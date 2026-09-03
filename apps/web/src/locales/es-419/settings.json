@@ -7,14 +7,51 @@
       "clearFilters": "Borrar filtros",
       "emptyDescription": "Las ejecuciones activadas por alertas, horarios, tickets y acciones manuales aparecerán aquí una vez que un agente las ejecute.",
       "emptyFilteredDescription": "Ninguna ejecución coincide con estos filtros. Prueba con otro agente o estado.",
-      "emptyConfigureLink": "Configurar agentes de IA"
+      "emptyConfigureLink": "Configurar agentes de IA",
+      "columns": {
+        "started": "Iniciado",
+        "duration": "Duración"
+      },
+      "showCost": "Mostrar costo",
+      "hideCost": "Ocultar costo"
     },
     "detail": {
       "notFoundDescription": "Es posible que esta ejecución se haya eliminado, o que el enlace esté desactualizado.",
+      "summary": {
+        "title": "Lo que encontró el agente"
+      },
+      "findings": {
+        "badge_one": "{{count}} hallazgo por revisar",
+        "badge_other": "{{count}} hallazgos por revisar"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Unidad",
+          "serviceName": "Nombre del servicio",
+          "configName": "Trabajo de respaldo",
+          "usedPercent": "Usado (%)",
+          "percentUsed": "Usado (%)",
+          "freeGb": "Libre (GB)",
+          "totalGb": "Capacidad (GB)",
+          "lastSeenAt": "Visto por última vez",
+          "lastSeenDays": "Días desde la última vez visto",
+          "checkedAt": "Comprobado",
+          "cveIds": "ID de CVE",
+          "cveCount": "Cantidad de CVE",
+          "osType": "Tipo de SO",
+          "openCriticalCount": "CVE críticos abiertos"
+        }
+      },
+      "sweep": {
+        "caption": "Una fila por cada problema que encontró este barrido, con la acción que propuso.",
+        "reviewPermissions": "Revisar permisos del agente"
+      },
       "trace": {
+        "description": "Cada llamada a herramienta que el agente propuso, ejecutó o tuvo denegada, en orden.",
         "emptyDescription": "Las llamadas a herramientas que el agente proponga o ejecute se mostrarán aquí."
       },
       "ledger": {
+        "description": "Solo las llamadas que realmente se ejecutaron, con su duración y cualquier error.",
         "emptyDescription": "Las herramientas que el agente realmente invocó se mostrarán aquí.",
         "statuses": {
           "pending": "Pendiente",
@@ -1494,6 +1531,30 @@
     "allOrgsHint": "Para todo el partner: se aplica a cada organización, salvo que una organización la restrinja.",
     "stateEnabled": "Habilitado",
     "stateDisabled": "Deshabilitado",
+    "lastRun": {
+      "never": "Nunca se ejecutó",
+      "at": "Última ejecución {{at}}"
+    },
+    "disableDialog": {
+      "title": "¿Deshabilitar {{name}}?",
+      "message": "Las ejecuciones futuras se detienen, las programaciones asociadas dejan de dispararse y las anulaciones de organización de este agente dejan de aplicarse. Una ejecución en curso continúa hasta su límite de tiempo.",
+      "retained": "El historial de ejecuciones y la evidencia se conservan. Puede volver a habilitar el agente más tarde desde la lista de deshabilitados; regresa apagado."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Guarde o cancele la programación que está editando antes de cerrar este editor.",
+      "discardTitle": "¿Descartar la programación sin guardar?",
+      "discardMessage": "La programación que estaba editando no se guardó. Al cerrar el editor se descartan esos cambios. El agente en sí no cambia.",
+      "discardConfirm": "Descartar programación"
+    },
+    "disabledSection": {
+      "title": "Deshabilitados",
+      "hint": "Se conservan por su historial de ejecuciones. Al volver a habilitar uno, regresa apagado para que pueda revisar su política antes de que se ejecute de nuevo.",
+      "disabledAt": "Deshabilitado el {{at}}"
+    },
+    "allDisabled": {
+      "title": "Todos los agentes están deshabilitados",
+      "description": "No se está ejecutando nada. Vuelva a habilitar uno abajo o cree un agente nuevo."
+    },
     "errors": {
       "load": "No se pudieron cargar los agentes.",
       "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
@@ -1502,7 +1563,8 @@
       "actMissingRecipient": "Agregue al menos un destinatario de notificación antes de habilitar el modo Actuar.",
       "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo.",
       "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Ese agente ya está activo."
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1510,19 +1572,24 @@
       "save": "Guardar",
       "cancel": "Cancelar",
       "disable": "Deshabilitar",
-      "confirmDisable": "Confirmar deshabilitación"
+      "confirmDisable": "Confirmar deshabilitación",
+      "reenable": "Volver a habilitar",
+      "runs": "Ejecuciones"
     },
     "toasts": {
       "saved": "Agente guardado",
       "saveFailed": "No se pudo guardar el agente.",
       "disabled": "Agente deshabilitado",
-      "disableFailed": "No se pudo deshabilitar el agente."
+      "disableFailed": "No se pudo deshabilitar el agente.",
+      "reenabled": "Agente habilitado de nuevo",
+      "reenableFailed": "No se pudo volver a habilitar el agente."
     },
     "issues": {
       "name": "Asigne un nombre al agente.",
       "severities": "Seleccione al menos una severidad de alerta.",
       "org": "Seleccione una organización antes de crear un agente propio de la organización.",
-      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente."
+      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente.",
+      "unsavedSchedule": "Tiene una programación sin guardar. Guárdela o cancélela antes de guardar el agente."
     },
     "editor": {
       "newTitle": "Nuevo agente",
@@ -1589,6 +1656,8 @@
       "maxFleetPercentPerDay": "Porción máx. de la flota por día (%)",
       "cooldownSeconds": "Enfriamiento por dispositivo (segundos)",
       "recipientRolesHint": "Roles que se notifican cuando este agente propone algo.",
+      "recipientRolesPartner": "Roles del partner",
+      "recipientRolesOrganization": "Roles de la organización",
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
       "charactersLeft": "Quedan {{count}} caracteres",
@@ -1599,6 +1668,7 @@
       "ticketAutonomousWrites": "Escrituras autónomas de tickets",
       "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
+      "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
       "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
       "toolSuggestLabel": "Agregar una herramienta conocida",
       "toolSuggestHint": "Las sugerencias vienen del registro de acciones decidibles por política, que no es la lista completa de herramientas. Cualquier otra que este agente pueda usar todavía se puede escribir arriba.",
@@ -1878,8 +1948,9 @@
         "promoteEligible": "Operaciones aptas para promoción",
         "promoteEligibleCaption": "Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.",
         "estTimeSaved": "Tiempo ahorrado estimado",
-        "estTimeSavedValue": "{{hours}} horas",
-        "estTimeSavedCaption": "Estimado a partir de un tiempo fijo por resultado.",
+        "estTimeSavedValue_one": "{{hours}} hora",
+        "estTimeSavedValue_other": "{{hours}} horas",
+        "estTimeSavedCaption": "Basado en tiempos fijos por resultado. Edita las ponderaciones para ajustarlo.",
         "howEstimatedToggle": "¿Cómo se estima esto?",
         "llmSpend": "Gasto en LLM"
       },
@@ -1914,19 +1985,25 @@
         }
       },
       "freshness": "Datos hasta {{through}} (UTC) · reconstruido {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Datos hasta {{through}} (UTC) · nunca reconstruido",
+      "freshnessNeverRebuilt": "Aún no se generó — la primera reconstrucción se ejecuta esta noche",
       "positiveFeedbackRate": "Tasa de comentarios positivos",
       "positiveFeedbackDetail": "{{up}} útiles, {{down}} no útiles",
       "editWeights": "Editar ponderaciones",
       "exportPdf": "Exportar PDF",
       "weightsDrawer": {
         "title": "Editar ponderaciones de tiempo ahorrado",
-        "description": "Define cuántos segundos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "description": "Define cuántos minutos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "unitSuffix": "min.",
+        "preview": "Tiempo estimado ahorrado en esta ventana: {{from}} → {{to}}",
         "save": "Guardar",
         "saving": "Guardando…",
         "reset": "Restablecer valores predeterminados",
         "resetting": "Restableciendo…",
         "customized": "Personalizado",
+        "resetConfirm": {
+          "title": "¿Restablecer las ponderaciones a los valores predeterminados?",
+          "message": "Las seis ponderaciones vuelven a sus valores predeterminados, y el tiempo estimado ahorrado en esta página cambia para reflejarlo."
+        },
         "errors": {
           "save": "No se pudieron guardar las ponderaciones.",
           "reset": "No se pudieron restablecer las ponderaciones."
@@ -1954,7 +2031,7 @@
           "through": "Datos hasta (UTC)",
           "rebuiltAt": "Última reconstrucción"
         },
-        "weightRowLabel": "{{label}} (segundos acreditados)",
+        "weightRowLabel": "{{label}} (minutos acreditados)",
         "neverRebuilt": "Nunca reconstruido"
       }
     },

@@ -7,14 +7,51 @@
       "clearFilters": "Effacer les filtres",
       "emptyDescription": "Les exécutions déclenchées par des alertes, des horaires, des billets et des actions manuelles apparaîtront ici une fois qu'un agent les aura exécutées.",
       "emptyFilteredDescription": "Aucune exécution ne correspond à ces filtres. Essayez un autre agent ou statut.",
-      "emptyConfigureLink": "Configurer les agents IA"
+      "emptyConfigureLink": "Configurer les agents IA",
+      "columns": {
+        "started": "Démarré",
+        "duration": "Durée"
+      },
+      "showCost": "Afficher le coût",
+      "hideCost": "Masquer le coût"
     },
     "detail": {
       "notFoundDescription": "Cette exécution a peut-être été supprimée, ou le lien est désuet.",
+      "summary": {
+        "title": "Ce que l'agent a constaté"
+      },
+      "findings": {
+        "badge_one": "{{count}} constat à examiner",
+        "badge_other": "{{count}} constats à examiner"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Disque",
+          "serviceName": "Nom du service",
+          "configName": "Tâche de sauvegarde",
+          "usedPercent": "Utilisé (%)",
+          "percentUsed": "Utilisé (%)",
+          "freeGb": "Libre (Go)",
+          "totalGb": "Capacité (Go)",
+          "lastSeenAt": "Vu pour la dernière fois",
+          "lastSeenDays": "Jours depuis le dernier contact",
+          "checkedAt": "Vérifié",
+          "cveIds": "ID de CVE",
+          "cveCount": "Nombre de CVE",
+          "osType": "Type de SE",
+          "openCriticalCount": "CVE critiques ouvertes"
+        }
+      },
+      "sweep": {
+        "caption": "Une ligne par problème relevé par ce balayage, avec l'action proposée.",
+        "reviewPermissions": "Examiner les permissions de l'agent"
+      },
       "trace": {
+        "description": "Chaque appel d'outil proposé, exécuté ou refusé à l'agent, dans l'ordre.",
         "emptyDescription": "Les appels d'outils que l'agent propose ou exécute seront répertoriés ici."
       },
       "ledger": {
+        "description": "Seulement les appels réellement exécutés, avec leur durée et toute erreur.",
         "emptyDescription": "Les outils réellement invoqués par l'agent seront répertoriés ici.",
         "statuses": {
           "pending": "En attente",
@@ -1494,6 +1531,30 @@
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
     "stateEnabled": "Activé",
     "stateDisabled": "Désactivé",
+    "lastRun": {
+      "never": "Jamais exécuté",
+      "at": "Dernière exécution {{at}}"
+    },
+    "disableDialog": {
+      "title": "Désactiver {{name}}?",
+      "message": "Les exécutions futures s’arrêtent, les planifications rattachées cessent de se déclencher et les dérogations d’organisation de cet agent cessent de s’appliquer. Une exécution déjà en cours se poursuit jusqu’à sa limite de temps.",
+      "retained": "L’historique d’exécution et les preuves sont conservés. Vous pourrez réactiver l’agent plus tard depuis la liste des agents désactivés; il revient éteint."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Enregistrez ou annulez la planification en cours de modification avant de fermer cet éditeur.",
+      "discardTitle": "Abandonner la planification non enregistrée?",
+      "discardMessage": "La planification que vous modifiiez n’a pas été enregistrée. Fermer l’éditeur abandonne ces modifications. L’agent lui-même reste inchangé.",
+      "discardConfirm": "Abandonner la planification"
+    },
+    "disabledSection": {
+      "title": "Désactivés",
+      "hint": "Conservés pour leur historique d’exécution. Un agent réactivé revient éteint, ce qui vous laisse vérifier sa politique avant qu’il ne s’exécute de nouveau.",
+      "disabledAt": "Désactivé le {{at}}"
+    },
+    "allDisabled": {
+      "title": "Tous les agents sont désactivés",
+      "description": "Rien ne s’exécute. Réactivez-en un ci-dessous ou créez un nouvel agent."
+    },
     "errors": {
       "load": "Impossible de charger les agents.",
       "kindExists": "Un agent de ce type existe déjà pour ce propriétaire. Modifiez l’agent existant ou désactivez-le d’abord.",
@@ -1502,7 +1563,8 @@
       "actMissingRecipient": "Ajoutez au moins un destinataire de notification avant d’activer le mode Agir.",
       "actMissingTool": "Autorisez au moins un outil éligible au mode Agir, ou autorisez un script, avant de l’activer.",
       "invalidSupervisedActionKeys": "Une ou plusieurs actions sélectionnées ne peuvent pas être autorisées par la politique.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Cet agent est déjà actif."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -1510,19 +1572,24 @@
       "save": "Enregistrer",
       "cancel": "Annuler",
       "disable": "Désactiver",
-      "confirmDisable": "Confirmer la désactivation"
+      "confirmDisable": "Confirmer la désactivation",
+      "reenable": "Réactiver",
+      "runs": "Exécutions"
     },
     "toasts": {
       "saved": "Agent enregistré",
       "saveFailed": "Impossible d’enregistrer l’agent.",
       "disabled": "Agent désactivé",
-      "disableFailed": "Impossible de désactiver l’agent."
+      "disableFailed": "Impossible de désactiver l’agent.",
+      "reenabled": "Agent réactivé",
+      "reenableFailed": "Impossible de réactiver l’agent."
     },
     "issues": {
       "name": "Donnez un nom à l’agent.",
       "severities": "Sélectionnez au moins une gravité d’alerte.",
       "org": "Sélectionnez une organisation avant de créer un agent appartenant à l’organisation.",
-      "allKindsTaken": "Chaque type d’agent possède déjà un agent pour ce propriétaire. Modifiez plutôt un agent existant."
+      "allKindsTaken": "Chaque type d’agent possède déjà un agent pour ce propriétaire. Modifiez plutôt un agent existant.",
+      "unsavedSchedule": "Vous avez une planification non enregistrée. Enregistrez-la ou annulez-la avant d’enregistrer l’agent."
     },
     "editor": {
       "newTitle": "Nouvel agent",
@@ -1589,6 +1656,8 @@
       "maxFleetPercentPerDay": "Part max. du parc par jour (%)",
       "cooldownSeconds": "Délai de repos par appareil (secondes)",
       "recipientRolesHint": "Rôles notifiés lorsque cet agent formule une proposition.",
+      "recipientRolesPartner": "Rôles du partenaire",
+      "recipientRolesOrganization": "Rôles de l’organisation",
       "recipientRolesEmpty": "Aucun rôle disponible.",
       "instructionsHint": "Simples consignes — ton, ce qu’il faut vérifier en premier, conventions internes. N’accorde jamais d’autorisations.",
       "charactersLeft": "{{count}} caractères restants",
@@ -1599,6 +1668,7 @@
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
+      "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
       "toolSuggestLabel": "Ajouter un outil connu",
       "toolSuggestHint": "Les suggestions proviennent du registre des actions décidables par politique, qui n’est pas la liste complète des outils. Tout autre outil permis à cet agent peut encore être saisi ci-dessus.",
@@ -1878,8 +1948,9 @@
         "promoteEligible": "Opérations admissibles à la promotion",
         "promoteEligibleCaption": "Opérations disposant d'assez de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.",
         "estTimeSaved": "Temps gagné estimé",
-        "estTimeSavedValue": "{{hours}} heures",
-        "estTimeSavedCaption": "Estimé à partir d’une durée fixe par résultat.",
+        "estTimeSavedValue_one": "{{hours}} heure",
+        "estTimeSavedValue_other": "{{hours}} heures",
+        "estTimeSavedCaption": "Basé sur des durées fixes par résultat — modifiez les pondérations pour ajuster.",
         "howEstimatedToggle": "Comment cette estimation est-elle calculée ?",
         "llmSpend": "Dépenses LLM"
       },
@@ -1914,19 +1985,25 @@
         }
       },
       "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Données jusqu’au {{through}} (UTC) · jamais reconstruit",
+      "freshnessNeverRebuilt": "Pas encore généré — la première reconstruction s’exécute cette nuit",
       "positiveFeedbackRate": "Taux d’avis positifs",
       "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles",
       "editWeights": "Modifier les pondérations",
       "exportPdf": "Exporter en PDF",
       "weightsDrawer": {
         "title": "Modifier les pondérations de temps gagné",
-        "description": "Définissez le nombre de secondes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "description": "Définissez le nombre de minutes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "unitSuffix": "min.",
+        "preview": "Temps estimé économisé pour cette période : {{from}} → {{to}}",
         "save": "Enregistrer",
         "saving": "Enregistrement…",
         "reset": "Rétablir les valeurs par défaut",
         "resetting": "Rétablissement…",
         "customized": "Personnalisé",
+        "resetConfirm": {
+          "title": "Rétablir les pondérations aux valeurs par défaut ?",
+          "message": "Les six pondérations reviennent à leurs valeurs par défaut, et le temps estimé économisé sur cette page change en conséquence."
+        },
         "errors": {
           "save": "Les pondérations n'ont pas pu être enregistrées.",
           "reset": "Les pondérations n'ont pas pu être réinitialisées."
@@ -1954,7 +2031,7 @@
           "through": "Données jusqu'au (UTC)",
           "rebuiltAt": "Dernière reconstruction"
         },
-        "weightRowLabel": "{{label}} (secondes créditées)",
+        "weightRowLabel": "{{label}} (minutes créditées)",
         "neverRebuilt": "Jamais reconstruit"
       }
     },

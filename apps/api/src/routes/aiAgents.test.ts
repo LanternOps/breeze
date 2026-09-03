@@ -22,6 +22,9 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess
 // stand-in — proves the byOrg org listing's tenancy pin is the same
 // eq/inArray shape authMiddleware actually installs on `auth.orgCondition`.
 import { buildOrgAccessClosures } from '../middleware/auth';
+// Real (unmocked): access.ts is the single source of truth for who may mutate
+// an agent row, and POST /:id/enable calls it directly.
+import { AgentAccessDeniedError } from '../services/aiAgents/access';
 
 const {
   selectMock,
@@ -29,6 +32,7 @@ const {
   authOkMock,
   mfaOkMock,
   getAgentMock,
+  listAgentsMock,
   resolveEffectiveAgentMock,
   createAndEnqueueAgentRunMock,
   verifyDeviceAccessMock,
@@ -56,6 +60,7 @@ const {
   authOkMock: vi.fn(() => true),
   mfaOkMock: vi.fn(() => true),
   getAgentMock: vi.fn(),
+  listAgentsMock: vi.fn(),
   resolveEffectiveAgentMock: vi.fn(),
   createAndEnqueueAgentRunMock: vi.fn(),
   verifyDeviceAccessMock: vi.fn(),
@@ -128,15 +133,26 @@ const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoi
 
 vi.mock('../services/aiAgents/agentService', () => ({
   AgentInvariantError: class AgentInvariantError extends Error {},
-  AgentKindConflictError: class AgentKindConflictError extends Error {},
+  // Faithful to the real class: `mapError` reads `.code` off it, so a stub
+  // without one answers 409 with `code: undefined` and every caller's
+  // `friendly()` lookup silently misses.
+  AgentKindConflictError: class AgentKindConflictError extends Error {
+    readonly code = 'agent_kind_exists';
+    constructor(kind: string) {
+      super(`agent_kind_exists: ${kind}`);
+      this.name = 'AgentKindConflictError';
+    }
+  },
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   disableAgent: vi.fn(),
-  listAgents: vi.fn(),
+  listAgents: listAgentsMock,
   getAgent: getAgentMock,
+  withAgentRowLocked: withAgentRowLockedMock,
+  recordAgentMutation: recordAgentMutationMock,
 }));
 
 vi.mock('../services/aiAgents/runService', () => ({
@@ -240,8 +256,20 @@ vi.mock('../services/actionIntents/intentService', () => ({
 const dbCtxMock = vi.hoisted(() => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
+// GET / 's batched last-run probe and POST /:id/enable 's UPDATE. Kept OUT of
+// the shared `selectMock` so an enable test's UPDATE can never be satisfied by
+// a stray SELECT chain queued by another test.
+const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock } = vi.hoisted(() => ({
+  selectDistinctOnMock: vi.fn(),
+  updateMock: vi.fn(),
+  withAgentRowLockedMock: vi.fn(),
+  // The audit + `ai.agent.policy_changed` publish pair every agent mutation
+  // records. Its own coverage is agentService.test.ts; here it exists so
+  // POST /:id/enable can be proven to record the SAME way disable does.
+  recordAgentMutationMock: vi.fn(),
+}));
 vi.mock('../db', () => ({
-  db: { select: selectMock },
+  db: { select: selectMock, selectDistinctOn: selectDistinctOnMock, update: updateMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: dbCtxMock.withSystemDbAccessContext,
   getCurrentDbAccessContext: () => undefined,
@@ -327,6 +355,10 @@ function buildApp(withGlobalErrorHandler = false, authOverrides: Record<string, 
       partnerId: null,
       accessibleOrgIds: [ORG_ID],
       user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+      // authMiddleware always sets this; `assertAgentWriteAllowed` (the real
+      // one, used by POST /:id/enable) reads `principal.kind` first, so a
+      // fixture without it fails as a 500 rather than as the denial under test.
+      principal: { kind: 'user', id: USER_ID },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
       ...authOverrides,
@@ -2970,5 +3002,299 @@ describe('GET /ai-agents/graduation', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).not.toHaveProperty('byOrgTruncated');
     expect(dbCtxMock.withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET / — the settings list, plus its batched last-run projection.
+// POST /:id/enable — the way back from DELETE /:id.
+// ---------------------------------------------------------------------------
+
+/** A full `ai_agents` row, as `withAgentRowLocked` hands one to its callback. */
+function agentRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: AGENT_ID,
+    kind: 'triage',
+    name: 'Triage',
+    enabled: false,
+    mode: 'shadow',
+    model: null,
+    orgId: ORG_ID,
+    partnerId: null,
+    toolAllowlist: [],
+    protectedResources: {},
+    limits: {},
+    triggers: {},
+    recipients: {},
+    actAssets: {},
+    instructions: null,
+    cooldownSeconds: 900,
+    disabledAt: new Date('2026-08-01T10:00:00.000Z'),
+    createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-08-01T10:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+/** `db.update(...).set(...).where(...).returning()`. */
+function updateChain<T>(rows: T[]) {
+  const chain = {
+    set: () => chain,
+    where: () => chain,
+    returning: () => Promise.resolve(rows),
+  };
+  return chain;
+}
+
+/** `db.selectDistinctOn(...).from(...).where(...).orderBy(...)`. */
+function distinctChain<T>(rows: T[], onWhere?: (predicate: unknown) => void) {
+  const chain = {
+    from: () => chain,
+    where: (predicate: unknown) => { onWhere?.(predicate); return chain; },
+    orderBy: () => chain,
+    then: (resolve: (v: T[]) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+  };
+  return chain;
+}
+
+describe('GET /ai-agents', () => {
+  beforeEach(() => {
+    listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
+    selectDistinctOnMock.mockReturnValue(distinctChain([]));
+  });
+
+  it('projects the latest run per agent from ONE batched query', async () => {
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([
+      { agentId: AGENT_ID, status: 'failed', queuedAt: new Date('2026-08-30T12:00:00.000Z') },
+    ]));
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      id: AGENT_ID,
+      lastRunAt: '2026-08-30T12:00:00.000Z',
+      lastRunStatus: 'failed',
+    });
+    // One probe for the whole page, never one per row.
+    expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports nulls for an agent that has never run', async () => {
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].lastRunAt).toBeNull();
+    expect(body.data[0].lastRunStatus).toBeNull();
+  });
+
+  it('never touches ai_agent_runs when the caller owns no agents', async () => {
+    listAgentsMock.mockResolvedValue([]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+    expect(selectDistinctOnMock).not.toHaveBeenCalled();
+  });
+
+  it("pins the run probe to the caller's accessible orgs, not just to the agent ids", async () => {
+    // A partner-wide agent's runs belong to many orgs. Without the org pin the
+    // list would report the latest run in ANY org as this caller's last run.
+    let where: unknown;
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([], (p) => { where = p; }));
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID]);
+
+    const res = await buildApp(false, { orgCondition }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(ORG_ID);
+  });
+
+  it('forwards includeDisabled to the service', async () => {
+    const res = await buildApp().request('/ai-agents?includeDisabled=1');
+
+    expect(res.status).toBe(200);
+    expect(listAgentsMock).toHaveBeenCalledWith(expect.anything(), { includeDisabled: true });
+  });
+
+  it('omits disabled rows by default', async () => {
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(listAgentsMock).toHaveBeenCalledWith(expect.anything(), { includeDisabled: false });
+  });
+});
+
+describe('POST /ai-agents/:id/enable', () => {
+  const ENABLE = `/ai-agents/${AGENT_ID}/enable`;
+
+  beforeEach(() => {
+    withAgentRowLockedMock.mockImplementation(
+      async (_auth: unknown, _id: string, fn: (row: unknown) => Promise<unknown>) => fn(agentRow()),
+    );
+    // No live agent of this kind — the unique-index pre-check finds nothing.
+    selectMock.mockReturnValue(selectChain([]));
+    updateMock.mockReturnValue(updateChain([agentRow({ disabledAt: null })]));
+  });
+
+  it('is behind authMiddleware', async () => {
+    authOkMock.mockReturnValue(false);
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(401);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:write', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA, exactly like DELETE /:id', async () => {
+    mfaOkMock.mockReturnValue(false);
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a non-uuid id without touching the database', async () => {
+    const res = await buildApp().request('/ai-agents/not-a-uuid/enable', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(withAgentRowLockedMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a row this caller cannot see', async () => {
+    withAgentRowLockedMock.mockRejectedValue(new AgentAccessDeniedError('Agent not found'));
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Agent not found' });
+  });
+
+  it('409s an agent that is not disabled, rather than pretending it vanished', async () => {
+    withAgentRowLockedMock.mockImplementation(
+      async (_a: unknown, _i: string, fn: (row: unknown) => Promise<unknown>) => fn(agentRow({ disabledAt: null })),
+    );
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Agent is not disabled', code: 'agent_not_disabled' });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('409s when a live agent of the same kind was created while this one was disabled', async () => {
+    // The partial unique index would raise 23505 inside the request
+    // transaction, which poisons it — the pre-check is what turns that into an
+    // actionable answer.
+    selectMock.mockReturnValue(selectChain([{ id: 'other' }]));
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'agent_kind_exists' });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a partner-wide row owned by a DIFFERENT partner', async () => {
+    withAgentRowLockedMock.mockImplementation(
+      async (_a: unknown, _i: string, fn: (row: unknown) => Promise<unknown>) =>
+        fn(agentRow({ orgId: null, partnerId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })),
+    );
+    const res = await buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null })
+      .request(ENABLE, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('clears disabledAt, leaves the agent switched OFF, and audits ai.agent.enabled', async () => {
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.disabledAt).toBeNull();
+    // Restoring must not put an agent straight back to work — turning it on is
+    // a separate, deliberate edit.
+    expect(body.data.enabled).toBe(false);
+    // Round 2 review finding 8b/8c: this used to be a fire-and-forget
+    // `writeRouteAudit` and NO policy_changed publish at all, so the one agent
+    // mutation in this file diverged from `disableAgent` on both counts. It now
+    // goes through the same `recordAgentMutation` the service uses — one
+    // awaited `createAuditLog` plus the event-bus broadcast, in the request
+    // transaction.
+    expect(recordAgentMutationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID, disabledAt: null }),
+      expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
+      'enabled',
+      { enabled: false },
+    );
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('answers before the response is sent, so the audit cannot outlive the transaction', async () => {
+    // Awaited, not fire-and-forget: `persistAuditLog` escapes the request
+    // transaction, and a route that returns first can answer 200 on a mutation
+    // whose audit row never lands.
+    let settled = false;
+    recordAgentMutationMock.mockImplementation(async () => { settled = true; });
+
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(settled).toBe(true);
+  });
+
+  // Review finding 8e: the missing case. A partner-wide row is VISIBLE to
+  // every partner-scoped user under that partner, so `withAgentRowLocked`
+  // hands it over happily — `canManagePartnerWidePolicies` is the only thing
+  // between a `selected` technician and un-archiving a policy that applies to
+  // every org the partner owns.
+  it('403s a partner-wide row when the caller lacks full partner org access', async () => {
+    withAgentRowLockedMock.mockImplementation(
+      async (_a: unknown, _i: string, fn: (row: unknown) => Promise<unknown>) =>
+        fn(agentRow({ orgId: null, partnerId: PARTNER_ID })),
+    );
+
+    const res = await buildApp(false, {
+      scope: 'partner',
+      partnerId: PARTNER_ID,
+      orgId: null,
+      partnerOrgAccess: 'selected',
+    }).request(ENABLE, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  // Review finding 8a: precedence. The not-disabled 409 used to run FIRST, so
+  // an unauthorized caller probing a partner-wide agent learned its live/
+  // archived state from the status code before authorization was ever checked.
+  it('checks write authorization BEFORE the not-disabled conflict', async () => {
+    withAgentRowLockedMock.mockImplementation(
+      async (_a: unknown, _i: string, fn: (row: unknown) => Promise<unknown>) =>
+        fn(agentRow({ orgId: null, partnerId: PARTNER_ID, disabledAt: null })),
+    );
+
+    const res = await buildApp(false, {
+      scope: 'partner',
+      partnerId: PARTNER_ID,
+      orgId: null,
+      partnerOrgAccess: 'selected',
+    }).request(ENABLE, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+  });
+
+  // Review finding 9: `AiAgentDto` now declares lastRunAt/lastRunStatus, so
+  // every route that answers a DTO has to answer them — a field the type
+  // promises and the wire omits is the drift the shared type exists to stop.
+  it('answers the last-run fields as null on a single-agent DTO', async () => {
+    const res = await buildApp().request(ENABLE, { method: 'POST' });
+
+    const body = await res.json();
+    expect(body.data.lastRunAt).toBeNull();
+    expect(body.data.lastRunStatus).toBeNull();
   });
 });

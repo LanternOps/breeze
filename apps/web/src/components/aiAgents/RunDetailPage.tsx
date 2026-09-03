@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { ArrowLeft, Bot, Download, ExternalLink, Loader2 } from 'lucide-react';
+import { ArrowLeft, Bot, Clock, Download, ExternalLink, Loader2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from '../reports/reportExport';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
@@ -53,8 +54,16 @@ function LiveIndicator({ label }: { label: string }) {
   );
 }
 
-function formatDuration(ms: number | null): string {
-  if (ms === null || Number.isNaN(ms)) return '—';
+/**
+ * UI critique finding #4: this used to floor everything through
+ * `Math.round(ms / 1000)`, so a 250 ms tool call rendered as "0s" — which
+ * reads as "took no time at all" rather than "took a quarter of a second".
+ * Under a second we print the milliseconds instead; from a second up, the
+ * familiar m/s form.
+ */
+function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
   const totalSeconds = Math.round(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -135,6 +144,102 @@ function ledgerStatusLabel(t: (key: string) => string, value: AiAgentRunLedgerEn
     default:
       return value;
   }
+}
+
+/**
+ * `action_intents.status` → i18n label (UI critique finding #2). The eight
+ * values come from `actionIntentStatusEnum`
+ * (apps/api/src/db/schema/actionIntents.ts); five of them already have a
+ * label on the ledger's `AiToolStatus` map and two more on the run-status
+ * map, so this deliberately REUSES those keys rather than minting a parallel
+ * set that would drift from them in translation.
+ */
+function intentStatusLabel(t: (key: string) => string, value: string): string {
+  switch (value) {
+    case 'pending_approval':
+      return t('aiAgentsPage.runs.statuses.awaiting_approval');
+    case 'approved':
+      return t('aiAgentsRuns.detail.ledger.statuses.approved');
+    case 'executing':
+      return t('aiAgentsRuns.detail.ledger.statuses.executing');
+    case 'completed':
+      return t('aiAgentsRuns.detail.ledger.statuses.completed');
+    case 'failed':
+      return t('aiAgentsRuns.detail.ledger.statuses.failed');
+    case 'rejected':
+      return t('aiAgentsRuns.detail.ledger.statuses.rejected');
+    case 'expired':
+      return t('aiAgentsPage.runs.statuses.expired');
+    case 'cancelled':
+      return t('aiAgentsPage.runs.statuses.cancelled');
+    default:
+      return value;
+  }
+}
+
+/**
+ * UI critique finding #1 — the run summary is the AGENT'S OWN ACCOUNT of what
+ * it found, and the model writes it in markdown. Rendering it as one flat
+ * paragraph printed literal `**hostname**` and ran `1. **Failed backup**
+ * (high)` into the surrounding prose.
+ *
+ * The renderer is the app's existing one (`react-markdown`, already used by
+ * AiChatMessages/ScriptAiMessages) restricted to a safe subset. Two
+ * properties are load-bearing:
+ *
+ *  - NO `rehype-raw`, and `skipHtml`. react-markdown 10 does NOT drop raw HTML
+ *    nodes by default — without `rehype-raw` it converts them to plain TEXT
+ *    (a model-authored `<img onerror=…>` renders as the literal escaped
+ *    string, never becomes markup, so it was never an XSS risk either way),
+ *    but that still puts the raw tag soup on screen as noise. `skipHtml`
+ *    drops those nodes outright instead of rendering their source as text.
+ *    `dangerouslySetInnerHTML` remains forbidden here for the same reason it
+ *    is forbidden on the narrative section — neither renderer ever hands the
+ *    model's own string to `innerHTML`.
+ *  - `allowedElements` is a strict allowlist (paragraphs, emphasis, inline
+ *    code, code blocks, both list kinds, links); `unwrapDisallowed` keeps the
+ *    TEXT of anything else (a heading, a table cell) instead of dropping
+ *    content.
+ */
+const SUMMARY_ALLOWED_ELEMENTS = ['p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'br', 'a'];
+
+/** Only `http(s)` survives as a link; every other scheme (`javascript:`,
+ *  `data:`, a bare relative path) renders as its own label text. */
+function isSafeHttpUrl(href: string | undefined): boolean {
+  return typeof href === 'string' && /^https?:\/\//i.test(href);
+}
+
+function RunSummaryMarkdown({ markdown }: { markdown: string }) {
+  return (
+    <ReactMarkdown
+      allowedElements={SUMMARY_ALLOWED_ELEMENTS}
+      unwrapDisallowed
+      skipHtml
+      components={{
+        p: ({ children }) => <p className="mt-2 first:mt-0">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+        code: ({ children }) => (
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">{children}</code>
+        ),
+        pre: ({ children }) => (
+          <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 font-mono text-[0.9em]">{children}</pre>
+        ),
+        ul: ({ children }) => <ul className="mt-2 list-disc space-y-1 pl-5">{children}</ul>,
+        ol: ({ children }) => <ol className="mt-2 list-decimal space-y-1 pl-5">{children}</ol>,
+        a: ({ href, children }) =>
+          isSafeHttpUrl(href) ? (
+            <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              {children}
+            </a>
+          ) : (
+            <>{children}</>
+          ),
+      }}
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
 }
 
 function traceKindLabel(t: (key: string) => string, kind: AiAgentRunTraceEntryDto['kind']): string {
@@ -325,73 +430,272 @@ function sweepReasonLabel(t: (key: string) => string, reason: string | null): st
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
 }
 
+/**
+ * UI critique finding #2 — evidence keys the sweep loaders happen to use
+ * (`knownExploited`, `mountPoint`, `osType`) are internal field names, not
+ * something an operator should have to decode on a reading surface.
+ *
+ * Only the keys where sentence-casing produces the WRONG answer are curated
+ * here — acronyms (`cveIds` → "Cve ids"), units (`freeGb` → "Free gb"), and
+ * a handful whose plain-English name differs from the column
+ * (`mountPoint` → "Volume"). Everything else falls through to
+ * `sentenceCaseKey`, which turns any camelCase or snake_case key into
+ * readable English on its own — a curated entry for those would be pure
+ * translation debt.
+ */
+const EVIDENCE_LABELLED_KEYS: ReadonlySet<string> = new Set([
+  'mountPoint', 'serviceName', 'configName',
+  'usedPercent', 'percentUsed', 'freeGb', 'totalGb',
+  'lastSeenAt', 'lastSeenDays', 'checkedAt',
+  'cveIds', 'cveCount', 'osType', 'openCriticalCount',
+]);
+
+/** `camelCase` / `snake_case` → `Sentence case`. */
+function sentenceCaseKey(key: string): string {
+  const words = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function evidenceLabel(t: (key: string) => string, key: string): string {
+  if (EVIDENCE_LABELLED_KEYS.has(key)) {
+    return t(/* i18n-dynamic */ `aiAgentsRuns.detail.evidence.labels.${key}`);
+  }
+  return sentenceCaseKey(key);
+}
+
+/** A bare uuid tells an operator nothing and cannot be acted on. The one
+ *  identifier that CAN be turned into a destination is the device id, and
+ *  that is already the Device column's link target — so every opaque id is
+ *  dropped here rather than printed. `deviceVulnerabilityIds` arrives as a
+ *  comma-joined list, hence the per-part test. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isOpaqueIdValue(value: string | number | boolean | null): boolean {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  return value.split(',').every((part) => UUID_RE.test(part.trim()));
+}
+
+const ISO_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function formatEvidenceValue(t: (key: string) => string, value: string | number | boolean | null): string {
+  if (value === null) return '—';
+  // `common:labels.yes`/`.no` rather than a private pair: this is shared
+  // vocabulary (locales/README.md), and minting a second copy would drift.
+  if (typeof value === 'boolean') {
+    return value ? t('common:labels.yes') : t('common:labels.no');
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? formatNumber(value) : '—';
+  if (ISO_DATE_TIME_RE.test(value)) return formatDateTime(value);
+  if (ISO_DATE_RE.test(value)) return formatDate(value);
+  return value;
+}
+
 /** The bounded scalar evidence map, rendered as `<dt>`/`<dd>` pairs — never a
  * JSON dump, and never a flattened "k: v" string a screen reader would read
  * as one undifferentiated run of text. */
 function SweepEvidenceList({
   evidence,
   testId,
+  t,
 }: {
   evidence: AiAgentRunSweepFindingDto['evidence'];
   testId: string;
+  t: (key: string) => string;
 }) {
-  const entries = Object.entries(evidence);
+  const entries = Object.entries(evidence).filter(
+    ([key, value]) => key !== 'deviceId' && !isOpaqueIdValue(value),
+  );
   if (entries.length === 0) return null;
   return (
     <dl className="mt-1 space-y-0.5 text-xs" data-testid={testId}>
       {entries.map(([key, value]) => (
         <div key={key} className="flex gap-1">
-          <dt className="text-muted-foreground">{key}:</dt>
-          <dd>{value === null ? '—' : String(value)}</dd>
+          <dt className="text-muted-foreground">{evidenceLabel(t, key)}:</dt>
+          <dd>{formatEvidenceValue(t, value)}</dd>
         </div>
       ))}
     </dl>
   );
 }
 
-function SweepFindingRow({
+/**
+ * The findings are rendered twice — as table rows from `md` up, as a stacked
+ * list below it (UI critique finding #7: at 390px the six-column table
+ * collapsed to two visible columns and ~250px-tall rows). Tailwind's `hidden`
+ * is `display:none`, so exactly one of the two is in the accessibility tree
+ * at any viewport. The two variants share every sub-component below and
+ * differ only in their test ids, which this table keeps in one place.
+ */
+type SweepVariant = 'row' | 'card';
+
+interface SweepTestIds {
+  finding: (index: number) => string;
+  device: (index: number) => string;
+  evidence: (index: number) => string;
+  proposal: (index: number) => string;
+  proposalLink: (index: number) => string;
+  permissionsLink: (index: number) => string;
+}
+
+const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
+  row: {
+    finding: (i) => `ai-agent-run-sweep-finding-${i}`,
+    device: (i) => `ai-agent-run-sweep-finding-${i}-device`,
+    evidence: (i) => `ai-agent-run-sweep-finding-${i}-evidence`,
+    proposal: (i) => `ai-agent-run-sweep-finding-${i}-proposal`,
+    proposalLink: (i) => `ai-agent-run-sweep-proposal-link-${i}`,
+    permissionsLink: (i) => `ai-agent-run-sweep-permissions-link-${i}`,
+  },
+  card: {
+    finding: (i) => `ai-agent-run-sweep-finding-card-${i}`,
+    device: (i) => `ai-agent-run-sweep-finding-card-${i}-device`,
+    evidence: (i) => `ai-agent-run-sweep-finding-card-${i}-evidence`,
+    proposal: (i) => `ai-agent-run-sweep-finding-card-${i}-proposal`,
+    proposalLink: (i) => `ai-agent-run-sweep-card-proposal-link-${i}`,
+    permissionsLink: (i) => `ai-agent-run-sweep-card-permissions-link-${i}`,
+  },
+};
+
+/** A finding's device, as a link to the device itself when the sweep resolved
+ *  one — the id is otherwise a dead end (UI critique finding #2). */
+function SweepFindingDevice({ finding }: { finding: AiAgentRunSweepFindingDto }) {
+  if (!finding.deviceHostname) return <>—</>;
+  if (!finding.deviceId) return <>{finding.deviceHostname}</>;
+  return (
+    <a href={`/devices/${finding.deviceId}`} className="text-primary hover:underline">
+      {finding.deviceHostname}
+    </a>
+  );
+}
+
+/**
+ * UI critique finding #3: a proposal that did NOT become an approval is the
+ * one thing on this page an operator can act on, and it used to render as
+ * muted grey text in the far-right column with nowhere to go. It now carries
+ * warning tone, and the `not_allowlisted` case — the only reason with a
+ * direct fix — links to the agent's own permissions.
+ */
+function sweepProposalToneClass(proposal: AiAgentRunSweepFindingDto['proposal']): string {
+  if (proposal === null) return 'text-muted-foreground';
+  if (proposal.disposition === 'intent_created') return '';
+  return 'text-amber-700 dark:text-amber-400';
+}
+
+function SweepProposalContent({
   finding,
   index,
+  agentId,
+  ids,
   t,
 }: {
   finding: AiAgentRunSweepFindingDto;
   index: number;
+  agentId: string;
+  ids: SweepTestIds;
   t: (key: string) => string;
 }) {
   const { proposal } = finding;
+  if (proposal === null) return <>—</>;
+  if (proposal.disposition === 'intent_created') {
+    return (
+      <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
+        {t('aiAgentsPage.runs.sweep.proposalCreated')}
+      </a>
+    );
+  }
+  return (
+    <>
+      <span>{sweepReasonLabel(t, proposal.reason)}</span>
+      {proposal.reason === 'not_allowlisted' && (
+        <a
+          href={`/settings/ai-agents#agent=${agentId}`}
+          data-testid={ids.permissionsLink(index)}
+          className="ml-1.5 font-medium text-primary hover:underline"
+        >
+          {t('aiAgentsRuns.detail.sweep.reviewPermissions')}
+        </a>
+      )}
+    </>
+  );
+}
+
+function SweepFindingRow({
+  finding,
+  index,
+  agentId,
+  t,
+}: {
+  finding: AiAgentRunSweepFindingDto;
+  index: number;
+  agentId: string;
+  t: (key: string) => string;
+}) {
+  const ids = SWEEP_TEST_IDS.row;
 
   return (
-    <tr data-testid={`ai-agent-run-sweep-finding-${index}`} className="align-top">
+    <tr data-testid={ids.finding(index)} className="align-top">
       <td className="px-2 py-2 whitespace-nowrap">{sweepKindLabel(t, finding.kind)}</td>
       <td className="px-2 py-2">
         <span className={SWEEP_SEVERITY_BADGE[finding.severity] ?? badgeClass('neutral', { size: 'sm' })}>
           {sweepSeverityLabel(t, finding.severity)}
         </span>
       </td>
-      <td className="px-2 py-2 text-muted-foreground" data-testid={`ai-agent-run-sweep-finding-${index}-device`}>
-        {finding.deviceHostname ?? '—'}
+      <td className="px-2 py-2 text-muted-foreground" data-testid={ids.device(index)}>
+        <SweepFindingDevice finding={finding} />
       </td>
       <td className="px-2 py-2 font-medium">{finding.title}</td>
       <td className="px-2 py-2 text-muted-foreground">
         <span>{finding.detail}</span>
-        <SweepEvidenceList evidence={finding.evidence} testId={`ai-agent-run-sweep-finding-${index}-evidence`} />
+        <SweepEvidenceList evidence={finding.evidence} testId={ids.evidence(index)} t={t} />
       </td>
-      <td className="px-2 py-2" data-testid={`ai-agent-run-sweep-finding-${index}-proposal`}>
-        {proposal === null ? (
-          <span className="text-muted-foreground">—</span>
-        ) : proposal.disposition === 'intent_created' ? (
-          <a
-            href="/approvals"
-            data-testid={`ai-agent-run-sweep-proposal-link-${index}`}
-            className="text-primary hover:underline"
-          >
-            {t('aiAgentsPage.runs.sweep.proposalCreated')}
-          </a>
-        ) : (
-          <span className="text-muted-foreground">{sweepReasonLabel(t, proposal.reason)}</span>
-        )}
+      <td
+        className={`px-2 py-2 ${sweepProposalToneClass(finding.proposal)}`}
+        data-testid={ids.proposal(index)}
+      >
+        <SweepProposalContent finding={finding} index={index} agentId={agentId} ids={ids} t={t} />
       </td>
     </tr>
+  );
+}
+
+/** The same finding, stacked, for viewports below `md`. A divided list rather
+ *  than nested bordered cards — the sweep section is already a card. */
+function SweepFindingCard({
+  finding,
+  index,
+  agentId,
+  t,
+}: {
+  finding: AiAgentRunSweepFindingDto;
+  index: number;
+  agentId: string;
+  t: (key: string) => string;
+}) {
+  const ids = SWEEP_TEST_IDS.card;
+
+  return (
+    <li data-testid={ids.finding(index)} className="py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={SWEEP_SEVERITY_BADGE[finding.severity] ?? badgeClass('neutral', { size: 'sm' })}>
+          {sweepSeverityLabel(t, finding.severity)}
+        </span>
+        <span className="text-xs text-muted-foreground">{sweepKindLabel(t, finding.kind)}</span>
+        <span className="text-xs text-muted-foreground" data-testid={ids.device(index)}>
+          <SweepFindingDevice finding={finding} />
+        </span>
+      </div>
+      <p className="mt-1.5 text-sm font-medium">{finding.title}</p>
+      <p className="mt-0.5 text-sm text-muted-foreground">{finding.detail}</p>
+      <SweepEvidenceList evidence={finding.evidence} testId={ids.evidence(index)} t={t} />
+      <p className={`mt-1.5 text-xs ${sweepProposalToneClass(finding.proposal)}`} data-testid={ids.proposal(index)}>
+        <SweepProposalContent finding={finding} index={index} agentId={agentId} ids={ids} t={t} />
+      </p>
+    </li>
   );
 }
 
@@ -605,7 +909,7 @@ function TicketProposalSection({
                 >
                   <span className="font-medium">{intent?.actionName ?? intentId}</span>
                   <span className="text-xs text-muted-foreground">
-                    {intent?.status ?? t('aiAgentsPage.runs.triage.intentUnknown')}
+                    {intent ? intentStatusLabel(t, intent.status) : t('aiAgentsPage.runs.triage.intentUnknown')}
                   </span>
                 </li>
               );
@@ -698,6 +1002,14 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
       cancelled = true;
     };
   }, [orgId, kind]);
+
+  // UI critique finding #5: a readout of "0 of 0 devices" is not a fact worth
+  // a card — the org has no recorded exposure and no allowance in the window,
+  // so every figure below it is zero. Drop the whole card rather than print a
+  // row of zeroes the operator has to interpret.
+  if (!loading && !unavailable && budget && budget.distinctDevices === 0 && budget.allowance === 0) {
+    return null;
+  }
 
   return (
     <div data-testid="run-detail-budget-card" className="rounded-lg border bg-card p-4">
@@ -934,6 +1246,36 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
     : null;
   const runIsLive = isLiveRunStatus(run.status);
 
+  /**
+   * UI critique finding #1c — everything this run left for a human to look
+   * at: sweep findings and tool calls it proposed but could not run.
+   * `no_action` is computed from the run's own remediation outcome, so a
+   * sweep that found six problems and proposed nothing it was allowed to
+   * execute still rolls up as "no action" — which the header must not
+   * present as "nothing to see here".
+   *
+   * Review finding #6: a `denied` trace entry is NOT a finding — for a
+   * read-only profile (verdict/sweep/narrative/triage) it's the guardrail
+   * working as intended, logged for every mutating tool the model even
+   * attempted (`runLoop.ts`'s `enforceReadOnlyProfile`). Counting it here
+   * inflated "N findings to review" with denials the operator never needs to
+   * act on; a `proposed` entry (one the run WOULD have executed if it had
+   * permission/budget) is the only trace kind that belongs alongside sweep
+   * findings.
+   */
+  const findingsToReview =
+    (run.sweep?.findings.length ?? 0)
+    + run.trace.filter((entry) => entry.kind === 'proposed').length;
+  const verdictUnderstatesFindings = run.runVerdict === 'no_action' && findingsToReview > 0;
+
+  /**
+   * UI critique finding #5 — the exposure budget is a per-device allowance.
+   * A run that never touched a device (a ticket-triage or narrative run) has
+   * no exposure to report, and the card rendered "0 of 0 devices".
+   */
+  const runTouchedDevices = run.deviceId !== null
+    || (run.sweep?.findings.some((finding) => finding.deviceId !== null) ?? false);
+
   return (
     <div className="space-y-6" data-testid="run-detail-page">
       <a href="/ai-agents/runs" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
@@ -952,8 +1294,22 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             {statusLabel(t, run.status)}
           </span>
           {runIsLive && <LiveIndicator label={t('aiAgentsRuns.live.label')} />}
-          <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
-            {verdictLabel(t, run.runVerdict)}
+          {/* Review finding #7: `run-detail-verdict-badge` is a stable
+              wrapper present in BOTH branches, not just the plain-verdict
+              one — a consumer that always looks for "the verdict badge" must
+              never see it vanish just because the findings override fired.
+              The findings badge keeps its own nested testid for callers that
+              specifically want to assert the override is showing. */}
+          <span data-testid="run-detail-verdict-badge">
+            {verdictUnderstatesFindings ? (
+              <span data-testid="run-detail-findings-badge" className={badgeClass('warning', { size: 'sm' })}>
+                {t('aiAgentsRuns.detail.findings.badge', { count: findingsToReview })}
+              </span>
+            ) : (
+              <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
+                {verdictLabel(t, run.runVerdict)}
+              </span>
+            )}
           </span>
           {/* P2-4 (#4191, Task 12) — the detail DTO carries no `profile`
               field (unlike the list item), so `ticketProposal !== null` is
@@ -966,7 +1322,41 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           )}
         </div>
 
-        <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+        {/* The status row's supporting line: how long the run took, plus the
+            machine verdict when the badge above had to override it (UI
+            critique findings #1c and #4). */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1" data-testid="run-detail-header-duration">
+            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="sr-only">{t('aiAgentsPage.runs.detail.labels.duration')}</span>
+            {formatDuration(durationMs)}
+          </span>
+          {verdictUnderstatesFindings && (
+            <span data-testid="run-detail-verdict-secondary">{verdictLabel(t, run.runVerdict)}</span>
+          )}
+        </div>
+
+        {/* UI critique finding #1 — the agent's own account of the run leads
+            the card, above the machine-derived metadata grid, at body weight
+            rather than as a muted afterthought below it. */}
+        {run.summary && (
+          <section className="mt-4" aria-labelledby="run-detail-summary-heading">
+            <h2
+              id="run-detail-summary-heading"
+              className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              {t('aiAgentsRuns.detail.summary.title')}
+            </h2>
+            <div
+              className="mt-1.5 max-w-prose text-sm leading-relaxed text-foreground"
+              data-testid="run-detail-summary"
+            >
+              <RunSummaryMarkdown markdown={run.summary} />
+            </div>
+          </section>
+        )}
+
+        <dl data-testid="run-detail-meta" className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.device')}</dt>
             <dd>{run.deviceHostname ?? t('aiAgentsPage.runs.detail.labels.noDevice')}</dd>
@@ -979,10 +1369,8 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
             <dd>{formatCurrency(run.costCents / 100)}</dd>
           </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.duration')}</dt>
-            <dd>{formatDuration(durationMs)}</dd>
-          </div>
+          {/* Duration lives in the status row above (UI critique finding #4)
+              — repeating it here would double-mark the same fact. */}
           <div>
             <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.queuedAt')}</dt>
             <dd>{formatDateTime(run.queuedAt)}</dd>
@@ -1000,12 +1388,6 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             <dd>{formatNumber(run.turnCount)}</dd>
           </div>
         </dl>
-
-        {run.summary && (
-          <p className="mt-3 text-sm text-muted-foreground" data-testid="run-detail-summary">
-            {run.summary}
-          </p>
-        )}
 
         {/* Wave 6 PR 4 (#3828, Task 4) — anomaly-triggered runs are
             device-bound (unlike ticket runs), so `deviceId` is always set
@@ -1043,7 +1425,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         )}
       </div>
 
-      {run.orgId && run.agentKind && (
+      {run.orgId && run.agentKind && runTouchedDevices && (
         <ExposureBudgetCard orgId={run.orgId} kind={run.agentKind} t={t} />
       )}
 
@@ -1083,25 +1465,41 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {run.sweep.findings.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.sweep.empty')}</p>
           ) : (
-            <div className="mt-3 overflow-x-auto">
-              <table className="min-w-full divide-y text-sm" data-testid="ai-agent-run-sweep-findings">
-                <thead>
-                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.kind')}</th>
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.severity')}</th>
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.device')}</th>
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.title')}</th>
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.detail')}</th>
-                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.proposal')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {run.sweep.findings.map((finding, index) => (
-                    <SweepFindingRow key={index} finding={finding} index={index} t={t} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {/* Below `md` the six-column table degraded into two visible
+                  columns behind a horizontal scrollbar (UI critique finding
+                  #7); the stacked list carries the same finding in reading
+                  order instead. Exactly one of the two is displayed — and
+                  therefore exposed to assistive tech — at any viewport. */}
+              <ul className="mt-3 divide-y md:hidden" data-testid="ai-agent-run-sweep-finding-cards">
+                {run.sweep.findings.map((finding, index) => (
+                  <SweepFindingCard key={index} finding={finding} index={index} agentId={run.agentId} t={t} />
+                ))}
+              </ul>
+              <div
+                className="mt-3 hidden overflow-x-auto md:block"
+                data-testid="ai-agent-run-sweep-findings-table-wrapper"
+              >
+                <table className="min-w-full divide-y text-sm" data-testid="ai-agent-run-sweep-findings">
+                  <caption className="sr-only">{t('aiAgentsRuns.detail.sweep.caption')}</caption>
+                  <thead>
+                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.kind')}</th>
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.severity')}</th>
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.device')}</th>
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.title')}</th>
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.detail')}</th>
+                      <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.proposal')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {run.sweep.findings.map((finding, index) => (
+                      <SweepFindingRow key={index} finding={finding} index={index} agentId={run.agentId} t={t} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
       )}
@@ -1177,6 +1575,15 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.trace.title')}</h2>
+        {/* UI critique finding #6: "Execution trace" and "Tool executions" can
+            render the same single row, so each says what it is FOR. Only when
+            populated — the empty state already explains the absence, and
+            saying both would double-mark it. */}
+        {run.trace.length > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="run-detail-trace-description">
+            {t('aiAgentsRuns.detail.trace.description')}
+          </p>
+        )}
         {run.trace.length === 0 ? (
           <EmptyState
             size="sm"
@@ -1195,6 +1602,11 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.ledger.title')}</h2>
+        {run.ledger.length > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="run-detail-ledger-description">
+            {t('aiAgentsRuns.detail.ledger.description')}
+          </p>
+        )}
         {run.ledger.length === 0 ? (
           <EmptyState
             size="sm"
@@ -1244,7 +1656,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             {run.intents.map((intent) => (
               <li key={intent.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{intent.actionName}</span>
-                <span className="text-xs text-muted-foreground">{intent.status}</span>
+                <span className="text-xs text-muted-foreground">{intentStatusLabel(t, intent.status)}</span>
                 <a href="/approvals" className="text-primary hover:underline">
                   {t('aiAgentsPage.runs.detail.intents.viewAll')}
                 </a>

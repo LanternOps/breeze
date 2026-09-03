@@ -195,6 +195,9 @@ describe('ImpactPage', () => {
     expect(estimate).toHaveTextContent('5');
     // 4321 cents rendered as money, never as a raw cent count.
     expect(screen.getByTestId('ai-impact-tile-llm-cents')).toHaveTextContent('$43.21');
+    // The caption names the unit basis and points at the control that changes it.
+    expect(estimate).toHaveTextContent('Based on per-outcome allowances');
+    expect(estimate).toHaveTextContent('edit weights to adjust');
   });
 
   it('shows the six effective weights in an accessible, closed-by-default disclosure (not a title= tooltip)', async () => {
@@ -315,6 +318,70 @@ describe('ImpactPage', () => {
     );
     // Header controls (window switcher) stay usable so the user can widen the window.
     expect(screen.getByTestId('ai-impact-window-90')).toBeInTheDocument();
+
+    // Nothing to export on a window with zero outcomes, but Edit weights
+    // still makes sense — there's a methodology to configure ahead of the
+    // first outcome.
+    expect(screen.queryByTestId('ai-impact-export-pdf')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-impact-edit-weights')).toBeInTheDocument();
+  });
+
+  it('hides Export PDF (both the toolbar and overflow-menu copies) when the window has no outcomes', async () => {
+    const zero = dto({
+      totals: {
+        alertsJudged: 0,
+        noiseFlagged: 0,
+        suppressionsApplied: 0,
+        ticketsTriaged: 0,
+        draftsSent: 0,
+        fixesProposed: 0,
+        fixesExecuted: 0,
+        fixWatchesHeld: 0,
+        fixWatchesRecurred: 0,
+        narrativesDelivered: 0,
+        estSecondsSaved: 0,
+        llmCents: 0,
+      },
+      series: [],
+      canEditWeights: true,
+    });
+    mockImpact(zero);
+    render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-impact-export-pdf')).not.toBeInTheDocument();
+
+    // The overflow menu itself still renders (Edit weights lives there too on
+    // mobile), but its Export PDF entry is gone.
+    fireEvent.click(screen.getByTestId('ai-impact-overflow-menu'));
+    expect(screen.queryByTestId('ai-impact-export-pdf-overflow')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-impact-edit-weights-overflow')).toBeInTheDocument();
+  });
+
+  it('hides the mobile overflow menu entirely when there is nothing in it (no outcomes, no edit access)', async () => {
+    const zero = dto({
+      totals: {
+        alertsJudged: 0,
+        noiseFlagged: 0,
+        suppressionsApplied: 0,
+        ticketsTriaged: 0,
+        draftsSent: 0,
+        fixesProposed: 0,
+        fixesExecuted: 0,
+        fixWatchesHeld: 0,
+        fixWatchesRecurred: 0,
+        narrativesDelivered: 0,
+        estSecondsSaved: 0,
+        llmCents: 0,
+      },
+      series: [],
+      canEditWeights: false,
+    });
+    mockImpact(zero);
+    render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-impact-overflow-menu')).not.toBeInTheDocument();
   });
 
   it('renders the populated tile groups and chart when the window has outcomes', async () => {
@@ -431,19 +498,26 @@ describe('ImpactPage', () => {
     expect(screen.getByTestId('ai-impact-by-org-truncated')).toBeInTheDocument();
   });
 
-  it('renders the freshness line, and the never-rebuilt variant when rebuiltAt is null', async () => {
+  it('renders the freshness line, and the not-built-yet variant when rebuiltAt is null', async () => {
     mockImpact(dto());
     const view = render(<ImpactPage />);
 
     await waitFor(() => expect(screen.getByTestId('ai-impact-freshness')).toBeInTheDocument());
     expect(screen.getByTestId('ai-impact-freshness')).toHaveTextContent('2026-08-31');
     expect(screen.getByTestId('ai-impact-freshness')).toHaveTextContent('UTC');
-    expect(screen.getByTestId('ai-impact-freshness')).not.toHaveTextContent('never');
+    expect(screen.getByTestId('ai-impact-freshness')).not.toHaveTextContent('Not built yet');
     view.unmount();
 
+    // "Never rebuilt" read as broken/stuck on a fresh install; the nightly
+    // rollup worker (jobs/aiAgentImpactRollup.ts) makes this an honest,
+    // reassuring wait rather than a dead end.
     mockImpact(dto({ rebuiltAt: null }));
     render(<ImpactPage />);
-    await waitFor(() => expect(screen.getByTestId('ai-impact-freshness')).toHaveTextContent('never'));
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-impact-freshness')).toHaveTextContent(
+        'Not built yet — first rebuild runs nightly',
+      ),
+    );
   });
 
   it('hides the positive-feedback readout when the rate is null', async () => {
@@ -841,6 +915,17 @@ describe('buildImpactPdfRows', () => {
     const rows = buildImpactPdfRows(dto({ rebuiltAt: null }), t);
     const rebuiltRow = rows.find((row) => row.metric === 'aiAgentsPage.impact.pdf.metrics.rebuiltAt');
     expect(rebuiltRow?.value).toBe('aiAgentsPage.impact.pdf.neverRebuilt');
+  });
+
+  it('renders the six weight rows in MINUTES, matching the editor and the on-page disclosure', async () => {
+    const { buildImpactPdfRows } = await import('./ImpactPage');
+    const t = (key: string) => key;
+    // 90s, 240s, 360s, 300s, 900s, 1800s -> 1.5, 4, 6, 5, 15, 30 minutes.
+    const rows = buildImpactPdfRows(dto(), t);
+    const weightValues = rows
+      .filter((row) => row.metric === 'aiAgentsPage.impact.pdf.weightRowLabel')
+      .map((row) => row.value);
+    expect(weightValues).toEqual(['1.5', '4', '6', '5', '15', '30']);
   });
 });
 

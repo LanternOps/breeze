@@ -84,6 +84,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   mockCurrentOrgId = 'org-1';
   mockAllOrgs = false;
+  localStorage.clear();
 });
 
 describe('RunsListPage', () => {
@@ -185,10 +186,11 @@ describe('RunsListPage', () => {
     expect(link).toHaveAttribute('href', '/ai-agents/runs/run-1');
   });
 
-  // Review fix (#3828): the route is registered `org-or-all` in
-  // routeScope.ts, whose contract requires an Organization column in
-  // All-organizations view — mirrors AlertsPage/AlertList's showOrgColumn.
-  it('shows an Organization column with each row\'s orgName in All-organizations (fleet) view', async () => {
+  // Review finding #2: the column was mislabeled "Target" while its cell
+  // renders `orgName` — the list DTO carries no device hostname to target,
+  // only the organization — so the header reverts to "Organization"
+  // (`common:labels.organization`), always visible in fleet view or not.
+  it('shows an Organization column with each row\'s orgName, in fleet view or not', async () => {
     mockCurrentOrgId = null;
     mockAllOrgs = true;
     mockEndpoints();
@@ -263,12 +265,232 @@ describe('RunsListPage', () => {
     expect(screen.queryByTestId('ai-agent-run-profile-triage-run-2')).not.toBeInTheDocument();
   });
 
-  it('hides the Organization column when a single org is selected', async () => {
+  // Review finding #2: Organization is not fleet-view-only.
+  it('shows the Organization column even when a single org is selected', async () => {
     mockEndpoints();
     render(<RunsListPage />);
 
     await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
-    expect(screen.queryByText('Acme Corp')).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
+    expect(screen.getAllByText('Acme Corp').length).toBeGreaterThan(0);
+  });
+});
+
+// Review finding #1 — columns: Started (relative + absolute), Duration, and
+// Cost moved behind a "Show cost" toggle that defaults off and persists.
+describe('RunsListPage columns', () => {
+  it('renders Started as a visible relative time with the absolute time in dateTime/title/sr-only text', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    const time = screen.getByTestId('runs-list-row-run-1').querySelector('time');
+    expect(time).not.toBeNull();
+    expect(time).toHaveAttribute('dateTime', RUN_1.queuedAt);
+    const title = time!.getAttribute('title');
+    expect(title).toBeTruthy();
+    // Review finding #4: `<time>` maps to the ARIA `generic` role, which
+    // PROHIBITS naming — `aria-label` is stripped from the accessibility
+    // tree, not merely redundant with `title`. The absolute timestamp must
+    // instead be exposed as real text content (an `sr-only` span), which a
+    // `generic` element's flattened text still carries to assistive tech.
+    expect(time).not.toHaveAttribute('aria-label');
+    const srOnly = time!.querySelector('.sr-only');
+    expect(srOnly).not.toBeNull();
+    expect(srOnly!.textContent).toContain(title);
+    // The visible text is relative, not the raw ISO timestamp.
+    expect(time!.textContent).not.toBe(RUN_1.queuedAt);
+  });
+
+  it('computes Duration from queuedAt to finishedAt for a finished run', async () => {
+    const run = { ...RUN_1, queuedAt: '2026-08-20T10:00:00.000Z', finishedAt: '2026-08-20T10:05:12.000Z' };
+    mockEndpoints({ runs: [run] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-row-run-1')).toHaveTextContent('5m 12s');
+  });
+
+  it('shows a Duration column header even for a run that has not finished', async () => {
+    mockEndpoints({ runs: [RUN_2] }); // RUN_2.finishedAt is null.
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-2')).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'Duration' })).toBeInTheDocument();
+  });
+
+  it('hides the Cost column by default and reveals it via the Show cost toggle', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('runs-list-toggle-cost')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('runs-list-toggle-cost'));
+
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-toggle-cost')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('persists the Show cost preference in localStorage across a remount', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    const { unmount } = render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('runs-list-toggle-cost'));
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument());
+    unmount();
+
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument());
+  });
+});
+
+// Review finding #2 — deep link from the agents list: `?agentId=` (legacy)
+// and `#agent=<id>` (repo's hash-for-transient-UI-state convention) both
+// pre-select the agent filter; the hash wins when both are present.
+describe('RunsListPage agent deep link', () => {
+  afterEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
+  it('pre-selects the agent filter from the #agent=<id> hash', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=a1');
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+    await waitFor(() => {
+      const runsCall = fetchMock.mock.calls.find(([url]) => (url as string).startsWith('/ai/agents/runs'));
+      expect(runsCall?.[0]).toContain('agentId=a1');
+    });
+  });
+
+  it('pre-selects the agent filter from the legacy ?agentId= query param when there is no hash', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs?agentId=a1');
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+  });
+
+  it('prefers the #agent hash over the legacy ?agentId= query param when both are present', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs?agentId=a2#agent=a1');
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+  });
+
+  it('leaves the agent filter unset when neither the hash nor the query param is present', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs');
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('');
+  });
+
+  // Review finding #1: a malformed percent-escape in the hash used to throw
+  // inside `decodeURIComponent`, uncaught, inside the mount layout effect —
+  // before the gated first fetch ever ran, so the page rendered blank
+  // forever. The bad hash must degrade to "no deep link" instead.
+  it('does not blank the page when the hash has a malformed percent-escape', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=%');
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('');
+  });
+
+  // Review finding #5: the previous `if (fromUrl !== undefined)` guard meant
+  // a `hashchange` that removed the hash (fromUrl becomes undefined) never
+  // cleared an already-applied filter. `applyDeepLink` now always sets the
+  // filter (falling back to '').
+  it('clears the agent filter when the #agent hash is removed', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=a1');
+    mockEndpoints();
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+
+    window.history.pushState({}, '', '/ai-agents/runs');
+    fireEvent(window, new Event('hashchange'));
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue(''));
+  });
+});
+
+// Review finding #3 — a deep-linked agent id that matches nothing in the
+// loaded agents list (a stale link, a deleted/renamed agent, or a
+// partner-wide agent invisible under this caller's RLS context) used to
+// desync the filter: the dropdown fell back to its first option ("All
+// agents") while `agentFilter` state still held the unmatched id, so every
+// request kept sending an `agentId` the UI no longer visibly reflected.
+describe('RunsListPage agent filter desync', () => {
+  afterEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
+  it('drops a deep-linked agent filter that matches no loaded agent option, and clears the hash', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=ghost-agent');
+    mockEndpoints(); // agents: [{ id: 'a1', ... }] — no 'ghost-agent'.
+    render(<RunsListPage />);
+
+    // The deep link applies immediately, before the agents list resolves —
+    // there is no `<option value="ghost-agent">` yet for the `<select>` to
+    // reflect (a mismatched controlled value renders as unselected), so the
+    // applied state is observed through the outgoing runs request instead.
+    await waitFor(() => {
+      const runsCall = fetchMock.mock.calls.find(([url]) => (url as string).startsWith('/ai/agents/runs'));
+      expect(runsCall?.[0]).toContain('agentId=ghost-agent');
+    });
+
+    // Once the agents list has genuinely loaded, the unmatched filter is
+    // dropped and the dropdown falls back to "All agents" for real.
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue(''));
+    expect(window.location.hash).toBe('');
+  });
+
+  it('keeps a deep-linked agent filter that DOES match a loaded agent option', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=a1');
+    mockEndpoints(); // agents: [{ id: 'a1', ... }]
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+    // Give the agents-loaded validation effect a tick to run — it must not
+    // clear a filter that legitimately matches.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1');
+  });
+
+  it('does not drop the filter while the agents list has not yet loaded (fetch failure)', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=a1');
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/runs')) return Promise.resolve(json({ data: [], nextCursor: null }));
+      if (url.startsWith('/ai/agents')) return Promise.reject(new Error('network error'));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<RunsListPage />);
+
+    // The agents list never loads (no `<option value="a1">` to reflect), so
+    // the applied filter is observed via the outgoing runs request and the
+    // "Clear filters" affordance — both state-driven, not select-DOM-driven.
+    await waitFor(() => {
+      const runsCall = fetchMock.mock.calls.find(([url]) => (url as string).startsWith('/ai/agents/runs'));
+      expect(runsCall?.[0]).toContain('agentId=a1');
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The agents fetch failed — we never confirmed the filter is invalid, so
+    // it must not be cleared out from under the deep link.
+    expect(screen.getByTestId('runs-list-clear-filters')).toBeInTheDocument();
   });
 });
 

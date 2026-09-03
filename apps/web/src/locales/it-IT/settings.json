@@ -7,14 +7,51 @@
       "clearFilters": "Cancella filtri",
       "emptyDescription": "Le esecuzioni attivate da avvisi, pianificazioni, ticket e azioni manuali appariranno qui una volta che un agente le avrà eseguite.",
       "emptyFilteredDescription": "Nessuna esecuzione corrisponde a questi filtri. Prova un agente o uno stato diverso.",
-      "emptyConfigureLink": "Configura agenti IA"
+      "emptyConfigureLink": "Configura agenti IA",
+      "columns": {
+        "started": "Avviato",
+        "duration": "Durata"
+      },
+      "showCost": "Mostra costo",
+      "hideCost": "Nascondi costo"
     },
     "detail": {
       "notFoundDescription": "Questa esecuzione potrebbe essere stata eliminata, oppure il link non è più valido.",
+      "summary": {
+        "title": "Che cosa ha rilevato l'agente"
+      },
+      "findings": {
+        "badge_one": "{{count}} rilievo da esaminare",
+        "badge_other": "{{count}} rilievi da esaminare"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Unità",
+          "serviceName": "Nome del servizio",
+          "configName": "Processo di backup",
+          "usedPercent": "Utilizzato (%)",
+          "percentUsed": "Utilizzato (%)",
+          "freeGb": "Libero (GB)",
+          "totalGb": "Capacità (GB)",
+          "lastSeenAt": "Ultimo contatto",
+          "lastSeenDays": "Giorni dall'ultimo contatto",
+          "checkedAt": "Verificato",
+          "cveIds": "ID CVE",
+          "cveCount": "Numero di CVE",
+          "osType": "Tipo di sistema operativo",
+          "openCriticalCount": "CVE critiche aperte"
+        }
+      },
+      "sweep": {
+        "caption": "Una riga per ogni problema rilevato da questa scansione, con l'azione proposta.",
+        "reviewPermissions": "Esamina le autorizzazioni dell'agente"
+      },
       "trace": {
+        "description": "Ogni chiamata a strumento proposta, eseguita o negata all'agente, in ordine.",
         "emptyDescription": "Le chiamate agli strumenti proposte o eseguite dall'agente saranno elencate qui."
       },
       "ledger": {
+        "description": "Solo le chiamate effettivamente eseguite, con la durata ed eventuali errori.",
         "emptyDescription": "Gli strumenti effettivamente invocati dall'agente saranno elencati qui.",
         "statuses": {
           "pending": "In sospeso",
@@ -1494,6 +1531,30 @@
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
     "stateEnabled": "Attivo",
     "stateDisabled": "Disattivato",
+    "lastRun": {
+      "never": "Mai eseguito",
+      "at": "Ultima esecuzione {{at}}"
+    },
+    "disableDialog": {
+      "title": "Disattivare {{name}}?",
+      "message": "Le esecuzioni future si fermano, le pianificazioni collegate smettono di attivarsi e le sostituzioni dell’organizzazione per questo agente smettono di applicarsi. Un’esecuzione già in corso prosegue fino al suo limite di tempo.",
+      "retained": "La cronologia delle esecuzioni e le prove vengono conservate. Puoi riattivare l’agente in seguito dall’elenco dei disattivati; torna spento."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Salva o annulla la pianificazione che stai modificando prima di chiudere questo editor.",
+      "discardTitle": "Eliminare la pianificazione non salvata?",
+      "discardMessage": "La pianificazione che stavi modificando non è stata salvata. Chiudendo l’editor queste modifiche vengono eliminate. L’agente stesso resta invariato.",
+      "discardConfirm": "Elimina pianificazione"
+    },
+    "disabledSection": {
+      "title": "Disattivati",
+      "hint": "Conservati per la loro cronologia di esecuzione. Riattivandone uno torna spento, così puoi rivedere la sua policy prima che venga eseguito di nuovo.",
+      "disabledAt": "Disattivato il {{at}}"
+    },
+    "allDisabled": {
+      "title": "Tutti gli agenti sono disattivati",
+      "description": "Non è in esecuzione nulla. Riattivane uno qui sotto o crea un nuovo agente."
+    },
     "errors": {
       "load": "Impossibile caricare gli agenti.",
       "kindExists": "Esiste già un agente di questo tipo per questo proprietario. Modifica quello esistente o disattivalo prima.",
@@ -1502,7 +1563,8 @@
       "actMissingRecipient": "Aggiungi almeno un destinatario di notifica prima di attivare la modalità Agire.",
       "actMissingTool": "Consenti almeno uno strumento idoneo per la modalità Agire, oppure autorizza uno script, prima di attivarla.",
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Questo agente è già attivo."
     },
     "actions": {
       "add": "Nuovo agente",
@@ -1510,19 +1572,24 @@
       "save": "Salva",
       "cancel": "Annulla",
       "disable": "Disattiva",
-      "confirmDisable": "Conferma disattivazione"
+      "confirmDisable": "Conferma disattivazione",
+      "reenable": "Riattiva",
+      "runs": "Esecuzioni"
     },
     "toasts": {
       "saved": "Agente salvato",
       "saveFailed": "Impossibile salvare l’agente.",
       "disabled": "Agente disattivato",
-      "disableFailed": "Impossibile disattivare l’agente."
+      "disableFailed": "Impossibile disattivare l’agente.",
+      "reenabled": "Agente riattivato",
+      "reenableFailed": "Impossibile riattivare l’agente."
     },
     "issues": {
       "name": "Assegna un nome all’agente.",
       "severities": "Seleziona almeno una gravità di avviso.",
       "org": "Seleziona un’organizzazione prima di creare un agente di proprietà dell’organizzazione.",
-      "allKindsTaken": "Ogni tipo di agente ha già un agente per questo proprietario. Modifica invece un agente esistente."
+      "allKindsTaken": "Ogni tipo di agente ha già un agente per questo proprietario. Modifica invece un agente esistente.",
+      "unsavedSchedule": "Hai una pianificazione non salvata. Salvala o annullala prima di salvare l’agente."
     },
     "editor": {
       "newTitle": "Nuovo agente",
@@ -1589,6 +1656,8 @@
       "maxFleetPercentPerDay": "Quota max del parco al giorno (%)",
       "cooldownSeconds": "Attesa per dispositivo (secondi)",
       "recipientRolesHint": "Ruoli avvisati quando questo agente propone qualcosa.",
+      "recipientRolesPartner": "Ruoli partner",
+      "recipientRolesOrganization": "Ruoli dell’organizzazione",
       "recipientRolesEmpty": "Nessun ruolo disponibile.",
       "instructionsHint": "Solo indicazioni — tono, cosa controllare per primo, convenzioni interne. Non concede mai autorizzazioni.",
       "charactersLeft": "{{count}} caratteri rimasti",
@@ -1599,6 +1668,7 @@
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
+      "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
       "toolSuggestLabel": "Aggiungi uno strumento noto",
       "toolSuggestHint": "I suggerimenti provengono dal registro delle azioni decidibili dalla policy, che non è l’elenco completo degli strumenti. Qualsiasi altro strumento consentito a questo agente si può comunque digitare qui sopra.",
@@ -1878,8 +1948,9 @@
         "promoteEligible": "Operazioni idonee alla promozione",
         "promoteEligibleCaption": "Operazioni con prove sufficienti e senza errori per essere preautorizzate. Apri Impostazioni → Agenti IA per esaminarle e promuoverle.",
         "estTimeSaved": "Tempo risparmiato stimato",
-        "estTimeSavedValue": "{{hours}} ore",
-        "estTimeSavedCaption": "Stimato in base a un tempo fisso per risultato.",
+        "estTimeSavedValue_one": "{{hours}} ora",
+        "estTimeSavedValue_other": "{{hours}} ore",
+        "estTimeSavedCaption": "Basato su tempi fissi per risultato — modifica i pesi per regolarlo.",
         "howEstimatedToggle": "Come viene stimato?",
         "llmSpend": "Spesa LLM"
       },
@@ -1914,19 +1985,25 @@
         }
       },
       "freshness": "Dati fino al {{through}} (UTC) · ricostruito {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Dati fino al {{through}} (UTC) · mai ricostruito",
+      "freshnessNeverRebuilt": "Non ancora generato — la prima ricostruzione viene eseguita stanotte",
       "positiveFeedbackRate": "Percentuale di riscontri positivi",
       "positiveFeedbackDetail": "{{up}} utili, {{down}} non utili",
       "editWeights": "Modifica pesi",
       "exportPdf": "Esporta PDF",
       "weightsDrawer": {
         "title": "Modifica i pesi del tempo risparmiato",
-        "description": "Imposta quanti secondi di tempo umano vengono accreditati a ciascun risultato. Questi pesi modificano solo la stima — mai ciò che fanno i tuoi agenti IA.",
+        "description": "Imposta quanti minuti di tempo umano vengono accreditati a ciascun risultato. Questi pesi modificano solo la stima — mai ciò che fanno i tuoi agenti IA.",
+        "unitSuffix": "min.",
+        "preview": "Tempo stimato risparmiato in questa finestra: {{from}} → {{to}}",
         "save": "Salva",
         "saving": "Salvataggio…",
         "reset": "Ripristina predefiniti",
         "resetting": "Ripristino…",
         "customized": "Personalizzato",
+        "resetConfirm": {
+          "title": "Ripristinare i pesi ai valori predefiniti?",
+          "message": "Tutti e sei i pesi tornano ai valori predefiniti e il tempo stimato risparmiato in questa pagina cambia di conseguenza."
+        },
         "errors": {
           "save": "Non è stato possibile salvare i pesi.",
           "reset": "Non è stato possibile ripristinare i pesi."
@@ -1954,7 +2031,7 @@
           "through": "Dati fino al (UTC)",
           "rebuiltAt": "Ultima ricostruzione"
         },
-        "weightRowLabel": "{{label}} (secondi accreditati)",
+        "weightRowLabel": "{{label}} (minuti accreditati)",
         "neverRebuilt": "Mai ricostruito"
       }
     },

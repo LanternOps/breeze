@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { History } from 'lucide-react';
@@ -6,10 +6,91 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency } from '@/lib/i18n/format';
+import { formatTimeAgo } from '@/lib/formatTime';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+
+// SSR-safe: reading `window` inside an effect (not a `useState` initializer)
+// avoids the hydration-mismatch class useHashState.ts documents — this page
+// mounts `client:load` (index.astro), so it IS server-rendered first.
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+/**
+ * Review finding #2 (agent → runs deep link): the hash form wins over the
+ * legacy `?agentId=` query param, per CLAUDE.md's hash-for-transient-UI-state
+ * convention — the query param is kept only for whatever already links to it.
+ *
+ * Review finding #1: a malformed percent-escape (`#agent=%`) makes
+ * `decodeURIComponent` throw. Uncaught, that exception fires inside the
+ * mount layout effect, before the gated first fetch ever runs — the page
+ * renders blank forever. The whole parse is wrapped so a bad hash degrades
+ * to "no deep link" instead of taking the page down with it.
+ */
+function parseAgentIdFromLocation(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const hash = window.location.hash.replace(/^#/, '');
+    const hashMatch = /(?:^|&)agent=([^&]*)/.exec(hash);
+    if (hashMatch?.[1]) return decodeURIComponent(hashMatch[1]);
+    const fromQuery = new URLSearchParams(window.location.search).get('agentId');
+    return fromQuery || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Cost is per-run spend, not every viewer wants it on screen by default — a
+ *  simple, per-viewer, persisted-but-not-synced preference (no cross-tab/
+ *  same-page sync needed: this page has exactly one instance of the toggle,
+ *  unlike billingUi.tsx's SHOW_INTERNAL_MARGIN_KEY). */
+const SHOW_COST_KEY = 'breeze:ai-agents-runs-show-cost';
+function readShowCost(): boolean {
+  try {
+    return localStorage.getItem(SHOW_COST_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** `queuedAt`→`finishedAt` span — the list DTO carries no `startedAt` (that's
+ *  detail-only), so this includes queue wait time; a duration purely for
+ *  in-flight execution isn't available at list granularity. `null` while the
+ *  run hasn't finished. Deliberately not i18n'd: "5m 12s" is a measurement
+ *  unit string, not translated prose, matching RunDetailPage's formatDuration. */
+function formatRunDuration(queuedAt: string, finishedAt: string | null): string {
+  if (!finishedAt) return '—';
+  const ms = new Date(finishedAt).getTime() - new Date(queuedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+/**
+ * Review finding #1: a relative "Started" value alone isn't enough — the
+ * absolute timestamp must be programmatically available (`dateTime`) and
+ * exposed to assistive tech, not just sighted users hovering for a `title`
+ * tooltip.
+ *
+ * Review finding #4: `<time>` has no ARIA naming role of its own — it maps to
+ * `generic`, and ARIA prohibits a `generic` element from taking an
+ * `aria-label`/`aria-labelledby` (naming is stripped, not merely ignored).
+ * The absolute timestamp is exposed instead as an `sr-only` text node inside
+ * the element, so it's read as part of the element's own content rather than
+ * relying on a naming attribute the accessibility tree throws away.
+ */
+function StartedCell({ queuedAt }: { queuedAt: string }) {
+  const absolute = formatDateTime(queuedAt);
+  return (
+    <time dateTime={queuedAt} title={absolute}>
+      {formatTimeAgo(queuedAt)}
+      <span className="sr-only"> ({absolute})</span>
+    </time>
+  );
+}
 
 interface RunsResponse {
   data: AiAgentRunListItemDto[];
@@ -149,10 +230,6 @@ export default function RunsListPage() {
   // selected, so a scope change must trigger a refetch or the list keeps
   // showing the previous scope's rows.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  // Fleet (All-organizations) view — show an Organization column so cross-org
-  // rows stay legible (mirrors AlertsPage/AlertList's showOrgColumn).
-  const isFleetView = !currentOrgId && allOrgs;
   const [runs, setRuns] = useState<AiAgentRunListItemDto[]>([]);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,6 +245,54 @@ export default function RunsListPage() {
   const clearFilters = useCallback(() => {
     setAgentFilter('');
     setStatusFilter('');
+  }, []);
+
+  const [showCost, setShowCost] = useState(false);
+  const toggleShowCost = useCallback(() => {
+    setShowCost((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SHOW_COST_KEY, next ? '1' : '0');
+      } catch {
+        // Best-effort — the preference just won't survive a reload.
+      }
+      return next;
+    });
+  }, []);
+
+  // Review finding #2 — deep link from the agents list: `?agentId=` and the
+  // hash form `#agent=<id>` both pre-select the agent filter, hash winning.
+  // Starts at the SSR-safe default ('') and adopts the URL post-mount, before
+  // paint, so a deep link lands on the right filter without a flash of the
+  // unfiltered list (same rationale as useHashState.ts).
+  //
+  // `deepLinkResolved` gates the very first fetch (below) so it can never
+  // race the deep-link's own `setAgentFilter` — both are set in the same
+  // layout-effect pass, so the first fetch effect that's allowed to run
+  // always sees the resolved filter, regardless of exactly how React
+  // schedules the layout-effect-triggered re-render relative to the mount's
+  // passive effects.
+  //
+  // Review finding #5: `applyDeepLink` now sets the filter unconditionally
+  // (falling back to `''`), not just when a value is present — the previous
+  // guard meant navigating the hash away (`#agent=a1` → no hash) left the
+  // stale filter applied forever, since `hashchange` fired with `fromUrl ===
+  // undefined` and the old `if (fromUrl !== undefined)` skipped clearing it.
+  //
+  // Review finding #5 also moves the cost-preference read into this same
+  // layout effect (it used to be a separate passive `useEffect`, so
+  // `showCost` flipped true a tick after the deep-link filter resolved,
+  // instead of both settling in the same pre-paint pass).
+  const [deepLinkResolved, setDeepLinkResolved] = useState(false);
+  useIsomorphicLayoutEffect(() => {
+    setShowCost(readShowCost());
+    const applyDeepLink = () => {
+      setAgentFilter(parseAgentIdFromLocation() ?? '');
+      setDeepLinkResolved(true);
+    };
+    applyDeepLink();
+    window.addEventListener('hashchange', applyDeepLink);
+    return () => window.removeEventListener('hashchange', applyDeepLink);
   }, []);
 
   // Monotonic request id — same stale-response guard as DeviceChangeHistoryTab:
@@ -189,6 +314,11 @@ export default function RunsListPage() {
     };
   }, []);
 
+  // Review finding #3: only flips true once the agents list has actually
+  // loaded successfully — a fetch failure leaves it false so a deep-linked
+  // `agentFilter` is never dropped just because we couldn't confirm it
+  // against an incomplete (empty) options list.
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -200,6 +330,7 @@ export default function RunsListPage() {
         setAgents(
           (body.data as Array<{ id: string; name: string }>).map((a) => ({ id: a.id, name: a.name })),
         );
+        setAgentsLoaded(true);
       } catch {
         // The agent filter is a convenience; a failed load just leaves it at
         // "All agents" — the runs list itself still loads independently.
@@ -209,6 +340,23 @@ export default function RunsListPage() {
       cancelled = true;
     };
   }, []);
+
+  // Review finding #3: a deep-linked `#agent=<id>` whose id matches nothing
+  // in the loaded agents list (a stale link, a deleted/renamed agent, or a
+  // partner-wide agent invisible under this caller's RLS context) desyncs
+  // the filter — the dropdown falls back to its first option ("All agents")
+  // while `agentFilter` state still holds the unmatched id, so every request
+  // keeps sending an `agentId` the UI no longer visibly reflects. Once the
+  // agents list has genuinely loaded, drop a filter that matches nothing and
+  // clear the hash so the URL doesn't keep re-asserting it.
+  useEffect(() => {
+    if (!agentsLoaded || !agentFilter) return;
+    if (agents.some((agent) => agent.id === agentFilter)) return;
+    setAgentFilter('');
+    if (window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, [agentsLoaded, agents, agentFilter]);
 
   const fetchPage = useCallback(
     async (cursor: string | null, append: boolean) => {
@@ -267,10 +415,11 @@ export default function RunsListPage() {
   );
 
   useEffect(() => {
+    if (!deepLinkResolved) return;
     setRuns([]);
     setNextCursor(null);
     void fetchPage(null, false);
-  }, [fetchPage]);
+  }, [fetchPage, deepLinkResolved]);
 
   /**
    * Background poll: re-fetches page 1 under the current filters.
@@ -396,6 +545,16 @@ export default function RunsListPage() {
               {t('aiAgentsRuns.list.clearFilters')}
             </button>
           )}
+
+          <button
+            type="button"
+            data-testid="runs-list-toggle-cost"
+            aria-pressed={showCost}
+            onClick={toggleShowCost}
+            className="rounded-md border px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            {showCost ? t('aiAgentsRuns.list.hideCost') : t('aiAgentsRuns.list.showCost')}
+          </button>
         </div>
       </div>
 
@@ -461,13 +620,18 @@ export default function RunsListPage() {
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.agent')}</th>
-                  {isFleetView && <th className="px-4 py-3">{t('common:labels.organization')}</th>}
+                  {/* Review finding #2: this column's cell renders `orgName`
+                      — the list DTO has no device hostname to "target" — so
+                      the header says Organization, reusing the shared
+                      vocabulary key rather than a private "Target" label
+                      that never matched what the column actually shows. */}
+                  <th className="px-4 py-3">{t('common:labels.organization')}</th>
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.status')}</th>
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.trigger')}</th>
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.verdict')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.queued')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.finished')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.cost')}</th>
+                  <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.started')}</th>
+                  <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.duration')}</th>
+                  {showCost && <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.cost')}</th>}
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -490,9 +654,7 @@ export default function RunsListPage() {
                           {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
                         </a>
                       </td>
-                      {isFleetView && (
-                        <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
-                      )}
+                      <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
                       <td className="px-4 py-3">
                         <span
                           className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
@@ -541,14 +703,16 @@ export default function RunsListPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {formatDateTime(run.queuedAt)}
+                        <StartedCell queuedAt={run.queuedAt} />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {run.finishedAt ? formatDateTime(run.finishedAt) : '—'}
+                        {formatRunDuration(run.queuedAt, run.finishedAt)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {formatCurrency(run.costCents / 100)}
-                      </td>
+                      {showCost && (
+                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          {formatCurrency(run.costCents / 100)}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
