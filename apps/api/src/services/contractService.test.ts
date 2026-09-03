@@ -358,9 +358,14 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { role: 'server', siteId: null, n: 2 },
-      { role: 'workstation', siteId: null, n: 5 },
-      { role: 'unknown', siteId: null, n: 1 },
+      { id: 'server-1', role: 'server', siteId: null },
+      { id: 'server-2', role: 'server', siteId: null },
+      { id: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', role: 'workstation', siteId: null },
+      { id: 'workstation-3', role: 'workstation', siteId: null },
+      { id: 'workstation-4', role: 'workstation', siteId: null },
+      { id: 'workstation-5', role: 'workstation', siteId: null },
+      { id: 'unknown-1', role: 'unknown', siteId: null },
     ]);
     queueRun([
       { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'] },
@@ -713,7 +718,10 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   });
 
   it('batches device counts: one snapshot per org across all orgs', async () => {
-    vi.mocked(snapshotContractDevices).mockResolvedValue([{ role: 'workstation', siteId: null, n: 2 }]);
+    vi.mocked(snapshotContractDevices).mockResolvedValue([
+      { id: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', role: 'workstation', siteId: null },
+    ]);
     queueResult(['org1', 'org2', 'org3'].map((orgId, i) => contract({ id: `c${i}`, orgId })));
     queueResult(['c0', 'c1', 'c2'].flatMap((contractId) => [
       line({ id: `${contractId}-a`, contractId, lineType: 'per_device', unitPrice: '10.00' }),
@@ -781,9 +789,12 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0, ...p,
   });
   const snapshot = [
-    { role: 'workstation', siteId: null, n: 3 },
-    { role: 'server', siteId: null, n: 2 },
-    { role: 'unknown', siteId: null, n: 1 },
+    { id: 'workstation-1', role: 'workstation', siteId: null },
+    { id: 'workstation-2', role: 'workstation', siteId: null },
+    { id: 'workstation-3', role: 'workstation', siteId: null },
+    { id: 'server-1', role: 'server', siteId: null },
+    { id: 'server-2', role: 'server', siteId: null },
+    { id: 'unknown-1', role: 'unknown', siteId: null },
   ];
 
   it('bills the role set from the snapshot and reports uncovered devices by role', async () => {
