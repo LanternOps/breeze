@@ -3918,6 +3918,8 @@
       "fieldKey": "Clé de Terrain",
       "fieldKeyPlaceholder": "par exemple, asset_tag",
       "fieldKeyHelp": "Utilisé dans les filtres et API. Ne peut pas être modifié après la création.",
+      "fieldKeyScriptHelp": "Cette clé est ce que les scripts utilisent pour lire et écrire le champ. Lecture : associez la source d’un paramètre de script à « À partir d’un champ personnalisé de l’appareil » en utilisant cette clé. Écriture : faites appeler par le script l’API des champs personnalisés de l’appareil avec une requête PATCH et une clé API pour enregistrer une nouvelle valeur.",
+      "fieldKeyScriptHelpAriaLabel": "À propos de l’utilisation de ce champ dans les scripts",
       "fieldType": "Type de champ",
       "dropdownChoices": "Choix déroulants",
       "choiceLabel": "Libellé",

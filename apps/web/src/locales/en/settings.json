@@ -3923,6 +3923,8 @@
       "fieldKey": "Field Key",
       "fieldKeyPlaceholder": "e.g., asset_tag",
       "fieldKeyHelp": "Used in filters and API. Cannot be changed after creation.",
+      "fieldKeyScriptHelp": "This key is what scripts use to read and write the field. Read: bind a script parameter's source to \"From a device custom field\" using this key. Write: have the script call the device's custom-fields API with a PATCH request and an API key to save a new value.",
+      "fieldKeyScriptHelpAriaLabel": "About using this field in scripts",
       "fieldType": "Field Type",
       "dropdownChoices": "Dropdown Choices",
       "choiceLabel": "Label",

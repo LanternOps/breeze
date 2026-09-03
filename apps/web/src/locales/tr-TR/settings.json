@@ -3923,6 +3923,8 @@
       "fieldKey": "Alan Tuşu",
       "fieldKeyPlaceholder": "örneğin, asset_tag",
       "fieldKeyHelp": "Filtrelerde ve API kullanılır. Oluşturulduktan sonra değiştirilemez.",
+      "fieldKeyScriptHelp": "Bu anahtar, betiklerin alanı okumak ve yazmak için kullandığı şeydir. Okuma: bir betik parametresinin kaynağını bu anahtarı kullanarak \"Cihaz özel alanından\" olarak bağlayın. Yazma: yeni bir değeri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldKeyScriptHelpAriaLabel": "Bu alanın betiklerde kullanımı hakkında",
       "fieldType": "Alan Türü",
       "dropdownChoices": "Açılır Seçenekler",
       "choiceLabel": "Etiket",

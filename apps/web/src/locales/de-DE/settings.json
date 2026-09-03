@@ -3870,6 +3870,8 @@
       "fieldKey": "Feldschlüssel",
       "fieldKeyPlaceholder": "z. B. asset_tag",
       "fieldKeyHelp": "Wird in Filtern und API verwendet. Kann nach der Erstellung nicht mehr geändert werden.",
+      "fieldKeyScriptHelp": "Dieser Schlüssel wird von Skripten zum Lesen und Schreiben des Felds verwendet. Lesen: Binden Sie die Quelle eines Skriptparameters mit diesem Schlüssel an „Aus einem benutzerdefinierten Gerätefeld“. Schreiben: Lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen, um einen neuen Wert zu speichern.",
+      "fieldKeyScriptHelpAriaLabel": "Über die Verwendung dieses Felds in Skripten",
       "fieldType": "Feldtyp",
       "dropdownChoices": "Dropdown-Auswahl",
       "choiceLabel": "Etikett",
