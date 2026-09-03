@@ -84,6 +84,7 @@ function portalApp(orgId: string) {
       user: { id: 'portal-user-gate', orgId, email: PORTAL_EMAIL, name: 'Gate Signer', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't',
       authMethod: 'bearer',
+      timezone: 'UTC',
     });
     const ctx: DbAccessContext = { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) return next();
