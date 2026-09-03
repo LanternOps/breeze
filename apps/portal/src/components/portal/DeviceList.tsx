@@ -1,8 +1,18 @@
 import React from 'react';
-import { Monitor } from 'lucide-react';
-import { type Device } from '@/lib/api';
+import { Download, Monitor } from 'lucide-react';
+import { publicApiPath, type Device } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice, type MarkTone } from './ui';
+import {
+  BTN_SECONDARY,
+  ROW,
+  CELL,
+  TH,
+  PageHeader,
+  StatusMark,
+  EmptyState,
+  ErrorNotice,
+  type MarkTone,
+} from './ui';
 
 interface DeviceListProps {
   devices: Device[];
@@ -49,6 +59,8 @@ function statusMark(status: Device['status']): { tone: MarkTone; label: string }
       return { tone: 'neutral', label: 'Offline' };
     case 'warning':
       return { tone: 'warning', label: 'Warning' };
+    default:
+      return { tone: 'neutral', label: status || 'Unknown' };
   }
 }
 
@@ -70,7 +82,20 @@ export function DeviceList({ devices, error }: DeviceListProps) {
 
   return (
     <div>
-      <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
+      <PageHeader
+        title="Devices"
+        lede="The machines your IT team looks after for you."
+        action={
+          <a
+            href={publicApiPath('/portal/devices/export.csv')}
+            data-testid="portal-devices-export"
+            className={BTN_SECONDARY}
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Export CSV
+          </a>
+        }
+      />
 
       {devices.length === 0 ? (
         <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">
@@ -83,7 +108,10 @@ export function DeviceList({ devices, error }: DeviceListProps) {
           {/* One inventory, one treatment: the same hairline-ruled ledger the
               rest of the portal keeps (Equipment reads these machines the same
               way) — not a card grid holding a second belief about this data. */}
-          <table className="block w-full sm:table sm:min-w-[36rem]">
+          <table
+            className="block w-full sm:table sm:min-w-[70rem]"
+            data-testid="portal-device-table"
+          >
             <thead className="hidden border-b border-border sm:table-header-group">
               <tr>
                 <th scope="col" className={cn(TH, 'text-left')}>
@@ -98,13 +126,32 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                 <th scope="col" className={cn(TH, 'text-left')}>
                   Last online
                 </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Last patch
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Protection
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Encryption
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Last backup
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Warranty ends
+                </th>
               </tr>
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {devices.map((device) => {
                 const mark = statusMark(device.status);
                 return (
-                  <tr key={device.id} className={ROW}>
+                  <tr
+                    key={device.id}
+                    className={ROW}
+                    data-testid={`portal-device-${device.id}`}
+                  >
                     {/* order-* reorders the phone card: name and status share
                         the first line, platform and last-seen trail muted. The
                         friendly name only — the raw hostname is a technician's
@@ -127,6 +174,13 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                       <span className="sm:hidden">Last online </span>
                       {lastSeenLabel(device.lastSeenAt)}
                     </td>
+                    <td className={CELL}>{device.lastPatchAt ?? 'Not available'}</td>
+                    <td className={CELL}>
+                      {device.protection[0].toUpperCase() + device.protection.slice(1)}
+                    </td>
+                    <td className={CELL}>{device.encryption ?? 'Not available'}</td>
+                    <td className={CELL}>{device.lastBackupAt ?? 'Not available'}</td>
+                    <td className={CELL}>{device.warrantyEndsAt ?? 'Not available'}</td>
                   </tr>
                 );
               })}
