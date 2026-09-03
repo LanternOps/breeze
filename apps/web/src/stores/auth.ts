@@ -180,6 +180,9 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
+        // Same reasoning for the SSO failure reason (#3704): a session that
+        // just logged in must not inherit a previous attempt's verdict.
+        ssoExchangeFailed = false;
         // A fresh login makes any pending throttle-recovery reload stale —
         // the session is already restored, don't reload out from under it.
         cancelThrottleReload();
@@ -772,6 +775,43 @@ export function settleSsoLoginGate(): void {
   ssoLoginGate = null;
 }
 
+/**
+ * Where a terminally failed SSO exchange sends the user.
+ *
+ * Exported so AuthOverlay's redirect and handleSessionExpired's eviction land
+ * on the BYTE-IDENTICAL URL. That is what makes it harmless for either of them
+ * to win the race between the two (#3704) — see markSsoExchangeFailed below.
+ */
+export const SSO_EXCHANGE_FAILED_LOGIN_PATH = '/login?error=sso_exchange_failed';
+
+let ssoExchangeFailed = false;
+
+/**
+ * Record that the `#ssoCode` exchange has terminally failed (#3704).
+ *
+ * Settling the gate releases every refresh queued behind it, and those
+ * refreshes 401 against the very cookie whose deadness sent the user through
+ * SSO in the first place. Their eviction is CORRECT — the session really is
+ * gone — but its generic `reason=session-expired` is the wrong explanation:
+ * it points away from SSO and invites an infinite retry loop, since signing in
+ * again just re-runs the same broken SSO round trip.
+ *
+ * AuthOverlay orders the two so the specific redirect commits first, which on
+ * its own is enough whenever `navigateTo` completes a real soft transition.
+ * This flag is what makes the outcome correct even when that ordering
+ * guarantee does NOT hold — `navigateTo` falls back to a fire-and-forget
+ * `window.location.replace`, which merely QUEUES a hard navigation and then
+ * resolves, so the address bar has not moved yet when the gate opens. Rather
+ * than suppress the eviction (which would strand the user if the SSO redirect
+ * never lands), we make it carry the same destination: whichever navigation
+ * wins, the user gets the same specific explanation.
+ *
+ * Cleared by login(), alongside the sessionExpiryInFlight latch.
+ */
+export function markSsoExchangeFailed(): void {
+  ssoExchangeFailed = true;
+}
+
 // Optional chaining: tests (and some embedders) stub `window.location` with a
 // partial object, and this runs at module load where a throw breaks every
 // importer of the store.
@@ -1177,6 +1217,16 @@ export function handleSessionExpired(reason: SessionExpiredReason = 'session-exp
   useAuthStore.getState().logout();
 
   if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    // A terminally failed SSO exchange outranks the generic expiry these
+    // refreshes report (#3704): it is the actual reason the session is dead,
+    // and it is the only one of the two the user can act on. Landing on the
+    // exact URL AuthOverlay is already navigating to makes it irrelevant which
+    // of the two wins — and no `next` deep link is dropped, because the SSO
+    // handoff has none to preserve.
+    if (ssoExchangeFailed) {
+      window.location.replace(SSO_EXCHANGE_FAILED_LOGIN_PATH);
+      return;
+    }
     const url = loginPathWithNext();
     window.location.replace(`${url}${url.includes('?') ? '&' : '?'}reason=${reason}`);
   }

@@ -67,6 +67,13 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
   beforeEach(async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fetchCalls = [];
+    // login() is the only reset for two module-level latches these tests trip:
+    // handleSessionExpired's `sessionExpiryInFlight` (which would make a later
+    // test's eviction a silent no-op) and the #3704 SSO verdict.
+    useAuthStore.getState().login(
+      { id: 'u-7', email: 'locked@example.com', name: 'Locked Out', mfaEnabled: false },
+      { accessToken: 'reset', expiresInSeconds: 900 },
+    );
     useAuthStore.setState({ ...STALE_SESSION });
     window.history.replaceState({}, '', '/');
     const { navigateTo } = await import('../../lib/navigation');
@@ -222,5 +229,59 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
     await act(async () => {
       await gatedRequest;
     });
+  });
+
+  it('lands the SSO notice even when the redirect is a hard navigation that has not committed yet', async () => {
+    // navigateTo's own fallback: when the Astro transition throws it fires
+    // `window.location.replace` and returns, so the promise resolves with the
+    // address bar STILL on the old path. Awaiting it therefore proves nothing
+    // here, and handleSessionExpired's `/login` pathname guard misses — this is
+    // the residual hole that markSsoExchangeFailed closes.
+    const { navigateTo } = await import('../../lib/navigation');
+    vi.mocked(navigateTo).mockImplementation(async () => {
+      // Resolves without moving the URL, exactly like the fallback branch.
+    });
+
+    // jsdom refuses real navigations, so swap the whole location object and spy
+    // on replace(); the overlay only reads hash/pathname/search off it.
+    const originalLocation = window.location;
+    const replace = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { pathname: '/', search: '', hash: '#ssoCode=stale-grant', replace, reload: vi.fn() },
+    });
+
+    try {
+      stubFetch({
+        '/sso/exchange': () => json(400, { error: 'Invalid or expired token exchange code' }),
+        '/auth/refresh': () => json(401, { error: 'invalid refresh token' }),
+      });
+
+      authStoreModule.armSsoLoginGate();
+      const gatedRequest = authStoreModule.fetchWithAuth('/config').catch(() => null);
+
+      render(<AuthOverlay />);
+      await act(async () => {
+        vi.advanceTimersByTime(60);
+      });
+
+      await waitFor(() => {
+        expect(refreshCalls().length).toBeGreaterThan(0);
+      });
+      await act(async () => {
+        await gatedRequest;
+      });
+
+      // The eviction DID win the race here — and that is fine, because it now
+      // carries the specific reason rather than the generic one.
+      await waitFor(() => {
+        expect(replace).toHaveBeenCalled();
+      });
+      const target = String(replace.mock.calls[0][0]);
+      expect(target).toBe('/login?error=sso_exchange_failed');
+      expect(target).not.toContain('reason=session-expired');
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    }
   });
 });
