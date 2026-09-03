@@ -243,7 +243,9 @@
       "critical": "Kritik",
       "important": "Önemli",
       "moderate": "Orta",
-      "low": "Düşük"
+      "low": "Düşük",
+      "unrated": "Derecelendirilmemiş",
+      "unratedNote": "Otomatik onaylanmayacak"
     },
     "approval": {
       "pending": "Beklemede",
