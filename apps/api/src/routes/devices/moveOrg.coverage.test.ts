@@ -160,14 +160,16 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   });
 
   it('keeps database-cascade restamps registered in the complete org-denormalized contract', () => {
-    // agent_rollback_events (#4371 fixup): breeze_app has UPDATE revoked
-    // entirely, so its restamp runs via the SECURITY DEFINER
-    // breeze_cascade_device_org_id() trigger instead of an ON UPDATE CASCADE
-    // FK — see the DEVICE_ORG_FK_CASCADE_TABLES doc comment in core.ts.
+    // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
+    // events (#4806 fixup): breeze_app has UPDATE revoked entirely, so their
+    // restamp runs via the SECURITY DEFINER breeze_cascade_device_org_id()
+    // trigger instead of an ON UPDATE CASCADE FK — see the
+    // DEVICE_ORG_FK_CASCADE_TABLES doc comment in core.ts.
     expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
       'agent_health_observations',
       'software_inventory_observations',
       'agent_rollback_events',
+      'peripheral_policy_delivery_events',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),

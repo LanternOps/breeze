@@ -133,6 +133,29 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // deliberate follow-up, not something to back into via this fix.
   agent_rollback_events: { kind: 'leave-for-erasure', note: 'append-only rollback evidence; breeze_app has no UPDATE (and breeze_audit_admin has none either) — rows die with the loser shell, same as ml_feedback_events' },
 
+  // peripheral_policy_delivery_events (#4806 fixup): breeze_app has UPDATE,
+  // DELETE, TRUNCATE revoked by migrations/2026-10-08-100800-peripheral-
+  // policy-delivery-events-revoke-update.sql, and breeze_audit_admin only
+  // gets SELECT/DELETE (INSERT/UPDATE/TRUNCATE revoked in the table's own
+  // migrations/2026-09-11-peripheral-effective-policy-v2.sql) — the same
+  // privilege topology as agent_rollback_events immediately above, so no
+  // role the merge could assume can issue the repoint UPDATE. Before #4806,
+  // breeze_app's real UPDATE grant (deliberately kept so moveOrg.ts could
+  // restamp org_id) is what let REPOINT_TABLES membership work; #4806
+  // revoked that grant because the restamp is redundant with the
+  // breeze_cascade_device_org_id() SECURITY DEFINER trigger (see
+  // DEVICE_ORG_FK_CASCADE_TABLES in routes/devices/core.ts), so this entry
+  // reclassifies the merge side to match, rather than reopening the
+  // privilege hole to keep working around it.
+  //
+  // The append-only trigger (peripheral_policy_delivery_events_append_only)
+  // DOES special-case a same-org-as-device org_id-only UPDATE as a "trusted
+  // restamp" — but, same as agent_rollback_events, that branch is presently
+  // unreachable by any role able to even attempt the UPDATE, so it isn't a
+  // live repoint path today; wiring one up is a separate, deliberate
+  // follow-up, not something to back into via this fix.
+  peripheral_policy_delivery_events: { kind: 'leave-for-erasure', note: 'append-only delivery evidence; breeze_app has no UPDATE (and breeze_audit_admin has none either) — rows die with the loser shell, same as agent_rollback_events' },
+
   // Column-level immutability: a BEFORE UPDATE row trigger RAISEs when
   // `org_id` changes, so these cannot be re-tenanted by ANY role the merge
   // can assume (the triggers are `tgenabled = 'O'`, and both bypasses —
@@ -609,7 +632,6 @@ const REPOINT_TABLES: readonly string[] = [
   "pax8_subscription_snapshots",
   "peripheral_events",
   "peripheral_policies",
-  "peripheral_policy_delivery_events",
   "peripheral_policy_device_states",
   "playbook_executions",
   "plugin_instances",
