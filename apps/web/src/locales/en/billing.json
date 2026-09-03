@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Flat fee",
         "perDevice": "Per device",
+        "perDeviceRole": "Per device role",
         "perSeat": "Per seat",
         "manual": "Manual quantity"
+      },
+      "coverage": {
+        "uncovered": "{{count}} device(s) on this organization are not billed by any line on this contract: {{breakdown}}",
+        "allCovered": "Every device on this organization is billed by a line on this contract."
       },
       "transition": {
         "activate": "Activate",
@@ -96,6 +101,7 @@
           "cancel": "Contract cancelled"
         },
         "invoiceGenerated": "Invoice generated",
+        "uncoveredDevices": "Invoice generated, but {{count}} device(s) are not billed by any line on this contract: {{breakdown}}",
         "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
         "draftDeleted": "Draft deleted"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Add from Pax8 catalog",
         "importFromTdSynnex": "Import from TD SYNNEX",
         "lineType": "Line type",
+        "deviceRoles": "Device roles (a device is billed when its role is one of these)",
+        "deviceRolesRequired": "Pick at least one role.",
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",

@@ -1,9 +1,9 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
+import { contracts, contractLines, contractBillingPeriods, organizations, sites, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
+import { BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
@@ -32,7 +32,8 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
-import { countContractDevices, countContractSeats } from './contractQuantities';
+import { countContractSeats, snapshotContractDevices, type DeviceSnapshotRow } from './contractQuantities';
+import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices } from './contractCoverage';
 import type { InvoiceActor } from './invoiceTypes';
 
 export type ContractActorT = ContractActor;
@@ -61,6 +62,14 @@ function assertEditable(c: { status: string }): void {
 }
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** A line may only be scoped to a site of ITS OWN org. The composite FK
+ *  contract_lines_site_org_fk is the backstop; this is the 400 the operator sees. */
+async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<void> {
+  const [row] = await tx.select({ id: sites.id }).from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
+  if (!row) throw new ContractServiceError('Site does not belong to this organization', 400, 'SITE_NOT_IN_ORG');
+}
 
 /**
  * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
@@ -151,8 +160,8 @@ export async function listContracts(query: {
   if (rows.length === 0) return rows;
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
-  // lines). All lines for the page load in one query; device/seat counts are
-  // memoized per (org, site) / org so distinct counts run once, not per contract.
+  // lines). All lines for the page load in one query; one device snapshot is
+  // cached per org and seat counts are memoized per org, not per contract.
   const ids = rows.map((r) => r.id);
   const allLines = await db.select().from(contractLines).where(inArray(contractLines.contractId, ids));
   const byContract = new Map<string, typeof allLines>();
@@ -174,10 +183,48 @@ export async function listContracts(query: {
   return out;
 }
 
-// ---- recurring-value estimate (live per_device/per_seat resolution) --------
-type DeviceCache = Map<string, number>; // key `${orgId}|${siteId ?? 'all'}`
-type SeatCache = Map<string, number>;   // key orgId
+// ---- recurring-value estimate (live per_device/per_device_role/per_seat) ----
+// One device snapshot per org (#3205): every device-counted line on a contract
+// is computed from the same grouped query, so a device reclassified between two
+// per-line COUNTs can no longer be billed twice or skipped on the same run.
+type DeviceCache = Map<string, DeviceSnapshotRow[]>; // key orgId
+type SeatCache = Map<string, number>;                // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
+
+async function orgSnapshot(orgId: string, dc: DeviceCache): Promise<DeviceSnapshotRow[]> {
+  let snap = dc.get(orgId);
+  if (!snap) { snap = await snapshotContractDevices(orgId); dc.set(orgId, snap); }
+  return snap;
+}
+
+/** True when `line` is a per_device_role line whose deviceRoles is missing,
+ *  empty, or (when `allowedRoles` is given) contains a role outside it. Shared
+ *  core for the two guards below — they differ only in status code / message
+ *  and in who is responsible for a bad set (DB CHECK vs untrusted spec input). */
+function roleLineIsInvalid(
+  line: { lineType: string; deviceRoles?: readonly string[] | null },
+  allowedRoles?: ReadonlySet<string>,
+): boolean {
+  if (line.lineType !== 'per_device_role') return false;
+  if (!line.deviceRoles || line.deviceRoles.length === 0) return true;
+  return allowedRoles ? line.deviceRoles.some((role) => !allowedRoles.has(role)) : false;
+}
+
+function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 'deviceRoles'>): void {
+  if (roleLineIsInvalid(line)) {
+    // Unreachable under contract_lines_device_roles_chk, but the row type allows
+    // null — and a role line must NEVER degrade into an every-device count.
+    throw new ContractServiceError(`Contract line ${line.id} is per_device_role but carries no device roles`, 500, 'INVALID_STATE');
+  }
+}
+
+const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
+
+function assertSpecRoleLine(line: NewContractSpec['lines'][number]): void {
+  if (roleLineIsInvalid(line, BILLABLE_DEVICE_ROLE_SET)) {
+    throw new ContractServiceError('per_device_role line requires at least one device role', 400, 'INVALID_STATE');
+  }
+}
 
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
@@ -185,36 +232,52 @@ async function resolveLineQty(
   switch (line.lineType) {
     case 'flat': return { quantity: 1, live: false };
     case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
-    case 'per_device': {
-      const key = `${orgId}|${line.siteId ?? 'all'}`;
-      if (!dc.has(key)) dc.set(key, await countContractDevices(orgId, line.siteId));
-      return { quantity: dc.get(key)!, live: true };
+    case 'per_device':
+    case 'per_device_role': {
+      assertRoleLineHasRoles(line);
+      return { quantity: quantityFor(await orgSnapshot(orgId, dc), line), live: true };
     }
     case 'per_seat': {
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
       return { quantity: sc.get(orgId)!, live: true };
     }
-    default: return { quantity: 0, live: false };
+    default: {
+      // Exhaustiveness: a new line type is a compile error here, not a silent qty 0.
+      const _exhaustive: never = line.lineType;
+      throw new ContractServiceError(`Unknown contract line type: ${String(line.lineType)}`, 500, 'INVALID_STATE');
+    }
   }
+}
+
+export interface ContractEstimate {
+  currencyCode: string;
+  periodTotal: string;
+  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean }>;
+  /** Devices no device-counted line bills (#3205). null when the contract has
+   *  no per_device / per_device_role line, so the UI can tell "n/a" from "0". */
+  uncoveredDevices: UncoveredDevices | null;
 }
 
 /** Per-line resolved quantities + values + period total for one contract, using
  *  live device/seat counts as of now. Powers the editor sidebar and detail. */
-export async function computeContractEstimate(contractId: string, actor: ContractActor) {
+export async function computeContractEstimate(contractId: string, actor: ContractActor): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
   let total = 0;
-  const out = [];
+  const out: ContractEstimate['lines'] = [];
   for (const l of lines) {
     const { quantity, live } = await resolveLineQty(contract.orgId, l, dc, sc);
     const value = Number(l.unitPrice) * quantity;
     total += value;
     out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
   }
-  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out };
+  const uncoveredDevices = lines.some(isDeviceLine)
+    ? uncoveredByRole(await orgSnapshot(contract.orgId, dc), lines)
+    : null;
+  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out, uncoveredDevices };
 }
 
 // ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
@@ -833,11 +896,16 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
+    const siteId = isDeviceLine(input) ? (input.siteId ?? null) : null;
+    if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
     const [row] = await tx.insert(contractLines).values({
       contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
       catalogItemId: input.catalogItemId ?? null, unitPrice,
       manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-      siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+      siteId,
+      // #3205: roles only on per_device_role (CHECK-enforced); the validator
+      // already guarantees a non-empty, duplicate-free, billable set.
+      deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
       taxable, sortOrder: input.sortOrder ?? 0
     }).returning();
     return row!;
@@ -941,6 +1009,10 @@ export interface GenerateResult {
   actor?: InvoiceActor;
   /** Always present (`[]` when none / nothing generated) — never a silent fallback. */
   priceBookGaps: PriceBookGap[];
+  /** Devices no device-counted line billed on this run (#3205). null when the
+   *  contract has no per_device / per_device_role line or nothing generated.
+   *  Rides beside priceBookGaps: the worker logs it, the generate route returns it. */
+  uncoveredDevices: UncoveredDevices | null;
 }
 
 /**
@@ -993,9 +1065,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -1008,7 +1080,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -1024,7 +1096,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
   // (removeContractLine stays permissive; this generation-side guard is the backstop.)
   if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
@@ -1042,6 +1114,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    passed as-is — addContractLine resolves the catalog price in the contract's
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
+  // #3205: one snapshot per run. Every device-counted line and the coverage
+  // figure below derive from it — never a per-line COUNT.
+  const hasDeviceLine = lines.some(isDeviceLine);
+  const snapshot = hasDeviceLine ? await snapshotContractDevices(c.orgId) : [];
   const priceBookGaps: PriceBookGap[] = [];
   for (const l of lines) {
     let quantity: string;
@@ -1053,7 +1129,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         quantity = l.manualQuantity ?? '0';
         break;
       case 'per_device':
-        quantity = String(await countContractDevices(c.orgId, l.siteId));
+      case 'per_device_role':
+        assertRoleLineHasRoles(l);
+        quantity = String(quantityFor(snapshot, l));
         break;
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
@@ -1089,7 +1167,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
@@ -1106,7 +1184,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps };
+  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, lines) : null;
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.
@@ -1155,9 +1234,12 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
+    assertSpecRoleLine(l);
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
+    const siteId = isDeviceLine(l) ? (l.siteId ?? null) : null;
+    if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
     const [insertedLine] = await db.insert(contractLines).values({
       contractId: contract.id,
       orgId: spec.orgId,
@@ -1166,7 +1248,8 @@ export async function createContractWithLinesDetailed(
       catalogItemId: l.catalogItemId ?? null,
       unitPrice: l.unitPrice,
       manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
-      siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
+      siteId,
+      deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
       taxable: l.taxable,
       sortOrder: l.sortOrder ?? i,
     }).returning({ id: contractLines.id });

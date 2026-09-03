@@ -32,22 +32,14 @@ import { listCatalog, resolveCatalogPrice, type CatalogItem, type ResolvedCatalo
 import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
+import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
+import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, SITE_SCOPED_TYPES } from './lineTypes';
+import DeviceCoverageNotice from './DeviceCoverageNotice';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
-
-const LINE_TYPE_LABELS: Record<ContractLineType, string> = {
-  flat: 'contracts.shared.lineType.flat',
-  per_device: 'contracts.shared.lineType.perDevice',
-  per_seat: 'contracts.shared.lineType.perSeat',
-  manual: 'contracts.shared.lineType.manual',
-};
-
-// per_device / per_seat quantities are resolved by the generator at billing
-// time from live counts — the editor intentionally does not fetch them.
-const AUTO_QTY_TYPES = new Set<ContractLineType>(['per_device', 'per_seat']);
 
 const INTERVAL_PRESETS = [
   { value: 1, label: 'contracts.shared.cadence.monthly' },
@@ -148,6 +140,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineQty, setLineQty] = useState('1');
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
+  const [lineRoles, setLineRoles] = useState<Exclude<DeviceRole, 'unknown'>[]>([]);
   // Linked catalog item (optional). A catalog line is priced by the SERVER in
   // the contract's currency (#3775 — price book, no conversion): the editor
   // shows that price read-only and never sends unitPrice/taxable for it.
@@ -326,7 +319,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const orgName = orgs.find((o) => o.id === orgId)?.name ?? orgId;
 
   // ---- live "Estimated this period" ----------------------------------------
-  // flat/manual contribute qty×price; per_device/per_seat are resolved by the
+  // flat/manual contribute qty×price; per_device/per_device_role/per_seat are resolved by the
   // generator from live counts, so we surface them as "auto" without a number.
   const estimate = useMemo(() => {
     let known = 0;
@@ -339,7 +332,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return { known, hasAuto };
   }, [lines]);
 
-  // Resolved live quantity per line (per_device/per_seat) from the estimate.
+  // Resolved live quantity per line (per_device/per_device_role/per_seat) from the estimate.
   const estByLine = useMemo(() => {
     const m = new Map<string, number>();
     for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e.quantity);
@@ -399,6 +392,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // Anything short of a server-resolved price blocks Add (the server would
   // refuse or — worse — a stale guess would mislead the preview).
   const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
+  // #3205: per_device_role requires at least one role picked before Add is allowed.
+  const roleLineMissingRoles = lineType === 'per_device_role' && lineRoles.length === 0;
   const effectiveLinePrice = lineCatalogItem ? (catalogPrice?.unitPrice ?? '0') : linePrice;
 
   const newLineEstimate = useMemo(() => {
@@ -573,7 +568,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved) return;
+    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles) return;
     setBusy(true);
     try {
       await runAction({
@@ -586,7 +581,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           // taxable: the server resolves both from the price book / item (#3775).
           unitPrice: lineCatalogItem ? undefined : linePrice,
           manualQuantity: lineType === 'manual' ? lineQty : undefined,
-          siteId: lineType === 'per_device' && lineSiteId ? lineSiteId : undefined,
+          siteId: SITE_SCOPED_TYPES.has(lineType) && lineSiteId ? lineSiteId : undefined,
+          deviceRoles: lineType === 'per_device_role' ? lineRoles : undefined,
           catalogItemId: lineCatalogItem?.id,
           taxable: lineCatalogItem ? undefined : lineTaxable,
         }),
@@ -598,6 +594,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         onUnauthorized: UNAUTHORIZED,
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
+      setLineRoles([]);
       setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
     } catch (err) {
@@ -605,7 +602,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, refresh, t]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -916,8 +913,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         <tr key={l.id} className="border-t" data-testid={`line-row-${idx}`}>
                           <td className="px-3 py-2">
                             {t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}
-                            {l.lineType === 'per_device' && l.siteId
+                            {SITE_SCOPED_TYPES.has(l.lineType) && l.siteId
                               ? <span className="block text-xs text-muted-foreground">{siteName(l.siteId)}</span>
+                              : null}
+                            {l.lineType === 'per_device_role' && l.deviceRoles
+                              ? <span className="block text-xs text-muted-foreground" data-testid={`line-roles-${idx}`}>{l.deviceRoles.map(getDeviceRoleLabel).join(', ')}</span>
                               : null}
                           </td>
                           <td className="px-3 py-2">{l.description}</td>
@@ -992,7 +992,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {t('contracts.contractEditor.addLine.lineType')}
                     <select
                       value={lineType}
-                      onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); }}
+                      onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); setLineRoles([]); }}
                       data-testid="contract-line-type"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
@@ -1064,7 +1064,35 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       />
                     </label>
                   )}
-                  {lineType === 'per_device' && (
+                  {lineType === 'per_device_role' && (
+                    <fieldset className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2" data-testid="contract-line-roles">
+                      <legend className="mb-1">{t('contracts.contractEditor.addLine.deviceRoles')}</legend>
+                      <div className="flex flex-wrap gap-2">
+                        {BILLABLE_DEVICE_ROLES.map((role) => {
+                          const Icon = getDeviceRoleIcon(role);
+                          const checked = lineRoles.includes(role);
+                          return (
+                            <label
+                              key={role}
+                              className={`inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-sm ${checked ? 'border-primary bg-primary/10 text-foreground' : 'bg-background text-muted-foreground hover:text-foreground'}`}
+                            >
+                              <input
+                                type="checkbox" className="sr-only" checked={checked}
+                                onChange={() => setLineRoles((prev) => (checked ? prev.filter((r) => r !== role) : [...prev, role]))}
+                                data-testid={`contract-line-role-${role}`}
+                              />
+                              <Icon className="h-3.5 w-3.5" />
+                              {getDeviceRoleLabel(role)}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {lineRoles.length === 0 && (
+                        <span className="text-amber-600 dark:text-amber-500">{t('contracts.contractEditor.addLine.deviceRolesRequired')}</span>
+                      )}
+                    </fieldset>
+                  )}
+                  {SITE_SCOPED_TYPES.has(lineType) && (
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                       {t('contracts.contractEditor.addLine.siteOptional')}
                       <select
@@ -1121,7 +1149,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved}
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
@@ -1155,6 +1183,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {t('contracts.contractEditor.estimate.includesLiveCounts')}
                   </p>
                 )}
+                <DeviceCoverageNotice uncovered={liveEstimate?.uncoveredDevices} />
                 {!liveEstimate && estimateFailed && (
                   <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
                     {estimate.hasAuto

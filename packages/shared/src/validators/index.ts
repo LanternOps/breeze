@@ -12,6 +12,7 @@ import {
   USER_STATUSES,
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
+import { DEVICE_ROLES } from './deviceRoles';
 
 export * from './reliability';
 export * from './businessEmail';
@@ -33,16 +34,11 @@ export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
+export * from './deviceRoles';
 
 // ============================================
 // Device Roles
 // ============================================
-
-export const DEVICE_ROLES = [
-  'workstation', 'server', 'printer', 'router', 'switch',
-  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-] as const;
-export type DeviceRole = typeof DEVICE_ROLES[number];
 
 // Orthogonal virtualization attribute (issue #1387). A virtual/VDI box is still
 // a workstation (or server) — virtualization is a SECOND targeting axis, not a
