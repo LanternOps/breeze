@@ -342,6 +342,120 @@ describe('buildAuthContextForIntent — user-owned intents', () => {
   });
 });
 
+describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widening (user-owned)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+  });
+
+  const moveOrgIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    partnerId: 'partner-1',
+    actionName: 'manage_tickets',
+    arguments: { action: 'move_org', ticketId: 'ticket-1', targetOrgId: 'org-2' },
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  it('widens accessibleOrgIds to the recorded target org when the requester (partner, orgAccess: all) can reach it', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'all',
+    });
+
+    const result = await buildAuthContextForIntent(moveOrgIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1', 'org-2']);
+    expect(result!.canAccessOrg('org-1')).toBe(true);
+    expect(result!.canAccessOrg('org-2')).toBe(true);
+    expect(result!.canAccessOrg('org-3')).toBe(false);
+    // The AuthContext's own "home" org is unchanged — only accessibleOrgIds
+    // widens, same as a live partner-scope request.
+    expect(result!.orgId).toBe('org-1');
+  });
+
+  it('does NOT widen when the requester (partner, orgAccess: selected) cannot reach the recorded target org — the tool gate refuses for the RIGHT reason', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'selected',
+      allowedOrgIds: ['org-1'], // org-2 (the recorded target) is NOT selected
+    });
+
+    const result = await buildAuthContextForIntent(moveOrgIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+  });
+
+  it('never widens for an org-scoped requester, even when they can reach intent.orgId', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization',
+    });
+
+    const result = await buildAuthContextForIntent(moveOrgIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+  });
+
+  it('does NOT widen a tool/action pair outside the allowlist, even one carrying a same-shaped "targetOrgId" argument', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'all', // would reach org-2 easily IF the widening ran
+    });
+
+    const result = await buildAuthContextForIntent(
+      moveOrgIntent({
+        actionName: 'manage_tickets',
+        arguments: { action: 'assign', ticketId: 'ticket-1', targetOrgId: 'org-2' },
+      }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+  });
+
+  it('does NOT widen manage_tickets:move_org missing a recorded targetOrgId (defensive — createActionIntent always requires one)', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'all',
+    });
+
+    const result = await buildAuthContextForIntent(
+      moveOrgIntent({ arguments: { action: 'move_org', ticketId: 'ticket-1' } }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+  });
+});
+
 describe('buildAuthContextForIntent — api-key-owned intents (Plan 2 not implemented)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -595,6 +709,97 @@ describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
     const result = await buildAuthContextForIntent(ticketScopedIntent());
 
     expect(result).not.toBeNull();
+  });
+});
+
+describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widening (agent-owned)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectAgentRunsResults.length = 0;
+    dbState.selectAgentsResults.length = 0;
+    dbState.selectOrgsResults.length = 0;
+    dbState.selectDevicesResults.length = 0;
+  });
+
+  const moveOrgAgentIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    requestedByUserId: null,
+    requestingApiKeyId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    source: 'ai_agent',
+    partnerId: 'partner-1',
+    actionName: 'manage_tickets',
+    arguments: { action: 'move_org', ticketId: 'ticket-1', targetOrgId: 'org-2' },
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  const runRow = { id: 'run-1', agentId: 'agent-1', orgId: 'org-1', deviceId: 'dev-1' };
+  const partnerAgentRow = { id: 'agent-1', orgId: null, partnerId: 'partner-1', name: 'Ticket Triage', kind: 'triage' };
+  const orgAgentRow = { id: 'agent-1', orgId: 'org-1', partnerId: null, name: 'Ticket Triage', kind: 'triage' };
+
+  it('widens for a partner-scoped agent when the recorded target org shares the agent\'s partner', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([partnerAgentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]); // source org (run.orgId)
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]); // target org — SAME partner
+
+    const result = await buildAuthContextForIntent(moveOrgAgentIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1', 'org-2']);
+    expect(result!.canAccessOrg('org-1')).toBe(true);
+    expect(result!.canAccessOrg('org-2')).toBe(true);
+    expect(result!.canAccessOrg('org-3')).toBe(false);
+  });
+
+  it('does NOT widen for a partner-scoped agent when the recorded target org belongs to ANOTHER partner', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([partnerAgentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]); // source org
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-2' }]); // target org — DIFFERENT partner
+
+    const result = await buildAuthContextForIntent(moveOrgAgentIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+  });
+
+  it('never widens for an ORG-scoped agent — its home IS a single org', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([orgAgentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: null }]); // source org has no partner for an org agent's ownership check
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(moveOrgAgentIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+    // No second `organizations` lookup for an org-scoped agent — it is never
+    // eligible for the widening, so resolveTenantMutationTargetOrgId's result
+    // must never trigger the target-org DB read at all.
+    expect(dbState.selectOrgsResults).toHaveLength(0);
+  });
+
+  it('does NOT widen a tool/action pair outside the allowlist for a partner-scoped agent', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([partnerAgentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]); // source org only
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(
+      moveOrgAgentIntent({
+        arguments: { action: 'assign', ticketId: 'ticket-1', targetOrgId: 'org-2' },
+      }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(dbState.selectOrgsResults).toHaveLength(0);
   });
 });
 
