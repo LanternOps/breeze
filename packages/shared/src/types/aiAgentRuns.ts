@@ -253,15 +253,28 @@ export interface ExposureBudgetDto {
  * `finishRun` created (`intentIds`) and which `ticket_drafts` rows it wrote
  * (`draftsWritten`). Still text/identifier-only — no `args`/`input`/`output`
  * blob, nothing a raw tool payload could carry.
+ *
+ * Issue #4467 — `draftReply`/`draftResolutionNote` (inherited below from
+ * `TicketTriageProposal`) are no longer always the proposal's own frozen
+ * text: once a `ticket_drafts` row exists for that kind (i.e. once
+ * `draftsWritten` names it), the API sources the text live from that SAME
+ * row instead, so a later edit on the ticket's "AI draft" surface can't
+ * leave this DTO showing stale content next to a `draftsWritten` entry that
+ * still points at the (now different) row. Pre-write — before a draft
+ * intent has released — there is no live row yet, so the proposal's own
+ * text is the only preview available and is used as-is. See
+ * `pickDraftText` in `services/aiAgents/runTrace.ts` for the derivation.
  */
 export interface AiAgentRunTicketProposalDto extends TicketTriageProposal {
   /** Tier-2 `manage_tickets` intent ids `finishRun` created from this
    *  proposal's `fields`/`device`/`comment` writes (act + autonomousWrites,
    *  or an inbox card — either way an intent id, never the raw args). */
   intentIds?: string[];
-  /** `ticket_drafts` rows `finishRun` wrote from `draftReply`/
-   *  `draftResolutionNote` — never the draft's own content, which lives on
-   *  the ticket UI's "AI draft" surface, not this run-trace DTO. */
+  /** `ticket_drafts` rows `finishRun` wrote — id + kind only. The row's own
+   *  `content` never appears on THESE entries (it would duplicate
+   *  `draftReply`/`draftResolutionNote` above, which is exactly the
+   *  duplication issue #4467 removed) — see this interface's own docstring
+   *  for how the two are now kept from disagreeing. */
   draftsWritten?: Array<{ kind: 'reply' | 'resolution_note'; draftId: string }>;
   /** Follow-up to #4191/#4301 (issue #4462) — why a slot this proposal named
    *  did NOT become a write, e.g. a field proposed below

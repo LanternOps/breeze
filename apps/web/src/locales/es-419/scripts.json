@@ -618,6 +618,30 @@
       "stdout": "Salida estándar (salida estándar)",
       "stderr": "Error estándar (stderr)"
     },
+    "customFields": {
+      "title": "Escrituras de campos personalizados",
+      "applied": "Aplicados",
+      "rejected": "Rechazados",
+      "none": "Ninguno",
+      "reasons": {
+        "unknown_field": "No hay una definición de campo coincidente",
+        "not_script_writable": "El campo no admite escritura por script",
+        "not_applicable_to_device": "El campo no aplica a este tipo de dispositivo",
+        "device_not_found": "Dispositivo no encontrado",
+        "invalid_type": "El valor tiene el tipo incorrecto",
+        "out_of_range": "El valor está fuera de rango",
+        "not_a_choice": "El valor no es una de las opciones permitidas del campo",
+        "too_long": "El valor es demasiado largo",
+        "invalid_date": "El valor no es una fecha válida",
+        "marker_unparseable": "No se pudo analizar el marcador como JSON",
+        "too_many_lines": "Demasiadas líneas de marcador en esta ejecución",
+        "too_many_keys": "Demasiadas claves en el marcador",
+        "marker_too_large": "El marcador superó el límite de tamaño",
+        "forbidden_key": "La clave no está permitida",
+        "envelope_unparseable": "No se pudo analizar el resultado estructurado",
+        "envelope_unsupported_version": "El resultado estructurado usó una versión no compatible"
+      }
+    },
     "actions": {
       "copyToClipboard": "Copiar al portapapeles"
     },

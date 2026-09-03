@@ -80,6 +80,8 @@ export interface ContractLine {
   manualQuantity: string | null;
   siteId: string | null;
   deviceRoles: string[] | null;
+  /** #3205 W03: resolved server-side so the detail page needs no site lookup. */
+  site: { id: string; name: string } | null;
   deviceGroupId: string | null;
   deviceGroupName: string | null;
   deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
@@ -211,6 +213,29 @@ export function addContractLine(id: string, body: unknown): Promise<Response> {
 
 export function removeContractLine(id: string, lineId: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, { method: 'DELETE' });
+}
+
+/** Body of PATCH /contracts/:id/lines/:lineId (#3205 W03). Omitted keys are
+ *  unchanged; `catalogItemId: null` unlinks (and then unitPrice + taxable are
+ *  required in the same patch); the same id re-sent is a no-op — use
+ *  `refreshCatalogPrice` to re-price an unchanged link. `lineType` is rejected. */
+export interface UpdateContractLinePatch {
+  description?: string;
+  unitPrice?: string;
+  taxable?: boolean;
+  catalogItemId?: string | null;
+  refreshCatalogPrice?: boolean;
+  manualQuantity?: string;
+  siteId?: string | null;
+  deviceRoles?: string[];
+  deviceGroupId?: string;
+  sortOrder?: number;
+}
+
+export function updateContractLine(id: string, lineId: string, body: UpdateContractLinePatch): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, {
+    method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body),
+  });
 }
 
 /** Body of `POST /contracts/:id/currency`. The stamped currency is only ever

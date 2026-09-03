@@ -369,6 +369,10 @@ Every parameter has a **source** that decides where its value comes from. By def
 | **From a device custom field** | A custom field value on the target device. |
 | **From a device property** | A built-in device property, such as hostname or OS type. |
 
+<Aside>
+  This reads a custom field. To have a script **write** one back to the device — no API key required — see [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script).
+</Aside>
+
 ### Using parameters in script content
 
 The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
@@ -518,6 +522,8 @@ Returns the full execution record including `stdout`, `stderr`, `exitCode`, `err
 <Aside>
   The agent captures up to 1 MB of stdout and 1 MB of stderr. Output exceeding this limit is truncated. The `truncatedFields` array in the agent result indicates which fields were truncated.
 </Aside>
+
+If the script printed a [custom-field write-back marker](/features/custom-fields/#writing-custom-fields-from-a-script), the response also includes `customFieldResult: { applied: string[], rejected: [{ key, reason }] } | null` — surfaced in the web UI's execution detail panel.
 
 ### Cancelling an execution
 

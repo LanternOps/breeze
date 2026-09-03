@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { acquireScrollLock } from './scrollLock';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -43,10 +44,10 @@ export function Drawer({
       const first = panelRef.current?.querySelector<HTMLElement>(FOCUSABLE);
       (first ?? panelRef.current)?.focus();
     });
-    document.body.style.overflow = 'hidden';
+    const releaseScrollLock = acquireScrollLock();
     return () => {
       cancelAnimationFrame(raf);
-      document.body.style.overflow = '';
+      releaseScrollLock();
       if (triggerRef.current instanceof HTMLElement) triggerRef.current.focus();
     };
   }, [open]);

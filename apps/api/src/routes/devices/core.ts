@@ -283,7 +283,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = CORE_DEVICE_ORG_DENORMALIZED_TABLE
  * can't silently skip both paths. The dedicated statements themselves are
  * covered by behavior tests in moveOrg.test.ts.
  */
-export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts', 'ticket_attachments', 'ticket_email_links'] as const;
+export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'] as const;
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
@@ -764,6 +764,15 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). Projected into the LIST as
+        // well as the detail response because DeviceDetails is handed the
+        // list-shaped row while its own detail fetch is still in flight — the
+        // badge would otherwise pop in a beat late on every navigation.
+        rebootScheduledAt: devices.rebootScheduledAt,
+        rebootDeadline: devices.rebootDeadline,
+        rebootSource: devices.rebootSource,
+        rebootDeferralsUsed: devices.rebootDeferralsUsed,
+        rebootMaxDeferrals: devices.rebootMaxDeferrals,
         // Collision enrollment (#2764): non-null when this row was created
         // because an agent presented a hostname that already existed in the
         // org. The list renders a "Possible duplicate" badge from it so the
@@ -942,6 +951,13 @@ coreRoutes.get(
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). All five are null until an
+        // agent that reports reboot status has actually scheduled one.
+        rebootScheduledAt: d.rebootScheduledAt ?? null,
+        rebootDeadline: d.rebootDeadline ?? null,
+        rebootSource: d.rebootSource ?? null,
+        rebootDeferralsUsed: d.rebootDeferralsUsed ?? null,
+        rebootMaxDeferrals: d.rebootMaxDeferrals ?? null,
         lastSeenAt: d.lastSeenAt,
         // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
         // until the device has made one authenticated request, lanIp until an

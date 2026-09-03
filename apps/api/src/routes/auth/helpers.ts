@@ -247,6 +247,23 @@ export function rejectProof(
   return c.json({ error: message, message, code, ...extra }, status);
 }
 
+/**
+ * #4746: both non-rejection failure bodies of the step-up helpers populate
+ * `error` AND `message`, exactly as {@link rejectProof} does, because clients
+ * are split on which key they read. The web profile form renders
+ * `data.message` and — unlike its siblings in the same file — does NOT fall
+ * back to `data.error`, so it shows a generic "Failed to change password" when
+ * `message` is absent (`apps/web/src/components/settings/ProfilePage.tsx`).
+ *
+ * That makes both of these indistinguishable from a mistyped password unless
+ * `message` is set: a throttle the user cannot see is a throttle they will keep
+ * hammering, and a Redis outage the user cannot see is one they will retry as
+ * though they got their own password wrong. `/auth/change-password` acquired
+ * both branches when it moved onto this helper, so both are fixed together.
+ */
+const STEP_UP_THROTTLED_MESSAGE = 'Too many attempts. Please try again later.';
+const STEP_UP_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable';
+
 export async function requireCurrentPasswordStepUp(
   c: Context,
   userId: string,
@@ -258,18 +275,42 @@ export async function requireCurrentPasswordStepUp(
    * Defaults to 401 for every pre-existing caller whose client contract keys
    * on it (approvals/PAM step-up, users email-change, authenticator).
    */
-  opts: { rejectionStatus?: ProofRejectionStatus } = {},
+  opts: {
+    rejectionStatus?: ProofRejectionStatus;
+    /**
+     * #4746: user-facing text for a rejected password. Defaults to the opaque
+     * 'Invalid credentials' every step-up caller has always sent, because on a
+     * step-up the specific reason is not the caller's to disclose.
+     *
+     * `/auth/change-password` overrides it: the request is already
+     * authenticated AS the account being changed, so opacity buys nothing
+     * there, and the web client renders `message` verbatim on the profile form
+     * (`apps/web/src/components/settings/ProfilePage.tsx`). Answering
+     * "Invalid credentials" to a mistyped current password would read as a
+     * dead session — the exact confusion #4660/#4739 just removed.
+     */
+    invalidMessage?: string;
+    /**
+     * Text for an account that has no password hash at all. Defaults to
+     * `invalidMessage`, keeping the two cases indistinguishable for callers
+     * that do not opt in.
+     */
+    noPasswordMessage?: string;
+  } = {},
 ): Promise<Response | null> {
   const rejectionStatus = opts.rejectionStatus ?? 401;
+  const invalidMessage = opts.invalidMessage ?? 'Invalid credentials';
+  const noPasswordMessage = opts.noPasswordMessage ?? invalidMessage;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
   if (!rateCheck.allowed) {
     return c.json({
-      error: 'Too many attempts. Please try again later.',
+      error: STEP_UP_THROTTLED_MESSAGE,
+      message: STEP_UP_THROTTLED_MESSAGE,
       retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
     }, 429);
   }
@@ -281,12 +322,12 @@ export async function requireCurrentPasswordStepUp(
     .limit(1);
 
   if (!user?.passwordHash) {
-    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
+    return rejectProof(c, noPasswordMessage, INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   const valid = await verifyPassword(user.passwordHash, currentPassword);
   if (!valid) {
-    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
+    return rejectProof(c, invalidMessage, INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   return null;
@@ -313,13 +354,14 @@ export async function requireFreshMfaStepUp(
   const rejectionStatus: ProofRejectionStatus = 401;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
   if (!rateCheck.allowed) {
     return c.json({
-      error: 'Too many attempts. Please try again later.',
+      error: STEP_UP_THROTTLED_MESSAGE,
+      message: STEP_UP_THROTTLED_MESSAGE,
       retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
     }, 429);
   }

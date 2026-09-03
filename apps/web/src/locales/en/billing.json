@@ -41,6 +41,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "group deleted"
+      },
+      "lineScope": {
+        "site": "Site: {{name}}"
       }
     },
     "contractDetail": {
@@ -153,13 +156,22 @@
         "addLine": "Could not add the line.",
         "removeLine": "Could not remove the line.",
         "activateContract": "Could not activate the contract.",
-        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link."
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link.",
+        "updateLine": "Could not update the line.",
+        "lineNotFound": "That line no longer exists. Refresh the contract.",
+        "contractNotEditable": "Lines can only be edited on draft or active contracts.",
+        "siteNotInOrg": "That site belongs to a different organization.",
+        "groupNotInOrg": "That device group belongs to a different organization.",
+        "invalidLinePatch": "Those changes aren’t valid for this line type.",
+        "priceNotRepresentable": "That price has too many decimal places for {{currency}}.",
+        "catalogItemNotFound": "That catalog item isn’t available on this contract."
       },
       "toast": {
         "contractCreated": "Contract created",
         "lineAdded": "Line added",
         "lineRemoved": "Line removed",
-        "contractActivated": "Contract activated"
+        "contractActivated": "Contract activated",
+        "lineUpdated": "Line updated"
       },
       "schedule": {
         "title": "Schedule",
@@ -190,7 +202,8 @@
         "unitPrice": "Unit price",
         "qty": "Qty",
         "tax": "Tax",
-        "empty": "No lines yet. Add a recurring line below."
+        "empty": "No lines yet. Add a recurring line below.",
+        "edit": "Edit"
       },
       "addLine": {
         "integrationHint": "Add from an integration — it pre-fills a line.",
@@ -223,6 +236,16 @@
         "priceLookupFailed": "Could not look up the {{currency}} price.",
         "priceNotRepresentable": "The saved {{currency}} price for this item is not valid in {{currency}} — correct it in the catalog, or clear the catalog link and enter a manual line.",
         "priceSourceOrgOverride": "Organization-specific price for {{org}}"
+      },
+      "editLine": {
+        "save": "Save line",
+        "cancel": "Cancel",
+        "typeLocked": "Line type can’t be changed. Remove the line and add a new one.",
+        "priceFromCatalog": "Price comes from the catalog. Clear the catalog link to set it by hand.",
+        "refreshPrice": "Refresh price from catalog",
+        "restoreCatalogLink": "Restore catalog link",
+        "unlinkNeedsPrice": "Enter a unit price and tax setting to clear the catalog link.",
+        "noChanges": "Nothing to save yet."
       },
       "estimate": {
         "title": "Estimated this period",
@@ -1697,7 +1720,9 @@
       "lastSynced": "Last synced {{when}}",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
-      "pushFailed": "Failed to push the invoice to QuickBooks."
+      "pushFailed": "Failed to push the invoice to QuickBooks.",
+      "voidedHint": "This invoice is voided — there is nothing to push to QuickBooks.",
+      "remoteDeletedHint": "This invoice was deleted in QuickBooks. Pushing again would create a duplicate — resolve it in QuickBooks first."
     }
   },
   "invoiceDocument": {

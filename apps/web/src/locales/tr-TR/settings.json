@@ -1,4 +1,39 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Canlı güncelleniyor"
+    },
+    "list": {
+      "clearFilters": "Filtreleri temizle",
+      "emptyDescription": "Uyarılar, zamanlamalar, biletler ve manuel eylemler tarafından tetiklenen çalıştırmalar, bir aracı bunları yürüttüğünde burada görünecektir.",
+      "emptyFilteredDescription": "Bu filtrelere uyan çalıştırma yok. Farklı bir aracı veya durum deneyin.",
+      "emptyConfigureLink": "AI aracılarını yapılandır"
+    },
+    "detail": {
+      "notFoundDescription": "Bu çalıştırma silinmiş olabilir veya bağlantı güncel olmayabilir.",
+      "trace": {
+        "emptyDescription": "Aracının önerdiği veya yürüttüğü araç çağrıları burada listelenecektir."
+      },
+      "ledger": {
+        "emptyDescription": "Aracının gerçekten çağırdığı araçlar burada listelenecektir.",
+        "statuses": {
+          "pending": "Beklemede",
+          "approved": "Onaylandı",
+          "executing": "Yürütülüyor",
+          "completed": "Tamamlandı",
+          "failed": "Başarısız",
+          "rejected": "Reddedildi"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Bu çalıştırmanın istediği onaylar burada listelenecektir."
+      },
+      "triage": {
+        "categoryLabel": "Kategori",
+        "categoryUnresolved": "Önerildi — bu görünümde ad kullanılamıyor"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
     "description": "İş ortağı kapsamındaki makine kimliklerini ve bunların erişim anahtarlarını yönetin.",
@@ -1380,7 +1415,7 @@
       "deleteOverride": "Geçersiz kılmayı kaldır",
       "confirmDelete": "Silmeyi onayla",
       "cron": "Cron ifadesi",
-      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır.",
+      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır. Dakika alanı, virgülle ayrılmış sabit sayılardan oluşmalıdır (*, / veya - kullanılamaz) — programlar en fazla saatte bir çalışır.",
       "cronInvalid": "Kaydetmeden önce geçerli, beş alanlı bir cron ifadesi girin.",
       "timezone": "Saat dilimi",
       "kinds": {
@@ -1400,6 +1435,9 @@
       "tightenOnly": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir: taramayı kapatabilir veya denetim çıkarabilir, asla ekleyemez.",
       "noKinds": "Denetim yok",
       "lastRun": "Son çalışma {{at}} · {{total}} kuruluştan {{admitted}} tanesi tarandı, {{skipped}} atlandı.",
+      "nextRun": "Sonraki çalışma {{at}} ({{timezone}})",
+      "nextRunInvalid": "Geçersiz zamanlama",
+      "nextRunNone": "Önümüzdeki bir yıl içinde çalışma yok.",
       "kindLabels": {
         "disk_pressure": "Disk baskısı",
         "stale_agents": "Eskimiş aracılar",
@@ -1432,6 +1470,26 @@
     "title": "Yapay Zeka Aracıları",
     "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
     "empty": "Henüz aracı yok.",
+    "kindHints": {
+      "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
+      "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
+      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir."
+    },
+    "emptyState": {
+      "title": "Henüz aracı yok",
+      "description": "Aracı, çalışan bir süreç değil kayıtlı bir politikadır: seçtiğiniz uyarıları, yamaları ya da talepleri izler, izin verdiğiniz araçlarla inceler ve ardından bir çözüm önerir veya uygular. Gölge modunda başlayın: aracı önerir, bir kişi onaylar, böylece siz demeden hiçbir şey bir cihaza ulaşmaz.",
+      "action": "İlk aracınızı oluşturun"
+    },
+    "modeChoice": {
+      "legend": "Bu aracının yapabilecekleri",
+      "off": "Kapalı",
+      "offConsequence": "Hiçbir şey çalışmaz.",
+      "shadow": "Gölge",
+      "shadowConsequence": "İzler ve önerir; her şeyi bir kişi onaylar.",
+      "act": "Eylem",
+      "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
+      "actUnavailable": "Bu aracı için henüz kullanılamıyor."
+    },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
     "stateEnabled": "Etkin",
@@ -1477,8 +1535,11 @@
     "sections": {
       "scope": "Ne zaman çalışır",
       "permissions": "İzinler",
+      "permissionsDescription": "Bu aracının nelere dokunabileceği. Araç listesi yapabileceklerini genişletir; korunan kaynaklar daraltır ve her zaman öncelikli olur.",
       "policyDecide": "Gözetimsiz politika yetkilendirmesi",
       "limits": "Sınırlar",
+      "limitsBudget": "Bütçe ve kapsam",
+      "limitsTiming": "Zamanlama",
       "notifications": "Bildirimler",
       "instructions": "Yönergeler"
     },
@@ -1536,7 +1597,12 @@
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
       "ticketAutonomousWrites": "Otonom talep yazmaları",
-      "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir"
+      "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
+      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
+      "toolSuggestLabel": "Bilinen bir araç ekle",
+      "toolSuggestHint": "Öneriler, araçların tam listesi olmayan politikayla karara bağlanabilir eylemler kaydından gelir. Bu aracının kullanabileceği diğer araçlar yukarıya yine de yazılabilir.",
+      "toolSuggestAdd": "Ekle"
     },
     "loading": "Aracılar yükleniyor…",
     "runs": {
@@ -1781,6 +1847,7 @@
       "refresh": "Yenile",
       "refreshing": "Yeniden oluşturuluyor…",
       "retry": "Yeniden dene",
+      "moreActions": "Diğer işlemler",
       "errors": {
         "load": "Etki raporu yüklenemedi.",
         "rebuild": "Etki raporunun yeniden oluşturulması sıraya alınamadı.",
@@ -1793,6 +1860,15 @@
         "rebuildComplete": "Etki raporu yeniden oluşturuldu.",
         "rebuildStillRunning": "Yeniden oluşturma hâlâ sürüyor. Yeni rakamları görmek için bu sayfayı birkaç dakika sonra yeniden yükleyin."
       },
+      "emptyState": {
+        "title": "Bu dönemde henüz yapay zekâ sonucu yok",
+        "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "action": "Ajan kur"
+      },
+      "tileGroups": {
+        "judged": "Değerlendirilen",
+        "executed": "Uygulanan"
+      },
       "tiles": {
         "alertsJudged": "Değerlendirilen uyarılar",
         "noiseFlagged": "Gürültü olarak işaretlenenler",
@@ -1800,9 +1876,11 @@
         "draftsSent": "Gönderilen taslaklar",
         "fixesExecuted": "Uygulanan düzeltmeler",
         "promoteEligible": "Yükseltmeye uygun işlemler",
-        "promoteEligibleHint": "Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.",
+        "promoteEligibleCaption": "Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.",
         "estTimeSaved": "Tahmini kazanılan zaman",
         "estTimeSavedValue": "{{hours}} saat",
+        "estTimeSavedCaption": "Sonuç başına sabit bir süre üzerinden tahmin edilir.",
+        "howEstimatedToggle": "Bu nasıl tahmin ediliyor?",
         "llmSpend": "LLM harcaması"
       },
       "weightsTooltipTitle": "Yalnızca bir tahmin — her sonuca sabit bir süre yazılır:",
@@ -1886,6 +1964,8 @@
       "loading": "Yetkilendirme kanıtları yükleniyor…",
       "error": "Yetkilendirme kanıtları yüklenemedi.",
       "retry": "Yeniden dene",
+      "noBaselineTitle": "Henüz temel araç yok",
+      "noBaseline": "Kademeli yetkilendirme takibi, bu türde ortak genelinde bir temel araç oluşturulduğunda başlar. Bu kuruluş için kanıt takibini başlatmak üzere \"Tüm kuruluşlar\" kapsamıyla bir tane oluşturun.",
       "orgRequired": "Kanıtları görmek için kuruluş seçiciden tek bir kuruluş seçin.",
       "empty": "Bu araç için henüz hiç kanıt kaydedilmedi.",
       "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
@@ -1894,6 +1974,22 @@
       "approvalsLink": "Bu isteği onay kutusunda izleyin",
       "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
       "promote": "Yükselt",
+      "revoke": "Geri al",
+      "emptyTitle": "Henüz kanıt yok",
+      "demotedAt": "{{at}} tarihinde geri alındı",
+      "demotedReason": "Gerekçe: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "bir deneme başarısız oldu",
+        "recurrence": "düzeltilen uyarı yeniden ortaya çıktı",
+        "operator": "bir operatör geri aldı"
+      },
+      "revokeConfirm": {
+        "title": "Ön yetkiyi geri al",
+        "message": "{{opKey}}, bu kuruluşun aracısı için onay kuyruğuna geri döner. Sürmekte olan bir çalıştırma etkilenmez; sonraki her çalıştırma yeniden insan kararı gerektirir.",
+        "action": "Geri al",
+        "reasonLabel": "Gerekçe (isteğe bağlı)",
+        "reasonHint": "Bu geri alma işleminin denetim kaydına yazılır. En çok 500 karakter."
+      },
       "verifiedOfThreshold": "{{threshold}} içinde {{verified}}",
       "columns": {
         "opKey": "İşlem",
@@ -1924,11 +2020,17 @@
         "action": "Onay iste"
       },
       "toasts": {
-        "requested": "Ön yetki istendi. Bu işlem gözetimsiz çalışmadan önce ikinci bir kişinin onaylaması gerekir ve yalnızca gelecekteki çalıştırmalar için geçerlidir."
+        "requested": "Ön yetki istendi. Bu işlem gözetimsiz çalışmadan önce ikinci bir kişinin onaylaması gerekir ve yalnızca gelecekteki çalıştırmalar için geçerlidir.",
+        "revoked": "Ön yetki geri alındı. Bu işlem, bir sonraki çalıştırmadan başlayarak yeniden insan kararı gerektirir."
       },
       "errors": {
         "promote": "Ön yetki isteği oluşturulamadı.",
-        "policyDecideDisabled": "Önceden yetkili çalıştırma bu kurulumda kapalı, bu yüzden bu işlem yükseltilemez."
+        "policyDecideDisabled": "Önceden yetkili çalıştırma bu kurulumda kapalı, bu yüzden bu işlem yükseltilemez.",
+        "revoke": "Ön yetki geri alınamadı.",
+        "noPromotedGrant": "Bu işlem bu kuruluş için önceden yetkilendirilmemiş, dolayısıyla geri alınacak bir şey yok.",
+        "alreadyDemoted": "Bu işlem zaten onay kuyruğuna geri dönmüş.",
+        "alreadyRevoked": "Bu işlem aracıdan zaten kaldırılmıştı, hiçbir şey değişmedi.",
+        "ambiguousOpKey": "Bu kuruluş için bu işlemi birden fazla aracı tutuyor. Değiştirmek istediğiniz aracıyı açıp orada geri alın."
       },
       "reliability": {
         "caption": "Eylem kipi işlemleri, salt okunur: bunlar politika anahtarı değildir, bu yüzden asla önceden yetkilendirilemez."
@@ -3932,7 +4034,8 @@
     },
     "columns": {
       "key": "Anahtar",
-      "deviceTypes": "Cihaz Türleri"
+      "deviceTypes": "Cihaz Türleri",
+      "scriptWrite": "Betik yazma"
     },
     "fieldTypes": {
       "text": {
@@ -3986,7 +4089,9 @@
       "patternPlaceholder": "örneğin, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Cihaz Türleri (isteğe bağlı)",
       "deviceTypesHelp": "Tüm cihaz türlerinde gösterilmesi için boş bırakın",
-      "requiredField": "Gerekli alan"
+      "requiredField": "Gerekli alan",
+      "scriptWrite": "Betiklerin bu alana yazmasına izin ver",
+      "scriptWriteHelp": "Bir cihazda çalışan betikler, ::breeze:custom-fields:: {\"key\": \"value\"} yazdırarak bu alanı ayarlayabilir. Değer, betiğin kaydedilen çıktısında da görünür — bu şekilde asla bir gizli bilgi yazmayın."
     },
     "delete": {
       "title": "Özel Alanı Sil",
