@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { buildPortalApiUrl, portalApi } from './api';
+import { buildPortalApiUrl, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -76,6 +76,34 @@ describe('publicApiPath (rendered into HTML)', () => {
     expect(publicApiPath('portal/x')).toBe('/api/v1/portal/x');
     expect(publicApiPath('/api/portal/x')).toBe('/api/v1/portal/x');
   });
+});
+
+it('preserves enriched device fields and exposes a same-origin CSV path', async () => {
+  const row = {
+    id: 'd-1',
+    hostname: 'Laptop',
+    displayName: null,
+    osType: 'windows',
+    osVersion: '11',
+    status: 'online',
+    lastSeenAt: null,
+    lastPatchAt: null,
+    protection: 'unknown',
+    encryption: null,
+    lastBackupAt: null,
+    warrantyEndsAt: null,
+  };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      data: [row],
+      pagination: { page: 1, limit: 50, total: 1 },
+    }), { status: 200 }),
+  ));
+
+  await expect(portalApi.getDevices()).resolves.toMatchObject({ data: [row] });
+  expect(publicApiPath('/portal/devices/export.csv')).toBe(
+    '/api/v1/portal/devices/export.csv',
+  );
 });
 
 // ---------------------------------------------------------------------------

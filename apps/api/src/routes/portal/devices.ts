@@ -1,8 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices } from '../../db/schema';
+import { organizations } from '../../db/schema';
+import {
+  devicesCsvForOrg,
+  enrichedDevicesForOrg
+} from '../../services/portal/deviceReadModel';
+import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { listSchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -13,53 +18,75 @@ import {
 
 export const deviceRoutes = new Hono();
 
-deviceRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
+deviceRoutes.get('/devices/export.csv', async (c) => {
   const auth = c.get('portalAuth');
-  const query = c.req.valid('query');
-  const { page, limit, offset } = getPagination(query);
+  const orgId = auth.user.orgId;
+  const [org] = await db
+    .select({ slug: organizations.slug })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const date = new Intl.DateTimeFormat('en-CA', {
+    timeZone: auth.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+  const filename = safeContentDispositionFilename(
+    `${org?.slug ?? 'organization'}-devices-${date}.csv`
+  );
 
-  // Belt-and-braces: a portal user's org is never the hidden 'quick_support'
-  // org, but this is the most customer-facing surface in the product — never
-  // show an ephemeral support device here.
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(devices)
-    .where(and(eq(devices.orgId, auth.user.orgId), eq(devices.isEphemeral, false)));
-  const count = countResult[0]?.count ?? 0;
-
-  const data = await db
-    .select({
-      id: devices.id,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-      osType: devices.osType,
-      osVersion: devices.osVersion,
-      status: devices.status,
-      lastSeenAt: devices.lastSeenAt
-    })
-    .from(devices)
-    .where(and(eq(devices.orgId, auth.user.orgId), eq(devices.isEphemeral, false)))
-    .orderBy(desc(devices.lastSeenAt), desc(devices.id))
-    .limit(limit)
-    .offset(offset);
-
-  const payload = {
-    data,
-    pagination: { page, limit, total: Number(count ?? 0) }
-  };
-
-  applyPortalCacheHeaders(c, {
-    scope: 'private',
-    browserMaxAgeSeconds: 15,
-    staleWhileRevalidateSeconds: 90,
-    vary: ['Authorization', 'Cookie']
+  const iterator = devicesCsvForOrg(orgId, {
+    timezone: auth.timezone,
+    now: new Date()
+  })[Symbol.asyncIterator]();
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await iterator.next();
+      if (next.done) controller.close();
+      else controller.enqueue(encoder.encode(next.value));
+    },
+    async cancel() {
+      await iterator.return?.();
+    }
   });
-  const etag = buildWeakEtag(payload);
-  c.header('ETag', etag);
 
-  if (isEtagFresh(c.req.header('if-none-match'), etag)) {
-    return new Response(null, { status: 304, headers: c.res.headers });
-  }
-
-  return c.json(payload);
+  return new Response(body, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=30'
+    }
+  });
 });
+
+deviceRoutes.get(
+  '/devices',
+  zValidator('query', listSchema),
+  async (c) => {
+    const auth = c.get('portalAuth');
+    const { page, limit } = getPagination(c.req.valid('query'));
+    const payload = await enrichedDevicesForOrg(auth.user.orgId, {
+      page,
+      limit,
+      timezone: auth.timezone,
+      now: new Date()
+    });
+
+    applyPortalCacheHeaders(c, {
+      scope: 'private',
+      browserMaxAgeSeconds: 15,
+      staleWhileRevalidateSeconds: 90,
+      vary: ['Authorization', 'Cookie']
+    });
+    const etag = buildWeakEtag(payload);
+    c.header('ETag', etag);
+
+    if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+      return new Response(null, { status: 304, headers: c.res.headers });
+    }
+
+    return c.json(payload);
+  }
+);
