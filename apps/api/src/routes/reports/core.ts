@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { portalBranding, reports, reportRuns } from '../../db/schema';
+import { reports, reportRuns } from '../../db/schema';
 import {
   authMiddleware,
   requirePermission,
@@ -15,7 +15,9 @@ import {
   getPagination,
   ensureOrgAccess,
   getReportWithOrgCheck,
+  isPortalSelfServiceLocked,
   isSystemManagedReportDefinition,
+  PORTAL_SELF_SERVICE_REPORT,
   reportDefinitionMetadataProjection,
   tenantAuthorizedReportCondition,
 } from './helpers';
@@ -50,6 +52,13 @@ const REPORT_NOT_FOUND = { error: 'Report not found' } as const;
 const SYSTEM_MANAGED_REPORT = { error: 'system_managed_report' } as const;
 /** `loadLockedDefinition`'s third outcome — see its docstring. */
 const SYSTEM_MANAGED = 'system_managed' as const;
+/**
+ * #4562 W10 — the mutation routes' fourth outcome: the definition is the
+ * customer portal's while `enable_reports` is on. See
+ * `isPortalSelfServiceLocked`. Not folded into `loadLockedDefinition` because
+ * it needs the locked row's org and a second table; callers answer 409.
+ */
+const PORTAL_SELF_SERVICE = 'portal_self_service' as const;
 
 type DefinitionListScopeResult =
   | { ok: true; tenantCondition?: SQL<unknown>; definitionScopePredicate: SQL<unknown> }
@@ -485,6 +494,9 @@ coreRoutes.put(
       );
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (!locked) return null;
+      if (await isPortalSelfServiceLocked(tx, locked.locked)) {
+        return PORTAL_SELF_SERVICE;
+      }
 
       const effectiveScope = intersectSiteScopes(
         locked.storedScope,
@@ -509,6 +521,9 @@ coreRoutes.put(
 
     if (mutation === SYSTEM_MANAGED) {
       return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
+    if (mutation === PORTAL_SELF_SERVICE) {
+      return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
     if (!mutation) {
       return c.json(REPORT_NOT_FOUND, 404);
@@ -627,16 +642,8 @@ coreRoutes.delete(
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (!locked) return null;
 
-      if (locked.locked.portalSelfService) {
-        const [branding] = await tx
-          .select({ enableReports: portalBranding.enableReports })
-          .from(portalBranding)
-          .where(eq(portalBranding.orgId, locked.locked.orgId))
-          .limit(1);
-
-        if (branding?.enableReports === true) {
-          return { kind: 'portal_self_service' as const };
-        }
+      if (await isPortalSelfServiceLocked(tx, locked.locked)) {
+        return { kind: PORTAL_SELF_SERVICE };
       }
 
       await tx
@@ -670,8 +677,8 @@ coreRoutes.delete(
     if (deleted === SYSTEM_MANAGED) {
       return c.json(SYSTEM_MANAGED_REPORT, 409);
     }
-    if (deleted?.kind === 'portal_self_service') {
-      return c.json({ error: 'portal_self_service_report' }, 409);
+    if (deleted?.kind === PORTAL_SELF_SERVICE) {
+      return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
     if (!deleted) {
       return c.json(REPORT_NOT_FOUND, 404);

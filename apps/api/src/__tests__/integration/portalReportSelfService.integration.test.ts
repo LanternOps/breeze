@@ -18,6 +18,7 @@ import {
 } from './db-utils';
 import {
   generatePortalReport,
+  listPortalRuns,
   PortalReportNotFoundError,
   renderRunPdf,
 } from '../../services/portal/reportsSelfService';
@@ -114,6 +115,67 @@ describe('portal report self-service tenancy', () => {
     await expect(
       withDbAccessContext(orgContext(fixture.orgB.id), () =>
         renderRunPdf(generated.id, fixture.orgB.id, 'UTC'),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+  });
+
+  // R10-8: the self-service marker, not org membership alone, is what admits a
+  // run into the portal. A completed run of an MSP-internal definition in the
+  // portal user's OWN org must be neither listed nor downloadable.
+  runDb('hides a non-self-service run from the portal even inside its own org', async () => {
+    const fixture = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const scope = {
+        version: 1,
+        kind: 'unrestricted',
+        orgId: org.id,
+      } as const;
+      const authority: UserReportExecutionAuthority = {
+        principalKind: 'user',
+        principalUserId: crypto.randomUUID(),
+        scope,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      };
+
+      const [definition] = await db.insert(reports).values({
+        orgId: org.id,
+        name: 'Internal executive summary',
+        type: 'executive_summary',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: { dateRange: { preset: 'last_30_days' } },
+        portalSelfService: false,
+        ...persistedSiteScopeValues(authority),
+      }).returning({ id: reports.id });
+
+      const [run] = await db.insert(reportRuns).values({
+        reportId: definition!.id,
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        result: { rows: [], summary: {} },
+        rowCount: 0,
+        // Tombstoned staff user: the provenance CHECK only forbids the WRONG id.
+        requestedByKind: 'user',
+        requestedByUserId: null,
+        requestedByPortalUserId: null,
+        ...persistedSiteScopeValues(authority),
+      }).returning({ id: reportRuns.id });
+
+      return { org, runId: run!.id };
+    });
+
+    const listed = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      listPortalRuns(fixture.org.id, 'UTC', { page: 1, limit: 50 }),
+    );
+    expect(listed.data.map((row) => row.id)).not.toContain(fixture.runId);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunPdf(fixture.runId, fixture.org.id, 'UTC'),
       ),
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });

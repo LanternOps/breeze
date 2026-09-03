@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { portalBranding, reports, reportRuns } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   decodeSiteScope,
@@ -15,6 +15,43 @@ import {
 } from '../../services/siteScope';
 
 export { getPagination } from '../../utils/pagination';
+
+/**
+ * #4562 W10 — a 409, not a 403, for the same reason as `system_managed_report`:
+ * the caller's permissions are fine, it is the definition's OWNERSHIP that
+ * makes the mutation impossible while the customer portal exposes it.
+ */
+export const PORTAL_SELF_SERVICE_REPORT = {
+  error: 'portal_self_service_report',
+} as const;
+
+/**
+ * #4562 W10 — is this definition the org's canonical customer-portal report
+ * (`portal_self_service`) while that org currently exposes portal reports?
+ *
+ * While `portal_branding.enable_reports` is on, the portal lists EVERY
+ * completed run of the definition and downloads it as the customer's own
+ * report (`portalRunListPredicate` keys on org + marker + status only), so
+ * the MSP must not rewrite its customer-safe config (PUT), generate a run
+ * under a tech's — possibly site-restricted — authority (POST /:id/generate),
+ * or delete it (DELETE). Once the flag is off the definition is an ordinary
+ * MSP-owned report again and every mutation is allowed. Spec §8.2 / R10-3.
+ *
+ * Takes the transaction (or `db`) so the write routes evaluate it on the
+ * same connection that holds the `FOR UPDATE` lock.
+ */
+export async function isPortalSelfServiceLocked(
+  tx: Pick<typeof db, 'select'>,
+  definition: { portalSelfService: boolean; orgId: string },
+): Promise<boolean> {
+  if (!definition.portalSelfService) return false;
+  const [branding] = await tx
+    .select({ enableReports: portalBranding.enableReports })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, definition.orgId))
+    .limit(1);
+  return branding?.enableReports === true;
+}
 
 export async function ensureOrgAccess(
   orgId: string,

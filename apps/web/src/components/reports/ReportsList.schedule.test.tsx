@@ -68,7 +68,7 @@ describe('ReportsList schedule cell', () => {
     expect(screen.queryByText(/^Next: .+/)).not.toBeInTheDocument();
   });
 
-  it('shows the portal badge and hides mutation actions', async () => {
+  it('shows the portal badge, offers open-latest, and hides mutation actions', async () => {
     mountWith([{
       ...monthlyReport,
       portalSelfService: true,
@@ -79,6 +79,10 @@ describe('ReportsList schedule cell', () => {
     expect(
       await screen.findByTestId(`report-portal-badge-${monthlyReport.id}`),
     ).toHaveTextContent('Visible in customer portal');
+    // Read-only, not invisible: the MSP can still open what the customer sees.
+    expect(
+      screen.getByTestId(`report-open-latest-${monthlyReport.id}`),
+    ).toBeInTheDocument();
     expect(
       screen.queryByTestId(`report-generate-${monthlyReport.id}`),
     ).not.toBeInTheDocument();
