@@ -2196,9 +2196,15 @@ export async function moveTicketOrg(
   await db.transaction(async (tx) => {
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
-    // tickets → time_entries → ticket_parts. The org lock is the FIRST statement
-    // of this transaction and is held to commit, so the source/target currency
-    // pair the guard compares cannot be restamped mid-move.
+    // ai_agent_runs → tickets → time_entries → ticket_parts. ai_agent_runs sits
+    // ahead of tickets (#4524) to match breeze_cascade_device_org_id(), which
+    // severs runs before re-stamping its child tables — `tickets` among them;
+    // the two paths must agree on that pair or a concurrent device-move and
+    // ticket-move over the same device-linked ticket deadlocks.
+    //
+    // The org lock is the FIRST statement of this transaction and is held to
+    // commit, so the source/target currency pair the guard compares cannot be
+    // restamped mid-move.
     const lockedOrgs = await readOrgStampingDefaultsMany(tx, [ticket.orgId, targetOrgId]);
     const orgRows = await tx
       .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
@@ -2266,6 +2272,42 @@ export async function moveTicketOrg(
     // move is the same accepted ruling used by the org-merge custom
     // executor for the same run-pinning conflict.
     await tx.delete(ticketDrafts).where(eq(ticketDrafts.ticketId, ticketId));
+    // #4524 — sever ai_agent_runs.ticket_id. Agent-run history stays with the
+    // SOURCE org (owner decision 2026-08-23): ai_agent_runs.org_id is
+    // trigger-immutable (ai_agent_runs_immutable_guard, 2026-09-06-a) and the
+    // table is deliberately absent from TICKET_ORG_DENORMALIZED_TABLES below.
+    // So a run that triggered on this ticket keeps org_id = SOURCE while the
+    // ticket it names becomes the TARGET org's — a cross-tenant pointer, and
+    // /ai-agents/:id/runs would serve that now-foreign ticket id back to the
+    // source org. This is the ticket-axis twin of the device-axis statement
+    // added by #4215.
+    //
+    // Nothing forces the issue the way it does for the two statements above:
+    // ai_agent_runs.ticket_id is a PLAIN single-column FK to tickets(id) with
+    // ON DELETE SET NULL (aiAgents.ts), not a composite (ticket_id, org_id)
+    // tenant FK, so the ticket UPDATE below would complete happily and the
+    // stale pointer would survive in silence. There is also no Postgres trigger
+    // on `UPDATE OF org_id ON tickets` (the device axis has
+    // breeze_cascade_device_org_id(); the ticket axis has no equivalent), so
+    // this service is the ONLY place the contract is enforced — see the note
+    // beside orgMergeRegistry's `tickets` entry for why the merge path is safe
+    // without one.
+    //
+    // Ordering — this must run BEFORE the tickets UPDATE, and that is a lock
+    // requirement, not a correctness one (the WHERE never reads `tickets`, and
+    // the plain FK cannot 23503 either way). breeze_cascade_device_org_id()
+    // severs ai_agent_runs FIRST and only then re-stamps its child tables, of
+    // which `tickets` is one, so the device axis takes ai_agent_runs BEFORE
+    // tickets. Taking them the other way round here would give a concurrent
+    // device-move and ticket-move over the same device-linked ticket a circular
+    // wait (each holding the lock the other needs) and one of them would die
+    // with 40P01. Matching the device axis's order is what keeps the pair
+    // consistent — see the global lock-order note at the top of this
+    // transaction.
+    await tx
+      .update(aiAgentRuns)
+      .set({ ticketId: null })
+      .where(eq(aiAgentRuns.ticketId, ticketId));
     // The UPDATE takes the ticket row lock; the currency guard then locks the
     // unbilled monetary children, and the org_id rewrites follow. A throw here
     // rolls this UPDATE back — nothing moves on a block.
@@ -2286,50 +2328,19 @@ export async function moveTicketOrg(
       .where(eq(tickets.id, ticketId))
       .returning();
     updated = row;
-    // #4524 — sever the ai_agent_runs <-> ticket pointer pair, BOTH directions.
-    //
-    // Agent-run history stays with the SOURCE org (owner decision 2026-08-23):
-    // ai_agent_runs.org_id is trigger-immutable (ai_agent_runs_immutable_guard,
-    // 2026-09-06-a) and the table is deliberately absent from
-    // TICKET_ORG_DENORMALIZED_TABLES above. So a run that triggered on this
-    // ticket keeps org_id = SOURCE while the ticket it names has just become
-    // the TARGET org's — a cross-tenant pointer, and /ai-agents/:id/runs would
-    // serve that now-foreign ticket id back to the source org.
-    //
-    // Unlike ticket_drafts and action_intents above, nothing forces the issue:
-    // ai_agent_runs.ticket_id is a PLAIN single-column FK to tickets(id) with
-    // ON DELETE SET NULL (aiAgents.ts), not a composite (ticket_id, org_id)
-    // tenant FK, so the ticket UPDATE above completes happily and the stale
-    // pointer survives silently. That is exactly why this detach may sit AFTER
-    // the UPDATE while those two must precede it.
-    //
-    // Ordering: it must still run BEFORE assertTicketMoveCurrencyCompatible
-    // below, which takes row locks on time_entries / ticket_parts. The
-    // device-move path (routes/devices/moveOrg.ts, and the
-    // breeze_cascade_device_org_id() trigger) locks ai_agent_runs immediately
-    // after the parent row flip and before any ticket-child table, so taking
-    // these two locks in the opposite order here would give a concurrent
-    // ticket-move and device-move an inverted lock pair — the deadlock shape
-    // the global lock-order comment at the top of this transaction exists to
-    // prevent.
-    //
-    // This is the ticket-axis twin of the device-axis statement added by #4215.
-    // There is no Postgres trigger on `UPDATE OF org_id ON tickets` (the device
-    // axis has breeze_cascade_device_org_id(); the ticket axis has no
-    // equivalent), so this service is the ONLY place the contract is enforced —
-    // see the note added beside orgMergeRegistry's `tickets` entry for why the
-    // org-merge path needs no equivalent.
-    await tx
-      .update(aiAgentRuns)
-      .set({ ticketId: null })
-      .where(eq(aiAgentRuns.ticketId, ticketId));
-    // Reverse direction: ticket_comments has no org_id (child-via-parent
+    // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
     // comment on this ticket travels into the target org while the run that
     // authored it stays behind. A retained agent_run_id would then name a
     // source-org run from a target-org row — the same reverse-pointer class
     // #3828 fixed for metric_anomaly_incidents.agent_run_id on the device axis,
     // just the other end of this ticket's link.
+    //
+    // This one stays AFTER the ticket UPDATE, unlike the ai_agent_runs detach
+    // above: ticket_comments' UPDATE policy (breeze_ticket_parent_update)
+    // EXISTS-joins the parent ticket's CURRENT org_id, so it is the target org
+    // that has to be accessible here. No lock-order concern either way — the
+    // device axis never touches ticket_comments.
     //
     // Only the cross-org link is dropped: origin_principal_kind is untouched,
     // and that (not agent_run_id) is what the helpdesk loop guard keys on when
