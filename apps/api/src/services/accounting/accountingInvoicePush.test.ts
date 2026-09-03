@@ -683,6 +683,39 @@ describe('pushInvoiceToAccounting', () => {
       });
       expect(captureExceptionMock).toHaveBeenCalled();
     });
+
+    it('a concurrent-insert race (unique violation) on the error-row insert is swallowed silently — NOT reported to Sentry — since another write already owns the row', async () => {
+      // Two auto-push attempts for the same invoice racing to insert the
+      // FIRST invoice mapping row: whichever loses the race must not treat
+      // "someone else already recorded a row here" as a failure worth paging
+      // on, distinct from a genuine DB error (covered by the test above).
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({
+        values: () => ({ returning: () => Promise.reject(pgUniqueViolation('accounting_entity_mappings_breeze_uniq')) }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    it('a DIFFERENT insert failure (not the unique-violation race) still reports to Sentry rather than being swallowed like the race above', async () => {
+      // Guards the `isPgUniqueViolation` branch from silently widening: only
+      // THIS exact constraint name is treated as benign; any other error
+      // (wrong constraint, or no constraint at all) must still surface.
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({
+        values: () => ({ returning: () => Promise.reject(pgUniqueViolation('some_other_unrelated_constraint')) }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).toHaveBeenCalled();
+    });
   });
 
   it('rejects with customer_currency_mismatch when the mapped customer currency differs from the invoice', async () => {
