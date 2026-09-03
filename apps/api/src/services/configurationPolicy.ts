@@ -184,11 +184,23 @@ export interface EffectiveConfiguration {
  *
  * This app-layer condition keeps partner-owned policies visible to
  * partner-scoped reads that filter by `auth.orgCondition` (which would
- * otherwise exclude org_id IS NULL rows). RLS is STRICTER, not identical:
- * breeze_has_partner_access only passes for partner-scope callers, so
- * org-scope tokens (which also carry a partnerId) never see partner-wide
- * rows — see configurationPoliciesPartnerRls.integration.test.ts. The branch
- * is therefore gated on partner scope so app and DB agree.
+ * otherwise exclude org_id IS NULL rows).
+ *
+ * Relationship to RLS, as of #2468: the DB no longer blocks an org token from
+ * READING its own partner's partner-wide rows —
+ * `configuration_policies_partner_wide_select`
+ * (2026-10-05-110000-config-policy-partner-wide-select.sql) grants exactly
+ * that, SELECT-only. So this function is now the STRICTER of the two layers,
+ * not the looser one: it still excludes `org_id IS NULL` rows for every
+ * non-partner scope. That gate is deliberate and load-bearing — the org-scoped
+ * list/get/update/delete endpoints and the AI tools all route through here, and
+ * relaxing it would silently start showing (and offering to edit) the MSP's
+ * shared policies in org-scoped UI. Do NOT relax it on the assumption that RLS
+ * is the backstop for reads; RLS is only the backstop for WRITES, which stay
+ * gated on breeze_has_partner_access.
+ *
+ * Read-visibility contracts: configPolicyPartnerWideSelect.integration.test.ts
+ * (DB layer) and configurationPoliciesPartnerRls.integration.test.ts.
  */
 export function policyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);

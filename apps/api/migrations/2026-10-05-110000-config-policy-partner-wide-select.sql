@@ -52,11 +52,13 @@
 --                   (This is why the predicate uses `=` and not
 --                   `IS NOT DISTINCT FROM`, which would match NULL-partner rows.)
 --
--- NOT INCLUDED: config_policy_onedrive_settings. It carries `org_id NOT NULL`
--- and `breeze_validate_config_policy_onedrive_settings`
+-- NOT INCLUDED: config_policy_onedrive_settings and its child
+-- config_policy_onedrive_libraries. Both carry `org_id NOT NULL`, and
+-- `breeze_validate_config_policy_onedrive_settings`
 -- (2026-07-27-b-onedrive-reference-ownership.sql) RAISEs when the parent policy
 -- has `partner_id IS NOT NULL`. A partner-wide OneDrive settings row is not
--- representable, so a branch there would be unreachable code.
+-- representable — and a library cannot exist without an org-owned settings
+-- parent — so a branch on either would be unreachable code.
 --
 -- Idempotent: DROP POLICY IF EXISTS then CREATE, so re-applying is a no-op.
 -- No inner BEGIN/COMMIT — autoMigrate wraps each file in a transaction.
