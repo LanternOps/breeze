@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -1109,5 +1109,23 @@ export const portalApi = {
       { sessionId },
       { redirectOnUnauthorized: false }
     );
-  }
+  },
+
+  // W06 — backups
+  getBackupOverview: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupOverviewDto>> =>
+    apiGet<BackupOverviewDto>('/portal/backups/overview', config),
+
+  getBackupDevices: (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupDevicesDto>> =>
+    apiGet<BackupDevicesDto>(
+      `/portal/backups/devices${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50,
+      })}`,
+      config
+    ),
 };
