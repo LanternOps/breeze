@@ -49,7 +49,12 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
 
   if (!sync) return null;
 
-  const { syncStatus, remoteDeleted } = sync;
+  const { syncStatus } = sync;
+  // Explicit default (not just relying on `!undefined` reading truthy the
+  // same as `!false`) — `remoteDeleted` is optional (absent on an older API
+  // response, see invoiceTypes.ts); this keeps the type honest about that
+  // instead of a TS `boolean` that can actually be `undefined` at runtime.
+  const remoteDeleted = sync.remoteDeleted ?? false;
   // Void is checked independently of `sync` (see the Props doc above) —
   // the mapping row's own status doesn't change when the invoice is voided.
   const voided = invoiceStatus === 'void';

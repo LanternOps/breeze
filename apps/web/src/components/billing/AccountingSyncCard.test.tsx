@@ -137,6 +137,25 @@ describe('AccountingSyncCard', () => {
     expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
   });
 
+  // `remoteDeleted` is optional (absent on an older API response — deploy
+  // skew). This pins the intentional default direction: missing degrades to
+  // "button renders, a real push attempt gets the server's 409" rather than
+  // crashing or silently misreading `undefined` as some other truthy state.
+  it('does not crash and renders the button when remoteDeleted is omitted from the API response', () => {
+    const { remoteDeleted: _omit, ...syncWithoutRemoteDeleted } = sync({ syncStatus: 'pending' });
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={syncWithoutRemoteDeleted as AccountingSyncSummary}
+        invoiceStatus="sent"
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
+  });
+
   // #4544 — voided invoice: the mapping row's own syncStatus can still read
   // 'pending'/'error' from before the void, so the guard must be independent
   // of `sync` and keyed off the invoice's own status.

@@ -39,7 +39,7 @@
  * again and double-booked the invoice in QuickBooks.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../../db';
 import { accountingEntityMappings, invoiceLines, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
@@ -332,16 +332,50 @@ async function upsertInvoiceMappingPending(params: {
 }): Promise<MappingRow> {
   try {
     if (params.existing) {
+      // The WHERE clause's remote-deleted condition (#4544) is what actually
+      // closes the race the caller's plain check-then-write left open: a
+      // check-then-separate-UPDATE can still straddle a concurrent
+      // `markInvoiceDeletedRemotely` commit between the two statements, no
+      // matter how small that window is made. Conditioning the UPDATE itself
+      // means that write can NEVER clear the marker once it has landed —
+      // either this UPDATE claims the row before the marker exists, or the
+      // marker already exists and this UPDATE matches zero rows.
       const rows = await db
         .update(accountingEntityMappings)
         .set({ syncStatus: 'pending', lastError: null, updatedAt: new Date() })
         .where(and(
           eq(accountingEntityMappings.id, params.existing.id),
           eq(accountingEntityMappings.partnerId, params.partnerId),
+          or(
+            isNull(accountingEntityMappings.lastError),
+            ne(accountingEntityMappings.lastError, INVOICE_REMOTE_DELETED_ERROR),
+          ),
         ))
         .returning();
       const row = (rows as MappingRow[])[0];
-      if (!row) throw new Error(`invoice mapping pending-update matched no row (id=${params.existing.id})`);
+      if (!row) {
+        // Zero rows: either the remote-deleted marker landed on this row
+        // between the caller's read and this UPDATE (the race above), or
+        // something else unexpected happened (row deleted entirely, etc).
+        // Disambiguate with one more read — this read is diagnostic only,
+        // not load-bearing: the UPDATE above already guarantees the marker
+        // was never silently cleared, whichever branch this takes.
+        const recheck = await db
+          .select({ lastError: accountingEntityMappings.lastError })
+          .from(accountingEntityMappings)
+          .where(and(
+            eq(accountingEntityMappings.id, params.existing.id),
+            eq(accountingEntityMappings.partnerId, params.partnerId),
+          ));
+        if (recheck[0]?.lastError === INVOICE_REMOTE_DELETED_ERROR) {
+          throw new AccountingInvoicePushError(
+            'remote_deleted',
+            409,
+            'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
+          );
+        }
+        throw new Error(`invoice mapping pending-update matched no row (id=${params.existing.id})`);
+      }
       return row;
     }
 
@@ -741,6 +775,17 @@ export async function voidInvoiceInAccounting(
       }
       return null;
     }
+
+    // Already remote-deleted (#4544): QuickBooks reports this invoice gone,
+    // and `markInvoiceDeletedRemotely` deliberately leaves `remoteEntityId`
+    // set (see its own doc comment) so this branch is reached instead of the
+    // no-remote-id no-op above. There is nothing left in QuickBooks to void —
+    // calling `provider.voidInvoice` against a remote id QuickBooks no
+    // longer recognizes would very likely fail, and the catch block below
+    // would then overwrite (clobber) this EXACT marker with a generic
+    // QuickBooks error message, silently undoing the guard
+    // `pushInvoiceToAccounting` relies on to refuse to resurrect the invoice.
+    if (mappingRow.lastError === INVOICE_REMOTE_DELETED_ERROR) return null;
 
     const inv = await loadOwnedInvoice(invoiceId, partnerId);
     return { conn, mappingRow, inv };

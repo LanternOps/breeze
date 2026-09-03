@@ -483,6 +483,51 @@ describe('pushInvoiceToAccounting', () => {
     expect(row?.lastError).toBe('Deleted in QuickBooks');
   });
 
+  // The two tests above prove the OUTCOME (the checked-then-thrown JS path).
+  // Neither can prove the row-claiming UPDATE itself is conditioned on the
+  // marker at the SQL level — this mock harness applies a patch synchronously
+  // against the same `currentMappings` array both the JS check and the UPDATE
+  // read, so there is no way to make the marker "invisible to the JS check but
+  // visible to the UPDATE" the way two genuinely concurrent Postgres
+  // transactions would be. Proving THAT requires a live database (out of
+  // scope for this fully-mocked unit file). This test instead proves the
+  // UPDATE's compiled WHERE clause — a REAL (unmocked) drizzle-orm SQL tree,
+  // same technique as `sqlColumnsAndValues` elsewhere in this file — actually
+  // carries the remote-deleted guard predicate, so a future edit that quietly
+  // drops the `or(isNull(...), ne(...))` condition (leaving only the
+  // check-then-write JS guard, reopening the TOCTOU code review flagged) fails
+  // this test instead of shipping silently.
+  it('the claiming UPDATE conditions on the row NOT already carrying the remote-deleted marker (SQL-level regression guard)', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        { ...remoteDeletedInvoiceMappingRow(), lastError: null, syncStatus: 'synced' }, // marker cleared — claimable
+      ],
+    });
+    // Capture only the FIRST update (the claim-pending write) — a successful
+    // push issues a second one later (persistInvoiceRemoteRef) whose WHERE
+    // clause has no reason to carry this predicate and would overwrite the
+    // capture if not guarded against.
+    let capturedWhereCond: unknown;
+    let captured = false;
+    updateMock.mockImplementation(() => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: (cond: unknown) => ({
+          returning: () => {
+            if (!captured) { capturedWhereCond = cond; captured = true; }
+            const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+            currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+            return Promise.resolve([currentMappings[idx]]);
+          },
+        }),
+      }),
+    }));
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(conditionContainsValue(capturedWhereCond, 'Deleted in QuickBooks')).toBe(true);
+  });
+
   describe('currency guard runs before any provider call', () => {
     it('blocks with home_currency_unknown when the realm home currency is unavailable', async () => {
       resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: null }));
@@ -913,6 +958,23 @@ describe('voidInvoiceInAccounting', () => {
 
     await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).resolves.toBeUndefined();
     expect(voidInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  // #4544: markInvoiceDeletedRemotely deliberately leaves remoteEntityId set
+  // (see its own doc comment), so a remote-deleted mapping does NOT take the
+  // no-remote-id no-op path above — without this guard it would call
+  // provider.voidInvoice against an id QuickBooks no longer recognizes, and
+  // the resulting failure's catch block would overwrite (clobber) this exact
+  // marker with a generic QuickBooks error, silently reopening the door for
+  // a later push to re-create the invoice — the same bug via a different path.
+  it('no-ops for an already remote-deleted mapping and preserves the marker, never calling the provider', async () => {
+    setup({ mappings: [orgMappingRow(), remoteDeletedInvoiceMappingRow()] });
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).resolves.toBeUndefined();
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+    expect(row?.lastError).toBe('Deleted in QuickBooks');
+    expect(row?.syncStatus).toBe('error');
   });
 
   it('calls provider.voidInvoice with the stored mapping for a pushed invoice, and leaves sync_status/last_error untouched on success', async () => {

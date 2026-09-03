@@ -127,8 +127,14 @@ export interface AccountingSyncSummary {
    * Computed server-side (invoiceService.ts) from the exact sentinel
    * `lastError` string, so this component never has to string-match
    * `lastError` itself to decide whether "Push to QuickBooks" is safe.
+   * Optional and defaults to `false` (AccountingSyncCard.tsx) — absent on an
+   * older API response (deploy skew), same convention as `stripeConnected`
+   * above. This is a UI hint only: the API's push route enforces the same
+   * guard server-side (409 `remote_deleted`) regardless of what this field
+   * says, so a stale/missing value here degrades to "the button renders and
+   * the click gets rejected," never to a duplicate push actually landing.
    */
-  remoteDeleted: boolean;
+  remoteDeleted?: boolean;
 }
 
 export interface InvoiceDetail {
