@@ -3430,12 +3430,88 @@ describe('moveTicketOrg', () => {
 
   // Extracts the raw table identifier drizzle's sql.identifier() embeds as
   // queryChunks[1].value (verified shape: UPDATE <identifier> SET ... WHERE ...).
+  //
+  // Statements that carry no sql.identifier() chunk are skipped rather than
+  // crashing on `chunks[1]!.value`: since #4596 the transaction opens with a
+  // plain `SET CONSTRAINTS time_entries_ticket_org_fk,
+  // ticket_parts_ticket_org_fk DEFERRED`, which names no table. That statement
+  // is asserted on its own in the '#4596' test below, so skipping it here
+  // cannot hide its removal.
   function executedTableNames(): string[] {
+    return dbMocks.txExecuteMock.mock.calls
+      .map((call) => {
+        const chunks = (call[0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+        return chunks[1]?.value;
+      })
+      .filter((v): v is string => typeof v === 'string');
+  }
+
+  // Renders a tx.execute() call back to its literal SQL text (the non-parameter
+  // chunks), for statements that are not table-identifier UPDATEs.
+  function executedSqlTexts(): string[] {
     return dbMocks.txExecuteMock.mock.calls.map((call) => {
-      const chunks = (call[0] as { queryChunks: Array<{ value?: unknown }> }).queryChunks;
-      return chunks[1]!.value as string;
+      const chunks = (call[0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+      return chunks
+        .map((c) => (Array.isArray(c?.value) ? c.value.join('') : typeof c?.value === 'string' ? c.value : ''))
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim();
     });
   }
+
+  // invocationCallOrder of the first tx.execute() that actually rewrites a
+  // child table. Since #4596 the transaction's FIRST execute is a
+  // `SET CONSTRAINTS ... DEFERRED` that names no table, so index 0 is no
+  // longer the first rewrite.
+  function firstRewriteInvocationOrder(): number {
+    const calls = dbMocks.txExecuteMock.mock.calls;
+    for (let i = 0; i < calls.length; i++) {
+      const chunks = (calls[i]![0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+      if (typeof chunks[1]?.value === 'string') {
+        return dbMocks.txExecuteMock.mock.invocationCallOrder[i]!;
+      }
+    }
+    throw new Error('no child-table rewrite tx.execute() was issued');
+  }
+
+  it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+    // The tickets UPDATE below changes tickets.org_id while time_entries and
+    // ticket_parts still point at the old org, so both composite FKs must be
+    // deferred to COMMIT or the UPDATE 23503s the instant it completes.
+    // BY NAME, never ALL: tickets_requester_contact_org_fk,
+    // ticket_drafts_ticket_org_fk and action_intents_scope_ticket_org_fk are
+    // deliberately left IMMEDIATE as fail-fast guards.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    const texts = executedSqlTexts();
+    expect(texts[0]).toBe(
+      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED'
+    );
+    // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
+    // constraints this path relies on failing fast.
+    expect(texts.some((t) => /SET CONSTRAINTS ALL/i.test(t))).toBe(false);
+    // Pin the total tx.execute() count so a regression that issues the
+    // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
+    // statement, is visible here — executedTableNames() only counts
+    // statements with a table identifier chunk and would not catch either.
+    // 1 SET CONSTRAINTS + 6 child-table rewrites (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links
+    // — same 6 tables as the 'moves ticket to a same-partner org' test below).
+    expect(texts).toHaveLength(7);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
+  });
 
   it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 6 tables including ticket_email_links', async () => {
     // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
@@ -3467,7 +3543,9 @@ describe('moveTicketOrg', () => {
     // to the source org's helpdesk agents after the move).
     // W08 #3902 added ticket_attachments as the 5th entry.
     // #4643 added ticket_email_links as the 6th and LAST entry.
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(6);
+    // Counts the child-table rewrites specifically: since #4596 the
+    // transaction also issues a leading SET CONSTRAINTS that names no table.
+    expect(executedTableNames()).toHaveLength(6);
     expect(executedTableNames()).toEqual(
       expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'])
     );
@@ -3631,7 +3709,9 @@ describe('moveTicketOrg', () => {
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), {
       ticketIds: ['t1'], sourceCurrency: 'USD', targetCurrency: 'EUR', targetOrgName: 'Beta Corp', acceptCurrencyMismatch: false
     });
-    expect(dbMocks.txExecuteMock).not.toHaveBeenCalled();
+    // No child-table rewrite ran. (tx.execute WAS called once, for the #4596
+    // leading SET CONSTRAINTS, which is issued before the guard can block.)
+    expect(executedTableNames()).toHaveLength(0);
     expect(valuesMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
@@ -3645,7 +3725,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -3684,7 +3764,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
@@ -3697,7 +3777,7 @@ describe('moveTicketOrg', () => {
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     const updateOrder = setMock.mock.invocationCallOrder[0]!;
     const guardOrder = guardMock.mock.invocationCallOrder[0]!;
-    const firstRewriteOrder = dbMocks.txExecuteMock.mock.invocationCallOrder[0]!;
+    const firstRewriteOrder = firstRewriteInvocationOrder();
     expect(updateOrder).toBeLessThan(guardOrder);
     expect(guardOrder).toBeLessThan(firstRewriteOrder);
   });

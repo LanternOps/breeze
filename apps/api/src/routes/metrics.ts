@@ -40,7 +40,11 @@ import {
   resetS1MetricsForTesting,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
-import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
+import {
+  setAnomalyMetricsRecorder,
+  type AuthenticatorL4Outcome,
+} from '../services/anomalyMetrics';
+import { authenticatorPlatformBoundBasisEnum } from '../db/schema/authenticatorDevices';
 import { setAuthTransitionMetricsRecorder } from '../services/authTransitionMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
@@ -344,6 +348,28 @@ const failedLoginsTotal = new Counter({
   registers: [register]
 });
 
+// #1374: the label sets are derived from the Drizzle enum (single source of
+// truth) rather than re-listed, so a new basis can never ship without its
+// zero-init series.
+const AUTHENTICATOR_L4_BASIS_LABELS = authenticatorPlatformBoundBasisEnum.enumValues;
+const AUTHENTICATOR_L4_OUTCOME_LABELS: readonly AuthenticatorL4Outcome[] = [
+  'allowed',
+  'denied',
+  'would_deny',
+];
+
+// #1374 — critical-tier (L4) assurance decisions by the approver device's
+// platform_bound_basis. No tenant label on purpose: the series is about the
+// FLEET-wide distribution of attestation bases (how many keys still sit on a
+// legacy/unattested basis), and `basis`/`outcome` are both bounded enums, so
+// cardinality is fixed at 7x3.
+const authenticatorL4BasisTotal = new Counter({
+  name: 'breeze_authenticator_l4_basis_total',
+  help: 'Critical-tier (L4) assurance decisions by approver-device platform_bound_basis (#1374)',
+  labelNames: ['basis', 'outcome'] as const,
+  registers: [register],
+});
+
 const authTransitionLegacyIssuerTotal = new Counter({
   name: 'auth_transition_legacy_issuer_total',
   help: 'Temporary pre-enforcement user-session issuance by issuer and client class',
@@ -510,6 +536,15 @@ function initializeMetricDefaults(): void {
   s1ActionDispatchTotal.labels('isolate', 'accepted').inc(0);
   s1ActionPollTransitionsTotal.labels('queued').inc(0);
   failedLoginsTotal.labels('invalid_password', 'redacted').inc(0);
+  // #1374: zero-init EVERY basis x outcome series. An absent series is
+  // indistinguishable from a scrape gap in Prometheus, and "no denials since
+  // the flag flipped" is exactly the assertion this metric exists to support —
+  // it has to be a real 0, not a missing series.
+  for (const basis of AUTHENTICATOR_L4_BASIS_LABELS) {
+    for (const outcome of AUTHENTICATOR_L4_OUTCOME_LABELS) {
+      authenticatorL4BasisTotal.labels(basis, outcome).inc(0);
+    }
+  }
   agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
   commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
   abuseSignalsFiredTotal.labels('alert').inc(0);
@@ -721,6 +756,12 @@ function tenantLabel(id: string | null | undefined): string {
   if (!METRICS_INCLUDE_ORG_ID) return 'redacted';
   const trimmed = id?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : 'unknown';
+}
+
+function recordAuthenticatorL4BasisMetric(basis: string, outcome: AuthenticatorL4Outcome): void {
+  // normalizeMetricLabel guards against an unexpected basis string widening the
+  // label set (the shim's signature is `string`, not the enum).
+  authenticatorL4BasisTotal.labels(normalizeMetricLabel(basis, 'unknown'), outcome).inc();
 }
 
 function recordFailedLoginMetric(reason: string, tenantId?: string | null): void {
@@ -951,6 +992,7 @@ function bindMetricsRecorders(): void {
     onFailedLogin: recordFailedLoginMetric,
     onAgentEnrollment: recordAgentEnrollmentMetric,
     onCommandDispatch: recordCommandDispatchMetric,
+    onAuthenticatorL4Basis: recordAuthenticatorL4BasisMetric,
   });
 
   setAuthTransitionMetricsRecorder({

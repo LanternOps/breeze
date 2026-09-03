@@ -710,7 +710,17 @@ describe('POST /devices/:id/move-org', () => {
       const response = await postMove();
 
       expect(response.status).toBe(200);
-      expect(statements.slice(0, 4)).toEqual([
+      // #4596 — the transaction's unconditional leading statement is
+      // `SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk
+      // DEFERRED` (see moveOrg.ts, right after `db.transaction(async (tx) => {`).
+      // It takes no table locks and runs before anything else in the callback,
+      // so it always occupies index 0 regardless of the PAM guard/lock
+      // ordering asserted below — assert it explicitly rather than folding it
+      // into the positional slice.
+      expect(statements[0]).toBe(
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+      );
+      expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
         'SELECT organizations FOR share (after 0 updates)',
         'PAM guard',
@@ -720,6 +730,19 @@ describe('POST /devices/:id/move-org', () => {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
       });
+    });
+
+    it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      expect(statements[0]).toBe(
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+      );
+      expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });
 
     it('returns a stable 409 for the typed preflight conflict and records only its stable code', async () => {

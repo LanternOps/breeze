@@ -54,6 +54,7 @@ import type {
   NarrativeOutcome,
   SweepFindingsOutcome,
   TicketTriageProposal,
+  TicketTriageSkip,
 } from '@breeze/shared';
 import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
@@ -252,6 +253,17 @@ export interface AgentRunOutcome {
    *  run — see `TicketProposalOutcome`'s docstring. Absent for every
    *  non-triage run, and for a triage run that never called the tool. */
   ticketProposal?: TicketProposalOutcome;
+  /**
+   * Follow-up to #4191/#4301 (issue #4462) — per-slot reasons
+   * `finalizeTicketTriage` did not turn part of `ticketProposal` into a
+   * write (e.g. a field below `TICKET_TRIAGE_CONFIDENCE_FLOOR`, a device
+   * already linked). Set at most once, alongside `ticketProposal`, by
+   * `finalizeTicketTriage` from `persistTicketTriage`'s own return value
+   * (`ticketTriageFindings.ts`). Absent when `ticketProposal` is absent, or
+   * when nothing was skipped. `runTrace.ts`'s `mapTicketProposal` carries
+   * this onto the wire DTO's `AiAgentRunTicketProposalDto.skipped`.
+   */
+  ticketTriageSkipped?: TicketTriageSkip[];
   proposedActions: OutcomeProposedAction[];
   executedActions: OutcomeExecutedAction[];
   deniedActions: Array<{ tool: string; reason: string }>;
@@ -2448,6 +2460,11 @@ async function finalizeTicketTriage(ctx: RunContext, result: LoopResult): Promis
       result.decidedIntentIds = [...(result.decidedIntentIds ?? []), ...approvedIntentIds];
     }
     if (skipped.length > 0) {
+      // Issue #4462: previously logged only — never reached `result.outcome`,
+      // so `finishRun`'s persisted `outcome` jsonb (and everything derived
+      // from it, including the run DTO) never carried it. Same direct-mutate
+      // pattern as `outcome.alertVerdictIntent` above.
+      outcome.ticketTriageSkipped = skipped;
       console.info('[aiAgentRunLoop] ticket-triage proposal partially skipped', {
         runId: ctx.run.id, skipped,
       });

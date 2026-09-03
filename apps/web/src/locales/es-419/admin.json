@@ -512,6 +512,53 @@
         "passed": "Aprobado",
         "failed": "Fallido"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Interruptor de emergencia de IA",
+      "description": "Parada de emergencia a nivel de plataforma para la actividad no supervisada de agentes de IA. Activarlo afecta a todos los partners a la vez — esta es una operación de plataforma, no una configuración por tenant.",
+      "refresh": "Actualizar",
+      "loading": "Cargando el estado del interruptor de emergencia…",
+      "impactNote": "Activar el interruptor detiene las acciones de IA no supervisadas para todos los partners en unos 5 segundos. Las acciones ya en curso no se interrumpen.",
+      "platformAdmin": {
+        "title": "Se requiere acceso de administrador de plataforma",
+        "description": "El interruptor de emergencia de IA es un control a nivel de plataforma administrado por los administradores de plataforma de Breeze. Su cuenta no puede verlo ni cambiarlo."
+      },
+      "status": {
+        "active": "Acciones de IA activas",
+        "killed": "Acciones de IA detenidas"
+      },
+      "fields": {
+        "epoch": "Época",
+        "updatedBy": "Modificado por última vez por",
+        "updatedAt": "Modificado por última vez el",
+        "lastReason": "Último motivo",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Detener las acciones de IA en toda la plataforma",
+        "restore": "Restaurar acciones de IA"
+      },
+      "confirm": {
+        "killTitle": "¿Detener las acciones de IA en toda la plataforma?",
+        "killDescription": "Esto detiene inmediatamente la actividad no supervisada de agentes de IA para todos los partners en Breeze. Úselo solo para un incidente activo.",
+        "restoreTitle": "¿Restaurar las acciones de IA?",
+        "restoreDescription": "Esto vuelve a habilitar la actividad no supervisada de agentes de IA para todos los partners en Breeze.",
+        "reasonLabel": "Motivo (obligatorio, para el registro de auditoría)",
+        "reasonPlaceholder": "Describa el incidente o el motivo de este cambio…",
+        "cancel": "Cancelar",
+        "killSubmit": "Detener acciones de IA",
+        "restoreSubmit": "Restaurar acciones de IA"
+      },
+      "notice": {
+        "killed": "Acciones de IA detenidas en toda la plataforma.",
+        "restored": "Acciones de IA restauradas en toda la plataforma."
+      },
+      "errors": {
+        "load": "Error al cargar el estado del interruptor de emergencia",
+        "generic": "Se produjo un error",
+        "flip": "Error al actualizar el interruptor de emergencia",
+        "mfaRequired": "Cambiar el interruptor de emergencia de IA requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
+      }
     }
   },
   "audit": {
