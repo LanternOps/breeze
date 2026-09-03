@@ -7,7 +7,14 @@ import { users } from './users';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
-export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']);
+// #3525: 'cancelling' is TRANSIENT — a cancel is in flight and unresolved. Only
+// a PROVEN stop terminalises as 'cancelled'; an unproven one reverts to
+// `cancel_prev_status`. Value order mirrors the installed type
+// (2026-10-07-100000 adds it AFTER 'running'), which drizzle-kit compares.
+export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled']);
+// #3525: the cancel REQUEST's lifecycle, orthogonal to the execution outcome
+// (spec OD8-C). NULL means no cancel was ever requested.
+export const scriptCancelStateEnum = pgEnum('script_cancel_state', ['requested', 'confirmed', 'unconfirmed', 'failed']);
 export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation']);
 
 // Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
@@ -155,11 +162,36 @@ export const scriptExecutions = pgTable('script_executions', {
   errorMessage: text('error_message'),
   // #2698: per-run summary of the script custom-field write-back.
   customFieldResult: jsonb('custom_field_result').$type<ScriptCustomFieldWriteSummary>(),
+  // #3525 cancellation lifecycle, orthogonal to `status` (spec OD8-C).
+  // `status` says what happened to the PROCESS; these say what happened to the
+  // CANCEL REQUEST. A NULL cancel_state means no cancel was ever requested —
+  // enforced against cancel_requested_at by script_executions_cancel_state_chk.
+  cancelRequestedAt: timestamp('cancel_requested_at'),
+  // The AI-agent actor id is an ai_agents id, not a user id; the caller
+  // probes-and-degrades to NULL before writing here, as triggered_by already does.
+  cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'set null' }),
+  cancelState: scriptCancelStateEnum('cancel_state'),
+  // The `device_commands.id` of the queued script_cancel. Bare uuid for the same
+  // reason as automation_run_id: command rows are reaped independently and a
+  // stale id must simply match nothing rather than block a delete.
+  cancelCommandId: uuid('cancel_command_id'),
+  // The status held when the cancel was requested. An unconfirmed or failed
+  // cancel reverts to it, so the row never claims an outcome we cannot prove
+  // and reapStaleScriptExecutions keeps ownership of the deadline.
+  cancelPrevStatus: executionStatusEnum('cancel_prev_status'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   automationRunIdIdx: index('script_executions_automation_run_id_idx')
     .on(table.automationRunId)
-    .where(sql`automation_run_id IS NOT NULL`)
+    .where(sql`automation_run_id IS NOT NULL`),
+  // #3525: the cancellation sweep scans only in-flight cancels.
+  cancellingIdx: index('script_executions_cancelling_idx')
+    .on(table.cancelRequestedAt)
+    .where(sql`status = 'cancelling'`),
+  // #3525: closers resolve the execution from the cancel command's id.
+  cancelCommandIdx: index('script_executions_cancel_command_idx')
+    .on(table.cancelCommandId)
+    .where(sql`cancel_command_id IS NOT NULL`)
 }));
 
 export const scriptExecutionBatches = pgTable('script_execution_batches', {
