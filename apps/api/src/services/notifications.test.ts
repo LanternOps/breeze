@@ -8,6 +8,11 @@ vi.mock('./apns', () => ({
   sendApnsNotification: (...args: unknown[]) => sendApnsNotificationMock(...args),
 }));
 
+const sendFcmNotificationMock = vi.fn();
+vi.mock('./fcm', () => ({
+  sendFcmNotification: (...args: unknown[]) => sendFcmNotificationMock(...args),
+}));
+
 const updateSetCalls: Record<string, unknown>[] = [];
 const updateWhereCalls: unknown[] = [];
 vi.mock('../db', () => ({
@@ -28,13 +33,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   alerts: {},
-  mobileDevices: { apnsToken: { name: 'apnsToken' } },
+  mobileDevices: { apnsToken: { name: 'apnsToken' }, fcmToken: { name: 'fcmToken' } },
   organizationUsers: {},
   pushNotifications: {},
   users: {},
 }));
 
-import { sendAPNS, type PushPayload } from './notifications';
+import { sendAPNS, sendFCM, type PushPayload } from './notifications';
 import { db } from '../db';
 
 const payload: PushPayload = {
@@ -108,6 +113,60 @@ describe('sendAPNS', () => {
     sendApnsNotificationMock.mockResolvedValueOnce({ ok: false, status: 400, reason: 'BadRequest' });
 
     await expect(sendAPNS('apns-token', payload)).rejects.toThrow(/status 400/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendFCM', () => {
+  beforeEach(() => {
+    sendFcmNotificationMock.mockReset();
+    vi.mocked(db.update).mockClear();
+    updateSetCalls.length = 0;
+    updateWhereCalls.length = 0;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns sent with the provider messageId on success', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: true, messageId: 'msg-1' });
+
+    const res = await sendFCM('tok', {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: {},
+      alertId: 'al-1',
+      eventType: 'alert.triggered',
+    });
+
+    expect(res).toEqual({ messageId: 'msg-1', status: 'sent' });
+    expect(sendFcmNotificationMock).toHaveBeenCalledWith('tok', {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: { alertId: 'al-1', eventType: 'alert.triggered' },
+    });
+  });
+
+  it('purges the fcm token column and throws when the provider reports unregistered', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'messaging/registration-token-not-registered',
+      unregistered: true,
+    });
+
+    await expect(
+      sendFCM('dead-tok', { title: 't', body: 'b', data: {}, alertId: null, eventType: 'alert.triggered' })
+    ).rejects.toThrow('FCM delivery failed');
+    expect(db.update).toHaveBeenCalled();
+    expect(updateSetCalls.some((s) => s.fcmToken === null)).toBe(true);
+  });
+
+  it('throws without purging on a non-unregistered failure', async () => {
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: false, reason: 'messaging/internal-error' });
+
+    await expect(
+      sendFCM('tok', { title: 't', body: 'b', data: {}, alertId: null, eventType: 'alert.triggered' })
+    ).rejects.toThrow('FCM delivery failed');
     expect(db.update).not.toHaveBeenCalled();
   });
 });
