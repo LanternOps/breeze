@@ -15,7 +15,7 @@
  *   1. the deliberate-action resource arm is served by the partial index
  *      audit_logs_device_feed_resource_idx (predicate `actor_type <> 'agent'`);
  *   2. the details arm is served by audit_logs_device_feed_details_idx
- *      (predicate `actor_type <> 'agent' AND details ? 'deviceId'`);
+ *      (predicate `details ? 'deviceId'`);
  *   3. the unfiltered resource arm is served by an index keyed on resource_id.
  * With enable_seqscan off, any usable index beats a seq scan by ~1e10 cost, so
  * a seq scan in the plan means the clause is NOT promotable under RLS — exactly
@@ -56,7 +56,7 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
 
     // Enough rows that the planner's choice is not a coin toss on a tiny
     // table: the org index sees ~3,800 rows, the device's resource index ~600,
-    // the actor-partial resource index ~200, the details index 1. (Production
+    // the actor-partial resource index ~200, the details index 2. (Production
     // is far more skewed still.)
     const telemetry = (targetDevice: string) => ({
       orgId,
@@ -124,6 +124,19 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
           resourceId: deviceId,
           result: 'success',
         },
+        // Agent-actor row linked ONLY through details.deviceId (no such writer
+        // exists today; this pins that the details arm does not exclude actors,
+        // so one appearing later still surfaces on the Activities tab).
+        {
+          orgId,
+          actorType: 'agent',
+          actorId: deviceId,
+          action: 'backup.job.result',
+          resourceType: 'backup_job',
+          resourceId: randomUUID(),
+          details: { deviceId, status: 'completed' },
+          result: 'success',
+        },
       ]);
     await getTestDb().execute(sql`ANALYZE audit_logs`);
   });
@@ -145,11 +158,10 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
       ...(withActorGuard ? [NON_AGENT_ACTOR] : [])
     )!;
 
-  const detailsArm = () =>
+  const detailsArm = (withActorGuard: boolean) =>
     and(
       eq(auditLogs.orgId, orgId),
-      deliberate(),
-      NON_AGENT_ACTOR,
+      ...(withActorGuard ? [deliberate(), NON_AGENT_ACTOR] : []),
       DETAILS_HAS_DEVICE_ID,
       sql`${auditLogs.details}->>'deviceId' = ${deviceId}`,
       sql`${auditLogs.resourceId} IS DISTINCT FROM ${deviceId}::uuid`
@@ -176,10 +188,12 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
     expect(plan).not.toContain('audit_logs_org_timestamp_idx');
   });
 
-  it('details arm uses the details-partial org index', async () => {
-    const plan = await explain(detailsArm());
-    expect(plan).toContain('audit_logs_device_feed_details_idx');
-    expect(plan).not.toContain('Seq Scan on audit_logs');
+  it('details arm uses the details-partial org index (deliberate and unfiltered)', async () => {
+    for (const guard of [true, false]) {
+      const plan = await explain(detailsArm(guard));
+      expect(plan).toContain('audit_logs_device_feed_details_idx');
+      expect(plan).not.toContain('Seq Scan on audit_logs');
+    }
   });
 
   it('unfiltered resource arm (Activities tab) is served by a resource_id index', async () => {
@@ -192,19 +206,24 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
     const keys = await inOrgContext(async () => {
       const [a, b] = await Promise.all([
         db.select({ action: auditLogs.action }).from(auditLogs).where(resourceArm(true)),
-        db.select({ action: auditLogs.action }).from(auditLogs).where(detailsArm()),
+        db.select({ action: auditLogs.action }).from(auditLogs).where(detailsArm(true)),
       ]);
       return [...a, ...b].map((r) => r.action).sort();
     });
     expect(keys).toEqual(['agent.command.install_patches', 'device.command.queue', 'script.execute']);
   });
 
-  it('the unfiltered resource arm still includes agent rows', async () => {
+  it('the unfiltered arms still include agent rows, including one linked only via details', async () => {
     const keys = await inOrgContext(async () => {
-      const rows = await db.select({ action: auditLogs.action }).from(auditLogs).where(resourceArm(false));
-      return rows.map((r) => r.action).sort();
+      const [a, b] = await Promise.all([
+        db.select({ action: auditLogs.action }).from(auditLogs).where(resourceArm(false)),
+        db.select({ action: auditLogs.action }).from(auditLogs).where(detailsArm(false)),
+      ]);
+      return [...a, ...b].map((r) => r.action).sort();
     });
-    expect(new Set(keys)).toEqual(new Set(['agent.command.install_patches', 'agent.logs.submit', 'script.execute']));
+    expect(new Set(keys)).toEqual(
+      new Set(['agent.command.install_patches', 'agent.logs.submit', 'backup.job.result', 'device.command.queue', 'script.execute'])
+    );
     expect(keys.filter((k) => k === 'agent.logs.submit')).toHaveLength(600);
   });
 });

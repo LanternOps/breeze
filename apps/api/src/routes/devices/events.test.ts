@@ -335,12 +335,13 @@ describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotab
     expect(resource).not.toContain("->>'deviceId'");
   });
 
-  it('details arm carries the JSONB test, the non-agent predicate and the disjointness guard', async () => {
+  it('details arm carries the JSONB key test (the partial-index predicate), the equality, and the disjointness guard', async () => {
     const { details } = await arms('');
-    expect(details).toContain("->>'deviceId'");
     expect(details).toContain("? 'deviceId'");
-    expect(details).toContain("<> 'agent'");
+    expect(details).toContain("->>'deviceId'");
     expect(details).toContain('IS DISTINCT FROM');
+    // Unfiltered feed: no actor is excluded from either arm (old OR semantics).
+    expect(details).not.toContain("<> 'agent'");
   });
 
   it('unfiltered Activities feed keeps agent rows in the resource arm (no actor exclusion)', async () => {
@@ -348,10 +349,11 @@ describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotab
     expect(resource).not.toContain("<> 'agent'");
   });
 
-  it('deliberate-action feed adds actor_type <> agent to the resource arm so the partial index applies', async () => {
-    const { resource } = await arms('?actions=script.,device.command&includeAutomated=true');
+  it('deliberate-action feed adds actor_type <> agent to both arms (partial index on the resource arm)', async () => {
+    const { resource, details } = await arms('?actions=script.,device.command&includeAutomated=true');
     expect(resource).toContain("<> 'agent'");
     expect(resource).toContain('LIKE');
+    expect(details).toContain("<> 'agent'");
   });
 
   it('includeAutomated alone also counts as the deliberate feed', async () => {
@@ -365,24 +367,34 @@ describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotab
 });
 
 describe('mergeFeedPage (two-arm page merge)', () => {
-  const row = (id: string, ts: string) => ({ id, timestamp: new Date(ts) });
+  // sortKey mirrors FEED_SORT_KEY: to_char(timestamp, 'YYYYMMDDHH24MISSUS').
+  const row = (id: string, sortKey: string) => ({ id, sortKey });
 
   it('interleaves both arms newest-first and cuts the page', () => {
-    const a = [row('a3', '2026-01-03T00:00:00Z'), row('a1', '2026-01-01T00:00:00Z')];
-    const b = [row('b2', '2026-01-02T00:00:00Z')];
+    const a = [row('a3', '20260103000000000000'), row('a1', '20260101000000000000')];
+    const b = [row('b2', '20260102000000000000')];
     expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['a3', 'b2', 'a1']);
     expect(mergeFeedPage(a, b, 1, 1).map((r) => r.id)).toEqual(['b2']);
     expect(mergeFeedPage(a, b, 2, 5).map((r) => r.id)).toEqual(['a1']);
   });
 
-  it('breaks timestamp ties by id DESC, matching the SQL ORDER BY', () => {
-    const a = [row('aaaa', '2026-01-01T00:00:00Z')];
-    const b = [row('bbbb', '2026-01-01T00:00:00Z')];
+  it('orders by the microsecond key, not the millisecond Date, so it matches SQL', () => {
+    // Same millisecond (…123ms), different microseconds: SQL puts the later
+    // microsecond first. A Date-based merge would see a tie and fall through to
+    // the id tiebreak, putting 'zzzz' first — wrong.
+    const a = [row('zzzz', '20260101000000123400')];
+    const b = [row('aaaa', '20260101000000123900')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['aaaa', 'zzzz']);
+  });
+
+  it('breaks exact timestamp ties by id DESC, matching the SQL ORDER BY', () => {
+    const a = [row('aaaa', '20260101000000000000')];
+    const b = [row('bbbb', '20260101000000000000')];
     expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['bbbb', 'aaaa']);
   });
 
   it('applies the offset even when one arm is empty', () => {
-    const a = [row('a3', '2026-01-03T00:00:00Z'), row('a2', '2026-01-02T00:00:00Z'), row('a1', '2026-01-01T00:00:00Z')];
+    const a = [row('a3', '20260103000000000000'), row('a2', '20260102000000000000'), row('a1', '20260101000000000000')];
     expect(mergeFeedPage(a, [], 1, 1).map((r) => r.id)).toEqual(['a2']);
     expect(mergeFeedPage([], a, 2, 5).map((r) => r.id)).toEqual(['a1']);
   });

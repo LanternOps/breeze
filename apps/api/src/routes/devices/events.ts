@@ -90,30 +90,40 @@ export function buildActionConditions(
 // provable under a custom plan).
 export const NON_AGENT_ACTOR: SQL = sql`${auditLogs.actorType} <> 'agent'`;
 
-// Second half of the audit_logs_device_feed_details_idx predicate. Implied by
-// the `details->>'deviceId' = X` test the details arm also applies, but the
-// planner cannot derive one from the other, so it is stated explicitly.
+// The audit_logs_device_feed_details_idx predicate. Implied by the
+// `details->>'deviceId' = X` test the details arm also applies, but the planner
+// cannot derive one from the other, so it is stated explicitly.
 export const DETAILS_HAS_DEVICE_ID: SQL = sql`${auditLogs.details} ? 'deviceId'`;
 
-// Merge the two feed arms (each already ordered timestamp DESC, id DESC and
-// bounded to offset+limit rows) and cut the requested page. Exact for any
+// Microsecond-precision sort key selected alongside each row. audit_logs.timestamp
+// has microsecond precision and each arm is ordered by it in SQL, but Drizzle
+// hands it back as a JS Date (milliseconds). Merging on the Date would order two
+// rows from different arms that fall in the same millisecond differently from
+// SQL, and a page boundary between them would then skip or repeat a row. The
+// fixed-width text key sorts exactly like the column.
+export const FEED_SORT_KEY: SQL<string> = sql<string>`to_char(${auditLogs.timestamp}, 'YYYYMMDDHH24MISSUS')`;
+
+// Merge the two feed arms (each already ordered timestamp DESC, id DESC in SQL
+// and bounded to offset+limit rows) and cut the requested page. Exact for any
 // offset because the top-(offset+limit) of the union is contained in the union
-// of each arm's top-(offset+limit).
-export function mergeFeedPage<T extends { timestamp: Date; id: string }>(
+// of each arm's top-(offset+limit) — provided the merge order is IDENTICAL to
+// the SQL order, hence the microsecond `sortKey` (FEED_SORT_KEY) rather than the
+// millisecond Date, and the same id DESC tiebreak (uuid text order == uuid
+// byte order for canonical lowercase uuids).
+export function mergeFeedPage<T extends { sortKey: string; id: string }>(
   resourceRows: T[],
   detailsRows: T[],
   offset: number,
   limit: number
 ): T[] {
+  const desc = (a: string, b: string) => (a === b ? 0 : a < b ? 1 : -1);
   const merged =
     detailsRows.length === 0
       ? resourceRows
       : resourceRows.length === 0
         ? detailsRows
         : [...resourceRows, ...detailsRows].sort(
-            (a, b) =>
-              b.timestamp.getTime() - a.timestamp.getTime() ||
-              (a.id === b.id ? 0 : a.id < b.id ? 1 : -1)
+            (a, b) => desc(a.sortKey, b.sortKey) || desc(a.id, b.id)
           );
   return merged.slice(offset, offset + limit);
 }
@@ -217,12 +227,13 @@ eventsRoutes.get(
     //      details.deviceId (device.command.queue, remote sessions). Their
     //      resource is something else, so this arm is keyed on the org via
     //      audit_logs_device_feed_details_idx, a partial index on
-    //      `actor_type <> 'agent' AND details ? 'deviceId'`. Both predicate
-    //      clauses are stated verbatim here so the proof holds: no agent path
-    //      writes deviceId into details, and only a handful of an org's
-    //      non-agent rows carry the key, so the `->>` equality runs as a filter
-    //      over a few rows instead of the org's whole non-agent history (which
-    //      was ~500 heap pages and 66 s on US under IO saturation).
+    //      `details ? 'deviceId'`. That predicate is stated verbatim here so
+    //      the proof holds (the `->>` equality cannot be derived from it). Rows
+    //      carrying the key are rare for every actor type (51 in the largest
+    //      US org), so the JSONB equality runs as a filter over a few rows
+    //      instead of the org's whole history — and the arm keeps the old OR's
+    //      semantics exactly; no actor is excluded from it except, for the
+    //      deliberate feed, the same telemetry exclusion as arm 1.
     //      `resource_id IS DISTINCT FROM device` keeps the arms disjoint so the
     //      merged page and the summed count have no duplicates.
     //
@@ -282,7 +293,7 @@ eventsRoutes.get(
     )!;
     const detailsArm = and(
       ...commonConditions,
-      NON_AGENT_ACTOR,
+      ...(deliberateFeed ? [NON_AGENT_ACTOR] : []),
       DETAILS_HAS_DEVICE_ID,
       sql`${auditLogs.details}->>'deviceId' = ${deviceId}`,
       sql`${auditLogs.resourceId} IS DISTINCT FROM ${deviceId}::uuid`
@@ -297,6 +308,7 @@ eventsRoutes.get(
         .select({
           id: auditLogs.id,
           timestamp: auditLogs.timestamp,
+          sortKey: FEED_SORT_KEY,
           action: auditLogs.action,
           actorType: auditLogs.actorType,
           actorEmail: auditLogs.actorEmail,
