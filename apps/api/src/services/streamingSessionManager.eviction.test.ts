@@ -364,6 +364,31 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expect(capacityAlarms()).toHaveLength(1);
     });
 
+    it('tags the capacity alarm with a magnitude bucket that actually varies', () => {
+      // `scrubEvent` deletes `message` from every outbound event, so a tag is
+      // the alarm's only surviving channel. Without a varying one, a blip and a
+      // wedged manager are byte-identical in Sentry.
+      const small = new StreamingSessionManager();
+      const huge = new StreamingSessionManager();
+      try {
+        seed(small, 's1', 'org-a', { idleFor: MINUTE, state: 'processing' });
+        for (let i = 0; i < MAX_ACTIVE_SESSIONS * 2 + 1; i++) {
+          seed(huge, `h-${i}`, 'org-a', { idleFor: MINUTE, state: 'processing' });
+        }
+
+        internals(small).evictLeastRecentlyActive();
+        internals(huge).evictLeastRecentlyActive();
+
+        const buckets = capacityAlarms().map(
+          (c) => (c[1] as { tags?: Record<string, string> }).tags?.ai_session_cap_bucket,
+        );
+        expect(buckets).toEqual(['at-cap', 'runaway']);
+      } finally {
+        small.shutdown();
+        huge.shutdown();
+      }
+    });
+
     it('throttles the capacity alarm instead of firing it on every request', () => {
       seed(manager, 's1', 'org-a', { idleFor: 5 * MINUTE, state: 'processing' });
 
@@ -664,7 +689,14 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       await settle();
       await settle();
 
-      expect(captureExceptionMock).toHaveBeenCalled();
+      // `org_id` is allowlisted (sentry.ts ALLOWED_TAG_NAMES) and survives the
+      // scrubber. Without it every org's failure collapses into one
+      // untriageable issue and the on-call cannot tell WHICH tenant is stranded.
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        undefined,
+        { org_id: 'org-a' },
+      );
       // org-b must still be retired — abandoning the loop strands exactly the
       // 'active' rows this helper exists to clean up.
       expect(capturedExpires).toHaveLength(2);

@@ -70,6 +70,22 @@ export const PROCESSING_STALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Throttle for the all-in-flight capacity alarm, so it cannot flood Sentry. */
 const CAPACITY_ALARM_THROTTLE_MS = 5 * 60 * 1000;
+
+/**
+ * Bucket how far past MAX_ACTIVE_SESSIONS the manager has been pushed, for the
+ * capacity alarm's only scrubber-surviving channel (a tag).
+ *
+ * Closed four-value set by construction, carrying no tenant, device or session
+ * identifier — the shape ALLOWED_TAG_NAMES requires. The raw count would be
+ * unbounded cardinality; the bucket still separates "one turn over" from "the
+ * manager is wedged", which is the distinction that decides whether to page.
+ */
+function bucketSessionOvershoot(size: number): string {
+  if (size <= MAX_ACTIVE_SESSIONS) return 'at-cap';
+  if (size <= MAX_ACTIVE_SESSIONS * 1.25) return 'over-cap';
+  if (size <= MAX_ACTIVE_SESSIONS * 2) return 'far-over-cap';
+  return 'runaway';
+}
 /**
  * 6 min per-turn timeout. Sized to accept a single approval wait
  * (`waitForApproval`, aiAgentSdk.ts, 300_000ms = 5 min) plus headroom for
@@ -1799,10 +1815,13 @@ export class StreamingSessionManager {
         } catch (err) {
           // Never abandon the remaining orgs: a failure here strands rows as
           // 'active', which is the very defect this helper exists to fix.
-          // Session ids go in the log line, not a Sentry tag — the scrubber
-          // allowlist deliberately voids tenant-scoped tags, so a tag here
-          // would silently vanish rather than aid correlation.
-          captureException(err);
+          //
+          // `org_id` IS in sentry.ts's ALLOWED_TAG_NAMES and survives the
+          // scrubber, so it goes on the event — without it every org's failure
+          // collapses into one untriageable Sentry issue and the on-call has to
+          // go log-diving to learn which tenant is stranded. The SESSION ids are
+          // the part the allowlist voids, so those stay in the log line only.
+          captureException(err, undefined, { org_id: orgId });
           console.error(
             `[StreamingSessionManager] Failed to expire ${sessionIds.length} session(s) for org ${orgId} (${sessionIds.join(', ')}):`,
             err,
@@ -1890,8 +1909,13 @@ export class StreamingSessionManager {
       );
       if (now - this.lastCapacityAlarmAt >= CAPACITY_ALARM_THROTTLE_MS) {
         this.lastCapacityAlarmAt = now;
+        // The magnitude has to ride on a TAG: `scrubEvent` deletes `message`
+        // from every outbound event, so without this a single-request blip and a
+        // sustained runaway produce byte-identical Sentry issues — and the
+        // difference is exactly what decides whether anyone should be paged.
         captureMessage('AI session cap exceeded: every session mid-turn', {
           eventCode: 'ai_session_cap_all_in_flight',
+          tags: { ai_session_cap_bucket: bucketSessionOvershoot(this.sessions.size) },
         });
       }
       return;
