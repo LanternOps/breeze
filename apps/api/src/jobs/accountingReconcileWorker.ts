@@ -61,6 +61,7 @@ import {
   listReconcilableConnections,
   stampReconcileRunError,
 } from '../services/accounting/accountingConnectionService';
+import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
 import { getAccountingProvider } from '../services/accounting/providerRegistry';
 import type { ChangeSetPaymentLine } from '../services/accounting/types';
@@ -213,6 +214,45 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
   );
 }
 
+/**
+ * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, all
+ * four conditions below collapsed into one silent `return null` — a
+ * switched-off connection, a lost connection, a stale job target and a
+ * genuine connectivity problem were indistinguishable from the outside.
+ *
+ *   - `missing`: no QuickBooks connection exists for this partner at all.
+ *   - `connection_mismatch`: a connection exists, but it is not the row this
+ *     job named (the partner reconnected under a new connection id between
+ *     enqueue and processing — the job's target is simply stale).
+ *   - `not_connected`: the connection exists and matches, but its `status`
+ *     is not `connected` (e.g. `reauth_required`, `error`).
+ *   - `pull_disabled`: the connection is live and matches, but the operator
+ *     has switched `pull_payments` off.
+ */
+type ReconcileSkipReason = 'missing' | 'connection_mismatch' | 'not_connected' | 'pull_disabled';
+
+function classifyReconcileSkip(
+  conn: Pick<AccountingConnection, 'id' | 'status' | 'pullPayments'> | null,
+  data: ReconcileConnectionJobData,
+): ReconcileSkipReason | null {
+  if (!conn) return 'missing';
+  if (conn.id !== data.connectionId) return 'connection_mismatch';
+  if (conn.status !== 'connected') return 'not_connected';
+  if (!conn.pullPayments) return 'pull_disabled';
+  return null;
+}
+
+/** One structured line per short-circuit reason (issue #4543) — see `classifyReconcileSkip`. */
+function logReconcileSkip(data: ReconcileConnectionJobData, reason: ReconcileSkipReason): void {
+  console.log(
+    '[AccountingReconcileWorker] run skipped',
+    `reason=${reason}`,
+    `connectionId=${data.connectionId}`,
+    `partnerId=${data.partnerId}`,
+    `trigger=${data.trigger}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Job handlers (exported for direct unit testing)
 // ---------------------------------------------------------------------------
@@ -220,12 +260,12 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 /**
  * Reconcile ONE connection's CDC window.
  *
- * Returns `null` when the job is a no-op (no connection, a connection that is
- * not the one the job names, one that is not `connected`, or one whose
- * `pull_payments` switch is off). A switched-off connection short-circuits
- * BEFORE `resolveConnectionAndToken`: that call is itself a QuickBooks round
- * trip plus a token write, and refreshing tokens for a connection the operator
- * has disabled is work nobody asked for.
+ * Returns `null` when the job is a no-op — see `classifyReconcileSkip` for the
+ * four distinct reasons, each logged via `logReconcileSkip` (issue #4543). A
+ * switched-off connection short-circuits BEFORE `resolveConnectionAndToken`:
+ * that call is itself a QuickBooks round trip plus a token write, and
+ * refreshing tokens for a connection the operator has disabled is work nobody
+ * asked for.
  */
 export async function processReconcileConnectionJob(
   data: ReconcileConnectionJobData,
@@ -236,7 +276,22 @@ export async function processReconcileConnectionJob(
       withSystemDbAccessContext(fn, `accountingReconcile.${data.trigger}`);
 
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    if (!conn || conn.id !== data.connectionId || conn.status !== 'connected' || !conn.pullPayments) return null;
+    const skipReason = classifyReconcileSkip(conn, data);
+    if (skipReason) {
+      logReconcileSkip(data, skipReason);
+      // `pull_disabled` is the one reason with no OTHER visible signal:
+      // `status` already surfaces `not_connected`, and `missing` /
+      // `connection_mismatch` name a job whose target isn't (or is no longer)
+      // the live connection, so there is nothing safe to stamp. Reuses the
+      // finding-H mechanism (`stampReconcileRunError`) so the same
+      // sync-status surface the "Sync now" card already reads shows this too.
+      if (skipReason === 'pull_disabled' && conn) {
+        await runInDbContext(() =>
+          stampReconcileRunError(db, conn.id, data.partnerId, 'skipped this run — payment pull is disabled for this connection'),
+        );
+      }
+      return null;
+    }
 
     const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting

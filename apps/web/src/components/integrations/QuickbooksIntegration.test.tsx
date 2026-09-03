@@ -415,6 +415,40 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     );
   });
 
+  it("issue #4543 — shows the pull-disabled reason (not a generic failure) on a 409 pull_disabled reconcile response", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/reconcile" &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse(
+            { error: "Payment pull is disabled for this connection", code: "pull_disabled" },
+            409,
+          );
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        message: "Payment sync is turned off for this connection. Turn on Payment sync to sync now.",
+      }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "warning" }),
+    );
+  });
+
   it("hides the pull-payments switch and the push-mode row without invoices:write", async () => {
     canWriteInvoices = false;
     fetchWithAuth.mockImplementation(async (url: string) =>

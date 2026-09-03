@@ -787,6 +787,7 @@
     "syncNow": "Sincronizza ora",
     "syncNowQueued": "Sincronizzazione dei pagamenti in coda.",
     "syncNowNotQueued": "Impossibile mettere in coda la sincronizzazione dei pagamenti. Riprova tra poco.",
+    "syncNowPullDisabled": "La sincronizzazione dei pagamenti è disattivata per questa connessione. Attiva la sincronizzazione dei pagamenti per sincronizzare ora.",
     "failedToSyncNow": "Impossibile avviare la sincronizzazione dei pagamenti."
   },
   "securityIntegration": {

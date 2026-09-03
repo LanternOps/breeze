@@ -787,6 +787,7 @@
     "syncNow": "Sincronizar agora",
     "syncNowQueued": "Sincronização de pagamentos na fila.",
     "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
+    "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão. Ative a sincronização de pagamentos para sincronizar agora.",
     "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
   },
   "securityIntegration": {
