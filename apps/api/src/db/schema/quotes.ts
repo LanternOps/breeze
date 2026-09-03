@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, integer, boolean, numeric, jsonb, timestamp,
+  pgTable, uuid, text, varchar, integer, smallint, boolean, numeric, jsonb, timestamp,
   char, date, pgEnum, index, uniqueIndex, primaryKey, foreignKey, type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -8,6 +8,7 @@ import { partners, organizations } from './orgs';
 // of redefining it locally — same pattern as users.avatarData.
 import { users, bytea } from './users';
 import { catalogItemTypeEnum } from './catalog';
+import { contractLineTypeEnum, contractOverageModeEnum } from './contracts';
 
 export const quoteStatusEnum = pgEnum('quote_status', [
   'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'
@@ -174,6 +175,21 @@ export const quoteLines = pgTable('quote_lines', {
   recurrence: quoteLineRecurrenceEnum('recurrence').notNull().default('one_time'),
   termMonths: integer('term_months'),
   billingFrequency: varchar('billing_frequency', { length: 20 }),
+  // #3205 W05: device-set descriptor. All NULL together on an ordinary line —
+  // contract_line_type IS NULL is the whole feature switch. The invariants live
+  // in quote_lines_device_set_chk (SQL-only, like contract_lines_device_roles_chk)
+  // and in quoteLineDeviceSetIssues.
+  contractLineType: contractLineTypeEnum('contract_line_type'),
+  deviceRoles: text('device_roles').array(),
+  deviceGroupId: uuid('device_group_id'),
+  // Stamped at write; outlives the id (the FK is ON DELETE SET NULL on the id
+  // only), which is how a deleted reference is detected.
+  deviceGroupName: varchar('device_group_name', { length: 255 }),
+  siteId: uuid('site_id'),
+  siteName: varchar('site_name', { length: 255 }),
+  includedQuantity: numeric('included_quantity', { precision: 12, scale: 2 }),
+  overageMode: contractOverageModeEnum('overage_mode'),
+  overageUnitPrice: numeric('overage_unit_price', { precision: 12, scale: 2 }),
   // Internal builder economics — never serialized to the customer document.
   unitCost: numeric('unit_cost', { precision: 12, scale: 2 }),
   // Counts toward a 'selected_lines' deposit. Catalog hardware defaults it on.
@@ -199,7 +215,11 @@ export const quoteLines = pgTable('quote_lines', {
   index('quote_lines_block_idx').on(t.blockId),
   index('quote_lines_org_idx').on(t.orgId),
   index('quote_lines_image_idx').on(t.imageId),
-  uniqueIndex('quote_lines_id_quote_uq').on(t.id, t.quoteId)
+  uniqueIndex('quote_lines_id_quote_uq').on(t.id, t.quoteId),
+  index('quote_lines_device_group_id_idx').on(t.deviceGroupId).where(sql`${t.deviceGroupId} IS NOT NULL`),
+  // The CHECK and all three composite FKs are SQL-only (2026-10-08-100700) —
+  // the W01/W02 pattern. Drizzle cannot express ON DELETE SET NULL (col) or
+  // DEFERRABLE, and drift detection compares columns/indexes, not constraints.
 ]);
 
 export const quoteImages = pgTable('quote_images', {
@@ -226,6 +246,9 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
   ipAddress: varchar('ip_address', { length: 64 }),
   userAgent: text('user_agent'),
   quoteSha256: char('quote_sha256', { length: 64 }).notNull(),
+  // #3205 W05: which computeQuoteSha256 algorithm produced quoteSha256.
+  // Existing rows default to 1 because that is what hashed them.
+  hashVersion: smallint('hash_version').notNull().default(1),
   acceptanceTokenJti: varchar('acceptance_token_jti', { length: 128 }),
   // Render locale the acceptance hash + executed contract PDF were computed
   // with (#3777 follow-up): the quote's send-time document_locale, or 'en'
