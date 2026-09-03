@@ -27,16 +27,48 @@ import { resolveSiteDevicePartition } from './aiToolsSiteScope';
  *
  * No-op for unrestricted callers — resolveSiteDevicePartition returns null.
  */
+async function forbiddenDeviceIds(
+  auth: AuthContext,
+  orgId: string,
+): Promise<Set<string> | null> {
+  const partition = await resolveSiteDevicePartition(orgId, auth);
+  return partition ? new Set(partition.forbidden) : null;
+}
+
+function holdsForbiddenDevice(forbidden: Set<string>, storedDevices: unknown): boolean {
+  return (Array.isArray(storedDevices) ? storedDevices : [])
+    .some((id) => typeof id === 'string' && forbidden.has(id));
+}
+
 async function storedGroupDevicesDenied(
   auth: AuthContext,
   orgId: string,
   storedDevices: unknown,
 ): Promise<boolean> {
-  const partition = await resolveSiteDevicePartition(orgId, auth);
-  if (!partition) return false;
-  const forbidden = new Set(partition.forbidden);
-  return (Array.isArray(storedDevices) ? storedDevices : [])
-    .some((id) => typeof id === 'string' && forbidden.has(id));
+  const forbidden = await forbiddenDeviceIds(auth, orgId);
+  return forbidden ? holdsForbiddenDevice(forbidden, storedDevices) : false;
+}
+
+/**
+ * Deny a plan-level mutation when ANY of the plan's groups reaches outside the
+ * caller's sites. Plan status gates execution and archival disables recovery
+ * outright, so this is a control-plane action over every site the plan touches
+ * — the AI-tool counterpart of authorizePlanStoredDevices in routes/dr.ts.
+ */
+async function planStoredDevicesDenied(
+  auth: AuthContext,
+  orgId: string,
+  planId: string,
+): Promise<boolean> {
+  const forbidden = await forbiddenDeviceIds(auth, orgId);
+  if (!forbidden) return false;
+
+  const groups = await db
+    .select({ devices: drPlanGroups.devices })
+    .from(drPlanGroups)
+    .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)));
+
+  return groups.some((group) => holdsForbiddenDevice(forbidden, group.devices));
 }
 
 type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -459,6 +491,9 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
         const plan = await loadPlanWithAccess(planId, auth);
         if (!plan) return JSON.stringify({ error: 'Plan not found or access denied' });
+        if (await planStoredDevicesDenied(auth, plan.orgId, plan.id)) {
+          return JSON.stringify({ error: 'Plan not found or access denied' });
+        }
 
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updateData.name = input.name.trim();

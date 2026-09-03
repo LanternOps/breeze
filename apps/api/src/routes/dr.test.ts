@@ -748,6 +748,89 @@ describe('dr routes', () => {
       expect((await res.json()).data.status).toBe('aborted');
     });
 
+    // The stored guard runs first, so a group whose stored membership is fully
+    // in-site must still have its PROPOSED additions checked. Without this the
+    // proposed guard could be deleted and every other test would stay green.
+    it('rejects a group update that adds an out-of-site device', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: GROUP_ID,
+        planId: PLAN_ID,
+        orgId: ORG_ID,
+        devices: [DEVICE_ID],
+      }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: OUT_OF_SITE_DEVICE_ID, siteId: SITE_B }]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ devices: [OUT_OF_SITE_DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    // An empty grant is the most locked-down state and the one a truthiness
+    // slip (`!allowedSiteIds`) would silently turn into "unrestricted".
+    it('denies a technician granted zero sites', async () => {
+      permissionsState = { allowedSiteIds: [] };
+      selectMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID, devices: [DEVICE_ID] }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
+    // authorizeStoredDevices deliberately omits the row-count parity check that
+    // authorizeProposedDevices has: an id whose device row is gone cannot be a
+    // restore target, and must not wedge maintenance of the group holding it.
+    it('does not let a deleted device block maintenance of its group', async () => {
+      restrictToSiteA();
+      const deletedDeviceId = '44444444-4444-4444-8444-444444444444';
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: GROUP_ID,
+        devices: [DEVICE_ID, deletedDeviceId],
+      }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+      deleteMock.mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(deleteMock).toHaveBeenCalled();
+    });
+
+    // A device outside the org must report the org mismatch, never the site
+    // grant — the site verdict would confirm the id exists somewhere in-org.
+    it('reports an org mismatch ahead of the site grant', async () => {
+      restrictToSiteA();
+      const foreignDeviceId = '55555555-5555-4555-8555-555555555555';
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      selectMock.mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Tier 1', devices: [foreignDeviceId] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/do not belong to this organization/);
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
     // An unrestricted principal must not pay for the site barrier, and must not
     // change behaviour: no extra lookup beyond the group existence check.
     it('costs an unrestricted caller no additional device lookup', async () => {

@@ -192,3 +192,67 @@ describe('manage_dr_plan — stored group membership is site-scoped', () => {
     expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 });
+
+// Plan status gates execution and archival disables recovery outright, so
+// update_plan is a control-plane action over every site the plan touches.
+describe('manage_dr_plan — plan mutations are site-scoped', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function writeChain(rows: unknown[]): any {
+    const p: any = Promise.resolve(rows);
+    for (const m of ['from', 'where', 'limit', 'set', 'values', 'returning']) p[m] = () => p;
+    return p;
+  }
+
+  const ORG_DEVICES = [
+    { id: 'dev-A', siteId: 'site-A' },
+    { id: 'dev-B', siteId: 'site-B' },
+  ];
+
+  it('refuses to archive a plan reaching sites the caller cannot access', async () => {
+    mockDb.update.mockImplementation(() => writeChain([]));
+    seqSelect([
+      [PLAN],                                  // loadPlanWithAccess
+      ORG_DEVICES,                             // site partition
+      [{ devices: ['dev-A', 'dev-B'] }],       // the plan's groups
+    ]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_plan', planId: 'p1', status: 'archived' },
+      makeAuth(['site-A']),
+    );
+
+    expect(JSON.parse(result).error).toMatch(/access denied/i);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('allows updating a plan confined to the caller sites', async () => {
+    mockDb.update.mockImplementation(() => writeChain([{ id: 'p1', name: 'Renamed' }]));
+    seqSelect([
+      [PLAN],
+      ORG_DEVICES,
+      [{ devices: ['dev-A'] }],
+    ]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_plan', planId: 'p1', name: 'Renamed' },
+      makeAuth(['site-A']),
+    );
+
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mockDb.update).toHaveBeenCalled();
+  });
+
+  it('leaves an unrestricted caller unaffected and loads no group membership', async () => {
+    mockDb.update.mockImplementation(() => writeChain([{ id: 'p1', name: 'Renamed' }]));
+    seqSelect([[PLAN]]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_plan', planId: 'p1', name: 'Renamed' },
+      makeAuth(undefined),
+    );
+
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+});

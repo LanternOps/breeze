@@ -68,10 +68,24 @@ function uniqueDeviceIds(value: unknown): string[] {
  * routes/backup/resilienceAuthorization.ts so both read the grant identically.
  */
 function siteRestriction(c: Context): UserPermissions | null {
-  const permissions = c.get('permissions') as UserPermissions | undefined;
-  if (!permissions?.allowedSiteIds) return null;
-  const auth = c.get('auth') as AuthContext | undefined;
-  return isSiteRestrictedPrincipalKind(auth?.principal?.kind) ? permissions : null;
+  const auth = c.get('auth') as AuthContext;
+  if (!isSiteRestrictedPrincipalKind(auth?.principal?.kind)) return null;
+
+  // Fall back to the token's own grant rather than treating a missing
+  // `permissions` as "unrestricted". Every route here is behind
+  // requirePermission, which always publishes it — but a route added later
+  // without that middleware would otherwise fail OPEN on a boundary Postgres
+  // does not enforce. Mirrors authorizeRouteResilienceResources.
+  const permissions = (c.get('permissions') as UserPermissions | undefined) ?? {
+    permissions: [],
+    partnerId: auth.partnerId,
+    orgId: auth.orgId,
+    roleId: '',
+    scope: auth.scope,
+    allowedSiteIds: auth.allowedSiteIds,
+  };
+
+  return permissions.allowedSiteIds ? permissions : null;
 }
 
 function loadDeviceSites(deviceIds: string[], orgId: string) {
