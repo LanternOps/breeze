@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type SQL } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const state = vi.hoisted(() => ({
@@ -33,7 +34,10 @@ vi.mock('../../db', () => ({
   },
 }));
 
-import { provisionPortalReportDefinitions } from './reportsSelfService';
+import {
+  portalReportDefinitionsInsertQuery,
+  provisionPortalReportDefinitions,
+} from './reportsSelfService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -81,6 +85,22 @@ describe('provisionPortalReportDefinitions', () => {
       }),
     ]);
     expect(state.conflict).toHaveBeenCalledOnce();
+  });
+
+  it('compiles the partial-index conflict arbiter with a literal true predicate', () => {
+    const compileDb = drizzle.mock();
+    const query = portalReportDefinitionsInsertQuery(
+      compileDb as unknown as Parameters<typeof portalReportDefinitionsInsertQuery>[0],
+      { orgId: ORG_ID, createdBy: USER_ID },
+    ).toSQL();
+
+    expect(query.sql).toMatch(/on conflict \("org_id","type"\) where/);
+    expect(query.sql).toMatch(
+      /on conflict \("org_id","type"\) where portal_self_service = true do nothing/,
+    );
+    expect(query.sql).not.toMatch(
+      /on conflict \("org_id","type"\) where[^$]*\$\d+[^]*do nothing/,
+    );
   });
 
   it('re-selects definitions through an organization-scoped predicate', async () => {

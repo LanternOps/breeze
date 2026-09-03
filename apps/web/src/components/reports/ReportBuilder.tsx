@@ -1272,7 +1272,10 @@ export default function ReportBuilder({
           }
         ),
         successMessage: t('reports.reportBuilder.recipients.converted'),
-        errorFallback: t('reports.reportBuilder.recipients.convertFailed')
+        errorFallback: t('reports.reportBuilder.recipients.convertFailed'),
+        friendly: (code) => code === 'MFA_REQUIRED'
+          ? t('reports.reportBuilder.recipients.mfaRequired')
+          : undefined
       });
       setEmailRecipients(current =>
         current.filter(value => value.toLowerCase() !== email.toLowerCase())

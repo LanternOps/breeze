@@ -700,7 +700,7 @@
         "templateName": "Quarterly Compliance Pack",
         "value": "Value"
       },
-      "recipients": { "contacts": "Organization contacts", "legacy": "Legacy email addresses", "convert": "Convert to contact", "added": "Report recipient added", "removed": "Report recipient removed", "converted": "Email address converted to a contact", "updateFailed": "Could not update the report recipients", "convertFailed": "Could not convert this email address", "loadFailed": "Could not load the report recipients" },
+      "recipients": { "contacts": "Organization contacts", "legacy": "Legacy email addresses", "convert": "Convert to contact", "added": "Report recipient added", "removed": "Report recipient removed", "converted": "Email address converted to a contact", "updateFailed": "Could not update the report recipients", "convertFailed": "Could not convert this email address", "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.", "loadFailed": "Could not load the report recipients" },
       "previewTable": {
         "selectFields": "Select fields to populate the preview table."
       },

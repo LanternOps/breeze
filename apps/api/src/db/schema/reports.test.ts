@@ -110,7 +110,7 @@ describe('report execution scope provenance', () => {
   it('makes both composite same-org recipient foreign keys deferrable', () => {
     const migration = readFileSync(
       new URL(
-        '../../../migrations/2026-10-06-120000-portal-report-self-service.sql',
+        '../../../migrations/2026-10-08-100100-portal-report-self-service.sql',
         import.meta.url,
       ),
       'utf8',

@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { reports } from '../../db/schema';
 import {
@@ -33,10 +33,16 @@ const PORTAL_DEFINITIONS = [
   },
 ] as const;
 
-export async function provisionPortalReportDefinitions(args: {
+type PortalReportInsertExecutor = Pick<typeof db, 'insert'>;
+type PortalReportProvisionArgs = {
   orgId: string;
   createdBy: string;
-}): Promise<void> {
+};
+
+export function portalReportDefinitionsInsertQuery(
+  executor: PortalReportInsertExecutor,
+  args: PortalReportProvisionArgs,
+) {
   const scope = {
     version: 1,
     kind: 'unrestricted',
@@ -51,7 +57,7 @@ export async function provisionPortalReportDefinitions(args: {
   };
   const scopeValues = persistedSiteScopeValues(authority);
 
-  await db
+  return executor
     .insert(reports)
     .values(PORTAL_DEFINITIONS.map((definition) => ({
       orgId: args.orgId,
@@ -66,8 +72,14 @@ export async function provisionPortalReportDefinitions(args: {
     })))
     .onConflictDoNothing({
       target: [reports.orgId, reports.type],
-      where: eq(reports.portalSelfService, true),
+      where: sql`portal_self_service = true`,
     });
+}
+
+export async function provisionPortalReportDefinitions(
+  args: PortalReportProvisionArgs,
+): Promise<void> {
+  await portalReportDefinitionsInsertQuery(db, args);
 
   const rows = await db
     .select({ type: reports.type })

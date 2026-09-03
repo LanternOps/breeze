@@ -342,4 +342,45 @@ describe('ReportBuilder recipients', () => {
       await screen.findByText('Could not load the report recipients')
     ).toBeInTheDocument();
   });
+
+  it('explains that MFA is required when legacy recipient conversion is rejected', async () => {
+    fetchWithAuthMock.mockImplementation(async url => {
+      if (url.includes('/orgs/organizations/org-1/contacts')) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url.endsWith('/reports/report-1/recipients')) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url.endsWith('/reports/report-1/recipients/convert')) {
+        return makeJsonResponse(
+          { error: 'MFA required', code: 'MFA_REQUIRED' },
+          false,
+          403
+        );
+      }
+      return makeJsonResponse({});
+    });
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{
+          schedule: 'monthly',
+          emailRecipients: ['legacy@example.test']
+        }}
+      />
+    );
+
+    await userEvent.click(
+      await screen.findByTestId('report-recipient-convert-legacy@example.test')
+    );
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.'
+      });
+    });
+  });
 });

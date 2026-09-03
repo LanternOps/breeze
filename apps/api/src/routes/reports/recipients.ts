@@ -14,6 +14,11 @@ import {
   requireScope,
 } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { createContact } from '../../services/contacts/crud';
+import {
+  contactCreateAuditEvent,
+  writeContactAudit,
+} from '../../services/contacts/audit';
 import { getReportWithOrgCheck } from './helpers';
 import {
   addReportRecipientSchema,
@@ -156,17 +161,18 @@ recipientsRoutes.post(
         ))
         .limit(1);
 
+      let createdContact = null;
       if (!contact) {
-        [contact] = await tx.insert(contacts).values({
+        createdContact = await createContact(tx, {
           orgId: report.orgId,
           name: input.name ?? null,
           email,
-          createdBy: c.get('auth').user.id,
-        }).returning({
-          id: contacts.id,
-          name: contacts.name,
-          email: contacts.email,
-        });
+        }, { userId: c.get('auth').user.id });
+        contact = {
+          id: createdContact.id,
+          name: createdContact.name,
+          email: createdContact.email,
+        };
       }
 
       await tx.insert(reportScheduleRecipients).values({
@@ -196,9 +202,20 @@ recipientsRoutes.post(
         eq(reports.orgId, report.orgId),
       ));
 
-      return contact!;
+      return { contact: contact!, createdContact };
     });
 
-    return c.json({ data: result }, 201);
+    if (result.createdContact) {
+      const createEvent = contactCreateAuditEvent(result.createdContact);
+      writeContactAudit(c, {
+        orgId: report.orgId,
+        action: createEvent.action,
+        contactId: createEvent.resourceId,
+        contactName: createEvent.resourceName,
+        details: createEvent.details,
+      });
+    }
+
+    return c.json({ data: result.contact }, 201);
   },
 );

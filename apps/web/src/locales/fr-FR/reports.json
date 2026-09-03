@@ -700,7 +700,7 @@
         "templateName": "Pack de conformité trimestriel",
         "value": "Valeur"
       },
-      "recipients": { "contacts": "Contacts de l’organisation", "legacy": "Anciennes adresses e-mail", "convert": "Convertir en contact", "added": "Destinataire du rapport ajouté", "removed": "Destinataire du rapport supprimé", "converted": "Adresse e-mail convertie en contact", "updateFailed": "Impossible de mettre à jour les destinataires du rapport", "convertFailed": "Impossible de convertir cette adresse e-mail", "loadFailed": "Impossible de charger les destinataires du rapport" },
+      "recipients": { "contacts": "Contacts de l’organisation", "legacy": "Anciennes adresses e-mail", "convert": "Convertir en contact", "added": "Destinataire du rapport ajouté", "removed": "Destinataire du rapport supprimé", "converted": "Adresse e-mail convertie en contact", "updateFailed": "Impossible de mettre à jour les destinataires du rapport", "convertFailed": "Impossible de convertir cette adresse e-mail", "mfaRequired": "La conversion d’un destinataire nécessite une authentification multifacteur. Activez la MFA dans votre profil, puis réessayez.", "loadFailed": "Impossible de charger les destinataires du rapport" },
       "previewTable": {
         "selectFields": "Sélectionnez les champs pour remplir la table d’aperçu."
       },

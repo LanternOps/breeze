@@ -12,6 +12,9 @@ const state = vi.hoisted(() => ({
   updated: [] as Array<{ value: unknown; condition?: unknown }>,
   whereConditions: [] as unknown[],
   getReport: vi.fn(),
+  createContact: vi.fn(),
+  contactCreateAuditEvent: vi.fn(),
+  writeContactAudit: vi.fn(),
 }));
 
 function selectChain(result: unknown[]) {
@@ -140,6 +143,15 @@ vi.mock('./helpers', () => ({
   getReportWithOrgCheck: state.getReport,
 }));
 
+vi.mock('../../services/contacts/audit', () => ({
+  contactCreateAuditEvent: state.contactCreateAuditEvent,
+  writeContactAudit: state.writeContactAudit,
+}));
+
+vi.mock('../../services/contacts/crud', () => ({
+  createContact: state.createContact,
+}));
+
 import { recipientsRoutes } from './recipients';
 
 function app() {
@@ -172,6 +184,29 @@ describe('report recipient routes', () => {
       id: REPORT_ID,
       orgId: ORG_ID,
       config: { emailRecipients: ['alex@example.test', 'keep@example.test'] },
+    });
+    state.contactCreateAuditEvent.mockReturnValue({
+      action: 'contact.create',
+      resourceType: 'contact',
+      resourceId: CONTACT_ID,
+      resourceName: 'Alex',
+      details: { isPrimary: false, roles: [] },
+    });
+    state.createContact.mockResolvedValue({
+      id: CONTACT_ID,
+      orgId: ORG_ID,
+      siteId: null,
+      name: 'Alex',
+      email: 'alex@example.test',
+      phone: null,
+      mobile: null,
+      title: null,
+      roles: [],
+      isPrimary: false,
+      notes: null,
+      createdBy: 'user-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
   });
 
@@ -254,12 +289,16 @@ describe('report recipient routes', () => {
     expect(await response.json()).toEqual({
       data: { id: CONTACT_ID, name: 'Alex', email: 'alex@example.test' },
     });
-    expect(state.inserted[0]?.value).toMatchObject({
-      orgId: ORG_ID,
-      email: 'alex@example.test',
-      createdBy: 'user-1',
-    });
-    expect(state.inserted[1]?.value).toEqual({
+    expect(state.createContact).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        orgId: ORG_ID,
+        name: 'Alex',
+        email: 'alex@example.test',
+      },
+      { userId: 'user-1' },
+    );
+    expect(state.inserted[0]?.value).toEqual({
       reportId: REPORT_ID,
       orgId: ORG_ID,
       contactId: CONTACT_ID,
@@ -268,6 +307,31 @@ describe('report recipient routes', () => {
       config: { emailRecipients: ['keep@example.test'] },
     });
     expect(hasEquality(state.updated[0]?.condition, 'reports.orgId', ORG_ID)).toBe(true);
+  });
+
+  it('audits the contact created while converting a legacy recipient', async () => {
+    state.results.push([]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'alex@example.test', name: 'Alex' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(state.contactCreateAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: CONTACT_ID, name: 'Alex' }),
+    );
+    expect(state.writeContactAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        orgId: ORG_ID,
+        action: 'contact.create',
+        contactId: CONTACT_ID,
+        contactName: 'Alex',
+        details: { isPrimary: false, roles: [] },
+      },
+    );
   });
 
   it('requires MFA before converting a legacy recipient', async () => {
@@ -319,6 +383,8 @@ describe('report recipient routes', () => {
       return node.conditions?.some((child) =>
         child.type === 'sql' && child.values?.includes('alex@example.test')) ?? false;
     })).toBe(true);
+    expect(state.writeContactAudit).not.toHaveBeenCalled();
+    expect(state.createContact).not.toHaveBeenCalled();
   });
 
   it('validates recipient and conversion request bodies', async () => {
