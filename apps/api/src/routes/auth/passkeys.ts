@@ -228,10 +228,17 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
-      // #4470: a rejected/expired REGISTRATION CHALLENGE, not a dead bearer.
-      // The challenge is single-use, so refresh-and-replaying this body could
-      // only ever fail again — and on the settings page that logged the user
-      // out for it.
+      // #4470: the registration challenge could not be redeemed — usually
+      // because it is missing or expired. Whatever the cause, it is not a dead
+      // bearer, and the challenge is single-use, so refresh-and-replaying this
+      // body could only ever fail again. On the settings page that 401 logged
+      // the user out for it.
+      //
+      // `PasskeyChallengeError` also covers "Redis unavailable" and a corrupt
+      // record, which are infra failures rather than rejected proofs and would
+      // be better served by a 503. That conflation predates this change (they
+      // shared the old 401 too) and is left for a follow-up — 400 at least
+      // keeps the user signed in where 401 did not.
       return rejectProof(c, err.message, MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
     }
     throw err;

@@ -305,10 +305,12 @@ export async function requireFreshMfaStepUp(
   userId: string,
   code: string,
   keyPrefix = 'auth:mfa-stepup',
-  /** #4470 — see {@link requireCurrentPasswordStepUp}. Same default, same reason. */
-  opts: { rejectionStatus?: ProofRejectionStatus } = {},
 ): Promise<Response | null> {
-  const rejectionStatus = opts.rejectionStatus ?? 401;
+  // #4470: no `rejectionStatus` opt-in here — unlike its siblings this helper
+  // has no factor-management caller (only approvals/PAM L4 re-auth), so an
+  // unused knob would just be untested dead code. Add it when a caller needs
+  // it. The BODY is uniform with the siblings so a client sees one shape.
+  const rejectionStatus: ProofRejectionStatus = 401;
   const redis = getRedis();
   if (!redis) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
