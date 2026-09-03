@@ -1096,7 +1096,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         approvalScope: 'auto', decidedVia: 'ticket_autonomy',
       }])) // intents (sessionId is null, so the ledger read is skipped)
       .mockReturnValueOnce(selectChain(
-        [{ id: DRAFT_ID, kind: 'reply' }],
+        [{ id: DRAFT_ID, kind: 'reply', content: 'Hi — please try restarting your computer.', state: 'active' }],
         (predicate) => { draftWhere = predicate; },
       )); // draft rows
 
@@ -1107,6 +1107,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
 
     expect(parsed.data.ticketProposal?.intentIds).toEqual([TRIAGE_INTENT_ID]);
     expect(parsed.data.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: DRAFT_ID }]);
+    // Issue #4467 — draftReply is sourced live off the same draft-rows read,
+    // never disagreeing with the draftsWritten entry it corresponds to.
+    expect(parsed.data.ticketProposal?.draftReply).toBe('Hi — please try restarting your computer.');
 
     // run row, intents, draft rows — no ledger (sessionId null), no sweep
     // hostname read, no narrative artifact read (reportRunId null).

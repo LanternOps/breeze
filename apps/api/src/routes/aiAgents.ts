@@ -1104,15 +1104,41 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // sweep-hostname and narrative-artifact reads above do (a partner-scoped
   // caller's `auth.orgCondition` alone spans every sibling org); that stays
   // as defence-in-depth beside RLS.
+  //
+  // Issue #4467 — also selects `content` and `state`, and orders newest
+  // first: `buildRunTrace`/`mapTicketProposal` now derive
+  // `ticketProposal.draftReply`/`draftResolutionNote` off this SAME live row
+  // (when one exists for the kind) instead of always echoing the persisted
+  // proposal text, so the two representations of a written draft can't
+  // disagree. `content` never reaches `draftsWritten` on the wire itself —
+  // it only feeds that derivation (see the docstrings on
+  // `RunTraceDraftRowInput` and `mapTicketProposal`/`pickDraftText`).
+  //
+  // More than one row of the SAME kind can be linked to this run_id — the
+  // `draft` tool executor (aiToolsTicketing.ts, action 'draft') supersedes
+  // the ticket's previously-active draft of that kind and inserts a new row
+  // on every call, including its own unique-violation retry path, and this
+  // query has no per-run uniqueness to lean on (`ticket_drafts_active_uq` is
+  // scoped to `(ticket_id, kind)`, not `(run_id, kind)`). `state` +
+  // `ORDER BY created_at DESC` let `pickDraftText` deterministically prefer
+  // the row that is actually still `active` (falling back to the most
+  // recently written row of that kind if none is), rather than an arbitrary
+  // one — see that function's docstring.
   const draftRows = run.triggerKind === 'ticket'
     ? await db
-      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind })
+      .select({
+        id: ticketDrafts.id,
+        kind: ticketDrafts.kind,
+        content: ticketDrafts.content,
+        state: ticketDrafts.state,
+      })
       .from(ticketDrafts)
       .where(and(
         eq(ticketDrafts.runId, run.id),
         eq(ticketDrafts.orgId, run.orgId),
         auth.orgCondition(ticketDrafts.orgId),
       ))
+      .orderBy(desc(ticketDrafts.createdAt))
     : [];
 
   // Both fields come from the same left-joined ai_agents row, so they are
