@@ -42,6 +42,7 @@ import { aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { createAuditLogAsync } from '../auditService';
+import { EVENT_TYPES, publishEvent } from '../eventBus';
 import { createNotification } from '../userNotifications';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { resolveRecipientUserIds } from './recipients';
@@ -530,6 +531,29 @@ export async function recordRunTerminal(
     }
   } catch (error) {
     console.error('[agentCircuit] failed to notify recipients of a circuit open (non-fatal)', {
+      orgId: run.orgId, agentId: run.agentId, error,
+    });
+  }
+
+  // #4205 — first-class registered event so webhooks/automations can react to
+  // a circuit open, not just the notification + audit row above. Best-effort,
+  // same posture as both: never allowed to fail this best-effort accounting
+  // path.
+  try {
+    await publishEvent(
+      EVENT_TYPES.AI_AGENT_CIRCUIT_OPENED,
+      run.orgId,
+      {
+        agentId: run.agentId,
+        orgId: run.orgId,
+        triggeringRunId: run.id,
+        consecutiveFailures: justOpened.consecutiveFailures,
+        threshold: justOpened.threshold,
+      },
+      'ai-agent-circuit',
+    );
+  } catch (error) {
+    console.error('[agentCircuit] failed to publish a circuit open event (non-fatal)', {
       orgId: run.orgId, agentId: run.agentId, error,
     });
   }

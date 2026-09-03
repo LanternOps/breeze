@@ -130,6 +130,12 @@ vi.mock('../auditService', () => ({
   createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...args),
 }));
 
+const publishEventMock = vi.fn();
+vi.mock('../eventBus', () => ({
+  EVENT_TYPES: { AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' },
+  publishEvent: (...args: unknown[]) => publishEventMock(...args),
+}));
+
 import {
   classifyTerminal,
   getCircuitState,
@@ -179,6 +185,7 @@ beforeEach(() => {
   resolveRecipientUserIdsMock.mockReset().mockResolvedValue([]);
   createNotificationMock.mockReset().mockResolvedValue('notif-id');
   createAuditLogAsyncMock.mockReset().mockResolvedValue(undefined);
+  publishEventMock.mockReset().mockResolvedValue('event-id');
 });
 
 afterEach(() => {
@@ -425,6 +432,7 @@ describe('recordRunTerminal', () => {
     expect(state.updateCount).toBe(0); // no open-transition update attempted
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
   });
 
   it('increment at threshold opens the circuit exactly once, then notifies + audits', async () => {
@@ -457,6 +465,22 @@ describe('recordRunTerminal', () => {
       resourceId: AGENT_ID,
       actorType: 'system',
     }));
+
+    // #4205 — first-class registered event so webhooks/automations can react,
+    // not just the notification + audit row.
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'ai.agent.circuit.opened',
+      ORG_ID,
+      expect.objectContaining({
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+        triggeringRunId: RUN_ID,
+        consecutiveFailures: 3,
+        threshold: 3,
+      }),
+      expect.any(String),
+    );
   });
 
   it('opens exactly once: a second increment landing on an already-open row notifies nobody again', async () => {
@@ -473,6 +497,7 @@ describe('recordRunTerminal', () => {
     expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
   });
 
   it('opens exactly once: the CAS losing to a concurrent opener suppresses this notify', async () => {
@@ -488,6 +513,7 @@ describe('recordRunTerminal', () => {
 
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
   });
 
   it('falls back to the shared default threshold when no effective policy resolves', async () => {
