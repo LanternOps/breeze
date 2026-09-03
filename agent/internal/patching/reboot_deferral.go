@@ -53,23 +53,43 @@ type DeferralOutcome struct {
 // ComputeDeferral is pure: no clock, no disk, no locks. Everything that decides
 // whether a user may postpone their restart lives here so it can be asserted
 // exhaustively without driving timers.
-func ComputeDeferral(policy DeferralPolicy, used int, now, deadline time.Time) DeferralOutcome {
+//
+// The window is added to the CURRENTLY SCHEDULED time, not to now. Computing it
+// from now instead looks equivalent and is not: with a 120-minute reboot delay
+// and a 60-minute postponement — both well inside the configurable ranges —
+// "now + 60m" moves the restart an hour EARLIER, so the user who pressed
+// Postpone loses an hour. It also has to be this way to agree with the deadline
+// the API derives, `scheduledAt + maxDeferrals * deferralMinutes`
+// (apps/api/src/services/patchRebootHandler.ts): spending the whole budget then
+// lands exactly on the deadline rather than short of it.
+func ComputeDeferral(policy DeferralPolicy, used int, now, scheduledAt, deadline time.Time) DeferralOutcome {
 	if !policy.Allowed || policy.MaxDeferrals <= 0 || policy.DeferralMinutes <= 0 {
 		return DeferralOutcome{Reason: deferralReasonNotEnabled}
 	}
 	if used >= policy.MaxDeferrals {
 		return DeferralOutcome{Reason: deferralReasonNoneRemaining}
 	}
-	want := time.Duration(policy.DeferralMinutes) * time.Minute
-	// The clamp. A zero or past deadline yields a non-positive remainder and so
-	// falls through to the refusal below rather than granting anything.
-	if remaining := deadline.Sub(now); remaining < want {
-		want = remaining
+
+	// An overdue schedule would otherwise push off a time already in the past.
+	base := scheduledAt
+	if base.Before(now) {
+		base = now
 	}
-	if want < MinRebootDelay {
+	target := base.Add(time.Duration(policy.DeferralMinutes) * time.Minute)
+	// The clamp: the deadline is the guarantee (#3253).
+	if target.After(deadline) {
+		target = deadline
+	}
+	// A deadline at or before the current schedule leaves nothing to postpone
+	// into, and clamping to it would pull the restart forward — refuse instead.
+	if target.Before(base) {
 		return DeferralOutcome{Reason: deferralReasonDeadlineReached}
 	}
-	return DeferralOutcome{Granted: true, NewDelay: want}
+	delay := target.Sub(now)
+	if delay < MinRebootDelay {
+		return DeferralOutcome{Reason: deferralReasonDeadlineReached}
+	}
+	return DeferralOutcome{Granted: true, NewDelay: delay}
 }
 
 // DeferralLedger persists the count for ONE reboot campaign, keyed by its hard
@@ -154,6 +174,13 @@ func SaveDeferralLedger(path string, deadline time.Time, used int) error {
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	// Flush to the device before the rename, so a power loss cannot leave the
+	// renamed file present but empty. An empty file reads back as corrupt, which
+	// means "zero used" — i.e. the user silently gets their whole budget again.
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}

@@ -2,12 +2,18 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
 )
 
+// NOTE: this manager keeps the production deferral-ledger path, which these
+// tests never write to — they only ever call handleScheduleReboot, and the
+// ledger READ treats a missing file as zero. A test at this layer that calls
+// Defer() would touch the real agent data dir, so seam the ledger first (the
+// field is unexported in package patching, so that needs an exported option).
 func newTestHeartbeatWithRebootManager(t *testing.T) *Heartbeat {
 	t.Helper()
 	mgr := patching.NewRebootManager(func(string, string, string) {}, 3)
@@ -189,5 +195,34 @@ func TestScheduleRebootWithoutARebootManagerFails(t *testing.T) {
 	res := handleScheduleReboot(&Heartbeat{}, Command{Payload: map[string]any{"delayMinutes": float64(15)}})
 	if res.Status == "completed" {
 		t.Fatal("schedule_reboot succeeded with no reboot manager")
+	}
+}
+
+// The bounds are inclusive on both ends. Only rejections were tested, so an
+// off-by-one (`<` becoming `<=`, or vice versa) on any of the four comparisons
+// would silently refuse a legal edge-of-range policy and nothing would notice.
+func TestScheduleRebootAcceptsTheBoundaryBudgetValues(t *testing.T) {
+	cases := []struct {
+		maxDeferrals    int
+		deferralMinutes int
+	}{
+		{1, 5}, {1, 1440}, {10, 5}, {10, 1440},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("max=%d window=%d", tc.maxDeferrals, tc.deferralMinutes), func(t *testing.T) {
+			h := newTestHeartbeatWithRebootManager(t)
+			res := handleScheduleReboot(h, Command{Payload: map[string]any{
+				"delayMinutes": float64(15), "allowDeferral": true,
+				"maxDeferrals": float64(tc.maxDeferrals), "deferralMinutes": float64(tc.deferralMinutes),
+			}})
+			if res.Status != "completed" {
+				t.Fatalf("status = %q (%s) — the bounds are inclusive", res.Status, res.Error)
+			}
+			st := h.rebootMgr.State()
+			if st.MaxDeferrals != tc.maxDeferrals || st.DeferralMinutes != tc.deferralMinutes {
+				t.Errorf("state = %d x %dm, want %d x %dm",
+					st.MaxDeferrals, st.DeferralMinutes, tc.maxDeferrals, tc.deferralMinutes)
+			}
+		})
 	}
 }

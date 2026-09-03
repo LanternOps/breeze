@@ -7,7 +7,9 @@ package patching
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -112,8 +114,10 @@ func TestDeferReschedulesAndReNotifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Defer: %v", err)
 	}
-	if newDelay != 60*time.Minute {
-		t.Errorf("newDelay = %v, want 60m", newDelay)
+	// The 60-minute window is added to the 15-minute schedule, not to now — a
+	// postponement pushes the restart out, it never pulls it in.
+	if newDelay != 75*time.Minute {
+		t.Errorf("newDelay = %v, want 75m (15m schedule + the 60m window)", newDelay)
 	}
 	st := rm.State()
 	if st.DeferralsUsed != 1 {
@@ -125,7 +129,7 @@ func TestDeferReschedulesAndReNotifies(t *testing.T) {
 	if !st.Deadline.Equal(deadline) {
 		t.Errorf("Deadline = %v, want it unchanged at %v — a deferral may not move the hard stop", st.Deadline, deadline)
 	}
-	if want := clock.now().Add(60 * time.Minute); !st.ScheduledAt.Equal(want) {
+	if want := clock.now().Add(75 * time.Minute); !st.ScheduledAt.Equal(want) {
 		t.Errorf("ScheduledAt = %v, want %v", st.ScheduledAt, want)
 	}
 	// The re-schedule must emit its own lead notification (#3197 invariant:
@@ -205,8 +209,9 @@ func TestDeferDoesNotConsumeCircuitBreakerBudget(t *testing.T) {
 	if got := len(rm.rebootHistory); got != 0 {
 		t.Fatalf("rebootHistory has %d entries after three deferrals, want 0", got)
 	}
-	// Budget exhausted; let the final schedule run to completion.
-	plan := PlanReboot(60 * time.Minute)
+	// Budget exhausted; let the final schedule run to completion. Each
+	// postponement adds its window to the schedule: 15 -> 75 -> 135 -> 195.
+	plan := PlanReboot(195 * time.Minute)
 	timers.runAt(plan.OSInvokeAt)
 	if len(*osCalls) != 1 {
 		t.Fatalf("osCalls = %d, want 1 — three deferrals must not have burned the breaker", len(*osCalls))
@@ -397,5 +402,145 @@ func TestDeferNeverResurrectsACancelledReboot(t *testing.T) {
 		if st := rm.State(); st.RebootScheduled {
 			t.Fatalf("iteration %d: a cancelled reboot was resurrected by a concurrent Defer: %+v", i, st)
 		}
+	}
+}
+
+// A postponement must never make the restart happen SOONER. With a policy
+// window shorter than the remaining countdown — a 2-hour reboot delay and a
+// 60-minute postponement, both well inside the configurable ranges — computing
+// the new delay from "now" rather than from the scheduled time pulls the
+// restart an hour forward. The user pressed Postpone and lost an hour.
+//
+// It also has to agree with the deadline the API derives
+// (scheduledAt + maxDeferrals * deferralMinutes, see patchRebootHandler.ts):
+// spending the whole budget must land exactly on the deadline, not short of it.
+func TestDeferNeverPullsTheRestartEarlier(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	start := clock.now()
+	// Exactly what the API sends for a 120-minute delay with 2 x 60m deferrals.
+	deadline := start.Add(120*time.Minute + 2*60*time.Minute)
+	if err := rm.ScheduleWithOptions(120*time.Minute, deadline, "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	firstScheduledAt := rm.State().ScheduledAt
+
+	newDelay, err := rm.Defer()
+	if err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	if newDelay != 180*time.Minute {
+		t.Errorf("newDelay = %v, want 180m (the scheduled 120m pushed out by the 60m window)", newDelay)
+	}
+	afterFirst := rm.State().ScheduledAt
+	if !afterFirst.After(firstScheduledAt) {
+		t.Fatalf("postponing moved the restart from %v to %v — a postponement must never pull it earlier",
+			firstScheduledAt, afterFirst)
+	}
+
+	// The second and last postponement must land exactly on the deadline.
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("second Defer: %v", err)
+	}
+	afterSecond := rm.State().ScheduledAt
+	if !afterSecond.After(afterFirst) {
+		t.Errorf("second postponement moved the restart from %v to %v", afterFirst, afterSecond)
+	}
+	if !afterSecond.Equal(deadline) {
+		t.Errorf("after spending the whole budget ScheduledAt = %v, want the deadline %v", afterSecond, deadline)
+	}
+	if _, err := rm.Defer(); err == nil {
+		t.Error("a third Defer must be refused at MaxDeferrals=2")
+	}
+}
+
+// The on-disk count must never lag the in-memory one. If it can, the user gets
+// back a postponement they already spent the next time the agent restarts.
+// Measured before the ledger write was moved inside the lock: 141 of 300 trials
+// disagreed. It is now written in the same critical section as the increment,
+// so the two cannot diverge.
+func TestConcurrentDefersLeaveTheLedgerAgreeingWithMemory(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		rm, timers, _, _, clock, ledgerPath := newDeferralTestManager(t, 3)
+		deadline := clock.now().Add(12 * time.Hour)
+		if err := rm.ScheduleWithOptions(15*time.Minute, deadline, "Patch", "patch_job", allowDeferral(4, 60)); err != nil {
+			t.Fatalf("iteration %d: ScheduleWithOptions: %v", i, err)
+		}
+		timers.runAt(0)
+
+		var wg sync.WaitGroup
+		wg.Add(4)
+		for j := 0; j < 4; j++ {
+			go func() {
+				defer wg.Done()
+				_, _ = rm.Defer()
+			}()
+		}
+		wg.Wait()
+
+		inMemory := rm.State().DeferralsUsed
+		onDisk := LoadDeferralLedger(ledgerPath, deadline, clock.now())
+		if onDisk != inMemory {
+			t.Fatalf("iteration %d: ledger says %d postponements used, memory says %d — a restart would refill the budget",
+				i, onDisk, inMemory)
+		}
+	}
+}
+
+// The ledger is best-effort by contract: a write failure must be logged and
+// swallowed, never turned into a refused postponement. A mutation that
+// propagated the error would strand the user with an un-postponable restart
+// because of a permissions problem in the data dir.
+func TestDeferSucceedsWhenTheLedgerCannotBeWritten(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory mode bits do not gate writes the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which ignores the directory mode that makes the write fail")
+	}
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	dir := t.TempDir()
+	readOnly := filepath.Join(dir, "locked")
+	if err := os.Mkdir(readOnly, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	rm.deferralLedger = func() string { return filepath.Join(readOnly, "reboot_deferrals.json") }
+
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(6*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+
+	newDelay, err := rm.Defer()
+	if err != nil {
+		t.Fatalf("Defer returned %v; an unwritable ledger must not refuse the postponement", err)
+	}
+	if newDelay != 75*time.Minute {
+		t.Errorf("newDelay = %v, want 75m", newDelay)
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Errorf("DeferralsUsed = %d, want 1 — the in-memory count still holds for this process", got)
+	}
+}
+
+// Cancel clears the reported budget, not just the schedule. A console showing a
+// cancelled restart must not still advertise postponements against it.
+func TestCancelClearsTheReportedDeferralBudget(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(6*time.Hour), "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	if err := rm.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	st := rm.State()
+	if st.DeferralAllowed || st.MaxDeferrals != 0 || st.DeferralMinutes != 0 || st.DeferralsUsed != 0 {
+		t.Errorf("deferral fields after Cancel = allowed:%v used:%d max:%d window:%d, want all zero",
+			st.DeferralAllowed, st.DeferralsUsed, st.MaxDeferrals, st.DeferralMinutes)
 	}
 }

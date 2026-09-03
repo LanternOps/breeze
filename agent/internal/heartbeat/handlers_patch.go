@@ -259,6 +259,15 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 	// payload is REJECTED rather than clamped — a silent clamp is how #3373
 	// turned a malformed delayMinutes into a 60-minute reboot.
 	opts := patching.RebootOptions{}
+	// GetPayloadBool swallows a non-boolean, which fails safe (deferral stays
+	// off) but is otherwise invisible. Say so, or "why does this device not
+	// offer postponements" has no signal at all to start from.
+	if raw, present := cmd.Payload["allowDeferral"]; present {
+		if _, ok := raw.(bool); !ok {
+			log.Warn("schedule_reboot allowDeferral is not a boolean; treating deferral as disabled",
+				"got", fmt.Sprintf("%T", raw))
+		}
+	}
 	if tools.GetPayloadBool(cmd.Payload, "allowDeferral", false) {
 		maxDeferrals, err := tools.ParsePayloadInt(cmd.Payload, "maxDeferrals", 0)
 		if err != nil {

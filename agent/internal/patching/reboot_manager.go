@@ -78,15 +78,11 @@ type NotifyFunc func(title, body, urgency string)
 
 // RebootManager handles reboot scheduling, notification, and execution.
 type RebootManager struct {
-	mu sync.Mutex
-	// deferMu serialises whole Defer calls, including the ledger write that
-	// happens after mu is released — without it two concurrent postponements can
-	// write their counts to disk in the wrong order, leaving a lower count
-	// persisted than was actually granted. W3 fans the prompt out to every helper
-	// session and takes the first answer, so simultaneous requests are the
-	// expected shape, not a hypothetical. Always acquired BEFORE mu; never held
-	// by anything else, so it cannot invert.
-	deferMu          sync.Mutex
+	// mu guards everything below it. Defer holds it for its whole
+	// decide-reschedule-persist sequence — W3 fans the prompt out to every
+	// helper session and takes the first answer, so simultaneous postponement
+	// requests are the expected shape, not a hypothetical.
+	mu               sync.Mutex
 	state            RebootState
 	notifyTimers     []*time.Timer
 	osTimer          *time.Timer
@@ -183,6 +179,16 @@ func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.T
 // that Defer can run its checks and its re-schedule as ONE atomic step. Callers
 // must hold r.mu.
 func (r *RebootManager) scheduleLocked(delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
+	return r.scheduleLockedAt(r.nowFn(), delay, deadline, reason, source, opts)
+}
+
+// scheduleLockedAt takes the instant the delay is measured from, so a caller
+// that has already sampled the clock uses that ONE sample. Defer needs this:
+// re-sampling here would place the reboot at (second sample + a delay computed
+// against the first), which lands just past the deadline whenever the deferral
+// was clamped to it — and arbitrarily past it if the wall clock steps. Callers
+// must hold r.mu.
+func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
 	if r.stopped {
 		return fmt.Errorf("reboot manager is stopped")
 	}
@@ -213,7 +219,6 @@ func (r *RebootManager) scheduleLocked(delay time.Duration, deadline time.Time, 
 	gen := r.generation
 
 	plan := PlanReboot(delay)
-	now := r.nowFn()
 
 	// Reset the budget from the incoming policy on every schedule. A schedule
 	// that says nothing about deferral is not deferrable, whatever the previous
@@ -282,36 +287,41 @@ func (r *RebootManager) scheduleLocked(delay time.Duration, deadline time.Time, 
 // has no cancel flag), so granting a deferral there would report success while
 // the machine still went down — the same class of lie Cancel() documents.
 func (r *RebootManager) Defer() (time.Duration, error) {
-	// deferMu covers the whole call INCLUDING the ledger write, so two
-	// postponements can never write their counts to disk out of order. mu covers
-	// the state mutation.
-	r.deferMu.Lock()
-	defer r.deferMu.Unlock()
-
-	// One atomic section: check, re-schedule, and record the increment without
-	// ever releasing mu. Splitting it — checking, unlocking, then re-entering
-	// ScheduleWithOptions — leaves a window in which a concurrent Cancel()
-	// succeeds and the re-schedule then RESURRECTS the reboot the operator just
-	// cancelled. That is not hypothetical: a technician cancelling from the
-	// console while the signed-in user answers the prompt is exactly the shape
-	// W3 creates, and widening the window by a millisecond reproduces it on the
-	// first iteration (TestDeferNeverResurrectsACancelledReboot).
+	// ONE atomic section: check, re-schedule, record the increment and persist
+	// it, without ever releasing mu. Every split version of this has a hole:
+	//
+	//   - Unlocking before re-entering ScheduleWithOptions lets a concurrent
+	//     Cancel() succeed inside the gap, after which the re-schedule
+	//     RESURRECTS the reboot the operator just cancelled. Not hypothetical —
+	//     a technician cancelling from the console while the signed-in user
+	//     answers the prompt is exactly the shape W3 creates, and widening the
+	//     window by a millisecond reproduces it on the first iteration
+	//     (TestDeferNeverResurrectsACancelledReboot).
+	//   - Unlocking before the ledger write lets a concurrent schedule for the
+	//     same campaign reload the stale on-disk count and hand back a
+	//     postponement that was already spent.
+	//
+	// The cost is a small file write under the lock, which briefly blocks
+	// State() and the timer callbacks. That is the right trade: the write is a
+	// few syscalls, and the alternative is a budget the user can exceed.
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.stopped {
-		r.mu.Unlock()
 		return 0, fmt.Errorf("reboot manager is stopped")
 	}
 	if r.osInvoked {
-		r.mu.Unlock()
 		return 0, fmt.Errorf("the restart countdown has already started and cannot be postponed")
 	}
 	if !r.state.RebootScheduled {
-		r.mu.Unlock()
 		return 0, fmt.Errorf("no reboot scheduled")
 	}
-	outcome := ComputeDeferral(r.deferral, r.deferralsUsed, r.nowFn(), r.state.Deadline)
+
+	// One clock sample for both the decision and the re-schedule; see
+	// scheduleLockedAt.
+	now := r.nowFn()
+	outcome := ComputeDeferral(r.deferral, r.deferralsUsed, now, r.state.ScheduledAt, r.state.Deadline)
 	if !outcome.Granted {
-		r.mu.Unlock()
 		return 0, fmt.Errorf("%s", outcome.Reason)
 	}
 	deadline, reason, source := r.state.Deadline, r.state.Reason, r.state.Source
@@ -321,23 +331,22 @@ func (r *RebootManager) Defer() (time.Duration, error) {
 	// Re-schedule under the same options: it cancels the in-flight timers, bumps
 	// the generation and emits a fresh lead notification quoting the new time —
 	// which is exactly how the user learns the countdown moved.
-	if err := r.scheduleLocked(outcome.NewDelay, deadline, reason, source, RebootOptions{Deferral: policy}); err != nil {
-		r.mu.Unlock()
+	if err := r.scheduleLockedAt(now, outcome.NewDelay, deadline, reason, source, RebootOptions{Deferral: policy}); err != nil {
 		return 0, err
 	}
 
-	// scheduleLocked reset the count from the ledger, so the increment is
+	// scheduleLockedAt reset the count from the ledger, so the increment is
 	// re-applied after it. Ordering matters — do not fold this into the
 	// re-schedule; TestDeferRefusesPastTheBudget pins it.
 	r.deferralsUsed = used
 	r.state.DeferralsUsed = used
-	path := r.ledgerPath()
-	r.mu.Unlock()
 
+	path := r.ledgerPath()
 	if err := SaveDeferralLedger(path, deadline, used); err != nil {
 		// Best-effort: losing the ledger costs the user an extra postponement
 		// after an agent restart, it never lets them exceed the DEADLINE.
-		log.Warn("failed to persist reboot deferral ledger", "error", err)
+		log.Warn("failed to persist reboot deferral ledger",
+			"path", path, "deadline", deadline, "used", used, "error", err)
 	}
 	log.Info("reboot postponed by user",
 		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals)

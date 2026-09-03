@@ -14,12 +14,16 @@ func TestComputeDeferral(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	pol := DeferralPolicy{Allowed: true, MaxDeferrals: 2, DeferralMinutes: 60}
 
+	// scheduledAt defaults to `now` in these cases unless a case sets it, so the
+	// table reads as "postpone a restart that is due right now" — the strictest
+	// framing, since any extra headroom only makes a grant easier.
 	cases := []struct {
-		name     string
-		policy   DeferralPolicy
-		used     int
-		deadline time.Time
-		want     DeferralOutcome
+		name        string
+		policy      DeferralPolicy
+		used        int
+		scheduledAt time.Time
+		deadline    time.Time
+		want        DeferralOutcome
 	}{
 		{
 			name:   "policy disabled refuses",
@@ -99,11 +103,48 @@ func TestComputeDeferral(t *testing.T) {
 			policy: pol, used: 0, deadline: time.Time{},
 			want: DeferralOutcome{Granted: false, Reason: deferralReasonDeadlineReached},
 		},
+		{
+			// The window is added to the SCHEDULE, not to now. Computed from now
+			// this would be 60m, which moves a restart that was two hours away an
+			// hour CLOSER — the user pressed Postpone and lost an hour.
+			name:   "adds the window to the scheduled time, never pulling it earlier",
+			policy: pol, used: 0,
+			scheduledAt: now.Add(2 * time.Hour), deadline: now.Add(4 * time.Hour),
+			want: DeferralOutcome{Granted: true, NewDelay: 3 * time.Hour},
+		},
+		{
+			// Which is also what makes the counter and the API's derived deadline
+			// agree: scheduledAt + maxDeferrals*window IS the deadline, so the last
+			// postponement lands exactly on it.
+			name:   "the last postponement lands exactly on the derived deadline",
+			policy: pol, used: 1,
+			scheduledAt: now.Add(3 * time.Hour), deadline: now.Add(4 * time.Hour),
+			want: DeferralOutcome{Granted: true, NewDelay: 4 * time.Hour},
+		},
+		{
+			// An overdue schedule pushes off from now, not from a past instant.
+			name:   "an overdue schedule postpones from now",
+			policy: pol, used: 0,
+			scheduledAt: now.Add(-30 * time.Minute), deadline: now.Add(4 * time.Hour),
+			want: DeferralOutcome{Granted: true, NewDelay: 60 * time.Minute},
+		},
+		{
+			// A deadline behind the schedule must refuse rather than clamp, which
+			// would drag the restart forward in the name of postponing it.
+			name:   "refuses a deadline that sits before the current schedule",
+			policy: pol, used: 0,
+			scheduledAt: now.Add(2 * time.Hour), deadline: now.Add(time.Hour),
+			want: DeferralOutcome{Granted: false, Reason: deferralReasonDeadlineReached},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ComputeDeferral(tc.policy, tc.used, now, tc.deadline)
+			scheduledAt := tc.scheduledAt
+			if scheduledAt.IsZero() {
+				scheduledAt = now
+			}
+			got := ComputeDeferral(tc.policy, tc.used, now, scheduledAt, tc.deadline)
 			if got.Granted != tc.want.Granted || got.NewDelay != tc.want.NewDelay {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
@@ -130,15 +171,23 @@ func TestComputeDeferralNeverExceedsTheDeadline(t *testing.T) {
 
 	for offset := time.Minute; offset <= 8*time.Hour; offset += 37 * time.Second {
 		deadline := now.Add(offset)
-		got := ComputeDeferral(pol, 0, now, deadline)
-		if !got.Granted {
-			continue
-		}
-		if landing := now.Add(got.NewDelay); landing.After(deadline) {
-			t.Fatalf("offset %v: deferral lands at %v, past the deadline %v", offset, landing, deadline)
-		}
-		if got.NewDelay < MinRebootDelay {
-			t.Fatalf("offset %v: granted %v, below MinRebootDelay", offset, got.NewDelay)
+		for _, sched := range []time.Duration{-time.Hour, 0, time.Minute, offset / 2, offset, offset + time.Hour} {
+			scheduledAt := now.Add(sched)
+			got := ComputeDeferral(pol, 0, now, scheduledAt, deadline)
+			if !got.Granted {
+				continue
+			}
+			landing := now.Add(got.NewDelay)
+			if landing.After(deadline) {
+				t.Fatalf("offset %v sched %v: lands at %v, past the deadline %v", offset, sched, landing, deadline)
+			}
+			if landing.Before(scheduledAt) {
+				t.Fatalf("offset %v sched %v: lands at %v, EARLIER than the current schedule %v",
+					offset, sched, landing, scheduledAt)
+			}
+			if got.NewDelay < MinRebootDelay {
+				t.Fatalf("offset %v sched %v: granted %v, below MinRebootDelay", offset, sched, got.NewDelay)
+			}
 		}
 	}
 }
