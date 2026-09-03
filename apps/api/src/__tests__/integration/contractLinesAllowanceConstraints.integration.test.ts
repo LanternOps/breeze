@@ -18,7 +18,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { partners, organizations, contracts } from '../../db/schema';
 
-const MIGRATION = '2026-10-07-100100-contract-lines-allowance-overage.sql';
+const MIGRATION = '2026-10-08-100200-contract-lines-allowance-overage.sql';
 
 async function seed() {
   return withSystemDbAccessContext(async () => {
