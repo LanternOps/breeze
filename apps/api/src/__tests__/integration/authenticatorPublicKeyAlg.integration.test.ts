@@ -1,6 +1,6 @@
 /**
  * #1374 (feature #4707, wave W02) — real-Postgres proof for
- * `2026-10-06-120000-authenticator-public-key-alg.sql`.
+ * `2026-10-07-110000-authenticator-public-key-alg.sql`.
  *
  * Why this must be an INTEGRATION suite: the unit suites stub `../db`
  * wholesale, so none of them can see the column default, the NOT NULL, or the
@@ -25,7 +25,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_PATH = join(
   __dirname,
-  '../../../migrations/2026-10-06-120000-authenticator-public-key-alg.sql',
+  '../../../migrations/2026-10-07-110000-authenticator-public-key-alg.sql',
 );
 
 const seededPartnerIds: string[] = [];
@@ -52,7 +52,7 @@ afterAll(async () => {
   }
 });
 
-describe('authenticator_devices.public_key_alg (migration 2026-10-06-120000)', () => {
+describe('authenticator_devices.public_key_alg (migration 2026-10-07-110000)', () => {
   it('is NOT NULL and defaults to RS256 — every pre-W02 key is react-native-biometrics RSA', async () => {
     const rows = (await getTestDb().execute(sql`
       SELECT is_nullable, column_default, data_type, character_maximum_length
