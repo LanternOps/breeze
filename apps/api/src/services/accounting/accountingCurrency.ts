@@ -159,14 +159,22 @@ export function normalizeAccountingPayment(
  *     an AccountingProvider, and fails unless the enclosing module is the
  *     coordinator itself. That is what makes the guard unbypassable rather
  *     than merely available.
- *  3. DELIVERED. `apps/api/src/__tests__/integration/accountingInvoicePushCurrency.integration.test.ts` —
+ *  3. DELIVERED, UPDATED BY #4498. `apps/api/src/__tests__/integration/accountingInvoicePushCurrency.integration.test.ts` —
  *     seeds a USD QBO connection + an EUR invoice, calls the real coordinator,
- *     asserts `currency_mismatch` (ACCOUNTING_INVOICE_CURRENCY_MISMATCH),
- *     asserts NO QBO request was made (a `fetch` spy) and NO sync/mapping
- *     state was persisted (no `accounting_entity_mappings` row for the
- *     invoice at all); a null-home-currency case asserting
+ *     asserts `currency_mismatch` (ACCOUNTING_INVOICE_CURRENCY_MISMATCH) and
+ *     that NO QBO request was made (a `fetch` spy). Through #4498, no
+ *     sync/mapping state was persisted either (no `accounting_entity_mappings`
+ *     row for the invoice at all) — a tech had no signal that an auto-push
+ *     had failed short of retrying it manually. As of #4498, `currency_mismatch`
+ *     specifically now persists an ERROR-ONLY mapping row (`sync_status:'error'`,
+ *     no `remoteEntityId`, both currencies named in `lastError`) so the
+ *     invoice detail card's existing `syncStatus:'error'`-is-pushable branch
+ *     surfaces it with no new UI plumbing — see `persistInvoiceCurrencyMismatchErrorInOwnContext`
+ *     in `accountingInvoicePush.ts`. `home_currency_unknown` is UNCHANGED and
+ *     still persists nothing (a rarer connection-setup problem, out of #4498's
+ *     scope); the suite also proves a null-home-currency case asserting
  *     `home_currency_unknown` (ACCOUNTING_HOME_CURRENCY_UNKNOWN) the same
- *     way; and a same-currency happy-path case (provider transport mocked at
+ *     way, and a same-currency happy-path case (provider transport mocked at
  *     the `fetch` boundary) proving the mapping row lands `synced` and a
  *     second push against the same invoice UPDATEs the existing mapping row
  *     rather than inserting a second one, against the real
