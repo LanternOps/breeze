@@ -377,6 +377,35 @@ describe('decideApprovalBatch', () => {
     expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
   });
 
+  // (b3) same tool AND action, but a DIFFERENT customer org. This axis is the
+  // one a drift would hurt most — a fleet sweep proposes the identical
+  // `(tool, action)` across every org a partner manages, so if `orgId` ever
+  // fell out of the key the whole 422 would silently become "approve all of
+  // these, everywhere" off ONE ceremony. Covered end-to-end here, not just as
+  // a key-equality unit check, so the org axis has the same defence in depth
+  // the tool and action axes already have.
+  it('422s for the same tool and action under a DIFFERENT org', async () => {
+    const batchRows = [
+      { approval: buildApproval(1), intent: buildIntent(1) },
+      { approval: buildApproval(2), intent: buildIntent(2, { orgId: 'org-other' }) },
+    ];
+    mockDb({ batchRows });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(422);
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+    // Nothing decided, and no assertion ceremony consumed.
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
   // (c)
   it('422s when a FOUR-EYES card is in the set', async () => {
     const batchRows = [
