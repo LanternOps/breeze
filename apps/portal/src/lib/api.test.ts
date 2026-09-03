@@ -157,3 +157,20 @@ describe('ApiRequestConfig.timeoutMs', () => {
     expect(result.error).toBe('Network error');
   });
 });
+
+describe('portalApi.getDashboard', () => {
+  it('GETs the dashboard endpoint and preserves tile statuses', async () => {
+    const dto = {
+      asOf: '2026-09-02T12:00:00.000Z',
+      timezone: 'America/Denver',
+      securityScore: { status: 'stale', score: 76 },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(dto), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(portalApi.getDashboard()).resolves.toMatchObject({ data: dto });
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/portal/dashboard');
+  });
+});
