@@ -97,12 +97,32 @@ function collectSecretFileEntries(composeFile: string): SecretFileEntry[] {
   return entries;
 }
 
-/** `${VAR:-default}` -> "default"; a literal (non-interpolated) path is returned as-is. */
-function extractDefault(rawFile: string): string | null {
-  const match = /^\$\{[A-Za-z_][A-Za-z0-9_]*:-(.*)\}$/.exec(rawFile);
-  if (match) return match[1] ?? ''; // may be '' if the author wrote `${VAR:-}` (no default)
-  if (rawFile.includes('$')) return null; // `${VAR}` / `${VAR:?msg}` — no static default to check
-  return rawFile; // literal path, no interpolation at all
+type FileValue =
+  | { kind: 'default'; value: string } // `${VAR:-default}` / `${VAR-default}`, or a literal path
+  | { kind: 'no-default' } // `${VAR}` / `${VAR:?msg}` / `${VAR?msg}` — required, no static default
+  | { kind: 'unrecognized' }; // some other `$`-containing form this parser doesn't know
+
+/**
+ * Classifies a `secrets.<name>.file:` value. Deliberately fails CLOSED: any
+ * `$`-containing form that isn't one of the two recognized shapes above comes
+ * back `unrecognized` rather than being silently skipped, so a typo'd
+ * interpolation (e.g. `${VAR-default}` misread, or a future default-setting
+ * syntax this parser doesn't know) surfaces as a test failure telling a human
+ * to look at it, instead of quietly passing an unchecked default through —
+ * which is exactly how #2991's `/dev/null` default could reappear unnoticed.
+ */
+function classifyFileValue(rawFile: string): FileValue {
+  // `${VAR:-default}` (unset-or-empty) or `${VAR-default}` (unset-only) — both
+  // are real default-providing forms.
+  const withDefault = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?-(.*)\}$/.exec(rawFile);
+  if (withDefault) return { kind: 'default', value: withDefault[1] ?? '' };
+
+  // `${VAR}` (plain) or `${VAR:?msg}` / `${VAR?msg}` (required, fails if
+  // unset/empty) — no static default to check either way.
+  if (/^\$\{[A-Za-z_][A-Za-z0-9_]*(:?\?.*)?\}$/.test(rawFile)) return { kind: 'no-default' };
+
+  if (rawFile.includes('$')) return { kind: 'unrecognized' };
+  return { kind: 'default', value: rawFile }; // literal path, no interpolation at all
 }
 
 const composeFiles = trackedComposeFiles();
@@ -121,8 +141,20 @@ describe('Compose secret file: defaults', () => {
     const problems: string[] = [];
 
     for (const entry of allSecretFileEntries) {
-      const defaultValue = extractDefault(entry.rawFile);
-      if (defaultValue === null || defaultValue === '') continue; // no static default to check
+      const classified = classifyFileValue(entry.rawFile);
+
+      if (classified.kind === 'unrecognized') {
+        problems.push(
+          `${entry.composeFile}: secret "${entry.secretName}" file: value "${entry.rawFile}" ` +
+            `uses an interpolation form this test doesn't recognize as either a static default ` +
+            `or a required (no-default) reference. Update classifyFileValue() in this test to ` +
+            `handle it explicitly, so its default (if any) gets checked rather than skipped.`,
+        );
+        continue;
+      }
+      if (classified.kind === 'no-default') continue; // required var — no static default to check
+      const defaultValue = classified.value;
+      if (defaultValue === '') continue; // `${VAR:-}` — author wrote no default
 
       const composeDir = path.dirname(path.join(REPO_ROOT, entry.composeFile));
       const resolved = defaultValue.startsWith('/')
@@ -158,8 +190,8 @@ describe('Compose secret file: defaults', () => {
     // host made a device-node remount succeed and the generic isFile() check
     // above stopped firing for it.
     const devNullDefaults = allSecretFileEntries
-      .map((e) => ({ ...e, defaultValue: extractDefault(e.rawFile) }))
-      .filter((e) => e.defaultValue === '/dev/null');
+      .map((e) => ({ ...e, classified: classifyFileValue(e.rawFile) }))
+      .filter((e) => e.classified.kind === 'default' && e.classified.value === '/dev/null');
 
     expect(devNullDefaults).toEqual([]);
   });
