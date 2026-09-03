@@ -94,6 +94,13 @@ export const desktopInputEvent = z.object({
   deltaX: z.number().optional(),
   deltaY: z.number().optional(),
   code: z.string().max(50).optional(),
+  // Viewer's Caps Lock state at the moment the event was produced (issue
+  // #3595). Zod strips undeclared keys, so omitting this would silently drop
+  // the field on the WebSocket fallback transport and leave those sessions
+  // with the desynced-AlphaShift bug that WebRTC sessions no longer have.
+  // Optional, never defaulted: an older Viewer sends nothing and the agent
+  // keeps its previous behaviour.
+  capsLock: z.boolean().optional(),
 });
 
 const desktopMessageSchema = z.discriminatedUnion('type', [

@@ -185,4 +185,29 @@ describe('desktopWs input schema — Viewer coverage', () => {
     const result = desktopInputEvent.safeParse({ type: 'definitely_not_a_real_kind' });
     expect(result.success).toBe(false);
   });
+
+  // Zod strips unknown keys, so a field the Viewer sends but this schema does
+  // not declare is silently dropped on the WebSocket fallback transport —
+  // which is how a WebRTC-only fix for issue #3595 would quietly not apply
+  // to fallback sessions.
+  it.each(['key_down', 'key_up', 'key_press'])(
+    'preserves the Caps Lock state carried on %s',
+    (kind) => {
+      for (const capsLock of [true, false]) {
+        const result = desktopInputEvent.safeParse({ type: kind, key: 'a', capsLock });
+        expect(result.success).toBe(true);
+        expect(result.success && result.data.capsLock).toBe(capsLock);
+      }
+    }
+  );
+
+  it('leaves capsLock undefined when the Viewer does not state it', () => {
+    const result = desktopInputEvent.safeParse({ type: 'key_down', key: 'a' });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.capsLock).toBeUndefined();
+  });
+
+  it('rejects a non-boolean capsLock', () => {
+    expect(desktopInputEvent.safeParse({ type: 'key_down', key: 'a', capsLock: 'yes' }).success).toBe(false);
+  });
 });

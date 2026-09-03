@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapKey, getModifiers, isModifierOnly } from './keymap';
+import { mapKey, getModifiers, isModifierOnly, isCapsLock, getCapsLockState } from './keymap';
 
 describe('keymap', () => {
   it('maps known KeyboardEvent.code values', () => {
@@ -30,3 +30,40 @@ describe('keymap', () => {
   });
 });
 
+describe('caps lock (issue #3595)', () => {
+  const evt = (init: KeyboardEventInit) => new KeyboardEvent('keydown', init);
+
+  it('identifies the CapsLock key by physical code', () => {
+    expect(isCapsLock(evt({ code: 'CapsLock', key: 'CapsLock' }))).toBe(true);
+    expect(isCapsLock(evt({ code: 'KeyA', key: 'a' }))).toBe(false);
+  });
+
+  it('is not classified as a modifier-only key', () => {
+    // isModifierOnly gates the "hold this modifier down" branch, which would
+    // latch capslock in pressedKeysRef and later emit a bogus key_up.
+    expect(isModifierOnly(evt({ code: 'CapsLock', key: 'CapsLock' }))).toBe(false);
+  });
+
+  it('reads the live CapsLock state off any key event', () => {
+    expect(getCapsLockState(evt({ code: 'KeyA', key: 'a', modifierCapsLock: true }))).toBe(true);
+    expect(getCapsLockState(evt({ code: 'KeyA', key: 'a' }))).toBe(false);
+  });
+
+  it('reports state on the CapsLock key event itself', () => {
+    // macOS reports CapsLock as keydown-on-engage / keyup-on-disengage rather
+    // than a matched pair, so each event has to carry the resulting state.
+    expect(getCapsLockState(evt({ code: 'CapsLock', key: 'CapsLock', modifierCapsLock: true }))).toBe(true);
+    expect(
+      getCapsLockState(new KeyboardEvent('keyup', { code: 'CapsLock', key: 'CapsLock' }))
+    ).toBe(false);
+  });
+
+  it('does not report caps lock merely because shift is held', () => {
+    expect(getCapsLockState(evt({ code: 'KeyA', key: 'A', shiftKey: true }))).toBe(false);
+  });
+
+  it('falls back to false when the platform has no getModifierState', () => {
+    const stub = { getModifierState: undefined } as unknown as KeyboardEvent;
+    expect(getCapsLockState(stub)).toBe(false);
+  });
+});
