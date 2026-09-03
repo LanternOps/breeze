@@ -37,6 +37,14 @@ export type ContractServiceErrorCode =
   | 'ORG_NOT_FOUND'
   // #3205: a line's siteId names a site owned by a different organization.
   | 'SITE_NOT_IN_ORG'
+  // #3205 W02: a line's deviceGroupId names a group owned by a different organization.
+  | 'GROUP_NOT_IN_ORG'
+  // #3205 W02: a dynamic group's filter could not be evaluated (malformed, engine
+  // error, 500 ms timeout). Never a zero count — generation aborts, list degrades.
+  | 'GROUP_EVALUATION_FAILED'
+  // #3205 W02: a per_device_group line whose group was deleted (device_group_id
+  // NULL). Reads show it unresolved; generation refuses.
+  | 'GROUP_DELETED'
   | 'CONTRACT_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'

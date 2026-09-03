@@ -734,6 +734,8 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Cihaz grubu kaydedilemedi",
     "failedToDeleteGroup": "Grup silinemedi",
+    "billedByContracts": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor: {{names}}. Önce bu sözleşme satırlarını kaldırın.",
+    "billedByContractsCount": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor. Önce bu sözleşme satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",

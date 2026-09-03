@@ -1,4 +1,5 @@
 import type { DeviceRole } from '@breeze/shared';
+import { sql } from 'drizzle-orm';
 import {
   pgTable, uuid, text, varchar, integer, boolean, numeric, date, char,
   timestamp, pgEnum, index, uniqueIndex
@@ -13,7 +14,7 @@ export const contractBillingTimingEnum = pgEnum('contract_billing_timing', [
   'advance', 'arrears'
 ]);
 export const contractLineTypeEnum = pgEnum('contract_line_type', [
-  'flat', 'per_device', 'per_device_role', 'per_seat', 'manual'
+  'flat', 'per_device', 'per_device_role', 'per_device_group', 'per_seat', 'manual'
 ]);
 export const contractRenewalNoticeKindEnum = pgEnum('contract_renewal_notice_kind', [
   'advance', 'renewed'
@@ -70,12 +71,21 @@ export const contractLines = pgTable('contract_lines', {
   // catalog_item_id / site_id FKs above). $type narrows the row to DeviceRole[]
   // so contractCoverage.ts needs no cast.
   deviceRoles: text('device_roles').array().$type<DeviceRole[]>(),
+  // #3205 W02: the device group a per_device_group line bills. Composite FK
+  // (device_group_id, org_id) -> device_groups(id, org_id) ON DELETE SET NULL
+  // (device_group_id), and contract_lines_device_group_chk, are SQL-only like
+  // the site FK above. NULL id + non-null name = the group was deleted after a
+  // terminated contract billed it.
+  deviceGroupId: uuid('device_group_id'),
+  deviceGroupName: varchar('device_group_name', { length: 255 }),
   taxable: boolean('taxable').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('contract_lines_contract_sort_idx').on(t.contractId, t.sortOrder),
   index('contract_lines_org_idx').on(t.orgId),
+  // Partial index (WHERE device_group_id IS NOT NULL); the SQL migration creates it, this mirrors it.
+  index('contract_lines_device_group_id_idx').on(t.deviceGroupId).where(sql`${t.deviceGroupId} IS NOT NULL`),
   uniqueIndex('contract_lines_id_org_uq').on(t.id, t.orgId)
 ]);
 

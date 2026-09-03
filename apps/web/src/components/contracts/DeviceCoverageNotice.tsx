@@ -12,7 +12,7 @@ export function formatUncoveredBreakdown(byRole: Record<string, number>): string
 
 /**
  * #3205: devices on the org that no device-counted line on the contract bills.
- * null/undefined = not applicable (no per_device / per_device_role line) →
+ * null/undefined = not applicable (no per_device / per_device_role / per_device_group line) →
  * render nothing; 0 = every device is covered; >0 = warn with the breakdown.
  */
 export default function DeviceCoverageNotice({ uncovered }: { uncovered: UncoveredDevices | null | undefined }) {

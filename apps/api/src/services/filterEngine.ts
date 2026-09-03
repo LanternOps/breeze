@@ -565,10 +565,30 @@ async function withFilterStatementTimeout<T>(
   run: (tx: FilterQueryTx) => Promise<T>
 ): Promise<T> {
   return db.transaction(async (tx) => {
+    const previousResult = await tx.execute(
+      sql`select current_setting('statement_timeout', true) as value`
+    );
+    const previousRow = (Array.isArray(previousResult)
+      ? previousResult[0]
+      : (previousResult as unknown as { rows: Array<{ value: string | null }> }).rows[0]
+    ) as { value: string | null } | undefined;
+    // `statement_timeout` is a built-in setting, so PostgreSQL normally returns
+    // `0` when no timeout is configured. Keep the fallback for pool/session
+    // configurations that surface an empty value.
+    const previousTimeout = previousRow?.value || '0';
     await tx.execute(
       sql`select set_config('statement_timeout', ${`${FILTER_QUERY_TIMEOUT_MS}ms`}, true)`
     );
-    return run(tx);
+    try {
+      // Isolate a timed-out filter statement in its own savepoint. PostgreSQL
+      // rejects all commands after a statement error until that savepoint is
+      // rolled back, including the restoration in `finally` below.
+      return await tx.transaction((queryTx) => run(queryTx));
+    } finally {
+      await tx.execute(
+        sql`select set_config('statement_timeout', ${previousTimeout}, true)`
+      );
+    }
   });
 }
 

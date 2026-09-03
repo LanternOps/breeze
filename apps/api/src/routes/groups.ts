@@ -15,9 +15,10 @@ import {
 } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from '../services/deviceGroupDelete';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -795,40 +796,26 @@ groupRoutes.delete(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Check for child groups
-    const [childCount] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deviceGroups)
-      .where(eq(deviceGroups.parentId, id));
-
-    if (Number(childCount?.count ?? 0) > 0) {
-      return c.json({ error: 'Cannot delete group with child groups' }, 400);
+    let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+    try {
+      result = await deleteDeviceGroup(id, group.orgId);
+    } catch (err) {
+      if (err instanceof DeviceGroupDeleteError) {
+        if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
+        if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
+        // #3205 W02: a draft/active/paused contract bills this group. Contract
+        // names are contract data — disclose them only to a contracts reader.
+        const perms = c.get('permissions') as UserPermissions | undefined;
+        const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        return c.json({
+          error: err.message, code: 'GROUP_IN_USE_BY_CONTRACTS', contractCount: err.contractCount,
+          ...(canReadContracts ? { contracts: err.contracts } : {}),
+        }, 409);
+      }
+      throw err;
     }
 
-    const affectedMemberships = await db
-      .select({ deviceId: deviceGroupMemberships.deviceId })
-      .from(deviceGroupMemberships)
-      .where(eq(deviceGroupMemberships.groupId, id));
-
-    // Delete memberships first
-    await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, id));
-
-    // …and the membership audit log, which also FKs device_groups with no
-    // ON DELETE (#3313). Every dynamic group accumulates rows here the first
-    // time its membership materializes, so without this the group can never be
-    // deleted again: the DELETE below raises 23503 and the route 500s.
-    //
-    // These two are the ONLY tables that reference device_groups.id.
-    // config_policy_assignments targets a group through a polymorphic
-    // (level, target_id) pair with no foreign key, so it cannot block the
-    // delete — its orphan-row problem is real but separate, and deliberately
-    // out of scope here.
-    await db.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, id));
-
-    // Delete the group
-    await db.delete(deviceGroups).where(eq(deviceGroups.id, id));
-
-    await Promise.all(affectedMemberships.map(({ deviceId }) =>
+    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
       schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
         console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
       })

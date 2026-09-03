@@ -22,9 +22,12 @@
         "flat": "Canone fisso",
         "perDevice": "Per dispositivo",
         "perDeviceRole": "Per ruolo dispositivo",
+        "perDeviceGroup": "Per gruppo di dispositivi",
         "perSeat": "Per postazione",
         "manual": "Quantità manuale"
       },
+      "dynamicGroup": "dinamico",
+      "deletedGroup": "{{name}} (gruppo eliminato)",
       "coverage": {
         "uncovered": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto."
@@ -36,7 +39,8 @@
         "cancel": "Annulla"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "gruppo eliminato"
       }
     },
     "contractDetail": {
@@ -196,6 +200,10 @@
         "lineType": "Tipo di riga",
         "deviceRoles": "Ruoli dispositivo (un dispositivo viene fatturato quando il suo ruolo è uno di questi)",
         "deviceRolesRequired": "Seleziona almeno un ruolo.",
+        "deviceGroup": "Gruppo di dispositivi (fattura i suoi membri; i gruppi dinamici sono valutati alla fatturazione)",
+        "selectGroup": "Seleziona un gruppo",
+        "deviceGroupRequired": "Scegli un gruppo.",
+        "deviceGroupsLoadFailed": "Impossibile caricare i gruppi di dispositivi di questa organizzazione.",
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
@@ -247,6 +255,10 @@
       "backToContractsText": "Torna ai contratti",
       "newContract": "Nuovo contratto",
       "doneEditing": "Modifica completata"
+    },
+    "list": {
+      "estimateUnavailable": "Stima non disponibile: non è stato possibile valutare un gruppo di dispositivi in questo contratto",
+      "estimateExcluded": "Esclude {{count}} contratto/i la cui stima non è disponibile"
     },
     "contractsList": {
       "title": "Contratti",
