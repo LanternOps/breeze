@@ -111,7 +111,7 @@ export const SENTRY_EVENT_CODES = [
   /** An AI budget alert event never became visible before its retries ran out. */
   'ai_budget_alert_event_not_visible',
 
-  // --- ai agent tool registry ---------------------------------------------
+  // --- ai agent tool registry -------------------------------------------
   /**
    * `createBreezeMcpServer`'s `onlyTools` (verdict/sweep tool pinning)
    * contained a name that matched no registered tool — always a programming

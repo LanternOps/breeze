@@ -1124,8 +1124,13 @@ function nearestToolNames(name: string, candidates: readonly string[], limit = 3
  * the registry without updating it. (#4447) Since every caller is internal,
  * that condition throws outside production (test/dev), so the bug is caught
  * before it ships; in production it degrades to the matched subset rather
- * than failing a live run, but is loudly logged and Sentry-captured so it
- * cannot slip by unnoticed the way the old silent `.filter()` did.
+ * than failing a live run, but logs via `console.error` and Sentry-captures
+ * (event code `ai_agent_onlytools_unknown_name`) so it does not vanish the
+ * way the old silent `.filter()` did. The Sentry capture is best-effort, not
+ * guaranteed delivery: on a self-hosted install with no `SENTRY_DSN`,
+ * `captureMessage` is a documented no-op (see `sentry.ts`) and the
+ * `console.error` line is the only surviving signal — an operator has to be
+ * watching API logs, not a Sentry inbox, to catch it there.
  */
 export function createBreezeMcpServer(
   getAuth: () => AuthContext,

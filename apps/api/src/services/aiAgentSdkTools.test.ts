@@ -14,12 +14,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBreezeMcpServer, wrapExtraToolWithHooks } from './aiAgentSdkTools';
-import { buildOutcomeSdkTools, type SdkTool } from './aiAgents/outcomeTools';
+import { buildOutcomeSdkTools, isOutcomeTool, type SdkTool } from './aiAgents/outcomeTools';
 import {
   createAgentRunPostToolUse,
   createAgentRunPreToolUse,
   type AgentRunOutcome,
 } from './aiAgents/runLoop';
+import { VERDICT_TOOL_ALLOWLIST } from './aiAgents/verdictProfile';
+import { SWEEP_TOOL_ALLOWLIST } from './aiAgents/sweepProfile';
 import type { AiAgentRunProfile } from '@breeze/shared';
 import { hasDbAccessContext, __runInDbContextForTests } from '../db';
 
@@ -352,13 +354,59 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
         expect((caught as Error).message).toContain('this_tool_does_not_exist');
       });
 
+      it('the error message names the nearest valid tool for a typo', () => {
+        const onlyTools = new Set(['manage_alertz']);
+
+        let caught: unknown;
+        try {
+          createBreezeMcpServer(() => ({}) as never, undefined, undefined, undefined, [], { onlyTools });
+        } catch (err) {
+          caught = err;
+        }
+
+        // "manage_alertz" is one edit from the real "manage_alerts" — closer
+        // than any other registered name — so it must be the suggestion.
+        expect((caught as Error).message).toContain('manage_alerts');
+      });
+
+      it('an unmatched name with no close registered name says so rather than suggesting a distant one', () => {
+        const onlyTools = new Set(['zzzzzzzzzzzzzzzzzzzz_not_a_tool']);
+
+        let caught: unknown;
+        try {
+          createBreezeMcpServer(() => ({}) as never, undefined, undefined, undefined, [], { onlyTools });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Not a strict "no suggestions" claim (edit distance always finds
+        // *something*) — this only pins that the helper still runs and
+        // produces readable output for a name with no plausible relative.
+        expect((caught as Error).message).toContain('nearest:');
+      });
+
+      it('multiple unknown names in one call: the message names every one of them', () => {
+        const onlyTools = new Set(['manage_alerts', 'not_a_real_tool_one', 'not_a_real_tool_two']);
+
+        let caught: unknown;
+        try {
+          createBreezeMcpServer(() => ({}) as never, undefined, undefined, undefined, [], { onlyTools });
+        } catch (err) {
+          caught = err;
+        }
+
+        expect((caught as Error).message).toContain('not_a_real_tool_one');
+        expect((caught as Error).message).toContain('not_a_real_tool_two');
+        // The one known-good name must never be reported as unknown.
+        expect((caught as Error).message).not.toContain('"manage_alerts"');
+      });
+
       it('production: does not throw, still narrows to matched names, logs + Sentry-captures', async () => {
-        const originalEnv = process.env.NODE_ENV;
+        vi.stubEnv('NODE_ENV', 'production');
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const sentry = await import('./sentry');
         const captureSpy = vi.spyOn(sentry, 'captureMessage').mockImplementation(() => {});
         try {
-          process.env.NODE_ENV = 'production';
           const onlyTools = new Set(['manage_alerts', 'this_tool_does_not_exist']);
 
           let server: ReturnType<typeof createBreezeMcpServer> | undefined;
@@ -372,12 +420,37 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
           expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('this_tool_does_not_exist'));
           expect(captureSpy).toHaveBeenCalledWith(
             expect.any(String),
-            expect.objectContaining({ eventCode: 'ai_agent_onlytools_unknown_name' }),
+            expect.objectContaining({ eventCode: 'ai_agent_onlytools_unknown_name', level: 'error' }),
           );
         } finally {
-          process.env.NODE_ENV = originalEnv;
           errorSpy.mockRestore();
           captureSpy.mockRestore();
+        }
+      });
+
+      // Silent-failure review (PR #4796): the tests above only ever build
+      // onlyTools from hand-picked names, so a real typo/rename drift in the
+      // ACTUAL production allowlists — VERDICT_TOOL_ALLOWLIST/
+      // SWEEP_TOOL_ALLOWLIST — would never be caught here. Every
+      // runLoop.*.test.ts suite mocks aiAgentSdkTools entirely, so this is
+      // the only place anything calls the real, unmocked createBreezeMcpServer
+      // with the real allowlists. Regression gate: if either list ever drifts
+      // from the tool registry, this fails loudly in CI instead of only
+      // throwing the first time a verdict/sweep run actually executes.
+      it('regression gate: the real VERDICT_TOOL_ALLOWLIST and SWEEP_TOOL_ALLOWLIST are all registered tool names', () => {
+        // Mirrors runLoop.ts's onlyTools computation: bare names (multiplexed
+        // `tool:action` entries collapse to `tool`), outcome tools excluded
+        // (they ride on extraTools, never on the registry `tools` filtered
+        // here).
+        const toOnlyTools = (allowlist: readonly string[]) => new Set(
+          allowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)),
+        );
+
+        for (const allowlist of [VERDICT_TOOL_ALLOWLIST, SWEEP_TOOL_ALLOWLIST]) {
+          const onlyTools = toOnlyTools(allowlist);
+          expect(() => createBreezeMcpServer(
+            () => ({}) as never, undefined, undefined, undefined, [], { onlyTools },
+          )).not.toThrow();
         }
       });
     });
