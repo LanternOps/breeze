@@ -303,15 +303,16 @@ export async function securityDevicesPage(
     pendingCriticalPatches: Number(row.pendingCriticalPatches ?? 0),
     observedAt: row.securityUpdatedAt?.toISOString() ?? null,
   }));
+  const total = Number(countRows[0]?.count ?? 0);
 
   return {
-    dataStatus: data.length > 0 ? 'ok' : 'no_data',
+    dataStatus: total > 0 ? 'ok' : 'no_data',
     asOf: args.now.toISOString(),
     data,
     pagination: {
       page: args.page,
       limit: args.limit,
-      total: Number(countRows[0]?.count ?? 0),
+      total,
     },
   };
 }

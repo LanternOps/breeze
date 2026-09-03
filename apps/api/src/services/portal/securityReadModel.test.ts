@@ -243,4 +243,19 @@ describe('securityReadModel', () => {
       pagination: { page: 2, limit: 10, total: 0 },
     });
   });
+
+  it('returns ok when an out-of-range page is empty but the org has devices', async () => {
+    state.rows.push([{ count: 25 }], []);
+
+    await expect(securityDevicesPage(ORG_ID, {
+      page: 2,
+      limit: 25,
+      timezone: 'UTC',
+      now: NOW,
+    })).resolves.toMatchObject({
+      dataStatus: 'ok',
+      data: [],
+      pagination: { page: 2, limit: 25, total: 25 },
+    });
+  });
 });
