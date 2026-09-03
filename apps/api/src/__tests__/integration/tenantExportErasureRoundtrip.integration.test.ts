@@ -140,16 +140,21 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       (${orgB}, false, false, true, false, true)
   `);
 
-  // #3205: a per_device_role line, so the archive's contract_lines.json is
-  // exercised with the text[] column populated.
+  // #3205: a per_device_role allowance line, so contract_lines.json is
+  // exercised with the text[] and all three allowance columns populated.
   const contractId = crypto.randomUUID();
   await db.execute(sql`
     INSERT INTO contracts (id, partner_id, org_id, name, interval_months, start_date, currency_code)
     VALUES (${contractId}, ${partnerId}, ${orgA}, ${'Roundtrip contract ' + suffix}, 1, '2026-07-01', 'USD')
   `);
   await db.execute(sql`
-    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_roles)
-    VALUES (${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false, ARRAY['switch','router','firewall']::text[])
+    INSERT INTO contract_lines (
+      contract_id, org_id, line_type, description, unit_price, taxable, device_roles,
+      included_quantity, overage_mode, overage_unit_price
+    ) VALUES (
+      ${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false,
+      ARRAY['switch','router','firewall']::text[], 25.00, 'bill', 12.00
+    )
   `);
 
   // #3205 W02: a per_device_group line, so contract_lines.json carries
@@ -231,6 +236,12 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const contractLines = JSON.parse(
       await zip.file('contract_lines.json')!.async('string'),
     ) as Array<Record<string, unknown>>;
+    const allowanceLine = contractLines.find((line) => line.description === 'Network gear');
+    expect(allowanceLine).toMatchObject({
+      included_quantity: '25.00',
+      overage_mode: 'bill',
+      overage_unit_price: '12.00',
+    });
     const groupLine = contractLines.find((line) => line.device_group_id === groupId);
     expect(groupLine?.device_group_id).toBe(groupId);
     expect(groupLine?.device_group_name).toBe(groupName);

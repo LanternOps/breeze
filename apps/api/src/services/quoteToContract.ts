@@ -38,6 +38,11 @@ export interface NewContractLineSpec {
   deviceRoles?: DeviceRole[] | null;
   /** #3205 W02: required when lineType is per_device_group, otherwise absent. Name is stamped by the writer. */
   deviceGroupId?: string | null;
+  /** #3205 W04: allowance carried from a device-set quote line. W05 populates
+   *  these; W04 leaves every quote-accepted line's allowance null. */
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
   sortOrder?: number;
   /** In-memory Phase 4 → Phase 5 correlation only; never persisted. */
   sourceQuoteLineId?: string | null;

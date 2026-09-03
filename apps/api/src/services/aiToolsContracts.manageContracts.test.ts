@@ -242,6 +242,27 @@ describe('manage_contracts', () => {
     expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
   });
 
+  it('add_line accepts a bill allowance and rejects the pairing violations (#3205 W04)', async () => {
+    const line = {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    };
+    await getTool().handler({ action: 'add_line', contractId: 'contract-1', line }, auth);
+    expect(contractService.addContractLineToContract).toHaveBeenCalledWith(
+      'contract-1', expect.objectContaining({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' }), actor,
+    );
+
+    const lonely = JSON.parse(await getTool().handler(
+      { action: 'add_line', contractId: 'contract-1', line: { ...line, overageMode: undefined, overageUnitPrice: undefined } }, auth,
+    ));
+    expect(lonely.error).toMatch(/overageMode/);
+
+    const onFlat = JSON.parse(await getTool().handler(
+      { action: 'add_line', contractId: 'contract-1', line: { ...line, lineType: 'flat' } }, auth,
+    ));
+    expect(onFlat.error).toBeDefined();
+  });
+
   // #3205
   it('add_line accepts a per_device_role line with deviceRoles and forwards it verbatim', async () => {
     const line = {
@@ -326,6 +347,26 @@ describe('manage_contracts update_line (#3205 W03)', () => {
     expect(out).toMatchObject({ id: 'line-1', description: 'Renamed' });
   });
 
+  it("update_line removes an allowance with three nulls and surfaces the service's INVALID_LINE_PATCH rejection (#3205 W04)", async () => {
+    await getTool().handler({
+      action: 'update_line', contractId: 'contract-1', lineId: 'line-1',
+      patch: { includedQuantity: null, overageMode: null, overageUnitPrice: null },
+    }, auth);
+    expect(contractService.updateContractLine).toHaveBeenCalledWith(
+      'contract-1', 'line-1',
+      { includedQuantity: null, overageMode: null, overageUnitPrice: null },
+      actor,
+    );
+
+    vi.mocked(contractService.updateContractLine).mockRejectedValueOnce(
+      new ContractServiceError('includedQuantity and overageMode must be set together', 400, 'INVALID_LINE_PATCH'),
+    );
+    const bad = JSON.parse(await getTool().handler({
+      action: 'update_line', contractId: 'contract-1', lineId: 'line-1', patch: { includedQuantity: null },
+    }, auth));
+    expect(bad.code).toBe('INVALID_LINE_PATCH');
+  });
+
   // The payload parser wraps the value under its param name, so a ZodError path
   // reads `patch.lineType` rather than a bare `lineType`.
   it('rejects a patch containing lineType with a VALIDATION_ERROR naming patch.lineType', async () => {
@@ -372,5 +413,24 @@ describe('manage_contracts update_line (#3205 W03)', () => {
     expect(desc).toContain('lineType');
     expect(desc).toContain('refreshCatalogPrice');
     expect(desc).toMatch(/future billing periods/i);
+  });
+
+  it('documents the allowance semantics on both the line and the patch descriptions (#3205 W04)', () => {
+    const schema = getTool().definition.input_schema as { properties: Record<string, { description?: string }> };
+    for (const key of ['line', 'patch']) {
+      const desc = schema.properties[key]!.description!;
+      expect(desc).toContain('includedQuantity');
+      expect(desc).toContain('overageMode');
+      expect(desc).toContain('overageUnitPrice');
+      // The fixed-allowance rule is the one thing a model will otherwise get wrong.
+      expect(desc).toMatch(/every period even when the live count is lower/i);
+    }
+    const lineDesc = schema.properties.line!.description!;
+    expect(lineDesc).toMatch(/For add_line, includedQuantity and overageMode must be supplied together/i);
+    const patchDesc = schema.properties.patch!.description!;
+    expect(patchDesc).toMatch(/For update_line, the rule applies to the merged line/i);
+    expect(patchDesc).toMatch(/absent fields are unchanged/i);
+    expect(patchDesc).toMatch(/null clears/i);
+    expect(patchDesc).toMatch(/send includedQuantity, overageMode and overageUnitPrice all as null/i);
   });
 });

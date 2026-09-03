@@ -24,6 +24,8 @@ import {
   type ContractLine,
   type ContractLineType,
   type ContractEstimate,
+  type ContractEstimateLine,
+  type OverageMode,
   type UpdateContractLinePatch,
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
@@ -35,8 +37,9 @@ import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
-import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, SITE_SCOPED_TYPES } from './lineTypes';
+import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES } from './lineTypes';
 import DeviceCoverageNotice from './DeviceCoverageNotice';
+import AllowanceCell, { OverageNotice } from './AllowanceCell';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -50,6 +53,16 @@ interface EditLineDraft {
   deviceRoles: Exclude<DeviceRole, 'unknown'>[];
   deviceGroupId: string;
   catalogItemId: string | null;
+  allowanceOn: boolean;
+  includedQuantity: string;
+  overageMode: OverageMode;
+  overageUnitPrice: string;
+}
+
+function integerQuantityForInput(value: string | null): string {
+  if (value === null) return '';
+  const quantity = Number(value);
+  return Number.isInteger(quantity) ? String(quantity) : value;
 }
 
 function draftFromLine(l: ContractLine): EditLineDraft {
@@ -62,6 +75,10 @@ function draftFromLine(l: ContractLine): EditLineDraft {
     deviceRoles: (l.deviceRoles ?? []) as Exclude<DeviceRole, 'unknown'>[],
     deviceGroupId: l.deviceGroupId ?? '',
     catalogItemId: l.catalogItemId,
+    allowanceOn: l.includedQuantity != null,
+    includedQuantity: integerQuantityForInput(l.includedQuantity),
+    overageMode: l.overageMode ?? 'bill',
+    overageUnitPrice: l.overageUnitPrice ?? '',
   };
 }
 
@@ -71,6 +88,12 @@ const sameRoleSet = (a: readonly string[], b: readonly string[] | null): boolean
 };
 
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
+const POSITIVE_INTEGER_RE = /^[1-9]\d*$/;
+
+function allowanceFieldsValid(includedQuantity: string, overageMode: OverageMode, overageUnitPrice: string): boolean {
+  return POSITIVE_INTEGER_RE.test(includedQuantity)
+    && (overageMode === 'flag' || MONEY_RE.test(overageUnitPrice));
+}
 
 function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePatch {
   const patch: UpdateContractLinePatch = {};
@@ -90,6 +113,21 @@ function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePa
   if (SITE_SCOPED_TYPES.has(l.lineType) && (d.siteId || null) !== l.siteId) patch.siteId = d.siteId || null;
   if (l.lineType === 'per_device_role' && !sameRoleSet(d.deviceRoles, l.deviceRoles)) patch.deviceRoles = d.deviceRoles;
   if (l.lineType === 'per_device_group' && d.deviceGroupId && d.deviceGroupId !== l.deviceGroupId) patch.deviceGroupId = d.deviceGroupId;
+  if (l.includedQuantity != null && !d.allowanceOn) {
+    // The persisted tuple is all-or-nothing. Clearing one key alone is an
+    // INVALID_LINE_PATCH, just like unlinking a catalog item needs its tuple.
+    patch.includedQuantity = null;
+    patch.overageMode = null;
+    patch.overageUnitPrice = null;
+  } else if (d.allowanceOn) {
+    if (d.includedQuantity !== integerQuantityForInput(l.includedQuantity)) patch.includedQuantity = d.includedQuantity;
+    if (d.overageMode !== l.overageMode) patch.overageMode = d.overageMode;
+    if (d.overageMode === 'flag') {
+      if (l.overageUnitPrice !== null) patch.overageUnitPrice = null;
+    } else if (d.overageUnitPrice !== l.overageUnitPrice) {
+      patch.overageUnitPrice = d.overageUnitPrice;
+    }
+  }
   return patch;
 }
 
@@ -99,6 +137,7 @@ function editDraftIncomplete(l: ContractLine, d: EditLineDraft): boolean {
   if (l.lineType === 'per_device_group' && !d.deviceGroupId) return true;
   if (l.lineType === 'manual' && !MONEY_RE.test(d.manualQuantity)) return true;
   if (d.catalogItemId === null && !MONEY_RE.test(d.unitPrice)) return true;
+  if (d.allowanceOn && !allowanceFieldsValid(d.includedQuantity, d.overageMode, d.overageUnitPrice)) return true;
   return false;
 }
 
@@ -206,6 +245,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineRoles, setLineRoles] = useState<Exclude<DeviceRole, 'unknown'>[]>([]);
+  // #3205 W04: the add-form allowance. Cleared whenever lineType changes, so an
+  // allowance can never be smuggled onto a type the CHECK forbids it on.
+  const [lineAllowanceOn, setLineAllowanceOn] = useState(false);
+  const [lineIncludedQty, setLineIncludedQty] = useState('');
+  const [lineOverageMode, setLineOverageMode] = useState<OverageMode>('bill');
+  const [lineOveragePrice, setLineOveragePrice] = useState('');
   const [lineGroupId, setLineGroupId] = useState('');
   const [editingLineId, setEditingLineId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditLineDraft | null>(null);
@@ -439,9 +484,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return { known, hasAuto };
   }, [lines]);
 
-  // Resolved live quantity per line (per_device/per_device_role/per_seat) from the estimate.
+  // Resolved live estimate per line — the whole line now, because AllowanceCell
+  // needs counted/overage/overageMode as well as the base quantity (#3205 W04).
   const estByLine = useMemo(() => {
-    const m = new Map<string, ContractEstimate['lines'][number]>();
+    const m = new Map<string, ContractEstimateLine>();
     for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e);
     return m;
   }, [liveEstimate]);
@@ -501,6 +547,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
   // #3205: per_device_role requires at least one role picked before Add is allowed.
   const roleLineMissingRoles = lineType === 'per_device_role' && lineRoles.length === 0;
+  // #3205 W04: an allowance needs a quantity, and a price when extras are billed.
+  const allowanceOn = lineAllowanceOn && ALLOWANCE_TYPES.has(lineType);
+  const allowanceIncomplete = allowanceOn
+    && !allowanceFieldsValid(lineIncludedQty, lineOverageMode, lineOveragePrice);
   // #3205 W03: lines are editable on draft/active only (assertEditable). Remove
   // was gated on permission ALONE and 409'd on click for cancelled/expired.
   const linesEditable = canWrite && (contract?.status === 'draft' || contract?.status === 'active');
@@ -679,7 +729,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup) return;
+    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete) return;
     setBusy(true);
     try {
       await runAction({
@@ -697,6 +747,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           deviceGroupId: lineType === 'per_device_group' ? lineGroupId : undefined,
           catalogItemId: lineCatalogItem?.id,
           taxable: lineCatalogItem ? undefined : lineTaxable,
+          includedQuantity: allowanceOn ? lineIncludedQty : undefined,
+          overageMode: allowanceOn ? lineOverageMode : undefined,
+          overageUnitPrice: allowanceOn && lineOverageMode === 'bill' ? lineOveragePrice : undefined,
         }),
         errorFallback: t('contracts.contractEditor.errors.addLine'),
         friendly: (code) => (code === 'NO_PRICE_FOR_CURRENCY'
@@ -707,6 +760,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
       setLineRoles([]);
+      setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
       setLineGroupId('');
       setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
@@ -715,7 +769,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
+  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, lineAllowanceOn, lineIncludedQty, lineOverageMode, lineOveragePrice, allowanceOn, allowanceIncomplete, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -1108,6 +1162,83 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                         </select>
                                       </label>
                                     )}
+                                    {ALLOWANCE_TYPES.has(l.lineType) && (
+                                      <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground sm:col-span-2">
+                                        <label className="flex items-center gap-2 text-sm text-foreground">
+                                          <input
+                                            type="checkbox" checked={d.allowanceOn}
+                                            onChange={(e) => setEditDraft({
+                                              ...d,
+                                              allowanceOn: e.target.checked,
+                                              includedQuantity: e.target.checked ? d.includedQuantity : '',
+                                              overageMode: e.target.checked ? d.overageMode : 'bill',
+                                              overageUnitPrice: e.target.checked ? d.overageUnitPrice : '',
+                                            })}
+                                            data-testid={`line-edit-allowance-toggle-${idx}`}
+                                          />
+                                          {t('contracts.contractEditor.addLine.allowanceToggle')}
+                                        </label>
+                                        {d.allowanceOn && (
+                                          <>
+                                            <span>{t('contracts.contractEditor.addLine.allowanceHint')}</span>
+                                            <label className="flex flex-col gap-1">
+                                              {t('contracts.contractEditor.addLine.includedQuantity')}
+                                              <input
+                                                type="number" min="1" step="1" value={d.includedQuantity}
+                                                onChange={(e) => setEditDraft({ ...d, includedQuantity: e.target.value })}
+                                                data-testid={`line-edit-included-qty-${idx}`}
+                                                className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                                              />
+                                            </label>
+                                            <fieldset
+                                              className="flex flex-col gap-1"
+                                              data-testid={`line-edit-overage-mode-group-${idx}`}
+                                            >
+                                              <legend>{t('contracts.contractEditor.addLine.overageMode')}</legend>
+                                              <div className="flex flex-wrap gap-3 text-sm text-foreground">
+                                              <label className="inline-flex items-center gap-1.5">
+                                                <input
+                                                  type="radio" name={`edit-overage-mode-${l.id}`} checked={d.overageMode === 'bill'}
+                                                  onChange={() => setEditDraft({ ...d, overageMode: 'bill' })}
+                                                  data-testid={`line-edit-overage-bill-${idx}`}
+                                                />
+                                                {t('contracts.contractEditor.addLine.overageBill')}
+                                              </label>
+                                              <label className="inline-flex items-center gap-1.5">
+                                                <input
+                                                  type="radio" name={`edit-overage-mode-${l.id}`} checked={d.overageMode === 'flag'}
+                                                  onChange={() => setEditDraft({ ...d, overageMode: 'flag' })}
+                                                  data-testid={`line-edit-overage-flag-${idx}`}
+                                                />
+                                                {t('contracts.contractEditor.addLine.overageFlag')}
+                                              </label>
+                                              </div>
+                                            </fieldset>
+                                            {d.overageMode === 'bill' && (
+                                              <label className="flex flex-col gap-1">
+                                                {t('contracts.contractEditor.addLine.overageUnitPrice')}
+                                                <input
+                                                  type="number" min="0" step="0.01" value={d.overageUnitPrice}
+                                                  onChange={(e) => setEditDraft({ ...d, overageUnitPrice: e.target.value })}
+                                                  data-testid={`line-edit-overage-price-${idx}`}
+                                                  className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                                                />
+                                                {d.overageUnitPrice !== '' && !MONEY_RE.test(d.overageUnitPrice) && (
+                                                  <span className="text-xs text-destructive" data-testid={`line-edit-overage-price-not-representable-${idx}`}>
+                                                    {t('contracts.contractEditor.addLine.priceNotRepresentable', { currency: contractCurrency })}
+                                                  </span>
+                                                )}
+                                              </label>
+                                            )}
+                                            {!allowanceFieldsValid(d.includedQuantity, d.overageMode, d.overageUnitPrice) && (
+                                              <span className="text-amber-600 dark:text-amber-500">
+                                                {t('contracts.contractEditor.addLine.allowanceRequired')}
+                                              </span>
+                                            )}
+                                          </>
+                                        )}
+                                      </fieldset>
+                                    )}
                                     {l.lineType === 'per_device_group' && (
                                       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                                         {t('contracts.contractEditor.addLine.deviceGroup')}
@@ -1247,13 +1378,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                 <td className="px-3 py-2">{l.description}</td>
                                 <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, contract?.currencyCode)}</td>
                                 <td className="px-3 py-2 text-right tabular-nums" data-testid={`line-qty-${idx}`}>
-                                  {AUTO_QTY_TYPES.has(l.lineType)
-                                    ? (estByLine.has(l.id)
-                                        ? (estByLine.get(l.id)?.unresolved === 'group_deleted'
-                                            ? t('contracts.shared.values.groupDeleted')
-                                            : estByLine.get(l.id)?.quantity)
-                                        : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
-                                    : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
+                                  <AllowanceCell line={l} estimate={estByLine.get(l.id)} />
                                 </td>
                                 <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
                                 <td className="px-3 py-2 text-right">
@@ -1346,7 +1471,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {t('contracts.contractEditor.addLine.lineType')}
                     <select
                       value={lineType}
-                      onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); setLineRoles([]); setLineGroupId(''); }}
+                      onChange={(e) => {
+                        setLineType(e.target.value as ContractLineType);
+                        setLineSiteId(''); setLineRoles([]); setLineGroupId('');
+                        setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
+                      }}
                       data-testid="contract-line-type"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
@@ -1479,6 +1608,74 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       </select>
                     </label>
                   )}
+                  {ALLOWANCE_TYPES.has(lineType) && (
+                    <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground sm:col-span-2">
+                      <label className="flex items-center gap-2 text-sm text-foreground">
+                        <input
+                          type="checkbox" checked={lineAllowanceOn}
+                          onChange={(e) => setLineAllowanceOn(e.target.checked)}
+                          data-testid="contract-line-allowance-toggle"
+                        />
+                        {t('contracts.contractEditor.addLine.allowanceToggle')}
+                      </label>
+                      {lineAllowanceOn && (
+                        <>
+                          <span>{t('contracts.contractEditor.addLine.allowanceHint')}</span>
+                          <label className="flex flex-col gap-1">
+                            {t('contracts.contractEditor.addLine.includedQuantity')}
+                            <input
+                              type="number" min="1" step="1" value={lineIncludedQty}
+                              onChange={(e) => setLineIncludedQty(e.target.value)}
+                              data-testid="contract-line-included-qty"
+                              className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                            />
+                          </label>
+                          <fieldset className="flex flex-col gap-1" data-testid="contract-line-overage-mode-group">
+                            <legend>{t('contracts.contractEditor.addLine.overageMode')}</legend>
+                            <div className="flex flex-wrap gap-3 text-sm text-foreground">
+                            <label className="inline-flex items-center gap-1.5">
+                              <input
+                                type="radio" name="overage-mode" checked={lineOverageMode === 'bill'}
+                                onChange={() => setLineOverageMode('bill')}
+                                data-testid="contract-line-overage-bill"
+                              />
+                              {t('contracts.contractEditor.addLine.overageBill')}
+                            </label>
+                            <label className="inline-flex items-center gap-1.5">
+                              <input
+                                type="radio" name="overage-mode" checked={lineOverageMode === 'flag'}
+                                onChange={() => setLineOverageMode('flag')}
+                                data-testid="contract-line-overage-flag"
+                              />
+                              {t('contracts.contractEditor.addLine.overageFlag')}
+                            </label>
+                            </div>
+                          </fieldset>
+                          {lineOverageMode === 'bill' && (
+                            <label className="flex flex-col gap-1">
+                              {t('contracts.contractEditor.addLine.overageUnitPrice')}
+                              <input
+                                type="number" min="0" step="0.01" value={lineOveragePrice}
+                                onChange={(e) => setLineOveragePrice(e.target.value)}
+                                data-testid="contract-line-overage-price"
+                                className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                              />
+                              {lineOveragePrice !== '' && !MONEY_RE.test(lineOveragePrice) && (
+                                <span className="text-xs text-destructive" data-testid="contract-line-overage-price-not-representable">
+                                  {t('contracts.contractEditor.addLine.priceNotRepresentable', { currency: contractCurrency })}
+                                </span>
+                              )}
+                            </label>
+                          )}
+                          {allowanceIncomplete && (
+                            <span className="text-amber-600 dark:text-amber-500">
+                              {t('contracts.contractEditor.addLine.allowanceRequired')}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </fieldset>
+                  )}
                   {catalogItems.length > 0 && (
                     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                       {t('contracts.contractEditor.addLine.linkCatalogItemOptional')}
@@ -1523,7 +1720,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup}
+                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
@@ -1558,6 +1755,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </p>
                 )}
                 <DeviceCoverageNotice uncovered={liveEstimate?.uncoveredDevices} orgId={orgId || null} />
+                <OverageNotice overages={liveEstimate?.overages} />
                 {!liveEstimate && estimateFailed && (
                   <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
                     {estimate.hasAuto

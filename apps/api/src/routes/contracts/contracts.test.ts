@@ -223,6 +223,29 @@ describe('contract line routes', () => {
     expect((svc.addContractLineToContract as any).mock.calls[0][1]).toMatchObject({ lineType: 'per_device_role', deviceRoles: ['switch', 'router'] });
   });
 
+  it('POST /:id/lines accepts a valid allowance line and 400s on each violation (#3205 W04)', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID });
+    const post = (body: unknown) => app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const ok = {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    };
+    expect((await post(ok)).status).toBe(200);
+    for (const bad of [
+      { ...ok, overageMode: undefined, overageUnitPrice: undefined },
+      { ...ok, includedQuantity: undefined },
+      { ...ok, includedQuantity: '0' },
+      { ...ok, includedQuantity: '25.5' },
+      { ...ok, overageMode: 'flag' },
+      { ...ok, lineType: 'flat' },
+    ]) {
+      expect((await post(bad)).status).toBe(400);
+    }
+    expect(svc.addContractLineToContract).toHaveBeenCalledTimes(1);
+  });
+
   it('POST /:id/lines rejects a per_device_role line without deviceRoles (400, no service call)', async () => {
     const res = await app().request(`/${CONTRACT_ID}/lines`, {
       method: 'POST',
@@ -458,6 +481,33 @@ describe('contract generate route', () => {
     expect(svc.generateDueInvoice).toHaveBeenCalledWith(CONTRACT_ID);
   });
 
+  it('POST /:id/generate returns overages verbatim (#3205 W04)', async () => {
+    (svc.getContract as any).mockResolvedValue({ id: CONTRACT_ID, status: 'active' });
+    const overages = [{ contractLineId: LINE_ID, invoiceLineId: 'invoice-line-overage-1', description: 'Endpoints', counted: 30, included: 25, overage: 5, mode: 'bill' }];
+    const generated = {
+      generated: true, invoiceId: 'inv-1', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages,
+    };
+    (svc.generateDueInvoice as any).mockResolvedValue(generated);
+    const res = await app().request(`/${CONTRACT_ID}/generate`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: {
+      generated: true,
+      invoiceId: 'inv-1',
+      autoIssue: false,
+      priceBookGaps: [],
+      uncoveredDevices: null,
+      overages: [{
+        contractLineId: LINE_ID,
+        invoiceLineId: 'invoice-line-overage-1',
+        description: 'Endpoints',
+        counted: 30,
+        included: 25,
+        overage: 5,
+        mode: 'bill',
+      }],
+    } });
+  });
+
   it('POST /:id/generate maps a CONTRACT_NOT_FOUND to 404 (authorize gate fires)', async () => {
     (svc.getContract as any).mockRejectedValue(
       new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND')
@@ -493,6 +543,47 @@ describe('contract generate route', () => {
       lines: [{ lineId: LINE_ID, lineType: 'per_device', quantity: 9, value: '450.00', live: true }],
     } });
     expect(svc.computeContractEstimate).toHaveBeenCalledWith(CONTRACT_ID, expect.objectContaining({ partnerId: 'p1' }));
+  });
+
+  it('GET /:id/estimate returns the allowance fields and overages verbatim (#3205 W04)', async () => {
+    const estimate = {
+      currencyCode: 'USD', periodTotal: '250.00',
+      lines: [{
+        lineId: LINE_ID, lineType: 'per_device', quantity: 25, value: '250.00', live: true,
+        counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00',
+      }],
+      uncoveredDevices: null,
+      overages: [{ contractLineId: LINE_ID, invoiceLineId: null, description: 'Endpoints', counted: 26, included: 25, overage: 1, mode: 'flag' }],
+    };
+    (svc.computeContractEstimate as any).mockResolvedValue(estimate);
+    const res = await app().request(`/${CONTRACT_ID}/estimate`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: {
+      currencyCode: 'USD',
+      periodTotal: '250.00',
+      lines: [{
+        lineId: LINE_ID,
+        lineType: 'per_device',
+        quantity: 25,
+        value: '250.00',
+        live: true,
+        counted: 26,
+        included: 25,
+        overage: 1,
+        overageMode: 'flag',
+        overageValue: '0.00',
+      }],
+      uncoveredDevices: null,
+      overages: [{
+        contractLineId: LINE_ID,
+        invoiceLineId: null,
+        description: 'Endpoints',
+        counted: 26,
+        included: 25,
+        overage: 1,
+        mode: 'flag',
+      }],
+    } });
   });
 });
 

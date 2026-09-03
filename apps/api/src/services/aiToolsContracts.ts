@@ -235,7 +235,16 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
               'already has changes nothing; to re-price an unchanged link, send refreshCatalogPrice: true. ' +
               'siteId accepts null to widen a site-scoped line to the whole org. Lines are only editable on ' +
               'draft and active contracts. Edits apply to future billing periods; invoices already generated ' +
-              'are unchanged.',
+              'are unchanged. ' +
+              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
+              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
+              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
+              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
+              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
+              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
+              'result and the billing log for a human to act on. For update_line, the rule applies to the MERGED line: ' +
+              'absent fields are unchanged and null clears a field; to remove an allowance send includedQuantity, overageMode and overageUnitPrice all as null. ' +
+              'The merged line requires includedQuantity and overageMode together, and overageUnitPrice only with "bill".',
           },
           line: {
             type: 'object',
@@ -253,7 +262,15 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
               'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
               'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
               'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
-              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required.',
+              'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required. ' +
+              'Any of per_device, per_device_role, per_device_group and per_seat may carry an allowance: ' +
+              'includedQuantity (a whole number, > 0) plus overageMode. With an allowance the line bills ' +
+              'includedQuantity x unitPrice EVERY PERIOD EVEN WHEN THE LIVE COUNT IS LOWER — a fixed included ' +
+              'quantity, not a cap on a variable count. overageMode "bill" adds a second invoice line for the ' +
+              'units above the allowance at overageUnitPrice (required in that mode, in the contract\'s currency); ' +
+              'overageMode "flag" bills nothing extra and instead reports the excess on the estimate, the generate ' +
+              'result and the billing log for a human to act on. For add_line, includedQuantity and overageMode must ' +
+              'be supplied together, and overageUnitPrice is allowed only with "bill".',
           },
         },
         required: ['action'],

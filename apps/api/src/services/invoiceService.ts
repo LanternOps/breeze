@@ -354,6 +354,13 @@ export async function addContractLine(
     taxable: boolean;        // used on non-catalog path
     catalogItemId?: string | null;
     sourceId?: string | null; // contract_line id
+    /**
+     * #3205 W04: per-unit cost basis for a DERIVED line (an overage) that
+     * inherits its origin line's basis, so computeInvoiceProfit does not report
+     * it as pure margin. Honoured on the NON-CATALOG path only — on the catalog
+     * path the price resolver stays authoritative for cost as well as price.
+     */
+    costBasis?: string | null;
     /** The owning CONTRACT id — durable lineage (#3778). REQUIRED: a
      *  source_type='contract' line without it is a 500-worthy bug, never a
      *  silent insert, because the ACTIVE-contract restamp keys on this column. */
@@ -440,6 +447,8 @@ export async function addContractLine(
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
         throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
       }
+      costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
+      if (costBasis != null) assertRepresentable(costBasis, inv.currencyCode);
     }
 
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {

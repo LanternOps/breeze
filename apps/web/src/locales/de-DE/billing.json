@@ -34,6 +34,16 @@
         "uncoveredLead": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet:",
         "roleBucket": "{{count}} {{role}}"
       },
+      "allowance": {
+        "includedOf": "{{counted}} von {{included}} inbegriffen",
+        "includedOnly": "{{included}} inbegriffen",
+        "overBilled": "{{included}} inbegriffen · {{overage}} darüber (berechnet)",
+        "overFlagged": "{{included}} inbegriffen · {{overage}} darüber (markiert)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} über {{included}} inbegriffen, nicht berechnet",
+        "billed": "{{description}} — {{overage}} über {{included}} inbegriffen, zum Überschreitungspreis berechnet"
+      },
       "transition": {
         "activate": "Aktivieren",
         "pause": "Pausieren",
@@ -110,6 +120,7 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "flaggedOverage": "{{count}} Position(en) liegen über der inbegriffenen Menge und wurden nicht berechnet: {{names}}",
         "uncoveredDevices": "Rechnung erstellt, aber {{count}} Gerät(e) werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
@@ -213,6 +224,14 @@
         "addFromPax8Catalog": "Aus dem Pax8-Katalog hinzufügen",
         "importFromTdSynnex": "Import aus TD SYNNEX",
         "lineType": "Positionstyp",
+        "allowanceToggle": "Feste Menge einschließen, Rest separat behandeln",
+        "allowanceHint": "Die Position berechnet in jedem Zeitraum die inbegriffene Menge, auch wenn weniger Geräte gezählt werden.",
+        "includedQuantity": "Inbegriffene Menge",
+        "overageMode": "Über die inbegriffene Menge hinaus",
+        "overageBill": "Extras berechnen",
+        "overageFlag": "Extras zur Prüfung markieren",
+        "overageUnitPrice": "Preis je zusätzlicher Einheit",
+        "allowanceRequired": "Geben Sie eine inbegriffene Menge an – und einen Preis, wenn Extras berechnet werden.",
         "deviceRoles": "Geräterollen (ein Gerät wird abgerechnet, wenn seine Rolle eine davon ist)",
         "deviceRolesRequired": "Mindestens eine Rolle auswählen.",
         "deviceGroup": "Gerätegruppe (berechnet ihre Mitglieder; dynamische Gruppen werden zur Abrechnung ausgewertet)",

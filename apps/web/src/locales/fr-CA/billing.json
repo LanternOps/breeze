@@ -34,6 +34,16 @@
         "uncoveredLead": "{{count}} appareil(s) de cette organisation ne sont facturés par aucune ligne de ce contrat :",
         "roleBucket": "{{count}} {{role}}"
       },
+      "allowance": {
+        "includedOf": "{{counted}} sur {{included}} inclus",
+        "includedOnly": "{{included}} inclus",
+        "overBilled": "{{included}} inclus · {{overage}} au-delà (facturés)",
+        "overFlagged": "{{included}} inclus · {{overage}} au-delà (signalés)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} au-delà des {{included}} inclus, non facturés",
+        "billed": "{{description}} — {{overage}} au-delà des {{included}} inclus, facturés au tarif de dépassement"
+      },
       "transition": {
         "activate": "Activer",
         "pause": "Mettre en pause",
@@ -110,6 +120,7 @@
           "cancel": "Contrat annulé"
         },
         "invoiceGenerated": "Facture générée",
+        "flaggedOverage": "{{count}} ligne(s) dépassent la quantité incluse et n'ont pas été facturées : {{names}}",
         "uncoveredDevices": "Facture générée, mais {{count}} appareil(s) ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
         "draftDeleted": "Brouillon supprimé"
@@ -213,6 +224,14 @@
         "addFromPax8Catalog": "Ajouter depuis le catalogue Pax8",
         "importFromTdSynnex": "Importer depuis TD SYNNEX",
         "lineType": "Type de ligne",
+        "allowanceToggle": "Inclure une quantité fixe, puis gérer les extras",
+        "allowanceHint": "La ligne facture la quantité incluse à chaque période, même si moins d'appareils sont comptés.",
+        "includedQuantity": "Quantité incluse",
+        "overageMode": "Au-delà de la quantité incluse",
+        "overageBill": "Facturer les extras",
+        "overageFlag": "Signaler les extras pour examen",
+        "overageUnitPrice": "Prix par unité supplémentaire",
+        "allowanceRequired": "Saisissez une quantité incluse, et un prix si vous facturez les extras.",
         "deviceRoles": "Rôles d'appareil (un appareil est facturé lorsque son rôle est l'un de ceux-ci)",
         "deviceRolesRequired": "Choisissez au moins un rôle.",
         "deviceGroup": "Groupe d'appareils (facture ses membres; les groupes dynamiques sont évalués à la facturation)",

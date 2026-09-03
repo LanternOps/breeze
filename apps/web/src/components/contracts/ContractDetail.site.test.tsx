@@ -39,7 +39,7 @@ const detail: ContractDetailData = {
 
 const renderDetail = (lines: ContractLine[]) => {
   vi.mocked(contractsApi.getContractEstimate).mockResolvedValue(resp({
-    data: { currencyCode: 'USD', periodTotal: '0.00', lines: [], uncoveredDevices: null },
+    data: { currencyCode: 'USD', periodTotal: '0.00', lines: [], uncoveredDevices: null, overages: [] },
   }));
   return render(<ContractDetail detail={{ ...detail, lines }} onChanged={vi.fn()} />);
 };
@@ -50,12 +50,14 @@ describe('ContractDetail — line site sub-label (#3205 W03)', () => {
   it('renders only present line.site names and issues no /sites request', async () => {
     renderDetail([{
       id: 'l1', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Managed device',
-      catalogItemId: null, unitPrice: '10.00', manualQuantity: null, siteId: 'site-1',
+      catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: 'site-1',
       site: { id: 'site-1', name: 'HQ' }, deviceRoles: null, deviceGroupId: null, deviceGroupName: null,
       deviceGroup: null, taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     }, {
       id: 'l2', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Org-wide device',
-      catalogItemId: null, unitPrice: '10.00', manualQuantity: null, siteId: null, site: null,
+      catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, site: null,
       deviceRoles: null, deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
       taxable: false, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
     }]);

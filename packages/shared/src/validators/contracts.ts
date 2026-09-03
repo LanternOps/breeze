@@ -17,6 +17,18 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 export const CONTRACT_LINE_TYPES = ['flat', 'per_device', 'per_device_role', 'per_device_group', 'per_seat', 'manual'] as const;
 export type ContractLineType = typeof CONTRACT_LINE_TYPES[number];
 
+// #3205 W04 (#4607): what happens to the units above included_quantity.
+// 'bill' adds a second invoice line at overage_unit_price; 'flag' invoices
+// nothing and reports the excess for a human. The DB twin is the
+// contract_overage_mode enum.
+export const OVERAGE_MODES = ['bill', 'flag'] as const;
+export type OverageMode = typeof OVERAGE_MODES[number];
+
+/** Line types that accept an allowance (#4607). The DB twin is the type list in
+ *  contract_lines_allowance_chk. #4547's hour_block joins this set. */
+export const ALLOWANCE_LINE_TYPES = ['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const;
+const ALLOWANCE_LINE_TYPE_SET: ReadonlySet<string> = new Set(ALLOWANCE_LINE_TYPES);
+
 /** Read layers use null for not-applicable, write layers omit the key (see the
  *  note on deviceRoles below). One predicate set has to serve both. */
 const present = (v: unknown): boolean => v !== undefined && v !== null;
@@ -30,6 +42,11 @@ export interface ContractLineShape {
   deviceRoles?: readonly string[] | null;
   deviceGroupId?: string | null;
   deviceGroupName?: string | null;
+  // #3205 W04: all three are NULL together on a line with no allowance, and
+  // always NULL on flat/manual.
+  includedQuantity?: string | null;
+  overageMode?: OverageMode | null;
+  overageUnitPrice?: string | null;
 }
 
 export interface ContractLineInvariantIssue {
@@ -106,6 +123,37 @@ export function contractLineInvariantIssues(
     }
   }
 
+  // ---- #3205 W04 (#4607): included quantity + overage ----------------------
+  // IDENTICAL IN BOTH MODES, deliberately: an allowance is equally legal on a
+  // new line and on a merged patch row, so a patch can never create a row that
+  // add_line would have rejected. Every rule below has a NULL-safe twin in
+  // contract_lines_allowance_chk.
+  const hasAllowanceColumn =
+    present(l.includedQuantity) || present(l.overageMode) || present(l.overageUnitPrice);
+  if (hasAllowanceColumn && !ALLOWANCE_LINE_TYPE_SET.has(l.lineType)) {
+    issues.push({ path: 'includedQuantity', message: 'an allowance is only valid on per_device, per_device_role, per_device_group and per_seat lines' });
+  }
+  // Two-way, like deviceRoles: an allowance with no disposition for the extras
+  // is the silent under-bill this wave removes.
+  if (present(l.includedQuantity) !== present(l.overageMode)) {
+    issues.push({ path: 'overageMode', message: "includedQuantity and overageMode must be set together — choose overageMode 'flag' to cap without billing; clear all three to remove an allowance" });
+  }
+  // 0 included with 'bill' is arithmetically a plain per-unit line at the
+  // overage rate; one spelling only.
+  if (present(l.includedQuantity) && !(Number(l.includedQuantity) > 0)) {
+    issues.push({ path: 'includedQuantity', message: 'includedQuantity must be greater than 0' });
+  }
+  // You cannot include 25.5 devices or 25.5 seats. (#4547 scopes this rule when
+  // hour_block joins ALLOWANCE_LINE_TYPES — hours are fractional.)
+  if (present(l.includedQuantity) && !Number.isInteger(Number(l.includedQuantity))) {
+    issues.push({ path: 'includedQuantity', message: 'includedQuantity must be a whole number of devices or seats' });
+  }
+  // A price is present iff it is actually charged. A rate parked on a 'flag'
+  // line reads as a charge on the detail page and in the tenant export.
+  if (present(l.overageUnitPrice) !== (l.overageMode === 'bill')) {
+    issues.push({ path: 'overageUnitPrice', message: "overageUnitPrice is required for overageMode 'bill' and not allowed for 'flag'" });
+  }
+
   return issues;
 }
 
@@ -125,6 +173,11 @@ export const contractLineInputSchema = z.object({
   // rate; the DB CHECK (contract_lines_device_roles_chk) enforces the same list.
   // Write side: omit the key when not a role line; `null` is rejected here (Zod `.optional()`), while every read layer (DB row, API JSON, web) uses `null` for not-applicable.
   deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
+  // #3205 W04: the allowance. money's ^\d+(\.\d{1,2})?$ already excludes
+  // negatives; the > 0 / integral / pairing rules are in the invariant table.
+  includedQuantity: money.optional(),
+  overageMode: z.enum(OVERAGE_MODES).optional(),
+  overageUnitPrice: money.optional(),
   // #3205 W02: the device group a per_device_group line bills. Dynamic groups
   // are evaluated live at estimate/invoice time. No siteId on this type — the
   // group's own site narrows it (contract_lines_device_group_chk).
@@ -175,6 +228,14 @@ export const updateContractLineSchema = z.object({
   deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
   // No null: a group line is never deliberately orphaned (decision 7).
   deviceGroupId: z.string().guid().optional(),
+  // #3205 W04: nullable because REMOVING an allowance is a legitimate edit and
+  // leaves a valid row (unlike clearing deviceRoles/deviceGroupId). The two-way
+  // rule runs on the MERGED row, so `{ includedQuantity: null }` alone is a 400
+  // INVALID_LINE_PATCH naming the fix; the edit form's "remove allowance"
+  // control sends all three nulls in one patch.
+  includedQuantity: money.nullable().optional(),
+  overageMode: z.enum(OVERAGE_MODES).nullable().optional(),
+  overageUnitPrice: money.nullable().optional(),
   sortOrder: z.number().int().min(0).max(INT32_MAX).optional(),
 }).strict().refine(
   (p) => Object.keys(p).length > 0,
@@ -204,6 +265,9 @@ export interface PersistedContractLine extends ContractLineShape {
   deviceGroupId: string | null;
   deviceGroupName: string | null;
   sortOrder: number;
+  includedQuantity: string | null;
+  overageMode: OverageMode | null;
+  overageUnitPrice: string | null;
 }
 
 export type MergedContractLine = PersistedContractLine;
@@ -244,6 +308,12 @@ export function mergeContractLinePatch(
     deviceGroupId: patch.deviceGroupId ?? current.deviceGroupId,
     deviceGroupName: current.deviceGroupName,
     sortOrder: patch.sortOrder ?? current.sortOrder,
+    // #3205 W04: tri-state like siteId — key present (even as null) is a change,
+    // key absent leaves the current value. `patch.x ?? current.x` would be wrong:
+    // it cannot tell "remove the allowance" from "leave it alone".
+    includedQuantity: patchHasKey(patch, 'includedQuantity') ? (patch.includedQuantity ?? null) : current.includedQuantity,
+    overageMode: patchHasKey(patch, 'overageMode') ? (patch.overageMode ?? null) : current.overageMode,
+    overageUnitPrice: patchHasKey(patch, 'overageUnitPrice') ? (patch.overageUnitPrice ?? null) : current.overageUnitPrice,
   };
 }
 

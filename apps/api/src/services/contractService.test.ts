@@ -26,6 +26,7 @@ vi.mock('../db', () => {
   const db = makeChain();
   return {
     db,
+    assertInTransaction: vi.fn(),
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
@@ -63,6 +64,7 @@ import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
 import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
 import { GroupEvaluationError } from './groupMembership';
+import { isKnownCurrency, roundToCurrency } from '@breeze/shared';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -99,7 +101,7 @@ describe('changeContractCurrency (draft currency immutability, #3774)', () => {
 
   it('refuses to restamp over monetary lines without clearLines (CURRENCY_LOCKED 409)', async () => {
     queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
-    queueResult([{ id: 'l1' }]); // one contract line
+    queueResult([{ id: 'l1', catalogItemId: null, overageUnitPrice: null }]); // one contract line
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', clearLines: false }, actor)
     ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409 });
@@ -119,7 +121,10 @@ describe('changeContractCurrency (draft currency immutability, #3774)', () => {
 
   it('clearLines: true deletes the lines and restamps atomically', async () => {
     queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
-    queueResult([{ id: 'l1' }, { id: 'l2' }]); // two contract lines
+    queueResult([
+      { id: 'l1', catalogItemId: null, overageUnitPrice: null },
+      { id: 'l2', catalogItemId: null, overageUnitPrice: null },
+    ]); // two contract lines
     queueResult([]); // delete
     queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', currencyCode: 'JPY' }]); // update returning
     const updated = await svc.changeContractCurrency('c1', { currencyCode: 'JPY', clearLines: true }, actor);
@@ -155,7 +160,10 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
 
   it('reprices catalog lines from the price book and restamps — no delete', async () => {
     queueResult([draft]);
-    queueResult([{ id: 'l1', catalogItemId: 'cat1' }, { id: 'l2', catalogItemId: 'cat2' }]);
+    queueResult([
+      { id: 'l1', catalogItemId: 'cat1', overageUnitPrice: null },
+      { id: 'l2', catalogItemId: 'cat2', overageUnitPrice: null },
+    ]);
     resolvePriceMock.mockResolvedValueOnce(resolved).mockResolvedValueOnce({ ...resolved, unitPrice: '5.00' });
     queueResult([]); // l1 update
     queueResult([]); // l2 update
@@ -174,7 +182,10 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
 
   it('refuses reprice when a non-catalog line exists (CURRENCY_LOCKED 409)', async () => {
     queueResult([draft]);
-    queueResult([{ id: 'l1', catalogItemId: 'cat1' }, { id: 'l2', catalogItemId: null }]);
+    queueResult([
+      { id: 'l1', catalogItemId: 'cat1', overageUnitPrice: null },
+      { id: 'l2', catalogItemId: null, overageUnitPrice: null },
+    ]);
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
     ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency') });
@@ -185,7 +196,7 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
 
   it('a price-book gap aborts the reprice as NO_PRICE_FOR_CURRENCY (409) — header never restamped', async () => {
     queueResult([draft]);
-    queueResult([{ id: 'l1', catalogItemId: 'cat1' }]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1', overageUnitPrice: null }]);
     resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('No price for "Managed endpoint" in EUR', 409, 'NO_PRICE_FOR_CURRENCY'));
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
@@ -195,12 +206,62 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
 
   it('maps a missing catalog item to CATALOG_ITEM_NOT_FOUND (400)', async () => {
     queueResult([draft]);
-    queueResult([{ id: 'l1', catalogItemId: 'missing-cat' }]);
+    queueResult([{ id: 'l1', catalogItemId: 'missing-cat', overageUnitPrice: null }]);
     resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND'));
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
     ).rejects.toMatchObject({ code: 'CATALOG_ITEM_NOT_FOUND', status: 400 });
     expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+});
+
+// #3205 W04 decision 15: the reprice loop writes only unit_price and cannot
+// re-derive a hand-entered overage rate from a price book, so a catalog-linked
+// line carrying one would silently keep a wrong-currency number.
+describe('changeContractCurrency refuses a stamped overage rate (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const draft = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' };
+
+  it('409 CURRENCY_LOCKED under reprice', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1', overageUnitPrice: '12.00' }]);
+    await expect(svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor))
+      .rejects.toMatchObject({
+        status: 409,
+        code: 'CURRENCY_LOCKED',
+        message: expect.stringContaining('overage rate priced in USD'),
+      });
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+  });
+
+  it('409 CURRENCY_LOCKED under a bare restamp too', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1', overageUnitPrice: '12.00' }]);
+    await expect(svc.changeContractCurrency('c1', { currencyCode: 'EUR' }, actor))
+      .rejects.toMatchObject({
+        status: 409,
+        code: 'CURRENCY_LOCKED',
+        message: expect.stringContaining('overage rate priced in USD'),
+      });
+  });
+
+  it('a flag-mode line (no rate) does not block a reprice', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'cat1', overageUnitPrice: null }]);
+    resolvePriceMock.mockResolvedValueOnce({ unitPrice: '9.00', taxable: true, source: 'price_book' } as never);
+    queueResult([]);                     // the per-line unit_price UPDATE
+    queueResult([{ ...draft, currencyCode: 'EUR' }]);
+    await expect(svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor))
+      .resolves.toMatchObject({ currencyCode: 'EUR' });
+  });
+
+  it('clearLines still proceeds — it deletes the lines and the rate with them', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: null, overageUnitPrice: '12.00' }]);
+    queueResult([]);                     // the DELETE
+    queueResult([{ ...draft, currencyCode: 'EUR' }]);
+    await expect(svc.changeContractCurrency('c1', { currencyCode: 'EUR', clearLines: true }, actor))
+      .resolves.toMatchObject({ currencyCode: 'EUR' });
   });
 });
 
@@ -393,6 +454,8 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     queueResult([]);                  // advance pointer
   }
 
+  const noAllowance = { includedQuantity: null, overageMode: null, overageUnitPrice: null };
+
   it('collects every catalog line billed at the contract snapshot into priceBookGaps', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine)
@@ -400,10 +463,10 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
       .mockResolvedValueOnce({ line: { id: 'il2' }, pricedFrom: 'price_book' } as never)
       .mockResolvedValueOnce({ line: { id: 'il3' }, pricedFrom: 'contract_snapshot' } as never);
     queueRun([
-      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null },
-      { id: 'cl-2', lineType: 'flat', description: 'Backup', unitPrice: '20.00', taxable: true, catalogItemId: 'cat-2', manualQuantity: null, siteId: null },
+      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null, ...noAllowance },
+      { id: 'cl-2', lineType: 'flat', description: 'Backup', unitPrice: '20.00', taxable: true, catalogItemId: 'cat-2', manualQuantity: null, siteId: null, ...noAllowance },
       // Non-catalog lines are always "contract_snapshot" priced — never a gap.
-      { id: 'cl-3', lineType: 'flat', description: 'Onboarding', unitPrice: '250.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null },
+      { id: 'cl-3', lineType: 'flat', description: 'Onboarding', unitPrice: '250.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, ...noAllowance },
     ]);
 
     const res = await svc.generateDueInvoice('c1', asOf);
@@ -412,6 +475,7 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(res.priceBookGaps).toEqual([
       { contractLineId: 'cl-1', catalogItemId: 'cat-1', itemName: 'Managed endpoint', currencyCode: 'EUR' },
     ]);
+    expect(res.overages).toEqual([]);
     // The catalog line was still billed (fallback, never skipped).
     expect(addContractLine).toHaveBeenCalledTimes(3);
     expect(addContractLine).toHaveBeenNthCalledWith(1, 'inv1', expect.objectContaining({ catalogItemId: 'cat-1', unitPrice: '80.00', sourceId: 'cl-1' }), expect.anything());
@@ -421,17 +485,21 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'price_book' } as never);
     queueRun([
-      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null },
+      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null, ...noAllowance },
     ]);
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res.generated).toBe(true);
     expect(res.priceBookGaps).toEqual([]);
+    expect(res.overages).toEqual([]);
   });
 
   it('a not-due contract reports no gaps (always-present array)', async () => {
     queueResult([{ ...contract, nextBillingAt: '2026-08-01' }]);
     const res = await svc.generateDueInvoice('c1', asOf);
-    expect(res).toMatchObject({ generated: false, skipped: 'not_due', priceBookGaps: [] });
+    expect(res).toEqual({
+      generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [],
+      uncoveredDevices: null, overages: [],
+    });
   });
 
   // #3205
@@ -449,8 +517,8 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
       { id: 'unknown-1', role: 'unknown', siteId: null },
     ]);
     queueRun([
-      { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'] },
-      { id: 'cl-2', lineType: 'per_device_role', description: 'Workstations', unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['workstation'] },
+      { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'], ...noAllowance },
+      { id: 'cl-2', lineType: 'per_device_role', description: 'Workstations', unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['workstation'], ...noAllowance },
     ]);
 
     const res = await svc.generateDueInvoice('c1', asOf);
@@ -460,14 +528,16 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(vi.mocked(addContractLine).mock.calls[0]![1]).toMatchObject({ description: 'Servers', quantity: '2' });
     expect(vi.mocked(addContractLine).mock.calls[1]![1]).toMatchObject({ description: 'Workstations', quantity: '5' });
     expect(res.uncoveredDevices).toEqual({ total: 1, byRole: { unknown: 1 } });
+    expect(res.overages).toEqual([]);
   });
 
   it('returns uncoveredDevices: null when no device-counted line exists', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
-    queueRun([{ id: 'cl-1', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null }]);
+    queueRun([{ id: 'cl-1', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, ...noAllowance }]);
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res.uncoveredDevices).toBeNull();
+    expect(res.overages).toEqual([]);
     expect(vi.mocked(snapshotContractDevices)).not.toHaveBeenCalled();
   });
 });
@@ -538,6 +608,17 @@ describe('contractService currency representability guard (W6-G3-1)', () => {
       } as never),
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
     expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(1);
+  });
+
+  it('createContractWithLinesDetailed rejects an allowance on a flat line instead of stripping it', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    queueResult([{ id: 'line-1' }]);
+
+    await expect(svc.createContractWithLinesDetailed({
+      partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+      startDate: '2026-01-01', currencyCode: 'USD',
+      lines: [{ lineType: 'flat', description: 'Base fee', unitPrice: '10.00', taxable: false, includedQuantity: '25.00' }],
+    } as never)).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
   });
 
   it('createContractWithLinesDetailed stamps deviceGroupName from the group row', async () => {
@@ -721,7 +802,8 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   });
   const line = (over: Record<string, unknown> = {}) => ({
     id: 'l1', contractId: 'c1', lineType: 'flat', unitPrice: '100.00',
-    manualQuantity: null, siteId: null, catalogItemId: null, ...over,
+    manualQuantity: null, siteId: null, catalogItemId: null,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...over,
   });
 
   it('returns an empty map without querying when no org ids are given', async () => {
@@ -860,6 +942,26 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '42.00' }]);
   });
 
+  it('uses the catalog base price plus the stamped billed-overage rate', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(
+      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+    );
+    queueResult([contract({ currencyCode: 'USD', intervalMonths: 3 })]);
+    queueResult([line({
+      catalogItemId: 'item-1', lineType: 'per_device', unitPrice: '10.00',
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.34',
+    })]);
+    queueResult([]); // no org overrides
+    queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '11.11' }]);
+
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+
+    expect(out.get('org1')).toEqual([{
+      currencyCode: 'USD',
+      amount: roundToCurrency((25 * 11.11 + 2 * 12.34) / 3, 'USD'),
+    }]);
+  });
+
   it('prefers an org override stamped in the contract currency over the price book', async () => {
     queueResult([contract({ currencyCode: 'USD' })]);
     queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
@@ -895,7 +997,8 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
   const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' };
   const lineRow = (p: Record<string, unknown>) => ({
     id: 'l1', contractId: 'c1', orgId: 'org1', description: 'x', unitPrice: '10.00', taxable: false,
-    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0, ...p,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
   const snapshot = [
     { id: 'workstation-1', role: 'workstation', siteId: null },
@@ -911,7 +1014,10 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     queueResult([contract]); // getOwnedContractOr404
     queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: ['server'], unitPrice: '50.00' })]);
     const out = await svc.computeContractEstimate('c1', actor);
-    expect(out.lines).toEqual([{ lineId: 'l1', lineType: 'per_device_role', quantity: 2, value: '100.00', live: true }]);
+    expect(out.lines).toEqual([{
+      lineId: 'l1', lineType: 'per_device_role', quantity: 2, value: '100.00', live: true,
+      counted: 2, included: null, overage: 0, overageMode: null, overageValue: '0.00',
+    }]);
     expect(out.uncoveredDevices).toEqual({ total: 4, byRole: { workstation: 3, unknown: 1 } });
     expect(vi.mocked(snapshotContractDevices)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(countContractDevices)).not.toHaveBeenCalled();
@@ -933,6 +1039,146 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
   });
 });
 
+// #3205 W04 (#4607): the estimate carries the allowance split, and every money
+// leg it touches goes through the exact-decimal primitives.
+describe('computeContractEstimate — allowance and overage (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD' };
+  const lineRow = (p: Record<string, unknown>) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null,
+    deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
+  });
+  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null }));
+
+  async function estimateWith(line: Record<string, unknown>, deviceCount: number) {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(deviceCount));
+    queueResult([contract]);
+    queueResult([lineRow({ lineType: 'per_device', ...line })]);
+    return svc.computeContractEstimate('c1', actor);
+  }
+
+  it('bills the ALLOWANCE at counted 0 — the fixed-allowance rule', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' }, 0);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 25, value: '250.00', counted: 0, included: 25, overage: 0,
+      overageMode: 'bill', overageValue: '0.00',
+    });
+    expect(out.periodTotal).toBe('250.00');
+    expect(out.overages).toEqual([]);
+  });
+
+  it('at 26 with bill mode: base 25, overage 1 priced separately, period total is their cent-exact sum', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' }, 26);
+    expect(out.lines[0]).toMatchObject({ quantity: 25, value: '250.00', counted: 26, overage: 1, overageValue: '12.00' });
+    expect(out.periodTotal).toBe('262.00');
+    expect(out.overages).toEqual([{
+      contractLineId: 'l1', invoiceLineId: null, description: 'Endpoints',
+      counted: 26, included: 25, overage: 1, mode: 'bill',
+    }]);
+  });
+
+  it('at 26 with flag mode: nothing extra is priced, but the excess is reported', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'flag' }, 26);
+    expect(out.lines[0]).toMatchObject({ quantity: 25, value: '250.00', overage: 1, overageMode: 'flag', overageValue: '0.00' });
+    expect(out.periodTotal).toBe('250.00');
+    expect(out.overages[0]).toMatchObject({ invoiceLineId: null, mode: 'flag', overage: 1 });
+  });
+
+  it('a line inside its allowance is not an overage entry, in either mode', async () => {
+    for (const mode of [{ overageMode: 'bill', overageUnitPrice: '12.00' }, { overageMode: 'flag' }]) {
+      results.length = 0;
+      const out = await estimateWith({ includedQuantity: '25.00', ...mode }, 24);
+      expect(out.overages).toEqual([]);
+    }
+  });
+
+  it('a line with no allowance is unchanged: quantity === counted and value === qty × unitPrice', async () => {
+    const out = await estimateWith({}, 26);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 26, value: '260.00', counted: 26, included: null, overage: 0, overageMode: null, overageValue: '0.00',
+    });
+    expect(out.periodTotal).toBe('260.00');
+  });
+
+  it('a wave-2 group line whose group is gone bills nothing and carries no allowance', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue([]);
+    queueResult([contract]);
+    queueResult([lineRow({
+      lineType: 'per_device_group', deviceGroupId: null, deviceGroupName: 'Retired group',
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00',
+    })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 0, value: '0.00', counted: 0, included: null, overage: 0,
+      overageMode: null, overageValue: '0.00', unresolved: 'group_deleted',
+    });
+    expect(out.periodTotal).toBe('0.00');
+    expect(out.overages).toEqual([]);
+  });
+
+  it('flat, manual and per_seat all return the six-field shape', async () => {
+    vi.mocked(countContractSeats).mockResolvedValue(4);
+    queueResult([contract]);
+    queueResult([
+      lineRow({ id: 'lf', lineType: 'flat' }),
+      lineRow({ id: 'lm', lineType: 'manual', manualQuantity: '3.00' }),
+      lineRow({ id: 'ls', lineType: 'per_seat', includedQuantity: '2.00', overageMode: 'flag' }),
+    ]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines.map((l) => [l.quantity, l.counted, l.included, l.overage, l.overageMode])).toEqual([
+      [1, 1, null, 0, null],
+      [3, 3, null, 0, null],
+      [2, 4, 2, 2, 'flag'],
+    ]);
+    expect(out.overages).toEqual([{
+      contractLineId: 'ls', invoiceLineId: null, description: 'Endpoints',
+      counted: 4, included: 2, overage: 2, mode: 'flag',
+    }]);
+  });
+
+  it('a JPY contract has no fractional yen anywhere', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(26));
+    queueResult([{ ...contract, currencyCode: 'JPY' }]);
+    queueResult([lineRow({
+      lineType: 'per_device', unitPrice: '1000', includedQuantity: '25.00',
+      overageMode: 'bill', overageUnitPrice: '1200',
+    })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({ value: '25000.00', overageValue: '1200.00' });
+    expect(out.periodTotal).toBe('26200.00');
+  });
+});
+
+describe('listContracts estimatedPeriodValue with allowances (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('includes a billed overage and excludes a flagged one', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(
+      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+    );
+    const rows = [
+      { id: 'cb', orgId: 'org1', currencyCode: 'USD' },
+      { id: 'cf', orgId: 'org1', currencyCode: 'USD' },
+    ];
+    const base = {
+      contractId: '', orgId: 'org1', lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00',
+      taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null,
+      deviceGroupId: null, deviceGroupName: null, sortOrder: 0, includedQuantity: '25.00',
+    };
+    queueResult(rows);
+    queueResult([
+      { ...base, id: 'lb', contractId: 'cb', overageMode: 'bill', overageUnitPrice: '12.00' },
+      { ...base, id: 'lf', contractId: 'cf', overageMode: 'flag', overageUnitPrice: null },
+    ]);
+    const out = await svc.listContracts({ orgId: 'org1' }, actor) as Array<{ id: string; estimatedPeriodValue: string }>;
+    expect(out.find((c) => c.id === 'cb')!.estimatedPeriodValue).toBe('262.00');
+    expect(out.find((c) => c.id === 'cf')!.estimatedPeriodValue).toBe('250.00');
+  });
+});
+
 describe('per_device_group quantities (#3205 W02)', () => {
   beforeEach(() => {
     results.length = 0;
@@ -951,7 +1197,8 @@ describe('per_device_group quantities (#3205 W02)', () => {
     id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device_group',
     description: 'Group', unitPrice: '10.00', taxable: false, catalogItemId: null,
     manualQuantity: null, siteId: null, deviceRoles: null, deviceGroupId: 'group-1',
-    deviceGroupName: 'Servers', sortOrder: 0, createdAt: new Date(), ...over,
+    deviceGroupName: 'Servers', sortOrder: 0, createdAt: new Date(),
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...over,
   });
   const group = { id: 'group-1', orgId: 'org1', name: 'Servers', type: 'static', siteId: null, filterConditions: null };
 
@@ -1411,8 +1658,128 @@ describe('deterministic line ordering (#3205 W03)', () => {
       endDate: null, autoIssue: false, createdBy: 'u1', notes: null, terms: null,
     }]);
     queueResult([]);
-    await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
+    const res = await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
     const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
     expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
+    expect(res.overages).toEqual([]);
+  });
+});
+
+describe('allowance writers (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const jpyContract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'JPY' };
+  const usdContract = { ...jpyContract, currencyCode: 'USD' };
+
+  it('rejects an unrepresentable overage price BEFORE any insert (adopted from #4547 finding 20)', async () => {
+    queueResult([jpyContract]); // lockContract
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '1000', taxable: false,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.50',
+    } as never, actor)).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    // The insert never ran: only the lock consumed a queued result.
+    expect(results.length).toBe(0);
+  });
+
+  it('checks the overage price on a CATALOG-linked line too — the overage leg is never catalog-priced', async () => {
+    queueResult([jpyContract]);
+    vi.mocked(resolvePrice).mockResolvedValue({ unitPrice: '1000', taxable: true, source: 'price_book' } as never);
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', catalogItemId: 'cat1',
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.50',
+    } as never, actor)).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+  });
+
+  it('persists the three columns on an allowance type and nulls them elsewhere', async () => {
+    queueResult([usdContract]);
+    queueResult([{ id: 'l1' }]);
+    await svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: false,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    } as never, actor);
+    const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
+    expect(values.at(-1)?.[0]).toEqual(expect.objectContaining({
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    }));
+
+    vi.clearAllMocks();
+    queueResult([usdContract]);
+    queueResult([{ id: 'l2' }]);
+    await svc.addContractLineToContract('c1', {
+      lineType: 'flat', description: 'Base fee', unitPrice: '10.00', taxable: false,
+    } as never, actor);
+    expect((db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+    }));
+  });
+
+  it('W03 updateContractLine checks the MERGED row overage price', async () => {
+    queueResult([jpyContract]);                                     // lockContract
+    queueResult([{                                                  // the current line
+      id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device', description: 'Endpoints',
+      unitPrice: '1000', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null,
+      deviceRoles: null, deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '1200',
+    }]);
+    await expect(svc.updateContractLine('c1', 'l1', { overageUnitPrice: '12.50' } as never, actor))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+  });
+});
+
+describe('materializeContractLineOntoInvoice (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = { id: 'c1', currencyCode: 'USD' };
+  const line = {
+    id: 'cl1', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, overageUnitPrice: '12.00',
+  };
+
+  it('writes the bill-mode base and overage sibling and returns its summary', async () => {
+    vi.mocked(addContractLine)
+      .mockResolvedValueOnce({ line: { id: 'base', taxable: true, costBasis: '4.00' }, pricedFrom: 'contract_snapshot' } as never)
+      .mockResolvedValueOnce({ line: { id: 'overage', lineTotal: '12.00' }, pricedFrom: 'contract_snapshot' } as never);
+
+    const out = await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line,
+      resolved: { counted: 26, billed: 25, included: 25, overage: 1, overageMode: 'bill' },
+      currencyCode: 'USD',
+    } as never);
+
+    expect(addContractLine).toHaveBeenCalledTimes(2);
+    expect(addContractLine).toHaveBeenNthCalledWith(2, 'inv1', expect.objectContaining({
+      description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00',
+      taxable: true, costBasis: '4.00', catalogItemId: null, sourceId: 'cl1', contractId: 'c1',
+    }), actor);
+    expect(out.overageLine).toMatchObject({ id: 'overage' });
+    expect(out.overage).toMatchObject({ invoiceLineId: 'overage', mode: 'bill' });
+  });
+
+  it('writes only the flag-mode base and returns a non-invoiced summary', async () => {
+    vi.mocked(addContractLine).mockResolvedValueOnce({
+      line: { id: 'base', taxable: true, costBasis: null }, pricedFrom: 'contract_snapshot',
+    } as never);
+
+    const out = await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line: { ...line, overageUnitPrice: null },
+      resolved: { counted: 26, billed: 25, included: 25, overage: 1, overageMode: 'flag' },
+      currencyCode: 'USD',
+    } as never);
+
+    expect(addContractLine).toHaveBeenCalledTimes(1);
+    expect(out.overageLine).toBeNull();
+    expect(out.overage).toMatchObject({ invoiceLineId: null, mode: 'flag' });
+  });
+});
+
+// #3205 W04: the KWD case is a REJECTION, not a three-decimal rounding case —
+// CURRENCY_CODES is a 34-entry allowlist with no KWD/BHD/OMR/TND and
+// minorUnitExponent returns 0 | 2 only. There is no three-decimal money to
+// design for, and a test that pretends otherwise would encode a false contract.
+describe('three-decimal currencies are not supported at all (#3205 W04)', () => {
+  it('KWD is not a known currency', () => {
+    expect(isKnownCurrency('KWD')).toBe(false);
+    expect(isKnownCurrency('BHD')).toBe(false);
+    expect(isKnownCurrency('USD')).toBe(true);
   });
 });

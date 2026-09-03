@@ -44,7 +44,9 @@ const detail: ContractDetailData = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed endpoint',
-      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, site: null, deviceRoles: null,
+      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      siteId: null, site: null, deviceRoles: null,
       deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
       taxable: true, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
@@ -54,7 +56,9 @@ const detail: ContractDetailData = {
 
 const roleLine = {
   id: 'cl-2', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device_role' as const, description: 'Network gear',
-  catalogItemId: null, unitPrice: '25.00', manualQuantity: null, siteId: null, site: null, deviceRoles: ['switch', 'firewall'],
+  catalogItemId: null, unitPrice: '25.00', manualQuantity: null,
+  includedQuantity: null, overageMode: null, overageUnitPrice: null,
+  siteId: null, site: null, deviceRoles: ['switch', 'firewall'],
   deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
   taxable: false, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
 };
@@ -66,7 +70,7 @@ describe('ContractDetail — per_device_role (#3205)', () => {
   });
 
   it('renders the role list under the line and "auto" as its quantity', async () => {
-    (contractsApi.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: null } }));
+    (contractsApi.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: null, overages: [] } }));
     render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
     const row = await screen.findByTestId('contract-detail-line-cl-2');
     expect(row.textContent).toContain('Switch, Firewall');
@@ -75,7 +79,7 @@ describe('ContractDetail — per_device_role (#3205)', () => {
 
   it('shows the coverage warning from the estimate', async () => {
     (contractsApi.getContractEstimate as any).mockResolvedValue(resp({
-      data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: { total: 3, byRole: { printer: 1, unknown: 2 } } },
+      data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: { total: 3, byRole: { printer: 1, unknown: 2 } }, overages: [] },
     }));
     render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
     expect((await screen.findByTestId('contract-coverage-warning')).textContent).toContain('2 Unknown, 1 Printer');
@@ -100,7 +104,7 @@ describe('ContractDetail — per_device_role (#3205)', () => {
   it('retries the estimate request from the failure banner', async () => {
     (contractsApi.getContractEstimate as any)
       .mockResolvedValueOnce(resp({}, false))
-      .mockResolvedValueOnce(resp({ data: { currencyCode: 'EUR', periodTotal: '25.00', lines: [], uncoveredDevices: null } }));
+      .mockResolvedValueOnce(resp({ data: { currencyCode: 'EUR', periodTotal: '25.00', lines: [], uncoveredDevices: null, overages: [] } }));
     render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
@@ -108,7 +112,7 @@ describe('ContractDetail — per_device_role (#3205)', () => {
   });
 
   it('generate now warns when the API reports uncovered devices', async () => {
-    (contractsApi.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: null } }));
+    (contractsApi.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: null, overages: [] } }));
     vi.mocked(contractsApi.generateContractInvoice).mockResolvedValue(resp({
       data: { generated: true, invoiceId: 'inv-9', autoIssue: false, priceBookGaps: [], uncoveredDevices: { total: 2, byRole: { unknown: 2 } } },
     }));

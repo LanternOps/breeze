@@ -38,13 +38,14 @@ const detail: ContractDetailData = {
 const groupLine = {
   id: 'cl-live', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device_group' as const,
   description: 'Managed group', catalogItemId: null, unitPrice: '12.00', manualQuantity: null,
+  includedQuantity: null, overageMode: null, overageUnitPrice: null,
   siteId: null, site: null, deviceRoles: null, deviceGroupId: 'group-1', deviceGroupName: 'Live Servers',
   deviceGroup: { id: 'group-1', name: 'Live Servers', type: 'dynamic' as const },
   taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
 };
 
 const estimate = (lines: ContractEstimate['lines'] = []): ContractEstimate => ({
-  currencyCode: 'USD', periodTotal: '0.00', lines, uncoveredDevices: null,
+  currencyCode: 'USD', periodTotal: '0.00', lines, uncoveredDevices: null, overages: [],
 });
 
 describe('ContractDetail — per_device_group (#3205)', () => {
@@ -67,7 +68,10 @@ describe('ContractDetail — per_device_group (#3205)', () => {
 
   it('renders group deleted in the quantity cell for an unresolved estimate line', async () => {
     vi.mocked(contractsApi.getContractEstimate).mockResolvedValue(resp({
-      data: estimate([{ lineId: 'cl-live', lineType: 'per_device_group', quantity: 0, value: '0.00', live: true, unresolved: 'group_deleted' }]),
+      data: estimate([{
+        lineId: 'cl-live', lineType: 'per_device_group', quantity: 0, counted: 0, included: null,
+        overage: 0, overageMode: null, overageValue: '0.00', value: '0.00', live: true, unresolved: 'group_deleted',
+      }]),
     }));
     render(<ContractDetail detail={{ ...detail, lines: [groupLine] }} onChanged={vi.fn()} />);
 

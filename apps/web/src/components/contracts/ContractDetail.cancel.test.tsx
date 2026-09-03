@@ -48,7 +48,9 @@ function detail(status: ContractStatus): ContractDetailData {
     lines: [
       {
         id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed services',
-        catalogItemId: null, unitPrice: '500.00', manualQuantity: null, siteId: null, site: null, deviceRoles: null,
+        catalogItemId: null, unitPrice: '500.00', manualQuantity: null,
+        includedQuantity: null, overageMode: null, overageUnitPrice: null,
+        siteId: null, site: null, deviceRoles: null,
         deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: false,
         sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
       },
@@ -62,7 +64,7 @@ beforeEach(() => {
   // cancel/pause are manage-gated; grant it so the lifecycle buttons render.
   state.permissions = [{ resource: 'contracts', action: 'manage' }];
   (contractsApi.getContractEstimate as ReturnType<typeof vi.fn>).mockResolvedValue(
-    resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null } }),
+    resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null, overages: [] } }),
   );
   (contractsApi.contractTransition as ReturnType<typeof vi.fn>).mockResolvedValue(resp({ data: null }));
 });
