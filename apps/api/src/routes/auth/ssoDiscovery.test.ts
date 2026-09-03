@@ -55,13 +55,16 @@ const ORG_UUID_2 = '00000000-0000-4000-8000-0000000000a2';
  *  3. entry-route provider     `.from(t).where(c).orderBy(...).limit(1)`
  * This helper answers whichever shape the call under test uses.
  */
+const orderByCalls: unknown[][] = [];
+
 function selectChain(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows),
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue(rows),
+        orderBy: vi.fn((...args: unknown[]) => {
+          orderByCalls.push(args);
+          return { limit: vi.fn().mockResolvedValue(rows) };
         }),
       }),
     }),
@@ -70,6 +73,7 @@ function selectChain(rows: unknown[]) {
 
 /** Queue per-call results in the order the route reads them. */
 function queueSelects(...results: unknown[][]) {
+  orderByCalls.length = 0;
   const mock = vi.mocked(db.select).mockReset();
   for (const rows of results) mock.mockReturnValueOnce(selectChain(rows) as never);
   mock.mockReturnValue(selectChain([]) as never);
@@ -142,6 +146,26 @@ describe('POST /auth/sso-discovery (#3229)', () => {
 
       expect((await res.json()).sso.providerName).toBe('Legacy Okta');
     });
+
+    // The mock cannot execute SQL, so the ONLY unit-level way to catch a
+    // dropped or reordered ORDER BY is to assert the columns it was handed.
+    // The real ordering behaviour is proved in ssoDiscovery.integration.test.ts.
+    it('orders the entry-route lookup by createdAt then id, like every other SSO-discovery surface', async () => {
+      queueSelects(VERIFIED_DOMAIN, ENFORCING_PROVIDER, OIDC_ENTRY_PROVIDER);
+
+      await discover({ email: 'tech@acme.example' });
+
+      const schema = await import('../../db/schema');
+      expect(orderByCalls).toEqual([[schema.ssoProviders.createdAt, schema.ssoProviders.id]]);
+    });
+
+    it('strips the FQDN root dot so `user@example.com.` matches the stored domain', async () => {
+      queueSelects(VERIFIED_DOMAIN, ENFORCING_PROVIDER, OIDC_ENTRY_PROVIDER);
+
+      const res = await discover({ email: 'tech@acme.example.' });
+
+      expect((await res.json()).sso).not.toBeNull();
+    });
   });
 
   // The whole point of the contract: the answer is a function of the DOMAIN and
@@ -193,6 +217,16 @@ describe('POST /auth/sso-discovery (#3229)', () => {
 
     it('returns the negative answer when the org has SSO but does not mandate it', async () => {
       queueSelects(VERIFIED_DOMAIN, []);
+      const res = await discover({ email: 'tech@acme.example' });
+      expect(await res.json()).toEqual(NONE);
+    });
+
+    // Distinct from the non-OIDC case below: here the enforcement probe found a
+    // provider but the entry-route lookup came back empty. Should be impossible
+    // (enforcing implies active), but the route defends against it, so the
+    // defence is exercised rather than assumed.
+    it('returns the negative answer when the entry-route lookup finds nothing', async () => {
+      queueSelects(VERIFIED_DOMAIN, ENFORCING_PROVIDER, []);
       const res = await discover({ email: 'tech@acme.example' });
       expect(await res.json()).toEqual(NONE);
     });

@@ -38,6 +38,7 @@ beforeEach(() => {
 
 import LoginPage from './LoginPage';
 import { discoverOrgSso } from '../../lib/ssoDiscovery';
+import { getLoginContext } from '../../lib/loginContext';
 
 const AUTHENTIK = {
   providerName: 'Authentik',
@@ -58,6 +59,7 @@ describe('LoginPage org-level SSO discovery (#3229)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(discoverOrgSso).mockResolvedValue(null);
+    vi.mocked(getLoginContext).mockResolvedValue({ branding: null, partnerSso: null });
   });
 
   it('collapses the password field and offers the IdP once the address resolves to an SSO-mandating org', async () => {
@@ -116,6 +118,115 @@ describe('LoginPage org-level SSO discovery (#3229)', () => {
     await enterEmail('tech@other.example');
 
     expect(await screen.findByTestId('org-sso-button')).toHaveTextContent(/Keycloak/);
+  });
+
+  describe('starting the SSO flow', () => {
+    it('bootstraps the browser binding, then navigates to the org entry route with the redirect', async () => {
+      vi.mocked(discoverOrgSso).mockResolvedValue(AUTHENTIK);
+
+      const calls: string[] = [];
+      vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith('/api/v1/config')) {
+          return new Response(JSON.stringify({ cfAccessLogin: { enabled: false } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(null, { status: 204 });
+      });
+      const realLocation = window.location;
+      const assign = vi.fn((url: string) => { calls.push(url); });
+      Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, assign } });
+
+      try {
+        render(<LoginPage next="/devices" />);
+        await enterEmail('tech@acme.example');
+        fireEvent.click(await screen.findByTestId('org-sso-button'));
+
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(
+          `${AUTHENTIK.loginUrl}?redirect=%2Fdevices`,
+        ));
+        // The binding bootstrap must PRECEDE the navigation, or the SSO
+        // callback lands with no browser transition to recover.
+        expect(calls.slice(-2)).toEqual([
+          '/api/v1/auth/browser-binding/bootstrap',
+          `${AUTHENTIK.loginUrl}?redirect=%2Fdevices`,
+        ]);
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+      }
+    });
+
+    // Enter in the email field must start the SSO flow, not run the password
+    // validator against a field that is no longer rendered.
+    it('starts the SSO flow on implicit form submission', async () => {
+      vi.mocked(discoverOrgSso).mockResolvedValue(AUTHENTIK);
+
+      const realLocation = window.location;
+      const assign = vi.fn();
+      Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, assign } });
+
+      try {
+        render(<LoginPage />);
+        await enterEmail('tech@acme.example');
+        const button = await screen.findByTestId('org-sso-button');
+        fireEvent.submit(button.closest('form')!);
+
+        // `?redirect=%2F` because getSafeNext() defaults to "/" — same URL the
+        // partner-axis button builds when no `next` is present.
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(`${AUTHENTIK.loginUrl}?redirect=%2F`));
+        expect(screen.queryByTestId('login-password-error')).not.toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+      }
+    });
+
+    it('disables the button while bootstrapping and surfaces a bootstrap failure', async () => {
+      vi.mocked(discoverOrgSso).mockResolvedValue(AUTHENTIK);
+
+      let resolveBootstrap!: (response: Response) => void;
+      const bootstrap = new Promise<Response>((resolve) => { resolveBootstrap = resolve; });
+      vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/v1/config')) {
+          return new Response(JSON.stringify({ cfAccessLogin: { enabled: false } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return bootstrap;
+      });
+
+      render(<LoginPage />);
+      await enterEmail('tech@acme.example');
+      const button = await screen.findByTestId('org-sso-button');
+      fireEvent.click(button);
+
+      expect(button).toBeDisabled();
+      resolveBootstrap(new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 }));
+
+      expect(await screen.findByText('Authentication bootstrap failed')).toBeInTheDocument();
+      expect(button).not.toBeDisabled();
+    });
+  });
+
+  // Partner-axis enforcement collapses the whole form at page load, so there is
+  // no email field to discover from. Locking this in: it is the one shape where
+  // org discovery deliberately never runs, and a future change that made the
+  // partner collapse keep the form would silently start firing discovery.
+  it('never runs discovery when partner-axis enforcement has already collapsed the form', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: true },
+    });
+
+    render(<LoginPage />);
+
+    await screen.findByTestId('show-password-form');
+    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
+    expect(discoverOrgSso).not.toHaveBeenCalled();
   });
 
   describe('request discipline', () => {

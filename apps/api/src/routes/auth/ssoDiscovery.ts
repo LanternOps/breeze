@@ -25,7 +25,12 @@ const NO_SSO: SsoDiscoveryResult = { sso: null };
 function emailDomain(email: string): string | null {
   const at = email.lastIndexOf('@');
   if (at < 1 || at === email.length - 1) return null;
-  return email.slice(at + 1).toLowerCase();
+  // Strip the FQDN root dot: `user@example.com.` is a valid address whose
+  // domain resolves identically to `example.com`, but sso_verified_domains
+  // stores the normalized form (services/ssoDomainVerification.ts), so leaving
+  // the dot on would silently miss a real match.
+  const domain = email.slice(at + 1).toLowerCase().replace(/\.+$/, '');
+  return domain || null;
 }
 
 /**
