@@ -1204,11 +1204,13 @@ async function loadRunAndAgent(runId: string): Promise<{
  * a `granted` bell. `granted` -> `failed` and `granted` -> `cancelled` are
  * therefore both real corrections that must survive the dedupe.
  *
- * Caveat worth knowing when reading this table: a cancel writes NO outbox row
- * today, so this worker only ever OBSERVES `cancelled` on a late delivery of
- * some other event (an `intent_expired` row processed after the cancel
- * landed). Keeping `cancelled` in its own class is what makes that late
- * delivery able to correct the record; it is not what makes a cancel notify.
+ * #4798: `cancelActionIntent` now writes its own `intent_cancelled` outbox row
+ * (in the same transaction as the CAS, mirroring `intent_created` /
+ * `intent_approved`) instead of relying solely on a late delivery of some
+ * OTHER event (e.g. an `intent_expired` row processed after the cancel
+ * landed) to surface the correction. Keeping `cancelled` in its own class is
+ * what makes both paths — the dedicated event and a stale late delivery —
+ * able to correct an earlier `granted` bell without duplicating it.
  *
  * Every unknown status shares the one `update` key on purpose: they all render
  * the same "changed state" copy, so a second one is noise, not news.
@@ -1285,7 +1287,7 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
  */
 async function notifyRequesterOfOutcome(
   intentId: string,
-  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired',
+  eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired' | 'intent_cancelled',
 ): Promise<void> {
   const [intent] = await withSystemDbAccessContext(() =>
     db
@@ -1433,7 +1435,8 @@ async function notifyRequesterOfOutcome(
  * it can be unit tested without spinning up a real BullMQ Worker.
  *
  * `intent_approved` is the release trigger AND an outcome to report.
- * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
+ * `intent_rejected` / `intent_expired` / `intent_cancelled` (#4798) are
+ * outcome-only. `intent_created` is
  * the policy-decide recovery hook (wave 5 Part B, #3827) — deliberately NOT
  * flag-gated at this call site (see the comment on that branch below for
  * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
@@ -1445,7 +1448,11 @@ async function notifyRequesterOfOutcome(
  * own per-job retry policy to make that redelivery real.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
-  if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
+  if (
+    data.eventType === 'intent_rejected' ||
+    data.eventType === 'intent_expired' ||
+    data.eventType === 'intent_cancelled'
+  ) {
     await notifyRequesterOfOutcome(data.intentId, data.eventType);
     return { released: false };
   }

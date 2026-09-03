@@ -1847,7 +1847,33 @@ export async function cancelActionIntent(
     throw new ActionIntentAuthorizationError(`Not authorized to cancel action intent ${intentId}`);
   }
 
-  const ok = await transitionIntent(intentId, ['pending_approval', 'approved'], 'cancelled');
+  // Inlined rather than reusing `transitionIntent` (the shared CAS primitive
+  // below): cancel is the only caller that needs an outbox row written
+  // atomically with the CAS, and `transitionIntent` is shared by
+  // intentReleaseWorker.ts / aiAgentSdk.ts release paths that don't. Same
+  // predicate transitionIntent would apply for this call
+  // (`from: ['pending_approval', 'approved']`, `to: 'cancelled'`, no deadline
+  // fold), just with the outbox write folded into the same
+  // withSystemDbAccessContext transaction (#4798) — without this, a
+  // requester already told "approved and is now running" was never told a
+  // subsequent cancel happened, because intentReleaseWorker.ts's outbox
+  // consumer never saw an event for it.
+  const ok = await withSystemDbAccessContext(async () => {
+    const rows = await db
+      .update(actionIntents)
+      .set({ status: 'cancelled' })
+      .where(and(eq(actionIntents.id, intentId), inArray(actionIntents.status, ['pending_approval', 'approved'])))
+      .returning({ id: actionIntents.id });
+    if (rows.length === 0) return false;
+    await db.insert(intentOutbox).values({
+      intentId,
+      eventType: 'intent_cancelled',
+      // Ids only, no argument content (spec §3.2) — matches the
+      // intent_created/intent_approved/intent_rejected/intent_expired rows.
+      payload: { intentId, orgId: intent.orgId },
+    });
+    return true;
+  });
   if (ok) {
     return { ok: true, status: 'cancelled' };
   }

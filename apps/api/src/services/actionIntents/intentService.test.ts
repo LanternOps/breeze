@@ -2181,6 +2181,33 @@ describe('cancelActionIntent', () => {
     const result = await cancelActionIntent(makeAuth(), 'intent-1');
     expect(result).toEqual({ ok: false, status: 'completed' });
   });
+
+  // #4798: a requester who already received the "approved and now running"
+  // outcome notification was never told a subsequent cancel happened — the
+  // CAS committed with no outbox row, so intentReleaseWorker.ts had nothing
+  // to deliver. Mirrors createActionIntent's intent_created/intent_approved
+  // outbox write: an event row in the SAME successful-CAS branch, ids only.
+  it('writes an intent_cancelled outbox row when the CAS succeeds', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', orgId: ORG_ID, requestedByUserId: REQUESTER_ID }),
+    ]);
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    const result = await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(result).toEqual({ ok: true, status: 'cancelled' });
+    expect(dbState.insertedOutboxValues).toEqual([
+      { intentId: 'intent-1', eventType: 'intent_cancelled', payload: { intentId: 'intent-1', orgId: ORG_ID } },
+    ]);
+  });
+
+  // Mirrors the "reports the lost race" test above: a lost CAS must not
+  // write an outbox row for a cancellation that never actually happened.
+  it('writes no outbox row when the CAS loses the race', async () => {
+    dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
+    dbState.updateActionIntentsResults.push([]); // CAS lost
+    dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
+    await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(dbState.insertedOutboxValues).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
