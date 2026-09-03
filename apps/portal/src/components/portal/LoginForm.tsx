@@ -79,6 +79,7 @@ export function LoginForm() {
         </label>
         <input
           id="email"
+          data-testid="portal-login-email"
           type="email"
           autoComplete="email"
           {...register('email')}
@@ -98,6 +99,7 @@ export function LoginForm() {
         </label>
         <input
           id="password"
+          data-testid="portal-login-password"
           type="password"
           autoComplete="current-password"
           {...register('password')}
@@ -122,7 +124,12 @@ export function LoginForm() {
         </a>
       </div>
 
-      <button type="submit" disabled={isLoading} className={cn(BTN_PRIMARY, 'w-full')}>
+      <button
+        type="submit"
+        data-testid="portal-login-submit"
+        disabled={isLoading}
+        className={cn(BTN_PRIMARY, 'w-full')}
+      >
         {isLoading ? (
           <>
             <Loader2 className="h-4 w-4 animate-spin" />

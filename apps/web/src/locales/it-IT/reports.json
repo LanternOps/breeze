@@ -100,6 +100,7 @@
       "formats": { "csv": "CSV", "excel": "Excel", "pdf": "PDF" },
       "loading": "Caricamento report...",
       "never": "Mai",
+      "visibleInPortal": "Visibile nel portale clienti",
       "newReport": "Nuovo report",
       "nextOccurrence": "Prossimo: {{next}}",
       "reportTypes": { "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },

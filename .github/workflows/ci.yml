@@ -2672,16 +2672,20 @@ jobs:
       - name: Show the stack descriptor
         run: cat .breeze-stack.json
 
-      # multi-currency.spec.ts is the only spec whose flow reaches the portal
-      # through `waitForHydration` — its `public-quote-accept` step is the exact
+      # multi-currency.spec.ts is the only `waitForHydration` caller whose flow
+      # reaches the portal — its `public-quote-accept` step is the exact
       # assertion #3906 broke and #4540 fixed.
       # `quote-contract-proposal.spec.ts` is the only other `waitForHydration`
       # caller and is EXCLUDED on purpose: it has a known, unrelated
       # pre-existing failure earlier in the WEB flow (AuthOverlay /
       # session-expired on the contracts tab) and never gets as far as its
       # portal step. Add it here once that is fixed.
+      # portal-visibility.spec.ts (#4562 W10) does not use `waitForHydration`,
+      # but this is the only job that stands up Caddy fronting the portal, so
+      # it is the only place the customer-facing portal is exercised at all.
+      # It depends on the portal rows in e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
 
       - name: Upload Playwright report
         if: failure()
