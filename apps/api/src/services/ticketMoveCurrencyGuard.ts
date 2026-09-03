@@ -13,11 +13,18 @@
  * (`acceptCurrencyMismatch: true`, gated on `invoices:write` at the route);
  * otherwise the move is blocked with a 409 and nothing moves.
  *
- * Global lock order: tickets → time_entries → ticket_parts. Call this INSIDE
- * the mover's transaction, AFTER its `UPDATE tickets` (which holds the ticket
- * row lock) and BEFORE the child `org_id` rewrites. `issueInvoice` never locks
- * `tickets` (wave-2 order invoices → invoice_lines → contracts →
- * contract_lines → time_entries → ticket_parts), so no cycle is possible.
+ * Global lock order: tickets → time_entries → ticket_parts → ticket_alert_links
+ * → ticket_attachments. Call this INSIDE the mover's transaction, AFTER its
+ * `UPDATE tickets` (which holds the ticket row lock) and BEFORE the child
+ * `org_id` rewrites. `issueInvoice` never locks `tickets` (wave-2 order
+ * invoices → invoice_lines → contracts → contract_lines → time_entries →
+ * ticket_parts), so no cycle is possible.
+ *
+ * This function is WHY the order runs that way round: it takes time_entries
+ * then ticket_parts `FOR UPDATE` on both axes and cannot be moved later, so
+ * the two tables lead and everything else the movers share follows. The full
+ * order, and the 40P01 it prevents, is documented in ./ticketOrgMoveLockOrder.ts
+ * (#4657) — that file is the one to change, and both movers must change with it.
  */
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import type { db } from '../db';

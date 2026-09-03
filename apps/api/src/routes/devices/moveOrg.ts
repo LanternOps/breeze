@@ -362,15 +362,6 @@ moveOrgRoutes.post(
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
 
-        // ticket_alert_links denormalizes org_id for RLS but has no
-        // device_id column, so the generic loop above can't reach it —
-        // rewrite via the alert join instead. Excluded from
-        // getDeviceOrgDenormalizedTables(); tracked in
-        // CUSTOM_ORG_REWRITE_TABLES (core.ts).
-        await tx.execute(
-          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
-        );
-
         // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
         // tickets bound to this device move org with it, so these must follow —
         // same stranded-org_id class as ticket_alert_links (#1261).
@@ -400,13 +391,42 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_alert_links denormalizes org_id for RLS but has no device_id
+        // column, so the generic loop above can't reach it — rewrite via the
+        // alert join instead. Excluded from getDeviceOrgDenormalizedTables();
+        // tracked in CUSTOM_ORG_REWRITE_TABLES (core.ts).
+        //
+        // Placed AFTER ticket_parts, not before the guard where it used to sit
+        // (#4657). moveTicketOrg — the twin path in services/ticketService.ts —
+        // re-stamps this same table from its TICKET_ORG_DENORMALIZED_TABLES loop,
+        // i.e. after its own time_entries/ticket_parts writes, and the two
+        // movers' rows genuinely overlap: a link row joining ticket X to an alert
+        // raised on device D is selected both by this statement's alert join and
+        // by a concurrent moveTicketOrg(X)'s `ticket_id = X`. Taking it on
+        // opposite sides of time_entries/ticket_parts was a live AB-BA that
+        // Postgres resolves by killing one transaction with 40P01 — a 500 on an
+        // admin action. The canonical order both paths now follow, and why it
+        // resolves this way round rather than the other, is documented once in
+        // services/ticketOrgMoveLockOrder.ts.
+        //
+        // The move past the currency guard is safe: the guard only touches
+        // time_entries/ticket_parts, and a guard throw rolls the whole
+        // transaction back, so nothing is left half-restamped. The alert
+        // subselect still resolves after the generic loop re-stamped `alerts` —
+        // alerts.device_id is not what the loop changes, and the request context
+        // spans both orgs (same argument as the ai_agent_runs subselect above).
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // ticket_attachments (W08 #3902) denormalizes org_id from its ticket and
         // has no device_id; tickets bound to this device move org, so their
-        // attachment rows follow via the tickets join. Placed AFTER ticket_parts
-        // to extend — not reorder — the documented global lock order
-        // (tickets -> time_entries -> ticket_parts -> ticket_attachments); the
-        // moveTicketOrg loop appends it last for the same reason. S3 objects are
-        // keyed by attachment id only (spec D8) and are not touched.
+        // attachment rows follow via the tickets join. Placed LAST to extend —
+        // not reorder — the documented global lock order (tickets ->
+        // time_entries -> ticket_parts -> ticket_alert_links ->
+        // ticket_attachments); the moveTicketOrg loop appends it last for the
+        // same reason. S3 objects are keyed by attachment id only (spec D8) and
+        // are not touched.
         await tx.execute(
           sql`UPDATE ${sql.identifier('ticket_attachments')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
