@@ -55,6 +55,36 @@ function consumeCfAccessLoginParam(): boolean {
   return true;
 }
 
+// Single owner of the "the SSO handoff is terminally dead, bounce with the
+// specific notice" redirect. Every failure path below routes through here so
+// the gate-settling order can't drift apart between them.
+//
+// The ORDER is the whole point (#3704). `navigateTo` is an async page
+// transition; settling the gate before it commits releases every refresh queued
+// behind it, and a dead-cookie refresh's 401 evicts via handleSessionExpired,
+// whose `window.location.replace(…&reason=session-expired)` is a HARD
+// navigation — it aborts the soft one and overwrites the URL. The user then
+// reads "Your session expired", which points away from SSO and invites an
+// infinite retry loop, since signing in again just re-runs the same broken SSO
+// round trip. Awaiting the navigation first closes that race: by the time the
+// gate opens the address bar is already on /login, where handleSessionExpired's
+// own pathname guard makes its redirect a no-op, so the specific reason
+// survives. (The eviction itself is still correct and still runs — the SSO
+// exchange really did fail; only its redirect is redundant here.)
+//
+// `finally`, not a plain sequence: waiting on the navigation must not become a
+// new way to deadlock. If it throws, the queued refreshes still have to be
+// released rather than hang on the gate's 15s timeout backstop.
+async function redirectToSsoExchangeFailed(): Promise<void> {
+  try {
+    await navigateTo('/login?error=sso_exchange_failed', { replace: true });
+  } catch (err) {
+    console.warn('[AuthOverlay] SSO error redirect failed', err);
+  } finally {
+    settleSsoLoginGate();
+  }
+}
+
 export default function AuthOverlay() {
   const { t } = useTranslation('auth');
   const { isAuthenticated, isLoading, tokens, sessionExpiredReason, authThrottledUntil } = useAuthStore();
@@ -133,8 +163,7 @@ export default function AuthOverlay() {
         // redirect and strip the error param.
         setIsRecovering(true);
         console.warn('[AuthOverlay] malformed ssoCode fragment; bouncing to login');
-        void navigateTo('/login?error=sso_exchange_failed', { replace: true });
-        settleSsoLoginGate();
+        void redirectToSsoExchangeFailed();
         return () => { cancelled = true; };
       }
       if (fragment.present && fragment.code) {
@@ -158,10 +187,10 @@ export default function AuthOverlay() {
               // dropping it re-arms the final !isAuthenticated branch, whose
               // bare `/login` redirect races this one and strips the error
               // param. The navigation below unmounts the overlay anyway.
-              // Gate settles AFTER the navigation is issued so a queued
-              // refresh's own eviction redirect can't beat this one.
-              void navigateTo('/login?error=sso_exchange_failed', { replace: true });
-              settleSsoLoginGate();
+              // Gate settles once that navigation has COMMITTED — merely
+              // issuing it first is not enough, see
+              // redirectToSsoExchangeFailed (#3704).
+              void redirectToSsoExchangeFailed();
               return;
             }
             settleSsoLoginGate();
