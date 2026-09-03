@@ -293,16 +293,30 @@ describe('org-erasure FK ON DELETE contract', () => {
     ).toEqual([]);
   });
 
-  it('every pre-cleared entry names a table with an ASSOCIATED_SYSTEM_SCOPED_TABLES pre-clear', () => {
-    const misfiled = ORG_CASCADE_FK_PRE_CLEARED.filter(
+  it('the two ledger lists agree with ASSOCIATED_SYSTEM_SCOPED_TABLES on which is which', () => {
+    // Both directions, so the lists stay mutually exclusive and each one keeps
+    // meaning what its name says. Without the second half, adding a pre-clear
+    // for a table would leave its FKs sitting in the DEBT list forever, and the
+    // burn-down test would not notice: they are still NO ACTION edges into the
+    // cascade set, so they still look "unresolved".
+    const misfiledAsPreCleared = ORG_CASCADE_FK_PRE_CLEARED.filter(
       (ref) => !preClearedTables.has(ref.childTable),
     );
-
     expect(
-      misfiled.map(refKey).sort(),
+      misfiledAsPreCleared.map(refKey).sort(),
       'ORG_CASCADE_FK_PRE_CLEARED claims these FKs are handled by a step-1b pre-clear, but '
       + 'their table is not in ASSOCIATED_SYSTEM_SCOPED_TABLES (services/tenantCascade.ts). '
       + 'Either add the pre-clear, or move the entry to ORG_CASCADE_FK_KNOWN_UNSAFE.',
+    ).toEqual([]);
+
+    const misfiledAsDebt = ORG_CASCADE_FK_KNOWN_UNSAFE.filter(
+      (ref) => preClearedTables.has(ref.childTable),
+    );
+    expect(
+      misfiledAsDebt.map(refKey).sort(),
+      'These FKs are logged as debt in ORG_CASCADE_FK_KNOWN_UNSAFE, but their table now has '
+      + 'an ASSOCIATED_SYSTEM_SCOPED_TABLES pre-clear. Check that the pre-clear\'s clearSql '
+      + 'actually reaches these rows, then move the entries to ORG_CASCADE_FK_PRE_CLEARED.',
     ).toEqual([]);
   });
 
