@@ -3855,6 +3855,12 @@
     "description": "Definieren Sie benutzerdefinierte Attribute, um zusätzliche Informationen zu Geräten zu verfolgen.",
     "searchPlaceholder": "Felder suchen...",
     "allTypes": "Alle Typen",
+    "allOrganizations": "Alle Organisationen",
+    "ownerScope": {
+      "legend": "Gilt für",
+      "allOrganizations": "Alle Organisationen (partnerweit)",
+      "thisOrganizationOnly": "Nur diese Organisation"
+    },
     "actions": {
       "add": "Benutzerdefiniertes Feld hinzufügen",
       "addFirst": "Fügen Sie Ihr erstes benutzerdefiniertes Feld hinzu",

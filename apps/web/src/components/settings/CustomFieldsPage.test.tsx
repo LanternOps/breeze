@@ -6,6 +6,12 @@ const fetchWithAuth = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) =>
+      selector({ user: {} }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 import CustomFieldsPage from './CustomFieldsPage';

@@ -3908,6 +3908,12 @@
     "description": "Cihazlardaki ek bilgileri izlemek için özel öznitelikler tanımlayın.",
     "searchPlaceholder": "Arama alanları...",
     "allTypes": "Tüm Türler",
+    "allOrganizations": "Tüm kuruluşlar",
+    "ownerScope": {
+      "legend": "Şunlara uygulanır",
+      "allOrganizations": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
     "actions": {
       "add": "Özel Alan Ekle",
       "addFirst": "İlk özel alanınızı ekleyin",

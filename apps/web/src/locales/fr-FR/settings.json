@@ -3855,6 +3855,12 @@
     "description": "Définissez des attributs personnalisés pour suivre des informations supplémentaires sur les appareils.",
     "searchPlaceholder": "Rechercher des champs...",
     "allTypes": "Tous types",
+    "allOrganizations": "Toutes les organisations",
+    "ownerScope": {
+      "legend": "S'applique à",
+      "allOrganizations": "Toutes les organisations (à l'échelle du partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
     "actions": {
       "add": "Ajouter un champ personnalisé",
       "addFirst": "Ajoutez votre premier champ personnalisé",
