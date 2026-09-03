@@ -1059,6 +1059,8 @@
       "variablePlaceholder": "p. ex. vendor_token",
       "fieldLabel": "Clé du champ personnalisé",
       "fieldPlaceholder": "p. ex. asset_tag",
+      "fieldHelp": "Saisissez la Clé du champ affichée dans Paramètres → Champs personnalisés (sensible à la casse). Lecture : une fois liée, la valeur résolue est transmise au script comme un paramètre normal — aucune invite n’est affichée. Écriture : pour enregistrer une nouvelle valeur, faites appeler par le script l’API des champs personnalisés de l’appareil avec une requête PATCH et une clé API.",
+      "fieldHelpAriaLabel": "À propos de la liaison du champ personnalisé de l’appareil",
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
       "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",

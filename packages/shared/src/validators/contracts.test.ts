@@ -173,6 +173,35 @@ describe('contractLineInputSchema — per_device_role (#3205)', () => {
   });
 });
 
+// #3205 wave 2: a per_device_group line bills the members of one device group.
+// deviceGroupId is required on that type and forbidden on every other; a group
+// line carries no site (the group's own site narrows it) and no roles.
+describe('contractLineInputSchema — per_device_group (#3205 W02)', () => {
+  const base = { description: 'VIP laptops', unitPrice: '40.00', taxable: true };
+  const groupId = '33333333-3333-4333-8333-333333333333';
+  const parse = (v: unknown) => contractLineInputSchema.safeParse(v).success;
+
+  it('requires a GUID deviceGroupId on per_device_group', () => {
+    expect(parse({ ...base, lineType: 'per_device_group' })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_group', deviceGroupId: 'not-a-guid' })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_group', deviceGroupId: groupId })).toBe(true);
+  });
+
+  it('rejects deviceGroupId on every other line type', () => {
+    for (const lineType of ['flat', 'per_device', 'per_seat'] as const) {
+      expect(parse({ ...base, lineType, deviceGroupId: groupId })).toBe(false);
+    }
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['server'], deviceGroupId: groupId })).toBe(false);
+    expect(parse({ ...base, lineType: 'manual', manualQuantity: '2', deviceGroupId: groupId })).toBe(false);
+  });
+
+  it('rejects siteId and deviceRoles on a group line', () => {
+    const siteId = '22222222-2222-4222-8222-222222222222';
+    expect(parse({ ...base, lineType: 'per_device_group', deviceGroupId: groupId, siteId })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_group', deviceGroupId: groupId, deviceRoles: ['server'] })).toBe(false);
+  });
+});
+
 describe('changeContractCurrencySchema (#3778)', () => {
   it('defaults confirmActiveChange to false — an ACTIVE restamp is never implicit', () => {
     const parsed = changeContractCurrencySchema.parse({ currencyCode: 'eur' });

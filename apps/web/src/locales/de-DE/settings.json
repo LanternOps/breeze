@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Sichtbarkeit",
+      "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
+      "enableAll": "Alle Sichtbarkeiten aktivieren",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Übersicht",
+          "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."
+        },
+        "enableSecurity": {
+          "label": "Sicherheit",
+          "description": "Zeigt Sicherheitsstatus, Schutz, Bedrohungen und Schwachstellen an."
+        },
+        "enableBackups": {
+          "label": "Sicherungen",
+          "description": "Zeigt Backup-Abdeckung, Überprüfung, Wiederherstellungstests und Bereitschaft an."
+        },
+        "enableReports": {
+          "label": "Berichte",
+          "description": "Ermöglicht Kunden, freigegebene Berichte zu erstellen und herunterzuladen."
+        },
+        "enableSupportUsage": {
+          "label": "Support-Nutzung",
+          "description": "Zeigt die abrechenbare Supportzeit des Monats bis heute an."
+        }
+      }
+    },
     "support": {
       "title": "Support-Kontakt",
       "description": "Wird den Kunden im Portal angezeigt.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Antwortentwurf",
           "resolutionNote": "Entwurf der Lösungsnotiz"
+        },
+        "skippedTitle": "Nicht übernommen",
+        "skipped": {
+          "item": {
+            "fields": "Feldaktualisierungen",
+            "link": "Geräteverknüpfung",
+            "note": "Private Notiz",
+            "draftReply": "Antwortentwurf",
+            "draftResolution": "Entwurf der Lösungsnotiz"
+          },
+          "reason": {
+            "noFieldsProposed": "Es wurden keine Felder vorgeschlagen.",
+            "belowConfidenceFloor": "Die Konfidenz lag unter dem Schwellenwert für eine automatische Übernahme.",
+            "humanSet": "Dieses Feld wurde bereits von einer Person gesetzt.",
+            "noDeviceProposed": "Es wurde kein Gerät vorgeschlagen.",
+            "deviceAlreadyLinked": "Dem Ticket ist bereits ein Gerät zugeordnet.",
+            "noDraftReply": "Es wurde keine Antwort vorgeschlagen.",
+            "noDraftResolution": "Es wurde keine Lösungsnotiz vorgeschlagen.",
+            "resolutionNoteExists": "Das Ticket hat bereits eine Lösungsnotiz.",
+            "maxActionsPerRun": "Das Aktionslimit des Laufs wurde zuerst erreicht.",
+            "intentError": "Das Erstellen der Änderung ist fehlgeschlagen.",
+            "ticketNotFound": "Das Ticket konnte nicht gefunden werden."
+          }
         }
       }
     },
@@ -2113,7 +2163,7 @@
     "remove": "Entfernen",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Import aus URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG oder WebP bis zu 5 MB.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG oder JPEG, bis zu 5 MB.",
     "saveTheItemFirstThenAddAProductImage": "Speichern Sie zunächst den Artikel und fügen Sie dann ein Produktbild hinzu.",
     "thisItemIsABundle": "Bei diesem Artikel handelt es sich um ein Bundle",
     "groupsOtherCatalogItemsSoldTogether": "Gruppiert andere zusammen verkaufte Katalogartikel.",
@@ -3871,6 +3921,8 @@
       "fieldKey": "Feldschlüssel",
       "fieldKeyPlaceholder": "z. B. asset_tag",
       "fieldKeyHelp": "Wird in Filtern und API verwendet. Kann nach der Erstellung nicht mehr geändert werden.",
+      "fieldKeyScriptHelp": "Dieser Schlüssel wird von Skripten zum Lesen und Schreiben des Felds verwendet. Lesen: Binden Sie die Quelle eines Skriptparameters mit diesem Schlüssel an „Aus einem benutzerdefinierten Gerätefeld“. Schreiben: Lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen, um einen neuen Wert zu speichern.",
+      "fieldKeyScriptHelpAriaLabel": "Über die Verwendung dieses Felds in Skripten",
       "fieldType": "Feldtyp",
       "dropdownChoices": "Dropdown-Auswahl",
       "choiceLabel": "Etikett",

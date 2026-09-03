@@ -1059,6 +1059,8 @@
       "variablePlaceholder": "e.g. vendor_token",
       "fieldLabel": "Custom field key",
       "fieldPlaceholder": "e.g. asset_tag",
+      "fieldHelp": "Enter the Field Key shown in Settings → Custom Fields (case-sensitive). Read: once bound, the resolved value is delivered to the script just like a normal parameter — no prompt is shown. Write: to save a new value back, have the script call the device's custom-fields API with a PATCH request and an API key.",
+      "fieldHelpAriaLabel": "About the device custom field binding",
       "builtinLabel": "Property",
       "chooseTitle": "Choose a variable",
       "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",

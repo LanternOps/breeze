@@ -185,11 +185,15 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           line: {
             type: 'object',
             description:
-              'Contract line input. lineType is one of flat | per_device | per_device_role | per_seat | manual. ' +
+              'Contract line input. lineType is one of flat | per_device | per_device_role | per_device_group | per_seat | manual. ' +
               'per_device counts the org\'s billable devices (optionally one site via siteId). ' +
               'per_device_role counts only devices whose role is in deviceRoles — a non-empty array of ' +
               `${BILLABLE_DEVICE_ROLES.join(', ')} ` +
               '(never unknown: unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
+              'per_device_group counts the members of one device group named by deviceGroupId (a device group UUID in the ' +
+              'contract\'s org). Static groups bill their current members; dynamic groups are evaluated live from their filter at ' +
+              'estimate and invoice time (a filter condition on groupId still reads that other group\'s cached membership). ' +
+              'No siteId on this type — the group\'s own site narrows it. ' +
               'manual requires manualQuantity. ' +
               'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
               'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +

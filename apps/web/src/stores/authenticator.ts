@@ -39,16 +39,28 @@ export type RegisterReauth =
 
 class RegisterStepError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /**
+   * #4470: the API's stable machine code for a rejected proof
+   * (`mfa_proof_invalid`, `invalid_credentials`, ...). Carried through so the
+   * UI can branch on it instead of string-matching the human message, which
+   * was the only discriminator available while every rejection was a 401.
+   */
+  code?: string;
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new RegisterStepError(data?.error ?? fallback, response.status);
+    throw new RegisterStepError(
+      data?.error ?? fallback,
+      response.status,
+      typeof data?.code === 'string' ? data.code : undefined,
+    );
   }
   // A 2xx with an unparseable body (empty body, truncated proxy response) must
   // not silently resolve to `null` — every caller immediately reads a field
@@ -105,10 +117,13 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     await fetchWithAuth('/auth/mfa/step-up', {
       method: 'POST',
       body: JSON.stringify(stepUpBody),
-      // Same reasoning: a 401 means the TOTP code / passkey assertion was
-      // rejected (wrong code, or the assertion is already burned), not that
-      // the access token is stale — never replay it.
-      skipUnauthorizedRetry: true,
+      // #4470: no opt-out here any more. A rejected proof is now 400
+      // `mfa_proof_invalid`, and the handler has no 401 path left at all — so
+      // every 401 from this endpoint comes from `authMiddleware`, BEFORE the
+      // handler runs. The passkey assertion in this body is therefore still
+      // unburned, and refreshing the bearer and replaying it is exactly right.
+      // Keeping the flag would instead have signed the user out for an access
+      // token that simply aged out mid-ceremony.
     }),
     'Verification failed.'
   );
@@ -186,11 +201,21 @@ export async function renameApproverDevice(id: string, label: string): Promise<R
 export class AssertionChallengeError extends Error {
   status: number;
   token?: string;
-  constructor(message: string, status: number, token?: string) {
+  /** Issue #4459 — the `offending` approval-request ids the server's
+   *  `batch_not_homogeneous` 422 carries (`loadHomogeneousBatch`,
+   *  `services/approvals/batchDecide.ts`). The challenge route re-validates
+   *  the whole set BEFORE minting anything, so on an APPROVE this is where a
+   *  drifted set is usually refused — the later `/batch/decide` 422 is only
+   *  reached on a DENY (which skips the challenge/proof round-trip
+   *  entirely). Without carrying this through, only the deny path could ever
+   *  tell the inbox which cards to deselect. */
+  offending?: string[];
+  constructor(message: string, status: number, token?: string, offending?: string[]) {
     super(message);
     this.name = 'AssertionChallengeError';
     this.status = status;
     this.token = token;
+    this.offending = offending;
   }
 }
 
@@ -214,10 +239,14 @@ async function completeAssertionCeremony(
   // benign "no registered device" fallback. (fetchWithAuth doesn't throw on non-2xx.)
   if (!challengeResponse.ok) {
     const token = typeof challengeData?.error === 'string' ? challengeData.error : undefined;
+    const offending = Array.isArray(challengeData?.offending)
+      ? challengeData.offending.filter((id: unknown): id is string => typeof id === 'string')
+      : undefined;
     throw new AssertionChallengeError(
       token ?? `Could not start verification (${challengeResponse.status}).`,
       challengeResponse.status,
       token,
+      offending,
     );
   }
   // A 2xx whose body isn't a usable challenge (empty body, truncated proxy

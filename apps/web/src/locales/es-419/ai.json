@@ -424,7 +424,9 @@
     "limit": "Hasta 5 conversaciones simultáneas"
   },
   "workspaceTab": {
-    "approvalPending": "Aprobación pendiente"
+    "approvalPending": "Aprobación pendiente",
+    "renameLabel": "Renombrar chat",
+    "renameHint": "Haga doble clic para renombrar"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Nueva pestaña (Cmd+Mayús+N)",

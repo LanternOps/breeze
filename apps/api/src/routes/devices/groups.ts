@@ -4,13 +4,14 @@ import { and, eq, sql, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../../services/permissions';
 import { getPagination, ensureOrgAccess } from './helpers';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
 export const groupsRoutes = new Hono();
 
@@ -328,22 +329,26 @@ groupsRoutes.delete(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const affectedMemberships = await db
-      .select({ deviceId: deviceGroupMemberships.deviceId })
-      .from(deviceGroupMemberships)
-      .where(eq(deviceGroupMemberships.groupId, groupId));
+    let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+    try {
+      result = await deleteDeviceGroup(groupId, group.orgId);
+    } catch (err) {
+      if (err instanceof DeviceGroupDeleteError) {
+        if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
+        if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
+        // #3205 W02: a draft/active/paused contract bills this group. Contract
+        // names are contract data — disclose them only to a contracts reader.
+        const perms = c.get('permissions') as UserPermissions | undefined;
+        const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        return c.json({
+          error: err.message, code: 'GROUP_IN_USE_BY_CONTRACTS', contractCount: err.contractCount,
+          ...(canReadContracts ? { contracts: err.contracts } : {}),
+        }, 409);
+      }
+      throw err;
+    }
 
-    // Delete memberships first
-    await db
-      .delete(deviceGroupMemberships)
-      .where(eq(deviceGroupMemberships.groupId, groupId));
-
-    // Delete the group
-    await db
-      .delete(deviceGroups)
-      .where(eq(deviceGroups.id, groupId));
-
-    await Promise.all(affectedMemberships.map(({ deviceId }) =>
+    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
       schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
         console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
       })

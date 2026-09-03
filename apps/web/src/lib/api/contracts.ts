@@ -49,7 +49,8 @@ export interface ContractSummary {
   createdAt: string;
   updatedAt: string;
   /** Resolved period value (live per_device/per_seat counts), added by GET /contracts. */
-  estimatedPeriodValue?: string;
+  estimatedPeriodValue?: string | null;
+  estimateError?: 'GROUP_EVALUATION_FAILED';
 }
 
 /** One line's resolved estimate from GET /contracts/:id/estimate. */
@@ -59,6 +60,7 @@ export interface ContractEstimateLine {
   quantity: number;
   value: string;
   live: boolean;
+  unresolved?: 'group_deleted';
 }
 export interface ContractEstimate {
   currencyCode: string;
@@ -78,6 +80,9 @@ export interface ContractLine {
   manualQuantity: string | null;
   siteId: string | null;
   deviceRoles: string[] | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
   taxable: boolean;
   sortOrder: number;
   createdAt: string;

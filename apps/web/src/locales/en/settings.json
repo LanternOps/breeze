@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibility",
+      "description": "Choose which service insights this customer can see in the portal.",
+      "enableAll": "Enable all visibility",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Dashboard",
+          "description": "Show a service-health summary when customers sign in."
+        },
+        "enableSecurity": {
+          "label": "Security",
+          "description": "Show security posture, protection, threats, and vulnerabilities."
+        },
+        "enableBackups": {
+          "label": "Backups",
+          "description": "Show backup coverage, verification, restore tests, and readiness."
+        },
+        "enableReports": {
+          "label": "Reports",
+          "description": "Allow customers to generate and download approved reports."
+        },
+        "enableSupportUsage": {
+          "label": "Support usage",
+          "description": "Show month-to-date billable support-time totals."
+        }
+      }
+    },
     "support": {
       "title": "Support contact",
       "description": "Shown to customers in the portal.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Reply draft",
           "resolutionNote": "Resolution-note draft"
+        },
+        "skippedTitle": "Not applied",
+        "skipped": {
+          "item": {
+            "fields": "Field updates",
+            "link": "Device link",
+            "note": "Private note",
+            "draftReply": "Reply draft",
+            "draftResolution": "Resolution-note draft"
+          },
+          "reason": {
+            "noFieldsProposed": "No fields were proposed.",
+            "belowConfidenceFloor": "Confidence was below the threshold for an automatic write.",
+            "humanSet": "A person already set this field.",
+            "noDeviceProposed": "No device was proposed.",
+            "deviceAlreadyLinked": "The ticket already has a linked device.",
+            "noDraftReply": "No reply was proposed.",
+            "noDraftResolution": "No resolution note was proposed.",
+            "resolutionNoteExists": "The ticket already has a resolution note.",
+            "maxActionsPerRun": "The run's action cap was reached first.",
+            "intentError": "Creating the change failed.",
+            "ticketNotFound": "The ticket could not be found."
+          }
         }
       }
     },
@@ -2113,7 +2163,7 @@
     "remove": "Remove",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Import from URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG, or WebP up to 5 MB.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG or JPEG, up to 5 MB.",
     "saveTheItemFirstThenAddAProductImage": "Save the item first, then add a product image.",
     "thisItemIsABundle": "This item is a bundle",
     "groupsOtherCatalogItemsSoldTogether": "Groups other catalog items sold together.",
@@ -2312,7 +2362,7 @@
     "regenerateRecoveryCodes": "Regenerate recovery codes",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
     "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated.",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated. Your other signed-in devices are signed out; this one stays signed in.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
@@ -3924,6 +3974,8 @@
       "fieldKey": "Field Key",
       "fieldKeyPlaceholder": "e.g., asset_tag",
       "fieldKeyHelp": "Used in filters and API. Cannot be changed after creation.",
+      "fieldKeyScriptHelp": "This key is what scripts use to read and write the field. Read: bind a script parameter's source to \"From a device custom field\" using this key. Write: have the script call the device's custom-fields API with a PATCH request and an API key to save a new value.",
+      "fieldKeyScriptHelpAriaLabel": "About using this field in scripts",
       "fieldType": "Field Type",
       "dropdownChoices": "Dropdown Choices",
       "choiceLabel": "Label",

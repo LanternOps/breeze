@@ -10,6 +10,11 @@ type PortalSettings = {
   enableAssetCheckout: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
+  enableDashboard: boolean;
+  enableSecurity: boolean;
+  enableBackups: boolean;
+  enableReports: boolean;
+  enableSupportUsage: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -38,6 +43,45 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
     key: 'enablePasswordReset',
     labelKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.label',
     descriptionKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.description',
+  },
+];
+
+type VisibilityToggleKey =
+  | 'enableDashboard'
+  | 'enableSecurity'
+  | 'enableBackups'
+  | 'enableReports'
+  | 'enableSupportUsage';
+
+const VISIBILITY_TOGGLES: Array<{
+  key: VisibilityToggleKey;
+  labelKey: string;
+  descriptionKey: string;
+}> = [
+  {
+    key: 'enableDashboard',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDashboard.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDashboard.description',
+  },
+  {
+    key: 'enableSecurity',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableSecurity.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableSecurity.description',
+  },
+  {
+    key: 'enableBackups',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableBackups.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableBackups.description',
+  },
+  {
+    key: 'enableReports',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableReports.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableReports.description',
+  },
+  {
+    key: 'enableSupportUsage',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.description',
   },
 ];
 
@@ -80,6 +124,14 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     onDirty();
   };
 
+  const enableAllVisibility = () => update({
+    enableDashboard: true,
+    enableSecurity: true,
+    enableBackups: true,
+    enableReports: true,
+    enableSupportUsage: true,
+  });
+
   const save = useCallback(async () => {
     if (!draft || saving) return;
     setSaving(true);
@@ -92,6 +144,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableAssetCheckout: draft.enableAssetCheckout,
             enableSelfService: draft.enableSelfService,
             enablePasswordReset: draft.enablePasswordReset,
+            enableDashboard: draft.enableDashboard,
+            enableSecurity: draft.enableSecurity,
+            enableBackups: draft.enableBackups,
+            enableReports: draft.enableReports,
+            enableSupportUsage: draft.enableSupportUsage,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
@@ -139,6 +196,56 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
                 type="checkbox"
                 checked={draft[key]}
                 onChange={(e) => update({ [key]: e.target.checked } as Partial<PortalSettings>)}
+                className="mt-0.5"
+                data-testid={`org-portal-toggle-${key}`}
+              />
+              <span>
+                <span className="block text-sm font-medium">
+                  {t(/* i18n-dynamic */ labelKey)}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {t(/* i18n-dynamic */ descriptionKey)}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">{t('orgPortalSettingsEditor.visibility.title')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t('orgPortalSettingsEditor.visibility.description')}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="org-portal-enable-all-visibility"
+            onClick={enableAllVisibility}
+            className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted/50"
+          >
+            {t('orgPortalSettingsEditor.visibility.enableAll')}
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {VISIBILITY_TOGGLES.map(({
+            key,
+            labelKey,
+            descriptionKey,
+          }) => (
+            <label
+              key={key}
+              className="flex items-start gap-3 rounded-md border bg-muted/30 p-3"
+            >
+              <input
+                type="checkbox"
+                checked={draft[key]}
+                onChange={(e) => update({
+                  [key]: e.target.checked,
+                } as Partial<PortalSettings>)}
                 className="mt-0.5"
                 data-testid={`org-portal-toggle-${key}`}
               />

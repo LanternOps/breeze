@@ -103,6 +103,9 @@ import {
   type TicketTriageFieldProposal,
   type TicketTriagePriority,
   type TicketTriageProposal,
+  type TicketTriageSkip,
+  type TicketTriageSkipReason,
+  type TicketTriageSlot,
 } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tickets } from '../../db/schema/portal';
@@ -124,39 +127,11 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
-/** The five deterministic proposal->intent slots — see this file's header. */
-export type TicketTriageSlot = 'fields' | 'link' | 'note' | 'draft-reply' | 'draft-resolution';
-
-/**
- * Why a slot did not become an intent. Display strings only — never a raw
- * `Error.message` (same posture as `SweepProposalReason`/
- * `AlertVerdictSuggestionReason`).
- *
- * `no_fields_proposed` / `below_confidence_floor` / `human_set` are the
- * three (mutually exclusive) reasons the `fields` slot can end up empty:
- * nothing was proposed at all, something was proposed but none of it met
- * `TICKET_TRIAGE_CONFIDENCE_FLOOR`, or everything proposed was already
- * human-provenanced. A run mixing a floor-drop with a human-set drop is
- * reported as `below_confidence_floor` — the coarser of the two, since
- * either alone would already have emptied the slot.
- */
-export type TicketTriageSkipReason =
-  | 'no_fields_proposed'
-  | 'below_confidence_floor'
-  | 'human_set'
-  | 'no_device_proposed'
-  | 'device_already_linked'
-  | 'no_draft_reply'
-  | 'no_draft_resolution'
-  | 'resolution_note_exists'
-  | 'max_actions_per_run'
-  | 'intent_error'
-  | 'ticket_not_found';
-
-export interface TicketTriageSkip {
-  item: TicketTriageSlot;
-  reason: TicketTriageSkipReason;
-}
+// `TicketTriageSlot` / `TicketTriageSkipReason` / `TicketTriageSkip` (the five
+// deterministic proposal->intent slots and why one did not become an intent)
+// now live in `@breeze/shared` (imported above) — issue #4462 surfaces the
+// `skipped` list this module returns on the run DTO, so the reason-string
+// union has to be visible from `packages/shared`, not API-only.
 
 /** The run fields `persistTicketTriage` needs — all already loaded by the
  *  caller (`finalizeTicketTriage`, which owns the `isRunStillRunning` +

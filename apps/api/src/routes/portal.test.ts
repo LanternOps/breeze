@@ -92,13 +92,20 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupJobs: {},
+  devicePatches: {},
+  deviceWarranty: {},
   devices: {},
   // The portal route graph transitively imports networkBaseline.ts, which reads
   // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
   // provide it or the whole suite fails to load.
   discoveredAssetTypeEnum: { enumValues: [] },
+  huntressAgents: {},
+  organizations: {},
   portalBranding: {},
   portalUsers: {},
+  s1Agents: {},
+  securityStatus: {},
   ticketComments: {},
   tickets: {},
   ticketStatuses: {}
@@ -130,14 +137,13 @@ const makeWhereChain = (result: any) =>
     orderBy: vi.fn().mockReturnValue(makeOrderChain(result))
   });
 
-const mockSelectResult = (result: any) => ({
-  from: vi.fn().mockReturnValue({
+const mockSelectResult = (result: any) => {
+  const fromChain: Record<string, any> = {
     where: vi.fn().mockReturnValue(makeWhereChain(result)),
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(makeWhereChain(result))
-    })
-  })
-});
+  };
+  fromChain.leftJoin = vi.fn().mockReturnValue(fromChain);
+  return { from: vi.fn().mockReturnValue(fromChain) };
+};
 
 const mockSelectLimit = mockSelectResult;
 const mockSelectWhere = mockSelectResult;
@@ -1258,5 +1264,53 @@ describe('portal routes', () => {
 
       expect(res.status).toBe(400);
     });
+  });
+
+  // Task 3.3 fix round 1 — real-router regression guard. The unit tests in
+  // routes/portal/featureFlags.test.ts build a throwaway Hono app and stub
+  // portalAuth directly, so they cannot detect a deleted/reordered
+  // `portalRoutes.use(prefix, portalAuthMiddleware)` line in
+  // routes/portal/index.ts. These drive the REAL portalRoutes mount (same
+  // pattern as the PORTAL_TICKETS_DISABLED "real mount" test above): one
+  // unauthenticated 401 per new prefix, and one authenticated-but-flag-false
+  // 403 per prefix proving the gate runs AFTER auth. dashboard/security/
+  // backups/reports/tickets/usage have no handlers yet (later waves), so a
+  // passing gate would fall through to Hono's 404 — the 403 case alone still
+  // proves auth-then-gate ordering.
+  describe('W03 strict visibility gates (real mount)', () => {
+    const strictGateCases = [
+      { path: '/portal/dashboard', code: 'PORTAL_DASHBOARD_DISABLED', flag: 'enableDashboard' },
+      { path: '/portal/security', code: 'PORTAL_SECURITY_DISABLED', flag: 'enableSecurity' },
+      { path: '/portal/backups', code: 'PORTAL_BACKUPS_DISABLED', flag: 'enableBackups' },
+      { path: '/portal/reports', code: 'PORTAL_REPORTS_DISABLED', flag: 'enableReports' },
+      { path: '/portal/tickets/usage', code: 'PORTAL_SUPPORT_USAGE_DISABLED', flag: 'enableSupportUsage' }
+    ] as const;
+
+    it.each(strictGateCases)(
+      'GET $path returns 401 with no Authorization header',
+      async ({ path }) => {
+        const res = await app.request(path);
+        expect(res.status).toBe(401);
+      }
+    );
+
+    it.each(strictGateCases)(
+      'GET $path returns 403 $code when authenticated but the flag is false/missing',
+      async ({ path, code }) => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // loginUser()'s own select
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // portalAuthMiddleware hydration
+          .mockReturnValueOnce(mockSelectLimit([]) as any); // strict gate: no portal_branding row → fail closed
+
+        const token = await loginUser();
+
+        const res = await app.request(path, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code });
+      }
+    );
   });
 });

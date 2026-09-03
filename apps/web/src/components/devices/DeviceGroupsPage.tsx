@@ -738,7 +738,17 @@ export default function DeviceGroupsPage() {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to delete group");
+        if (response.status === 409) {
+          const body = await response.json().catch(() => null) as
+            { contractCount?: number; contracts?: Array<{ name: string }> } | null;
+          if (body?.contractCount) {
+            const names = body.contracts?.map((contract) => contract.name).join(", ");
+            throw new Error(names
+              ? t("deviceGroupsPage.billedByContracts", { count: body.contractCount, names })
+              : t("deviceGroupsPage.billedByContractsCount", { count: body.contractCount }));
+          }
+        }
+        throw new Error(t("deviceGroupsPage.failedToDeleteGroup"));
       }
 
       await fetchGroups();
@@ -1514,7 +1524,7 @@ export default function DeviceGroupsPage() {
               </select>
             </div>
             {formError && (
-              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div role="alert" className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {formError}
               </div>
             )}

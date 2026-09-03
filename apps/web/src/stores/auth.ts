@@ -133,6 +133,7 @@ interface AuthState {
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
+  commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -226,6 +227,31 @@ export const useAuthStore = create<AuthState>()(
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
       })),
+
+      /**
+       * Adopt a replacement session an authenticated endpoint handed back after
+       * rotating the user's own authority (#4480: POST /auth/mfa/recovery-codes
+       * bumps mfa_epoch and revokes every refresh family, then re-issues for the
+       * caller). Unlike commitMfaEnrollmentIfCurrent this asserts nothing about
+       * the user record — only the tokens move.
+       *
+       * Fenced on `sessionGeneration`: a logout or re-login that raced the
+       * request has already bumped it, and pushing a token into THAT session
+       * would resurrect an evicted one.
+       */
+      commitReissuedSessionIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return { tokens };
+        });
+        return committed;
+      },
 
       commitMfaEnrollmentIfCurrent: (generation, tokens) => {
         let committed = false;
@@ -2044,11 +2070,13 @@ export async function apiEnableTotpMfa(code: string, currentPassword: string): P
   try {
     const response = await fetchWithAuth('/auth/mfa/enable', {
       method: 'POST',
-      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
-      // uses. Without this the generic 401 path replays the code, or evicts the
-      // session outright — on the forced-enrollment page that strands the user
-      // with no way back in. The caller already renders the raw error.
-      skipUnauthorizedRetry: true,
+      // #4470: no `skipUnauthorizedRetry` here any more. The API now answers a
+      // rejected TOTP (or a rejected step-up password) with 400 +
+      // `code: 'mfa_code_invalid'` / `'invalid_credentials'`, so a typo can no
+      // longer reach fetchWithAuth's 401 refresh-and-evict path at all. A 401
+      // from this endpoint now means only what it says — the bearer is dead —
+      // and refreshing it is the right response. The #4413 stopgap flag is
+      // gone with the status it was working around.
       body: JSON.stringify({ code, currentPassword }),
     });
     const data = await response.json().catch(() => null);

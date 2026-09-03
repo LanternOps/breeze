@@ -39,6 +39,7 @@ import {
 import { createOrganization, createPartner } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
 import { processInboundEmail } from './inboundEmailService';
+import { fourDigitSuffix } from './fixtureNumbering';
 import type { NormalizedInboundEmail } from './types';
 
 const uniqueSuffix = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -121,7 +122,14 @@ beforeEach(async () => {
   // Partner B's victim ticket. Known thread key + internal number so a forged
   // reference addressed to partner A could only match it if the guards failed.
   const bThreadKey = `<thread-b-${suffix}@b.test>`;
-  const bInternalNumber = `T-2026-${suffix.slice(-4)}`;
+  // Derived via fourDigitSuffix (never Number()) — see #4495: Number() on an
+  // arbitrary base36 slice can parse as scientific notation (e.g. "4e19") and
+  // overflow tickets.internal_number varchar(20).
+  const bInternalNumber = `T-2026-${fourDigitSuffix(suffix)}`;
+  // Fixture-level guard against a regression of #4495: tickets.internal_number
+  // is varchar(20) — assert here, not just rely on the formula, so a future
+  // edit to this fixture fails fast instead of flaking on an insert.
+  expect(bInternalNumber.length).toBeLessThanOrEqual(20);
   const [bTicket] = await db
     .insert(tickets)
     .values({
@@ -138,13 +146,15 @@ beforeEach(async () => {
 
   // A resolved partner-A ticket for the reopen case (distinct thread key).
   const aResolvedThreadKey = `<thread-a-${suffix}@a.test>`;
+  const aInternalNumber = `T-2026-${fourDigitSuffix(suffix, 1)}`;
+  expect(aInternalNumber.length).toBeLessThanOrEqual(20);
   const [aTicket] = await db
     .insert(tickets)
     .values({
       orgId: orgA.id,
       partnerId: partnerA.id,
       ticketNumber: `LEGACY-A-${suffix}`,
-      internalNumber: `T-2026-${(Number(suffix.slice(-4)) + 1).toString().padStart(4, '0')}`,
+      internalNumber: aInternalNumber,
       subject: 'Partner A laptop issue',
       status: 'resolved',
       source: 'email',

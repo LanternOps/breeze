@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@/lib/i18n';
 import CustomFieldsPage from './CustomFieldsPage';
 
 vi.mock('../../stores/auth', () => ({
@@ -173,5 +174,23 @@ describe('CustomFieldsPage script-write toggle', () => {
 
     expect(ramRow).toHaveTextContent('Script write');
     expect(assetRow).not.toHaveTextContent('Script write');
+  });
+});
+
+describe('CustomFieldsPage — field key help (issue #4198)', () => {
+  beforeEach(() => {
+    mockedFetchWithAuth.mockReset();
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse([]));
+  });
+
+  it('shows a help affordance next to Field Key explaining how scripts read/write it', async () => {
+    render(<CustomFieldsPage />);
+
+    await waitFor(() => expect(mockedFetchWithAuth).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole('button', { name: 'Add your first custom field' }));
+
+    const trigger = await screen.findByRole('button', { name: 'About using this field in scripts' });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
   });
 });

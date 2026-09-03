@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Görünürlük",
+      "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
+      "enableAll": "Tüm görünürlüğü etkinleştir",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Pano",
+          "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
+        },
+        "enableSecurity": {
+          "label": "Güvenlik",
+          "description": "Güvenlik duruşunu, korumayı, tehditleri ve güvenlik açıklarını gösterir."
+        },
+        "enableBackups": {
+          "label": "Yedeklemeler",
+          "description": "Yedekleme kapsamını, doğrulamayı, geri yükleme testlerini ve hazır olma durumunu gösterir."
+        },
+        "enableReports": {
+          "label": "Raporlar",
+          "description": "Müşterilerin onaylı raporlar oluşturmasına ve indirmesine izin verir."
+        },
+        "enableSupportUsage": {
+          "label": "Destek kullanımı",
+          "description": "Ayın bugüne kadarki faturalandırılabilir destek süresi toplamını gösterir."
+        }
+      }
+    },
     "support": {
       "title": "Destek iletişim kişisi",
       "description": "Portalda müşterilere gösterilir.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Yanıt taslağı",
           "resolutionNote": "Çözüm notu taslağı"
+        },
+        "skippedTitle": "Uygulanmadı",
+        "skipped": {
+          "item": {
+            "fields": "Alan güncellemeleri",
+            "link": "Cihaz bağlantısı",
+            "note": "Özel not",
+            "draftReply": "Yanıt taslağı",
+            "draftResolution": "Çözüm notu taslağı"
+          },
+          "reason": {
+            "noFieldsProposed": "Hiçbir alan önerilmedi.",
+            "belowConfidenceFloor": "Güven düzeyi otomatik yazma için gereken eşiğin altındaydı.",
+            "humanSet": "Bu alanı zaten bir kişi ayarladı.",
+            "noDeviceProposed": "Hiçbir cihaz önerilmedi.",
+            "deviceAlreadyLinked": "Talebe zaten bir cihaz bağlı.",
+            "noDraftReply": "Hiçbir yanıt önerilmedi.",
+            "noDraftResolution": "Hiçbir çözüm notu önerilmedi.",
+            "resolutionNoteExists": "Talebin zaten bir çözüm notu var.",
+            "maxActionsPerRun": "Çalıştırmanın eylem sınırına önce ulaşıldı.",
+            "intentError": "Değişiklik oluşturulamadı.",
+            "ticketNotFound": "Talep bulunamadı."
+          }
         }
       }
     },
@@ -2113,7 +2163,7 @@
     "remove": "Kaldır",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "URL'den içe aktar",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG veya WebP 5 MB'a kadar.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG veya JPEG, 5 MB'a kadar.",
     "saveTheItemFirstThenAddAProductImage": "Önce öğeyi kaydedin, ardından bir ürün resmi ekleyin.",
     "thisItemIsABundle": "Bu öğe bir pakettir",
     "groupsOtherCatalogItemsSoldTogether": "Birlikte satılan diğer katalog ürünlerini gruplandırır.",
@@ -3924,6 +3974,8 @@
       "fieldKey": "Alan Tuşu",
       "fieldKeyPlaceholder": "örneğin, asset_tag",
       "fieldKeyHelp": "Filtrelerde ve API kullanılır. Oluşturulduktan sonra değiştirilemez.",
+      "fieldKeyScriptHelp": "Bu anahtar, betiklerin alanı okumak ve yazmak için kullandığı şeydir. Okuma: bir betik parametresinin kaynağını bu anahtarı kullanarak \"Cihaz özel alanından\" olarak bağlayın. Yazma: yeni bir değeri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldKeyScriptHelpAriaLabel": "Bu alanın betiklerde kullanımı hakkında",
       "fieldType": "Alan Türü",
       "dropdownChoices": "Açılır Seçenekler",
       "choiceLabel": "Etiket",

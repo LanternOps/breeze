@@ -22,9 +22,12 @@
         "flat": "Pauschalpreis",
         "perDevice": "Pro Gerät",
         "perDeviceRole": "Pro Geräterolle",
+        "perDeviceGroup": "Pro Gerätegruppe",
         "perSeat": "Pro Sitzplatz",
         "manual": "Manuelle Menge"
       },
+      "dynamicGroup": "dynamisch",
+      "deletedGroup": "{{name}} (gelöschte Gruppe)",
       "coverage": {
         "uncovered": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet."
@@ -36,7 +39,8 @@
         "cancel": "Abbrechen"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "Gruppe gelöscht"
       }
     },
     "contractDetail": {
@@ -196,6 +200,10 @@
         "lineType": "Positionstyp",
         "deviceRoles": "Geräterollen (ein Gerät wird abgerechnet, wenn seine Rolle eine davon ist)",
         "deviceRolesRequired": "Mindestens eine Rolle auswählen.",
+        "deviceGroup": "Gerätegruppe (berechnet ihre Mitglieder; dynamische Gruppen werden zur Abrechnung ausgewertet)",
+        "selectGroup": "Gruppe auswählen",
+        "deviceGroupRequired": "Wählen Sie eine Gruppe.",
+        "deviceGroupsLoadFailed": "Die Gerätegruppen dieser Organisation konnten nicht geladen werden.",
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
@@ -247,6 +255,10 @@
       "backToContractsText": "Zurück zu den Verträgen",
       "newContract": "Neuer Vertrag",
       "doneEditing": "Bearbeitung abgeschlossen"
+    },
+    "list": {
+      "estimateUnavailable": "Schätzung nicht verfügbar: Eine Gerätegruppe in diesem Vertrag konnte nicht ausgewertet werden",
+      "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
     },
     "contractsList": {
       "title": "Verträge",

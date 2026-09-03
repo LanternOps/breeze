@@ -104,6 +104,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
+  const estByLine = new Map(estimate?.lines.map((line) => [line.lineId, line]) ?? []);
   // Currency restamp (ACTIVE contracts only, manage-gated, #3778).
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [targetCurrency, setTargetCurrency] = useState(currency);
@@ -379,12 +380,23 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                         {l.lineType === 'per_device_role' && l.deviceRoles
                           ? <span className="block text-xs text-muted-foreground">{l.deviceRoles.map(getDeviceRoleLabel).join(', ')}</span>
                           : null}
+                        {l.lineType === 'per_device_group'
+                          ? <span className="block text-xs text-muted-foreground" data-testid={`contract-detail-line-group-${l.id}`}>
+                              {l.deviceGroup
+                                ? `${l.deviceGroup.name}${l.deviceGroup.type === 'dynamic' ? ` · ${t('contracts.shared.dynamicGroup')}` : ''}`
+                                : t('contracts.shared.deletedGroup', { name: l.deviceGroupName ?? '' })}
+                            </span>
+                          : null}
                       </td>
                       <td className="px-3 py-2">{l.description}</td>
                       <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                       <td className="px-3 py-2 text-right">
                         {AUTO_QTY_TYPES.has(l.lineType)
-                          ? <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>
+                          ? (estByLine.has(l.id)
+                              ? (estByLine.get(l.id)?.unresolved === 'group_deleted'
+                                  ? t('contracts.shared.values.groupDeleted')
+                                  : estByLine.get(l.id)?.quantity)
+                              : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
                           : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                       </td>
                       <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>

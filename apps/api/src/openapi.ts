@@ -1044,6 +1044,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1253,6 +1257,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4660 (extends #4470): a rejected `currentPassword` is 400 with a
+          // stable `code` (`invalid_credentials`), alongside the pre-existing
+          // 400s for a passwordless account and a too-weak new password. 401
+          // is reserved for a dead bearer.
           '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' }
         }
@@ -1356,6 +1364,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1366,10 +1378,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'regenerateRecoveryCodes',
         tags: ['Auth'],
         summary: 'Regenerate MFA recovery codes',
-        description: 'Generate new recovery codes for the authenticated user. MFA must be enabled. Previous codes are invalidated.',
+        description: 'Generate new recovery codes for the authenticated user. MFA must be enabled. Previous codes are invalidated. Rotation advances the user\'s MFA epoch and revokes every refresh token family, so all OTHER sessions are signed out; the calling session is replaced in the same response (new refresh/CSRF cookies plus `tokens.accessToken`) and must adopt it.',
         responses: {
           '200': {
-            description: 'Recovery codes generated',
+            description: 'Recovery codes generated and the calling session replaced',
             content: {
               'application/json': {
                 schema: {
@@ -1377,13 +1389,23 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   properties: {
                     success: { type: 'boolean' },
                     recoveryCodes: { type: 'array', items: { type: 'string' } },
-                    message: { type: 'string' }
+                    message: { type: 'string' },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller. Install it before the next request — the previous access token is invalid from this point.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
                   }
                 }
               }
             }
           },
-          '400': { $ref: '#/components/responses/BadRequest' }
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No codes were rotated.' },
+          '428': { description: 'The client auth binding must be rotated before a session can be issued. Retry after re-bootstrapping the binding.' }
         }
       }
     },
@@ -1451,6 +1473,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }

@@ -43,7 +43,7 @@ export function LoginForm() {
       // login wall used to discard them and land everyone on /devices — a
       // technician's inventory, which is not why a customer is here.
       const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
-      await navigateTo(next ?? '/quotes', { replace: true });
+      await navigateTo(next ?? '/', { replace: true });
     } else {
       setError(result.error || 'That email and password don\'t match our records. Try again, or reset your password.');
     }

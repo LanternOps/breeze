@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilidade",
+      "description": "Escolha quais informações de serviço este cliente pode ver no portal.",
+      "enableAll": "Ativar toda a visibilidade",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Painel",
+          "description": "Mostra um resumo da saúde do serviço ao entrar."
+        },
+        "enableSecurity": {
+          "label": "Segurança",
+          "description": "Mostra postura de segurança, proteção, ameaças e vulnerabilidades."
+        },
+        "enableBackups": {
+          "label": "Cópias de segurança",
+          "description": "Mostra cobertura de backup, verificação, testes de restauração e prontidão."
+        },
+        "enableReports": {
+          "label": "Relatórios",
+          "description": "Permite que os clientes gerem e baixem relatórios aprovados."
+        },
+        "enableSupportUsage": {
+          "label": "Uso de suporte",
+          "description": "Mostra o total de tempo de suporte faturável do mês até a data."
+        }
+      }
+    },
     "support": {
       "title": "Contato de suporte",
       "description": "Exibido aos clientes no portal.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Rascunho de resposta",
           "resolutionNote": "Rascunho da nota de resolução"
+        },
+        "skippedTitle": "Não aplicado",
+        "skipped": {
+          "item": {
+            "fields": "Atualizações de campos",
+            "link": "Vínculo de dispositivo",
+            "note": "Nota privada",
+            "draftReply": "Rascunho de resposta",
+            "draftResolution": "Rascunho da nota de resolução"
+          },
+          "reason": {
+            "noFieldsProposed": "Nenhum campo foi proposto.",
+            "belowConfidenceFloor": "A confiança ficou abaixo do limite para uma gravação automática.",
+            "humanSet": "Uma pessoa já definiu este campo.",
+            "noDeviceProposed": "Nenhum dispositivo foi proposto.",
+            "deviceAlreadyLinked": "O chamado já tem um dispositivo vinculado.",
+            "noDraftReply": "Nenhuma resposta foi proposta.",
+            "noDraftResolution": "Nenhuma nota de resolução foi proposta.",
+            "resolutionNoteExists": "O chamado já tem uma nota de resolução.",
+            "maxActionsPerRun": "O limite de ações da execução foi atingido primeiro.",
+            "intentError": "Não foi possível criar a alteração.",
+            "ticketNotFound": "O chamado não pôde ser encontrado."
+          }
         }
       }
     },
@@ -2113,7 +2163,7 @@
     "remove": "Remover",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Importar do URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG ou WebP até 5 MB.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG ou JPEG, até 5 MB.",
     "saveTheItemFirstThenAddAProductImage": "Salve o item primeiro e depois adicione uma imagem do produto.",
     "thisItemIsABundle": "Este item é um pacote",
     "groupsOtherCatalogItemsSoldTogether": "Agrupa outros itens do catálogo vendidos juntos.",
@@ -3924,6 +3974,8 @@
       "fieldKey": "Chave de campo",
       "fieldKeyPlaceholder": "por exemplo, asset_tag",
       "fieldKeyHelp": "Usado em filtros e API. Não pode ser alterado após a criação.",
+      "fieldKeyScriptHelp": "Esta chave é o que os scripts usam para ler e gravar o campo. Leitura: vincule a origem de um parâmetro de script a \"De um campo personalizado do dispositivo\" usando esta chave. Gravação: faça o script chamar a API de campos personalizados do dispositivo com uma requisição PATCH e uma chave de API para salvar um novo valor.",
+      "fieldKeyScriptHelpAriaLabel": "Sobre usar este campo em scripts",
       "fieldType": "Tipo de campo",
       "dropdownChoices": "Opções suspensas",
       "choiceLabel": "Rótulo",

@@ -60,6 +60,7 @@ import {
   LayoutGrid,
   Cpu,
   TrendingUp,
+  Power,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -334,6 +335,12 @@ export const navSections: NavSection[] = [
       { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
       { name: 'LLM Provider Catalog', labelKey: 'nav.llmProviderCatalog', href: '/admin/llm-provider-catalog', icon: Cpu, platformAdminOnly: true },
       { name: 'Connected Apps', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      // #4208 — the platform-wide AI emergency stop's first UI. The
+      // write surface (routes/admin/aiKillState.ts) shipped in #3828/PR #4168
+      // with no console because production had zero platform admins; this
+      // adds the console path once one exists. The SQL fallback documented in
+      // docs/deploy/ai-kill-switch.md still works and remains the runbook.
+      { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
     ],
   },
 ];

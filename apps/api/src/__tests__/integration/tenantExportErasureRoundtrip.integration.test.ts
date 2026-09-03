@@ -33,6 +33,8 @@ interface SeededOrgs {
   partnerId: string;
   orgA: string;
   orgB: string;
+  groupId: string;
+  groupName: string;
   prohibitedSentinels: string[];
 }
 
@@ -89,7 +91,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
-  // Org A: 2 sites + 2 device_groups. Org B: 1 site + 1 device_group.
+  // Base rows: Org A has 2 sites + 2 device_groups; Org B has 1 of each.
   const siteA1 = crypto.randomUUID();
   await db.execute(sql`
     INSERT INTO sites (id, org_id, name) VALUES
@@ -125,6 +127,19 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
+  await db.execute(sql`
+    INSERT INTO portal_branding (
+      org_id,
+      enable_dashboard,
+      enable_security,
+      enable_backups,
+      enable_reports,
+      enable_support_usage
+    ) VALUES
+      (${orgA}, true, true, false, true, false),
+      (${orgB}, false, false, true, false, true)
+  `);
+
   // #3205: a per_device_role line, so the archive's contract_lines.json is
   // exercised with the text[] column populated.
   const contractId = crypto.randomUUID();
@@ -137,7 +152,26 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     VALUES (${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false, ARRAY['switch','router','firewall']::text[])
   `);
 
-  return { partnerId, orgA, orgB, prohibitedSentinels };
+  // #3205 W02: a per_device_group line, so contract_lines.json carries
+  // device_group_id + device_group_name and erasure has to remove the line,
+  // the group and the contract in FK order.
+  const groupId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO device_groups (id, org_id, name, type) VALUES (${groupId}, ${orgA}, ${'Roundtrip group ' + suffix}, 'static')
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_group_id, device_group_name)
+    VALUES (${contractId}, ${orgA}, 'per_device_group', 'VIP', 40.00, false, ${groupId}, ${'Roundtrip group ' + suffix})
+  `);
+
+  return {
+    partnerId,
+    orgA,
+    orgB,
+    groupId,
+    groupName: 'Roundtrip group ' + suffix,
+    prohibitedSentinels,
+  };
 }
 
 function rowCount(db: ReturnType<typeof getTestDb>, table: string, orgId: string) {
@@ -153,7 +187,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
   });
 
   it('export manifest reflects only the target org rows', async () => {
-    const { orgA, prohibitedSentinels } = await seedTwoOrgs();
+    const { orgA, groupId, groupName, prohibitedSentinels } = await seedTwoOrgs();
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -162,15 +196,17 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(zipBuffer.subarray(0, 2).toString('latin1')).toBe('PK');
 
     const byName = new Map(manifest.files.map((f) => [f.name, f]));
-    // Org A has exactly 2 sites + 2 device_groups; Org B's rows must not leak.
+    // Org A has exactly 2 sites + 3 device_groups; Org B's rows must not leak.
     expect(byName.get('sites.json')?.rowCount).toBe(2);
     expect(byName.get('contracts.json')?.rowCount).toBe(1);
-    expect(byName.get('contract_lines.json')?.rowCount).toBe(1);
-    expect(byName.get('device_groups.json')?.rowCount).toBe(2);
+    expect(byName.get('contract_lines.json')?.rowCount).toBe(2);
+    expect(byName.get('device_groups.json')?.rowCount).toBe(3);
     // organizations.json is the org's own id-keyed row.
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
     // device_mtls_certificates.json carries the one certificate history row.
     expect(byName.get('device_mtls_certificates.json')?.rowCount).toBe(1);
+    // portal_branding.json carries the one portal-visibility-flags row.
+    expect(byName.get('portal_branding.json')?.rowCount).toBe(1);
     // Every manifest entry carries a sha256.
     for (const f of manifest.files) {
       expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -178,6 +214,26 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(manifest.orgId).toBe(orgA);
 
     const zip = await JSZip.loadAsync(zipBuffer);
+    const portalBrandingRows = JSON.parse(
+      await zip.file('portal_branding.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    expect(portalBrandingRows).toEqual([
+      expect.objectContaining({
+        org_id: orgA,
+        enable_dashboard: true,
+        enable_security: true,
+        enable_backups: false,
+        enable_reports: true,
+        enable_support_usage: false,
+      }),
+    ]);
+
+    const contractLines = JSON.parse(
+      await zip.file('contract_lines.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    const groupLine = contractLines.find((line) => line.device_group_id === groupId);
+    expect(groupLine?.device_group_id).toBe(groupId);
+    expect(groupLine?.device_group_name).toBe(groupName);
     const serializedZip = await Promise.all(
       Object.values(zip.files).map((entry) => entry.async('string')),
     ).then((entries) => entries.join('\n'));
@@ -215,6 +271,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'sites', orgA)).toBe(2);
     expect(await rowCount(db, 'sites', orgB)).toBe(1);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(1);
+    expect(await rowCount(db, 'portal_branding', orgA)).toBe(1);
+    expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
 
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -224,6 +282,9 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'contracts', orgA)).toBe(0);
     expect(await rowCount(db, 'contract_lines', orgA)).toBe(0);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
+    expect(await rowCount(db, 'portal_branding', orgA)).toBe(0);
+    expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
+    expect(stats.tablesDeleted.portal_branding).toBe(1);
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
     )) as unknown as Array<{ n: number }>;
@@ -237,14 +298,15 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     )) as unknown as Array<{ n: number }>;
     expect(orgBRows[0]?.n).toBe(1);
 
-    // Stats account for at least the 7 rows we seeded into org A (the
+    // Stats account for at least the 10 rows we seeded into org A (the
     // original 5 plus the device + device_mtls_certificates row added for
-    // Wave 5 Task 2).
-    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(7);
+    // Wave 5 Task 2, the device group + contract line added for #3205 W02,
+    // and the portal_branding row added for the portal visibility flags).
+    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(10);
     expect(stats.tablesDeleted['sites']).toBe(2);
-    expect(stats.tablesDeleted['device_groups']).toBe(2);
+    expect(stats.tablesDeleted['device_groups']).toBe(3);
     expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
-    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(1);
+    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(2);
     expect(stats.tablesDeleted['organizations']).toBe(1);
     // device_mtls_certificates is deleted explicitly (via its cascade-list
     // registration), not merely as a side effect of the devices row's

@@ -512,6 +512,53 @@
         "passed": "Geçti",
         "failed": "Başarısız"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Yapay Zeka Acil Durdurma Anahtarı",
+      "description": "Denetimsiz yapay zeka aracı etkinliği için platform genelinde acil durdurma. Bunu değiştirmek tüm iş ortaklarını aynı anda etkiler — bu, kiracı başına bir ayar değil, bir platform işlemidir.",
+      "refresh": "Yenile",
+      "loading": "Acil durdurma anahtarı durumu yükleniyor…",
+      "impactNote": "Anahtarı kapatmak, tüm iş ortakları için denetimsiz yapay zeka eylemlerini yaklaşık 5 saniye içinde durdurur. Devam etmekte olan eylemler kesintiye uğramaz.",
+      "platformAdmin": {
+        "title": "Platform yöneticisi erişimi gerekli",
+        "description": "Yapay zeka acil durdurma anahtarı, Breeze platform yöneticileri tarafından yönetilen platform genelinde bir kontroldür. Hesabınız bunu görüntüleyemez veya değiştiremez."
+      },
+      "status": {
+        "active": "Yapay zeka eylemleri etkin",
+        "killed": "Yapay zeka eylemleri durduruldu"
+      },
+      "fields": {
+        "epoch": "Epok",
+        "updatedBy": "Son değiştiren",
+        "updatedAt": "Son değiştirilme zamanı",
+        "lastReason": "Son neden",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Yapay zeka eylemlerini platform genelinde durdur",
+        "restore": "Yapay zeka eylemlerini geri yükle"
+      },
+      "confirm": {
+        "killTitle": "Yapay zeka eylemleri platform genelinde durdurulsun mu?",
+        "killDescription": "Bu, Breeze'deki tüm iş ortakları için denetimsiz yapay zeka aracı etkinliğini hemen durdurur. Bunu yalnızca aktif bir olay için kullanın.",
+        "restoreTitle": "Yapay zeka eylemleri geri yüklensin mi?",
+        "restoreDescription": "Bu, Breeze'deki tüm iş ortakları için denetimsiz yapay zeka aracı etkinliğini yeniden etkinleştirir.",
+        "reasonLabel": "Neden (denetim günlüğü için zorunlu)",
+        "reasonPlaceholder": "Olayı veya bu değişikliğin nedenini açıklayın…",
+        "cancel": "İptal",
+        "killSubmit": "Yapay zeka eylemlerini durdur",
+        "restoreSubmit": "Yapay zeka eylemlerini geri yükle"
+      },
+      "notice": {
+        "killed": "Yapay zeka eylemleri platform genelinde durduruldu.",
+        "restored": "Yapay zeka eylemleri platform genelinde geri yüklendi."
+      },
+      "errors": {
+        "load": "Acil durdurma anahtarı durumu yüklenemedi",
+        "generic": "Bir hata oluştu",
+        "flip": "Acil durdurma anahtarı güncellenemedi",
+        "mfaRequired": "Yapay zeka acil durdurma anahtarını değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
     }
   },
   "audit": {

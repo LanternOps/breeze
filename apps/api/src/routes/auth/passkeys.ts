@@ -55,6 +55,8 @@ import {
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   resolveEnrollmentStepUp,
+  rejectProof,
+  MFA_PROOF_INVALID,
   installAuthorizedUserSessionCookies,
   installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
@@ -159,6 +161,23 @@ passkeyRoutes.get('/passkeys', authMiddleware, async (c) => {
   return c.json({ passkeys: rows.map(toPublicPasskey) });
 });
 
+/**
+ * #4470: the AUTHENTICATED passkey factor-management routes
+ * (`/passkeys/register/options`, `/passkeys/register/verify`,
+ * `DELETE /passkeys/:id`) answer a rejected proof with 400, exactly like
+ * `./mfa.ts`. `ProfilePage.handleAddPasskey` / `handleDeletePasskey` call all
+ * three through `fetchWithAuth` with no opt-out and no status branch, so while
+ * these answered 401 a mistyped step-up password — or a stale registration
+ * challenge — was handed to the generic refresh-and-replay path and could sign
+ * the user out mid-enrollment. Same bug, same fix.
+ *
+ * The LOGIN-time passkey routes further down (`/mfa/passkey/options`,
+ * `/mfa/passkey/verify`) deliberately keep their 401s: they are pre-session,
+ * scoped to a `tempToken` rather than a bearer, and are reached with a plain
+ * `fetch` that has no refresh path to mislead.
+ */
+const PASSKEY_PROOF_REJECTION_STATUS = 400;
+
 passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('json', registerOptionsSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
@@ -174,7 +193,7 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
     c,
     auth,
     { currentPassword, ssoReauthGrantId },
-    { keyPrefix: 'passkey:pwd', consume: false }
+    { keyPrefix: 'passkey:pwd', consume: false, rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS }
   );
   if (enrollmentError) return enrollmentError;
 
@@ -209,7 +228,18 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
-      return c.json({ error: err.message }, 401);
+      // #4470: the registration challenge could not be redeemed — usually
+      // because it is missing or expired. Whatever the cause, it is not a dead
+      // bearer, and the challenge is single-use, so refresh-and-replaying this
+      // body could only ever fail again. On the settings page that 401 logged
+      // the user out for it.
+      //
+      // `PasskeyChallengeError` also covers "Redis unavailable" and a corrupt
+      // record, which are infra failures rather than rejected proofs and would
+      // be better served by a 503. That conflation predates this change (they
+      // shared the old 401 too) and is left for a follow-up — 400 at least
+      // keeps the user signed in where 401 did not.
+      return rejectProof(c, err.message, MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
     }
     throw err;
   }
@@ -224,7 +254,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       email: auth.user.email,
       details: { method: 'passkey' }
     });
-    return c.json({ error: 'Passkey registration failed' }, 401);
+    return rejectProof(c, 'Passkey registration failed', MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
@@ -244,7 +274,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     c,
     auth,
     { ssoReauthGrantId },
-    { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true }
+    { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS }
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
@@ -853,7 +883,9 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     return c.json({ error: 'MFA verification is required to delete a passkey' }, 403);
   }
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd', {
+    rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS,
+  });
   if (passwordError) return passwordError;
 
   const [passkey] = await findOwnedPasskey(id, auth.user.id);

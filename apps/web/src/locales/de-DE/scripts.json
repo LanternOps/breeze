@@ -1059,6 +1059,8 @@
       "variablePlaceholder": "z.B. vendor_token",
       "fieldLabel": "Schlüssel des benutzerdefinierten Felds",
       "fieldPlaceholder": "z.B. asset_tag",
+      "fieldHelp": "Geben Sie den Feldschlüssel ein, der unter Einstellungen → Benutzerdefinierte Felder angezeigt wird (Groß-/Kleinschreibung beachten). Lesen: Sobald die Bindung besteht, wird der aufgelöste Wert wie ein normaler Parameter an das Skript übergeben — es erscheint keine Eingabeaufforderung. Schreiben: Um einen neuen Wert zurückzuschreiben, lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen.",
+      "fieldHelpAriaLabel": "Über die Bindung des benutzerdefinierten Gerätefelds",
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
       "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
