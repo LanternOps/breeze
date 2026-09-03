@@ -11,6 +11,7 @@ const {
   approverMocks,
   mobileHwKeyMocks,
   attestationMocks,
+  sentryMocks,
   rateLimitState,
   helperMocks,
   grantMocks,
@@ -68,6 +69,9 @@ const {
       // an accidental import does not explode.
       toMobileKeyAlg: vi.fn((v: string) => (v === 'RS256' || v === 'ES256' ? v : null)),
     },
+    sentryMocks: {
+      captureException: vi.fn(),
+    },
     attestationMocks: {
       issueRegistrationAttempt: vi.fn(),
       consumeRegistrationAttempt: vi.fn(),
@@ -106,6 +110,10 @@ vi.mock('../services/approverWebAuthn', () => ({
 
 vi.mock('../services/mobileHwKey', () => ({
   ...mobileHwKeyMocks,
+}));
+
+vi.mock('../services/sentry', () => ({
+  ...sentryMocks,
 }));
 
 vi.mock('../services/authenticatorAttestation', () => ({
@@ -1226,6 +1234,19 @@ describe('attested mobile registration (#1374 W02)', () => {
       });
       expect(res.status).toBe(403);
       expect(dbState.insertValues).toHaveLength(0);
+      // The grant survives — proven directly, not inferred from "nothing was
+      // inserted". The check happening before the grant consume is true by the
+      // current statement order, and that order is exactly what a refactor can
+      // change without any other test noticing.
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.denied',
+          result: 'failure',
+          reason: 'attempt_platform_mismatch',
+        }),
+      );
     });
 
     it('401s when the registration PoP signature does not verify', async () => {
@@ -1333,17 +1354,76 @@ describe('attested mobile registration (#1374 W02)', () => {
         verifiedAt: new Date(),
         keyId: 'k',
         evidence: { appId: 'x' },
-        appIntegrityVerifiedAt: null,
+        appIntegrityVerifiedAt: new Date(),
       });
 
       const res = await post('/devices/mobile/verify', validBody);
       expect(res.status).toBe(201);
+      // ALL FIVE attestation-derived columns must fall back together. Asserting
+      // only two would miss a row labelled `unattested` that nonetheless carries
+      // attested-looking evidence — forensically worse than either honest state.
       expect(dbState.insertValues[0]).toMatchObject({
         isPlatformBound: false,
         platformBoundBasis: 'unattested',
         attestationVerifiedAt: null,
+        attestationKeyId: null,
         attestedPublicKeySha256: null,
+        attestationEvidence: {},
+        appIntegrityVerifiedAt: null,
       });
+      expect(await res.json()).toMatchObject({
+        device: { isPlatformBound: false, platformBoundBasis: 'unattested' },
+      });
+    });
+
+    it('raises a dedicated signal when it downgrades — a silent success row is not enough', async () => {
+      // This path means a verifier said "verified" for a key that would not
+      // re-parse for hashing, even though the PoP check parsed the same bytes
+      // moments earlier. That is a server bug, not caller behaviour, and it is
+      // dead until W03/W04 wire a real verifier — i.e. it will start mattering
+      // at exactly the moment nobody remembers it exists.
+      mobileHwKeyMocks.sha256CanonicalSpki.mockReturnValueOnce(null);
+      attestationMocks.verifyPlatformAttestation.mockResolvedValueOnce({
+        basis: 'ios_se_p256_app_attest',
+        verifiedAt: new Date(),
+        keyId: 'k',
+        evidence: { appId: 'x' },
+        appIntegrityVerifiedAt: null,
+      });
+
+      await post('/devices/mobile/verify', validBody);
+
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.attestation_downgraded',
+          result: 'failure',
+          reason: 'attested_key_digest_unavailable',
+          details: expect.objectContaining({
+            claimedBasis: 'ios_se_p256_app_attest',
+            storedBasis: 'unattested',
+          }),
+        }),
+      );
+      expect(sentryMocks.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('ios_se_p256_app_attest') }),
+        expect.anything(),
+        expect.objectContaining({ area: 'authenticator_attestation' }),
+      );
+    });
+
+    it('raises NO downgrade signal on the ordinary unattested path (W02 today)', async () => {
+      // The stub returns verifiedAt: null, so nothing was ever claimed and there
+      // is nothing to downgrade. If this fired here it would cry wolf on every
+      // single registration until W03/W04 land.
+      await post('/devices/mobile/verify', validBody);
+      expect(sentryMocks.captureException).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.attestation_downgraded',
+        }),
+      );
     });
 
     it('leaves last_used_at null — PoP at registration does not mean "used for an approval"', async () => {

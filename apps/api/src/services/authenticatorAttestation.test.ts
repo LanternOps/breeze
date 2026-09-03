@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 
 // Redis is the only side effect here; the transcript is pure.
-const { redisStore, redisMock } = vi.hoisted(() => {
+const { redisStore, redisMock, sentryMocks } = vi.hoisted(() => {
   const store = new Map<string, string>();
   return {
     redisStore: store,
+    sentryMocks: { captureException: vi.fn() },
     redisMock: {
       setex: vi.fn(async (key: string, _ttl: number, value: string) => {
         store.set(key, value);
@@ -26,6 +27,8 @@ const { redisStore, redisMock } = vi.hoisted(() => {
 vi.mock('./redis', () => ({
   getRedis: vi.fn(() => redisMock),
 }));
+
+vi.mock('./sentry', () => ({ ...sentryMocks }));
 
 
 import { getRedis } from './redis';
@@ -138,9 +141,25 @@ describe('registration attempt lifecycle', () => {
     expect(await consumeRegistrationAttempt('nope')).toBeNull();
   });
 
-  it('returns null (never throws) when the stored value is corrupt', async () => {
+  it('returns null (never throws) when the stored value is corrupt, and REPORTS it', async () => {
+    // The caller is told "expired"; the operator must be told the truth. This
+    // key is a randomUUID keyspace we wrote ourselves with JSON.stringify
+    // moments earlier, so a parse failure is Redis corruption, a namespace
+    // collision, or a serialization bug — never caller behaviour. Swallowing it
+    // into a bare `null` would make a server defect indistinguishable from an
+    // ordinary expiry.
     redisStore.set('authenticator-attest:corrupt', 'not json');
     expect(await consumeRegistrationAttempt('corrupt')).toBeNull();
+    expect(sentryMocks.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ reason: 'attempt_corrupt' }),
+    );
+  });
+
+  it('does NOT report a plain miss — an expired or unknown attempt is routine', async () => {
+    expect(await consumeRegistrationAttempt('never-issued')).toBeNull();
+    expect(sentryMocks.captureException).not.toHaveBeenCalled();
   });
 
   it('throws when redis is unavailable — an attempt that cannot be stored must not be issued', async () => {
@@ -197,4 +216,131 @@ describe('verifyPlatformAttestation (W02 stub)', () => {
   // NOT in L4_TRUSTED_PLATFORM_BOUND_BASES — is asserted in
   // authenticatorAssurance.test.ts, which already stubs the db layer that
   // importing that module pulls in.
+});
+
+describe('registration proof-of-possession, end to end with real crypto', () => {
+  // registrationTranscript and verifyMobileSignature are each proven correct in
+  // isolation, and the route suite proves they are WIRED together — but with
+  // both mocked. Nothing else builds a real transcript, signs it with a real
+  // key, and verifies it through the real verifier in one assertion, so the
+  // binding is otherwise true only by inference across three files. This is the
+  // exact contract W05/W06 have to reproduce on-device.
+  const base = {
+    attemptId: '9f1c8b2e-0000-4000-8000-000000000001',
+    challenge: crypto.randomBytes(32).toString('base64url'),
+  };
+
+  function signTranscript(privateKey: crypto.KeyObject, transcript: Buffer) {
+    // The client signs the BASE64 TEXT of the digest, not the raw bytes — that
+    // is what the route passes as `payload`, and verifyMobileSignature reads
+    // `payload` as utf8.
+    return crypto
+      .sign('SHA256', Buffer.from(transcript.toString('base64'), 'utf8'), privateKey)
+      .toString('base64');
+  }
+
+  it('accepts a P-256 signature over the transcript for the key being registered', async () => {
+    const { verifyMobileSignature } = await import('./mobileHwKey');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const spki = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+    const transcript = registrationTranscript({
+      ...base,
+      publicKeyAlg: 'ES256',
+      publicKeySpkiB64: spki,
+    });
+
+    expect(
+      verifyMobileSignature({
+        publicKeySpkiB64: spki,
+        payload: transcript.toString('base64'),
+        signatureB64: signTranscript(privateKey, transcript),
+        alg: 'ES256',
+      }),
+    ).toBe(true);
+  });
+
+  it('REJECTS a signature bound to a different challenge — this is the replay defence', async () => {
+    const { verifyMobileSignature } = await import('./mobileHwKey');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const spki = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+    // The phone signs the transcript for attempt A...
+    const signature = signTranscript(
+      privateKey,
+      registrationTranscript({ ...base, publicKeyAlg: 'ES256', publicKeySpkiB64: spki }),
+    );
+    // ...and the server derives the transcript for the attempt it actually
+    // consumed, which carries a different challenge.
+    const serverTranscript = registrationTranscript({
+      ...base,
+      challenge: crypto.randomBytes(32).toString('base64url'),
+      publicKeyAlg: 'ES256',
+      publicKeySpkiB64: spki,
+    });
+
+    expect(
+      verifyMobileSignature({
+        publicKeySpkiB64: spki,
+        payload: serverTranscript.toString('base64'),
+        signatureB64: signature,
+        alg: 'ES256',
+      }),
+    ).toBe(false);
+  });
+
+  it('REJECTS a signature bound to a DIFFERENT key — the transcript commits to the SPKI', async () => {
+    // Key substitution: an attacker replays a PoP the victim minted for key A
+    // while registering their own key B. The SPKI is inside the transcript, so
+    // the signature no longer covers what is being registered.
+    const { verifyMobileSignature } = await import('./mobileHwKey');
+    const victim = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const attacker = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const victimSpki = victim.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+    const attackerSpki = attacker.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+    const signature = signTranscript(
+      victim.privateKey,
+      registrationTranscript({ ...base, publicKeyAlg: 'ES256', publicKeySpkiB64: victimSpki }),
+    );
+    const serverTranscript = registrationTranscript({
+      ...base,
+      publicKeyAlg: 'ES256',
+      publicKeySpkiB64: attackerSpki,
+    });
+
+    expect(
+      verifyMobileSignature({
+        publicKeySpkiB64: attackerSpki,
+        payload: serverTranscript.toString('base64'),
+        signatureB64: signature,
+        alg: 'ES256',
+      }),
+    ).toBe(false);
+  });
+
+  it('binds the algorithm too — an RS256-declared transcript is not satisfied by the ES256 one', async () => {
+    const { verifyMobileSignature } = await import('./mobileHwKey');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const spki = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+    const signature = signTranscript(
+      privateKey,
+      registrationTranscript({ ...base, publicKeyAlg: 'ES256', publicKeySpkiB64: spki }),
+    );
+    const rsTranscript = registrationTranscript({
+      ...base,
+      publicKeyAlg: 'RS256',
+      publicKeySpkiB64: spki,
+    });
+
+    expect(
+      verifyMobileSignature({
+        publicKeySpkiB64: spki,
+        payload: rsTranscript.toString('base64'),
+        signatureB64: signature,
+        alg: 'ES256',
+      }),
+    ).toBe(false);
+  });
 });

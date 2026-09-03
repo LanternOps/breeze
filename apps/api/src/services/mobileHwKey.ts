@@ -36,6 +36,34 @@ export function toMobileKeyAlg(value: string | null | undefined): MobileKeyAlg |
 }
 
 /**
+ * A signature can be rejected for two very different reasons, and collapsing
+ * them into one silent `false` is how a technician ends up locked out of a
+ * critical-tier approval with nothing to debug:
+ *
+ *  - the signature does not match — routine, and on the approval path it is the
+ *    attacker-shaped case. Stays silent; logging it would be noise a caller can
+ *    generate at will.
+ *  - the KEY SHAPE is wrong for the declared algorithm — an EC key labelled
+ *    RS256, a P-384 curve under ES256, an undersized RSA modulus. On the
+ *    approval path the key and its label both come from OUR OWN device row, so
+ *    this is never routine: it means bad data, a bad migration, or a Node crypto
+ *    behaviour change, and every future approval from that device will fail
+ *    forever. It gets a log line.
+ *
+ * No key material or signature bytes are logged — only the shape mismatch. The
+ * registration path, where the key IS caller-supplied, is rate limited
+ * (10/300s per user), so this cannot be used to flood logs.
+ */
+function rejectKeyShape(alg: MobileKeyAlg, field: string, observed: string | undefined): false {
+  console.warn('[mobile-hw-key] rejected key shape for declared algorithm', {
+    alg,
+    field,
+    observed: observed ?? 'unknown',
+  });
+  return false;
+}
+
+/**
  * Verify an approval / registration signature over `payload` against an SPKI DER
  * public key (base64). Returns false on any malformed input (never throws).
  *
@@ -69,15 +97,23 @@ export function verifyMobileSignature(input: {
       type: 'spki',
     });
     if (input.alg === 'ES256') {
-      if (key.asymmetricKeyType !== 'ec') return false;
+      if (key.asymmetricKeyType !== 'ec') {
+        return rejectKeyShape(input.alg, 'key_type', key.asymmetricKeyType);
+      }
       // "ES256" names ECDSA-SHA256 over P-256 specifically. Without this a
       // P-384/P-521 key would verify and the ios_se_p256_app_attest basis would
       // be describing a key the Secure Enclave cannot hold.
-      if (key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') return false;
+      if (key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+        return rejectKeyShape(input.alg, 'curve', key.asymmetricKeyDetails?.namedCurve);
+      }
     } else {
-      if (key.asymmetricKeyType !== 'rsa') return false;
+      if (key.asymmetricKeyType !== 'rsa') {
+        return rejectKeyShape(input.alg, 'key_type', key.asymmetricKeyType);
+      }
       const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
-      if (bits < MIN_RSA_MODULUS_BITS) return false;
+      if (bits < MIN_RSA_MODULUS_BITS) {
+        return rejectKeyShape(input.alg, 'modulus_bits', String(bits));
+      }
     }
     return crypto.verify(
       'SHA256',

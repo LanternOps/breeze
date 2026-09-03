@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { MobileAttestation } from '@breeze/shared';
 import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
 import { getRedis } from './redis';
+import { captureException } from './sentry';
 import type { MobileKeyAlg } from './mobileHwKey';
 
 /**
@@ -122,9 +123,18 @@ export async function consumeRegistrationAttempt(attemptId: string): Promise<Reg
   if (stored == null) return null;
   try {
     return JSON.parse(stored) as RegistrationAttempt;
-  } catch {
+  } catch (err) {
     // Corrupt value: the attempt is already gone (getdel), so this is terminal.
     // Returning null makes /verify 400 rather than throw a 500.
+    //
+    // But this is NOT an attacker-shaped failure and must not be swallowed
+    // silently. `attemptId` is a randomUUID keyspace we wrote ourselves with
+    // JSON.stringify moments earlier, so a parse failure means Redis-level
+    // corruption, a key-namespace collision on `authenticator-attest:*`, or a
+    // serialization bug — a server defect an operator needs to see. The caller
+    // is told "expired"; the operator is told the truth.
+    captureException(err, undefined, { area: 'authenticator_attestation', reason: 'attempt_corrupt' });
+    console.error('[authenticator-attest] corrupt registration attempt payload', { attemptId });
     return null;
   }
 }

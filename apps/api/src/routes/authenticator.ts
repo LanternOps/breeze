@@ -17,6 +17,7 @@ import {
   canManagePartnerWidePolicies,
 } from '../services/partnerWideAccess';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
+import { captureException } from '../services/sentry';
 import { sha256CanonicalSpki, verifyMobileSignature } from '../services/mobileHwKey';
 import {
   ATTEMPT_TTL_SECONDS,
@@ -609,6 +610,31 @@ authenticatorRoutes.post(
     const attestedKeyDigest = attested.verifiedAt ? sha256CanonicalSpki(body.publicKey) : null;
     const attestationHolds = attested.verifiedAt !== null && attestedKeyDigest !== null;
     const basis = attestationHolds ? attested.basis : ('unattested' as const);
+
+    if (attested.verifiedAt !== null && !attestationHolds) {
+      // A verifier said "verified" for a key whose SPKI will not re-parse for
+      // hashing — even though `verifyMobileSignature` parsed the very same bytes
+      // moments ago to check the PoP. That combination is a BUG in the verifier
+      // or in the key handling, not something a caller can provoke, and the row
+      // that results is a safe but silent downgrade. It needs its own signal:
+      // buried as a boolean in a `result: 'success'` audit row's details, nobody
+      // would ever see it. Dead until W03/W04 wire a real verifier — which is
+      // exactly when it starts to matter.
+      captureException(
+        new Error(`attestation verified but bound-key digest unavailable (basis=${attested.basis})`),
+        c,
+        { area: 'authenticator_attestation', basis: attested.basis },
+      );
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.authenticator.device.register.attestation_downgraded',
+        result: 'failure',
+        reason: 'attested_key_digest_unavailable',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { claimedBasis: attested.basis, storedBasis: 'unattested' },
+      });
+    }
 
     const grantError = await enforceApproverRegisterStepUp(c, auth, body.registerGrantId, { consume: true });
     if (grantError) return grantError;
