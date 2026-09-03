@@ -36,8 +36,12 @@ vi.mock('./quoteService', () => ({
 vi.mock('./quoteLifecycle', () => ({
   sendQuote: vi.fn().mockResolvedValue({
     quote: { id: 'quote-1', status: 'sent' },
-    emailed: false,
     acceptUrl: 'https://example.test/portal/quote/token',
+    // #3905 — the email is a deferred the tool invokes itself.
+    deliverEmail: vi.fn().mockResolvedValue({
+      quote: { id: 'quote-1', status: 'sent' },
+      emailed: false,
+    }),
   }),
   declineQuoteByActor: vi.fn().mockResolvedValue({ id: 'quote-1', status: 'declined' }),
 }));
@@ -155,6 +159,8 @@ describe('manage_quotes', () => {
     );
 
     expect(quoteLifecycle.sendQuote).toHaveBeenCalledWith('quote-1', actor);
+    // The tool must still report the delivery outcome — an AI caller that only
+    // saw `quote.status = sent` would tell the tech the customer was emailed.
     expect(JSON.parse(out)).toEqual({
       quote: { id: 'quote-1', status: 'sent' },
       emailed: false,

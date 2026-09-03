@@ -154,6 +154,8 @@ type SmtpProviderConfig = {
   from: string;
   user?: string;
   pass?: string;
+  /** #3905 — connection/greeting/socket deadline, ms. Never undefined. */
+  timeoutMs: number;
 };
 
 type MailgunProviderConfig = {
@@ -162,6 +164,8 @@ type MailgunProviderConfig = {
   domain: string;
   baseUrl: string;
   from: string;
+  /** #3905 — whole-request deadline for the Mailgun API call, ms. */
+  timeoutMs: number;
 };
 
 type ResolvedProviderConfig = ResendProviderConfig | SmtpProviderConfig | MailgunProviderConfig;
@@ -188,10 +192,26 @@ export class EmailService {
       return;
     }
 
+    // #3905 — explicit deadlines. Without these nodemailer inherits its own
+    // defaults (2min connect, 30s greeting, 10min socket), so a mail server
+    // that accepts the TCP connection and then goes silent holds the send for
+    // ten minutes. Quote/invoice sends are best-effort and swallow failures,
+    // so an unbounded hang is strictly worse than a bounded failure: the
+    // caller can record `send_email_reason` and show the "no email was
+    // delivered" banner instead of leaking a worker (and, before the
+    // deferred-send fix, a pooled Postgres connection and a row lock).
+    //
+    // All three take the same value on purpose. `socketTimeout` is an
+    // INACTIVITY timeout, not a total-transfer budget, so it does not cap how
+    // long a large PDF attachment may take to upload — only how long the
+    // socket may stall mid-transfer.
     this.smtpTransport = nodemailer.createTransport({
       host: config.host,
       port: config.port,
       secure: config.secure,
+      connectionTimeout: config.timeoutMs,
+      greetingTimeout: config.timeoutMs,
+      socketTimeout: config.timeoutMs,
       auth: config.user && config.pass
         ? {
           user: config.user,
@@ -440,6 +460,44 @@ function parseSmtpPort(): number {
   return parsed;
 }
 
+/**
+ * #3905 — parse a transport deadline in milliseconds.
+ *
+ * Deliberately THROWS on a malformed value rather than falling back to the
+ * default. `resolveEmailProviderConfig` is called from `getEmailService`,
+ * which turns a config error into a null service + a startup warning — so a
+ * typo surfaces as "email is not configured", not as a transport that is
+ * silently unbounded again. Silently defaulting is how an operator who typed
+ * `SMTP_TIMEOUT_MS=30s` ends up back at the ten-minute nodemailer default with
+ * no signal that their setting was ignored.
+ *
+ * Range: 1s-10min. Below a second no real mail server completes a handshake;
+ * above ten minutes the bound stops being one.
+ */
+function parseTransportTimeoutMs(name: string, defaultMs: number): number {
+  const raw = getEnvString(name);
+  if (!raw) {
+    return defaultMs;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || String(parsed) !== raw || parsed < 1000 || parsed > 600_000) {
+    throw new Error(`${name} must be an integer between 1000 and 600000 milliseconds (received "${raw}")`);
+  }
+
+  return parsed;
+}
+
+/** SMTP connection/greeting/socket deadline. 30s is generous for a handshake
+ *  and, being an inactivity timeout, does not cap a slow attachment upload. */
+const DEFAULT_SMTP_TIMEOUT_MS = 30_000;
+
+/** Mailgun whole-request deadline. Larger than the SMTP one because
+ *  `AbortSignal.timeout` bounds the ENTIRE request including the multipart
+ *  attachment upload, not just an idle socket — a multi-MB proposal PDF on a
+ *  slow uplink must still be able to finish. */
+const DEFAULT_MAILGUN_TIMEOUT_MS = 120_000;
+
 function parseSmtpSecure(): boolean {
   const raw = getEnvString('SMTP_SECURE');
   if (!raw) {
@@ -495,7 +553,8 @@ function resolveSmtpConfig(
     secure: parseSmtpSecure(),
     from: smtpFrom,
     user: smtpUser,
-    pass: smtpPass
+    pass: smtpPass,
+    timeoutMs: parseTransportTimeoutMs('SMTP_TIMEOUT_MS', DEFAULT_SMTP_TIMEOUT_MS)
   };
 }
 
@@ -520,7 +579,8 @@ function resolveMailgunConfig(
     apiKey: mailgunApiKey,
     domain: mailgunDomain,
     baseUrl: normalizeBaseUrl(mailgunBaseUrl ?? 'https://api.mailgun.net'),
-    from: mailgunFrom
+    from: mailgunFrom,
+    timeoutMs: parseTransportTimeoutMs('MAILGUN_TIMEOUT_MS', DEFAULT_MAILGUN_TIMEOUT_MS)
   };
 }
 
@@ -618,6 +678,28 @@ function buildMailgunEndpoint(config: MailgunProviderConfig): string {
   return `${config.baseUrl}/v3/${encodeURIComponent(config.domain)}/messages`;
 }
 
+/**
+ * #3905 — the Mailgun POST with its deadline translated.
+ *
+ * An aborted `fetch` rejects with a bare `TimeoutError: The operation was
+ * aborted due to timeout`, which names neither the transport nor the budget
+ * that expired. Callers persist the failure as an opaque `send_failed` reason
+ * and an operator then has to guess whether Mailgun was down, slow, or simply
+ * bounded too tightly — so re-throw with both facts attached, preserving the
+ * original as `cause`. Non-timeout failures (DNS, TLS, connection refused)
+ * pass through untouched: they already carry a usable message.
+ */
+async function mailgunFetch(config: MailgunProviderConfig, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(buildMailgunEndpoint(config), init);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(`Mailgun request timed out after ${config.timeoutMs}ms`, { cause: err });
+    }
+    throw err;
+  }
+}
+
 async function sendViaMailgun(
   config: MailgunProviderConfig,
   params: SendEmailParams & { from: string }
@@ -628,6 +710,12 @@ async function sendViaMailgun(
   const replyTos = params.replyTo
     ? (Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo])
     : [];
+
+  // #3905 — a whole-request deadline. Both fetches previously passed no
+  // AbortSignal, so a Mailgun endpoint that accepted the connection and then
+  // stalled had NO client-side bound at all. `AbortSignal.timeout` is created
+  // per send (not shared) because its clock starts at construction.
+  const signal = AbortSignal.timeout(config.timeoutMs);
 
   // Attachments require multipart/form-data; otherwise keep the simpler
   // urlencoded body (matches the long-standing contract + the email.test.ts
@@ -654,10 +742,11 @@ async function sendViaMailgun(
       });
       body.append('attachment', blob, attachment.filename);
     }
-    response = await fetch(buildMailgunEndpoint(config), {
+    response = await mailgunFetch(config, {
       method: 'POST',
       headers: { Authorization: `Basic ${authToken}` },
-      body
+      body,
+      signal
     });
   } else {
     const body = new URLSearchParams();
@@ -674,13 +763,14 @@ async function sendViaMailgun(
         body.set(`h:${name}`, value);
       }
     }
-    response = await fetch(buildMailgunEndpoint(config), {
+    response = await mailgunFetch(config, {
       method: 'POST',
       headers: {
         Authorization: `Basic ${authToken}`,
         'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: body.toString()
+      body: body.toString(),
+      signal
     });
   }
 

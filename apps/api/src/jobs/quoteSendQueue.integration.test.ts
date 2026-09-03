@@ -56,9 +56,9 @@ import {
   processQuoteSendJob,
   type QuoteSendJobData,
 } from './quoteSendQueue';
-import { sendQuote } from '../services/quoteLifecycle';
+import { sendQuote, type SendQuoteEmailReason } from '../services/quoteLifecycle';
 import { getBullMQConnection, closeRedis } from '../services/redis';
-import { withDbAccessContext, type DbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import type { QuoteActor } from '../services/quoteTypes';
 import { createOrganization, createPartner } from '../__tests__/integration/db-utils';
@@ -70,12 +70,31 @@ const DELAY_MS = 60_000;
 
 const sendQuoteMock = vi.mocked(sendQuote);
 
-function okSendResult(overrides: Partial<Awaited<ReturnType<typeof sendQuote>>> = {}) {
+/**
+ * A stand-in for the real sendQuote result.
+ *
+ * #3905 — the email (and the `send_email_reason` write it owns) is a DEFERRED
+ * the worker runs after the send transaction commits, so a delivery outcome is
+ * expressed through `deliverEmail`, not through top-level flags. `delivery`
+ * here also does the real thing the deferred does: it persists the reason in
+ * its own short system context, which is exactly what these real-DB assertions
+ * read back off the row.
+ */
+function okSendResult(
+  delivery: { emailed: boolean; emailReason?: SendQuoteEmailReason } = { emailed: true },
+  quoteId?: string,
+) {
   return {
     quote: {} as never,
-    emailed: true,
     acceptUrl: 'https://portal.example.test/quote/test-token',
-    ...overrides,
+    deliverEmail: async () => {
+      if (delivery.emailReason && quoteId) {
+        await withSystemDbAccessContext(() =>
+          db.update(quotes).set({ sendEmailReason: delivery.emailReason }).where(eq(quotes.id, quoteId)),
+        );
+      }
+      return { quote: {} as never, ...delivery };
+    },
   } as Awaited<ReturnType<typeof sendQuote>>;
 }
 
@@ -230,7 +249,7 @@ describe('quoteSendQueue — real Redis + real Postgres', () => {
   it('fire: a send that commits but does not email persists the emailReason', async () => {
     const fx = await seedDraftQuote();
     const { jobId } = await schedule(fx);
-    sendQuoteMock.mockResolvedValue(okSendResult({ emailed: false, emailReason: 'no_billing_contact' }));
+    sendQuoteMock.mockResolvedValue(okSendResult({ emailed: false, emailReason: 'no_billing_contact' }, fx.quoteId));
 
     await processQuoteSendJob(firePayload(fx, jobId));
 

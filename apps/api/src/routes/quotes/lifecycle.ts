@@ -3,7 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
-import { requireScope, requirePermission } from '../../middleware/auth';
+import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -41,35 +41,59 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
 }
 
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
+//
+// #3905 — issue and email are two transactions, not one. This route is
+// registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so the auth middleware opens NO
+// ambient request transaction: `withAuthDbAccessContext` opens a short one that
+// COMMITS when sendQuote resolves, and only then does the deferred render the
+// PDF and run the mail round-trip. Before the split, both ran inside the
+// request transaction while it held the quote's — and, on a revision, its
+// PARENT's — FOR UPDATE lock, so a stalled mail server blocked the customer's
+// own accept on the original quote and pinned a pooled connection for as long
+// as it liked. Do NOT collapse these two awaits back into one context: a
+// `runOutsideDbContext` around the deferred would NOT help, because it only
+// re-points the ALS `db` proxy and leaves the outer transaction open.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   const body = await parseComposerBody(c, sendBodySchema);
   if (!body.ok) return c.json({ error: body.error }, 400);
   const emailOpts = body.data;
   try {
     const id = c.req.valid('param').id;
-    const result = await sendQuote(id, quoteActorFrom(c), {
+    const auth = c.get('auth') as AuthContext;
+    const sent = await withAuthDbAccessContext(auth, () => sendQuote(id, quoteActorFrom(c), {
       message: emailOpts.message || undefined,
       to: emailOpts.to,
       cc: emailOpts.cc,
       subject: emailOpts.subject || undefined,
       includePdf: emailOpts.includePdf,
-    });
+    }));
+    // Post-commit. Never rejects; it swallows every delivery failure into
+    // `emailReason` and persists it to send_email_reason itself (#3502).
+    const delivery = await sent.deliverEmail();
     // Retiring a quote the customer could previously accept is a separate,
     // independently-auditable act from sending the revision — record it against
     // the PARENT, which is the row whose status actually changed.
-    if (result.superseded) {
+    if (sent.superseded) {
       // writeRouteAudit (not writeAuditEvent) so the acting tech is attributed;
       // the payload itself is shared with the worker/bulk/AI paths.
       writeRouteAudit(c, supersededAuditEvent({
         childQuoteId: id,
-        orgId: result.quote.orgId,
-        parentQuoteId: result.superseded.parentQuoteId,
-        previousStatus: result.superseded.previousStatus,
-        revisionNumber: result.quote.revisionNumber,
-        emailed: result.emailed,
+        orgId: sent.quote.orgId,
+        parentQuoteId: sent.superseded.parentQuoteId,
+        previousStatus: sent.superseded.previousStatus,
+        revisionNumber: sent.quote.revisionNumber,
+        emailed: delivery.emailed,
       }));
     }
-    return c.json({ data: result });
+    // Response shape is unchanged from before the deferred split — the web
+    // detail page reads `emailed`/`emailReason` off this payload.
+    return c.json({ data: {
+      quote: delivery.quote,
+      emailed: delivery.emailed,
+      emailReason: delivery.emailReason,
+      acceptUrl: sent.acceptUrl,
+      superseded: sent.superseded,
+    } });
   } catch (err) { return handleServiceError(c, err); }
 });
 
@@ -112,25 +136,38 @@ quoteLifecycleRoutes.post('/:id/resend', scopes, sendPerm, zValidator('param', i
   const parsed = await parseComposerBody(c, sendBodySchema);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   try {
-    const result = await resendQuote(id, quoteActorFrom(c), {
+    // Same two-transaction shape as /send (#3905) — this route is likewise
+    // registered in SELF_MANAGED_DB_CONTEXT_ROUTES. resendQuote takes a
+    // FOR UPDATE lock on the quote to serialize against a concurrent supersede;
+    // that lock is released by the commit below, before any mail I/O.
+    const auth = c.get('auth') as AuthContext;
+    const resent = await withAuthDbAccessContext(auth, () => resendQuote(id, quoteActorFrom(c), {
       message: parsed.data.message || undefined,
       to: parsed.data.to,
       cc: parsed.data.cc,
       subject: parsed.data.subject || undefined,
       includePdf: parsed.data.includePdf,
-    });
+    }));
+    const delivery = await resent.deliverEmail();
     writeRouteAudit(c, {
-      orgId: result.quote.orgId,
+      orgId: delivery.quote.orgId,
       action: 'quote.resend',
       resourceType: 'quote',
       resourceId: id,
-      result: result.emailed ? 'success' : 'failure',
+      result: delivery.emailed ? 'success' : 'failure',
       // `origin` is the notable field: it distinguishes "the customer's
       // original link still works alongside the new one" from "their original
       // link is now dead", which the bare boolean cannot.
-      details: { emailed: result.emailed, emailReason: result.emailReason, reissued: result.reissued, linkOrigin: result.origin },
+      details: { emailed: delivery.emailed, emailReason: delivery.emailReason, reissued: resent.reissued, linkOrigin: resent.origin },
     });
-    return c.json({ data: result });
+    return c.json({ data: {
+      quote: delivery.quote,
+      emailed: delivery.emailed,
+      emailReason: delivery.emailReason,
+      acceptUrl: resent.acceptUrl,
+      origin: resent.origin,
+      reissued: resent.reissued,
+    } });
   } catch (err) { return handleServiceError(c, err); }
 });
 

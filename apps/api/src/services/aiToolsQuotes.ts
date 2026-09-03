@@ -469,6 +469,15 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'send': {
             const quoteId = String(input.quoteId);
             const result = await sendQuote(quoteId, actor);
+            // #3905 residual, deliberate: the AI-tool dispatcher wraps this
+            // whole call in ONE transaction (aiAgentSdkTools.ts) and offers no
+            // post-commit seam, so the deferred is invoked here, still inside
+            // it — behaviour identical to before the split, no regression. It
+            // must NOT be moved onto a separate connection: sendQuote's
+            // FOR UPDATE lock is still held by this transaction, so a second
+            // connection writing send_email_reason would block on it forever.
+            // Fixing this properly means giving executeTool a post-commit hook.
+            const delivery = await result.deliverEmail();
             if (result.superseded) {
               // No Hono context on the AI-tool path, so attribute the actor
               // explicitly rather than letting the row fall back to anonymous.
@@ -479,12 +488,18 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
                   parentQuoteId: result.superseded.parentQuoteId,
                   previousStatus: result.superseded.previousStatus,
                   revisionNumber: result.quote.revisionNumber,
-                  emailed: result.emailed,
+                  emailed: delivery.emailed,
                 }),
                 actorId: actor.userId,
               });
             }
-            return JSON.stringify(result);
+            return JSON.stringify({
+              quote: delivery.quote,
+              emailed: delivery.emailed,
+              emailReason: delivery.emailReason,
+              acceptUrl: result.acceptUrl,
+              superseded: result.superseded,
+            });
           }
           case 'decline':
             return JSON.stringify(await declineQuoteByActor(String(input.quoteId), s('reason'), actor));
