@@ -48,9 +48,9 @@ const writeLineAudit = (c: AuditableContext, action: ContractLineAuditAction, a:
 contractLineRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idParam), zValidator('json', contractLineInputSchema), async (c) => {
   try {
     const contractId = c.req.valid('param').id;
-    const row = await addContractLineToContract(contractId, c.req.valid('json'), contractActorFrom(c));
+    const { contractName, ...row } = await addContractLineToContract(contractId, c.req.valid('json'), contractActorFrom(c));
     writeLineAudit(c, 'contract.line.added', {
-      orgId: row.orgId, contractId, contractLineId: row.id, lineType: row.lineType, newUnitPrice: row.unitPrice,
+      orgId: row.orgId, contractId, contractName, contractLineId: row.id, lineType: row.lineType, newUnitPrice: row.unitPrice,
     });
     return c.json({ data: row });
   }

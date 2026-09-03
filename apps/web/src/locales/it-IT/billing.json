@@ -243,6 +243,7 @@
         "typeLocked": "Il tipo di riga non può essere modificato. Rimuovi la riga e aggiungine una nuova.",
         "priceFromCatalog": "Il prezzo proviene dal catalogo. Rimuovi il collegamento al catalogo per impostarlo manualmente.",
         "refreshPrice": "Aggiorna il prezzo dal catalogo",
+        "restoreCatalogLink": "Ripristina il collegamento al catalogo",
         "unlinkNeedsPrice": "Inserisci un prezzo unitario e l’impostazione fiscale per rimuovere il collegamento al catalogo.",
         "noChanges": "Non c’è ancora nulla da salvare."
       },

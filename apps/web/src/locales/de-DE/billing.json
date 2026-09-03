@@ -243,6 +243,7 @@
         "typeLocked": "Der Positionstyp kann nicht geändert werden. Entfernen Sie die Position und fügen Sie eine neue hinzu.",
         "priceFromCatalog": "Der Preis stammt aus dem Katalog. Entfernen Sie die Katalogverknüpfung, um ihn manuell zu setzen.",
         "refreshPrice": "Preis aus dem Katalog aktualisieren",
+        "restoreCatalogLink": "Katalogverknüpfung wiederherstellen",
         "unlinkNeedsPrice": "Geben Sie einen Stückpreis und die Steuereinstellung an, um die Katalogverknüpfung zu entfernen.",
         "noChanges": "Noch nichts zu speichern."
       },

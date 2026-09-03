@@ -318,13 +318,16 @@ describe('contract line routes', () => {
   });
 
   it('POST writes contract.line.added with the new price', async () => {
-    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID, orgId: ORG_ID, lineType: 'flat', unitPrice: '150.00' });
+    (svc.addContractLineToContract as any).mockResolvedValue({
+      id: LINE_ID, orgId: ORG_ID, lineType: 'flat', unitPrice: '150.00', contractName: 'Acme MSA',
+    });
     await app().request(`/${CONTRACT_ID}/lines`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ lineType: 'flat', description: 'Monthly fee', unitPrice: '150.00', taxable: true }),
     });
     expect((writeRouteAudit as any).mock.calls[0][1]).toMatchObject({
       action: 'contract.line.added', resourceType: 'contract', resourceId: CONTRACT_ID,
+      resourceName: 'Acme MSA',
       details: { contractLineId: LINE_ID, lineType: 'flat', newUnitPrice: '150.00' },
     });
   });

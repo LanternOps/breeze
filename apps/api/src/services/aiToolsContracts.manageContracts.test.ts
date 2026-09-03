@@ -32,7 +32,7 @@ vi.mock('./contractService', () => {
       audit: { orgId: 'org-1', contractId: 'contract-1', contractName: 'Acme MSA', contractLineId: 'line-1', lineType: 'flat', changedFields: ['description'] },
     }),
     deleteDraftContract: vi.fn().mockResolvedValue(undefined),
-    addContractLineToContract: vi.fn().mockResolvedValue({ id: 'line-1', contractId: 'contract-1', orgId: 'org-1', lineType: 'flat', unitPrice: '5.00' }),
+    addContractLineToContract: vi.fn().mockResolvedValue({ id: 'line-1', contractId: 'contract-1', orgId: 'org-1', lineType: 'flat', unitPrice: '5.00', contractName: 'Managed Services' }),
     removeContractLine: vi.fn().mockResolvedValue({ orgId: 'org-1', contractId: 'contract-1', contractName: 'Acme MSA', contractLineId: 'line-1', lineType: 'flat' }),
     contractLineAuditDetails: vi.fn((audit) => ({
       contractLineId: audit.contractLineId,
@@ -346,8 +346,11 @@ describe('manage_contracts update_line (#3205 W03)', () => {
   });
 
   it('add_line and remove_line audit too', async () => {
-    await run({ action: 'add_line', contractId: CONTRACT_ID, line: { lineType: 'flat', description: 'Fee', unitPrice: '5.00', taxable: false } });
-    expect(writeAuditEvent.mock.calls.at(-1)![1]).toMatchObject({ action: 'contract.line.added', initiatedBy: 'ai' });
+    const added = JSON.parse(await run({ action: 'add_line', contractId: CONTRACT_ID, line: { lineType: 'flat', description: 'Fee', unitPrice: '5.00', taxable: false } }));
+    // The audit-only contractName helper must feed resourceName and never reach the model.
+    expect(writeAuditEvent.mock.calls.at(-1)![1]).toMatchObject({ action: 'contract.line.added', initiatedBy: 'ai', resourceName: 'Managed Services' });
+    expect(added).not.toHaveProperty('contractName');
+    expect(added).toMatchObject({ id: 'line-1' });
     await run({ action: 'remove_line', contractId: CONTRACT_ID, lineId: LINE_ID });
     expect(writeAuditEvent.mock.calls.at(-1)![1]).toMatchObject({ action: 'contract.line.removed', initiatedBy: 'ai' });
   });

@@ -70,16 +70,17 @@ export type DecoratedContractLine = typeof contractLines.$inferSelect & {
  *  ON DELETE SET NULL). Two batched inArray selects, never a per-line query. */
 async function withLineRefs<T extends { siteId: string | null; deviceGroupId: string | null; orgId: string }>(
   lines: T[],
+  executor: DbExecutor = db,
 ): Promise<Array<T & {
   site: { id: string; name: string } | null;
   deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
 }>> {
   const siteIds = [...new Set(lines.map((l) => l.siteId).filter((x): x is string => x !== null))];
   const groupIds = [...new Set(lines.map((l) => l.deviceGroupId).filter((x): x is string => x !== null))];
-  const siteRows = siteIds.length === 0 ? [] : await db
+  const siteRows = siteIds.length === 0 ? [] : await executor
     .select({ id: sites.id, orgId: sites.orgId, name: sites.name })
     .from(sites).where(inArray(sites.id, siteIds));
-  const groupRows = groupIds.length === 0 ? [] : await db
+  const groupRows = groupIds.length === 0 ? [] : await executor
     .select({ id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type })
     .from(deviceGroups).where(inArray(deviceGroups.id, groupIds));
   const siteByKey = new Map(siteRows.map((s) => [`${s.id}|${s.orgId}`, { id: s.id, name: s.name }]));
@@ -1043,10 +1044,7 @@ export async function changeContractCurrency(
           try {
             resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
           } catch (err) {
-            if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
-                throw new ContractServiceError(err.message, 409, err.code);
-            }
-            throw err;
+            mapCatalogResolveError(err);
           }
           await tx.update(contractLines).set({ unitPrice: resolved.unitPrice }).where(eq(contractLines.id, line.id));
         }
@@ -1164,7 +1162,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
         deviceGroupName: group?.name ?? null,
         taxable, sortOrder: input.sortOrder ?? 0
       }).returning();
-      return row!;
+      return { ...row!, contractName: c.name };
     } catch (err) {
       if (isGroupFkViolation(err)) {
         throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
@@ -1193,7 +1191,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
 export async function updateContractLine(
   contractId: string, lineId: string, patch: UpdateContractLineInput, actor: ContractActor,
 ): Promise<{ line: DecoratedContractLine; audit: ContractLineAudit }> {
-  const { before, after, contract } = await db.transaction(async (tx) => {
+  const { before, line, contract } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
     assertEditable(c);
 
@@ -1292,11 +1290,11 @@ export async function updateContractLine(
       throw err;
     }
 
-    return { before: current, after: updated, contract: c };
+    const [line] = await withLineRefs([updated], tx);
+    return { before: current, line: line as DecoratedContractLine, contract: c };
   });
 
-  const [line] = await withLineRefs([after]);
-  return { line: line as DecoratedContractLine, audit: diffLineAudit(before, after, contract) };
+  return { line, audit: diffLineAudit(before, line, contract) };
 }
 
 export async function removeContractLine(

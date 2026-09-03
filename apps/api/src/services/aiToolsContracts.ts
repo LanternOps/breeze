@@ -287,13 +287,15 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
             await deleteDraftContract(String(input.contractId), actor);
             return JSON.stringify({ ok: true });
           case 'add_line': {
-            const row = await addContractLineToContract(
+            // contractName is an audit-only helper on the service result: it feeds
+            // resourceName and never reaches the model (mirrors routes/contracts/lines.ts).
+            const { contractName, ...row } = await addContractLineToContract(
               String(input.contractId),
               linePayload.parse({ line: input.line }).line,
               actor
             );
             auditContractLineToolEvent(auth, 'contract.line.added', {
-              orgId: row.orgId, contractId: String(input.contractId),
+              orgId: row.orgId, contractId: String(input.contractId), contractName,
               contractLineId: row.id, lineType: row.lineType, newUnitPrice: row.unitPrice,
             });
             return JSON.stringify(row);

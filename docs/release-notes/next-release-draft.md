@@ -94,8 +94,9 @@ delete once done:
   names of the changed columns and, for a price change, the old and new unit
   price — no descriptions, site names or group names.
 
-**Self-Hosting / Upgrade Notes** — three deliberate behaviour changes, no migration:
+**Self-Hosting / Upgrade Notes** — four deliberate behaviour changes, no migration:
 
+- Generated invoice lines now use deterministic `(sortOrder, createdAt, id)` ordering; lines tied on `sortOrder` may appear in a different order.
 - `DELETE /api/v1/contracts/:id/lines/:lineId` now returns **404
   `LINE_NOT_FOUND`** for a line that does not exist (previously a silent 200),
   and its success body is `{"data":{"ok":true}}` (previously `{}`).

@@ -243,6 +243,7 @@
         "typeLocked": "O tipo de linha não pode ser alterado. Remova a linha e adicione uma nova.",
         "priceFromCatalog": "O preço vem do catálogo. Remova o vínculo com o catálogo para defini-lo manualmente.",
         "refreshPrice": "Atualizar preço do catálogo",
+        "restoreCatalogLink": "Restaurar vínculo com o catálogo",
         "unlinkNeedsPrice": "Informe um preço unitário e a configuração de imposto para remover o vínculo com o catálogo.",
         "noChanges": "Ainda não há nada para salvar."
       },

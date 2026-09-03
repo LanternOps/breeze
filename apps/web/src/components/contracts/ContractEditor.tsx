@@ -81,6 +81,7 @@ function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePa
     patch.unitPrice = d.unitPrice;
     patch.taxable = d.taxable;
   } else {
+    if (d.catalogItemId && d.catalogItemId !== l.catalogItemId) patch.catalogItemId = d.catalogItemId;
     if (d.catalogItemId === null && d.unitPrice !== l.unitPrice) patch.unitPrice = d.unitPrice;
     if (d.catalogItemId === null && d.taxable !== l.taxable) patch.taxable = d.taxable;
   }
@@ -96,6 +97,7 @@ function editDraftIncomplete(l: ContractLine, d: EditLineDraft): boolean {
   if (!d.description.trim()) return true;
   if (l.lineType === 'per_device_role' && d.deviceRoles.length === 0) return true;
   if (l.lineType === 'per_device_group' && !d.deviceGroupId) return true;
+  if (l.lineType === 'manual' && !MONEY_RE.test(d.manualQuantity)) return true;
   if (d.catalogItemId === null && !MONEY_RE.test(d.unitPrice)) return true;
   return false;
 }
@@ -677,7 +679,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup) return;
+    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup) return;
     setBusy(true);
     try {
       await runAction({
@@ -713,7 +715,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
+  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -1120,6 +1122,19 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                         {!d.deviceGroupId && <span className="text-amber-600 dark:text-amber-500">{t('contracts.contractEditor.addLine.deviceGroupRequired')}</span>}
                                       </label>
                                     )}
+                                    {catalogItems.length > 0 && (
+                                      <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                                        {t('contracts.contractEditor.addLine.linkCatalogItemOptional')}
+                                        <CatalogItemPicker
+                                          items={catalogItems}
+                                          currencyCode={contractCurrency ?? ''}
+                                          includeBundles={false}
+                                          onSelect={(item) => setEditDraft({ ...d, catalogItemId: item.id })}
+                                          testId={`line-edit-catalog-picker-${idx}`}
+                                          placeholder={t('contracts.contractEditor.addLine.searchCatalog')}
+                                        />
+                                      </div>
+                                    )}
                                     <label className="flex items-center gap-2 text-xs text-muted-foreground">
                                       <input
                                         type="checkbox" checked={d.taxable} disabled={d.catalogItemId !== null}
@@ -1180,7 +1195,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                       <>
                                         <button
                                           type="button" disabled={isPending(`edit-${l.id}`)}
-                                          onClick={() => void saveLine(l, { refreshCatalogPrice: true })}
+                                          onClick={() => void saveLine(l, { ...(patch ?? {}), refreshCatalogPrice: true })}
                                           data-testid={`line-edit-refresh-${idx}`}
                                           className="inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                                         >
@@ -1195,6 +1210,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                         </button>
                                       </>
                                     )}
+                                    {l.catalogItemId !== null && d.catalogItemId === null && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditDraft({ ...d, catalogItemId: l.catalogItemId })}
+                                        data-testid={`line-edit-restore-catalog-${idx}`}
+                                        className="inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                                      >
+                                        {t('contracts.contractEditor.editLine.restoreCatalogLink')}
+                                      </button>
+                                    )}
                                     {patch && Object.keys(patch).length === 0 && (
                                       <span className="text-xs text-muted-foreground">{t('contracts.contractEditor.editLine.noChanges')}</span>
                                     )}
@@ -1205,7 +1230,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                               <>
                                 <td className="px-3 py-2">
                                   {t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}
-                                  {SITE_SCOPED_TYPES.has(l.lineType) && l.site
+                                  {l.site
                                     ? <span className="block text-xs text-muted-foreground" data-testid={`line-site-${idx}`}>{t('contracts.shared.lineScope.site', { name: l.site.name })}</span>
                                     : null}
                                   {l.lineType === 'per_device_role' && l.deviceRoles
@@ -1498,7 +1523,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup}
+                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >

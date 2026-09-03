@@ -243,6 +243,7 @@
         "typeLocked": "Line type can’t be changed. Remove the line and add a new one.",
         "priceFromCatalog": "Price comes from the catalog. Clear the catalog link to set it by hand.",
         "refreshPrice": "Refresh price from catalog",
+        "restoreCatalogLink": "Restore catalog link",
         "unlinkNeedsPrice": "Enter a unit price and tax setting to clear the catalog link.",
         "noChanges": "Nothing to save yet."
       },

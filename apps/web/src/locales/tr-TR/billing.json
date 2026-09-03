@@ -243,6 +243,7 @@
         "typeLocked": "Satır türü değiştirilemez. Satırı kaldırıp yenisini ekleyin.",
         "priceFromCatalog": "Fiyat katalogdan gelir. Elle ayarlamak için katalog bağlantısını kaldırın.",
         "refreshPrice": "Fiyatı katalogdan yenile",
+        "restoreCatalogLink": "Katalog bağlantısını geri yükle",
         "unlinkNeedsPrice": "Katalog bağlantısını kaldırmak için birim fiyat ve vergi ayarını girin.",
         "noChanges": "Henüz kaydedilecek bir şey yok."
       },

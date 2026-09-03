@@ -1,5 +1,7 @@
 /**
- * #3205 W03 acceptance bar, real Postgres as breeze_app (forced RLS, no bypass).
+ * #3205 W03 acceptance bar, real Postgres as breeze_app. Fixtures and billing
+ * controls use system scope; every line update/remove uses tenant scope under
+ * forced RLS, including the explicit cross-tenant denial proof.
  *
  * The headline is LINEAGE: editing a line in place leaves an already-generated
  * draft invoice issuable, where delete-and-re-add wedges it with SOURCE_NOT_FOUND
@@ -14,7 +16,7 @@
 import './setup';
 import { describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, deviceGroups, contracts, contractLines, invoiceLines } from '../../db/schema';
 import {
   addContractLineToContract, updateContractLine, removeContractLine, getContract,
@@ -55,6 +57,16 @@ async function seed(status: 'draft' | 'active' | 'paused' | 'cancelled' = 'draft
   });
 }
 
+const requestCtx = (f: Fixture, orgId = f.orgId) => ({
+  scope: 'partner' as const,
+  partnerId: f.partnerId,
+  orgId: null,
+  userId: null,
+  accessibleOrgIds: [orgId],
+  accessiblePartnerIds: [f.partnerId],
+  currentPartnerId: f.partnerId,
+});
+
 /** Insert a line straight through SQL so the fixture is not bounded by the
  *  writer's own validation — the point of the matrix is what the DB does. */
 async function rawLine(f: Fixture, cols: Record<string, unknown>): Promise<string> {
@@ -86,18 +98,18 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('roles onto a per_device line: app 400, DB 23514 on contract_lines_device_roles_chk', async () => {
     const f = await seed();
     const id = await rawLine(f, {});
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { deviceRoles: ['server'] } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { deviceRoles: ['server'] } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
     expect(await forge(id, sql`device_roles = ARRAY['server']::text[]`))
       .toEqual({ code: '23514', constraint: 'contract_lines_device_roles_chk' });
   });
 
-  runDb('roles cleared from a per_device_role line: app 400, DB 23514', async () => {
+  runDb('duplicate roles on a per_device_role line: app 400; clearing roles in DB is 23514', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'per_device_role', deviceRoles: ['server'] });
     // deviceRoles is not nullable in the patch schema, so the app-side proof is
     // the merged-row rule reached through a sibling edit that cannot fix it.
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { deviceRoles: ['server', 'server'] } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { deviceRoles: ['server', 'server'] } as never, f.actor)))
       .rejects.toMatchObject({ status: 400 });
     expect(await forge(id, sql`device_roles = NULL`))
       .toEqual({ code: '23514', constraint: 'contract_lines_device_roles_chk' });
@@ -106,7 +118,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('a site_id onto a per_device_group line: app 400, DB 23514 on contract_lines_device_group_chk', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'per_device_group', deviceGroupId: f.groupId, deviceGroupName: 'GA' });
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { siteId: f.siteId } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { siteId: f.siteId } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
     expect(await forge(id, sql`site_id = ${f.siteId}::uuid`))
       .toEqual({ code: '23514', constraint: 'contract_lines_device_group_chk' });
@@ -123,7 +135,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('duplicate roles: app 400, DB ACCEPTS', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'per_device_role', deviceRoles: ['server'] });
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { deviceRoles: ['server', 'server'] } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { deviceRoles: ['server', 'server'] } as never, f.actor)))
       .rejects.toMatchObject({ status: 400 });
     expect(await forge(id, sql`device_roles = ARRAY['server','server']::text[]`)).toBe('accepted');
   });
@@ -132,7 +144,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('manualQuantity on a flat line: app 400, DB ACCEPTS', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'flat' });
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { manualQuantity: '5.00' } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { manualQuantity: '5.00' } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
     expect(await forge(id, sql`manual_quantity = 5.00`)).toBe('accepted');
   });
@@ -142,7 +154,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('site_id on a flat line: app 400, DB ACCEPTS', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'flat' });
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { siteId: f.siteId } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { siteId: f.siteId } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
     expect(await forge(id, sql`site_id = ${f.siteId}::uuid`)).toBe('accepted');
   });
@@ -153,16 +165,16 @@ describe('contract line editing (real DB) #3205 W03', () => {
     const id = await rawLine(f, { lineType: 'per_device_group', deviceGroupId: null, deviceGroupName: 'Retired group' });
     const [replacement] = await withSystemDbAccessContext(() => db.insert(deviceGroups)
       .values({ orgId: f.orgId, name: 'Replacement', type: 'static' }).returning({ id: deviceGroups.id }));
-    const { line } = await withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { deviceGroupId: replacement!.id } as never, f.actor));
+    const { line } = await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { deviceGroupId: replacement!.id } as never, f.actor));
     expect(line).toMatchObject({ deviceGroupId: replacement!.id, deviceGroupName: 'Replacement' });
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { deviceGroupId: f.otherGroupId } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { deviceGroupId: f.otherGroupId } as never, f.actor)))
       .rejects.toMatchObject({ code: 'GROUP_NOT_IN_ORG', status: 400 });
   });
 
   runDb('a site in another org is 400 SITE_NOT_IN_ORG', async () => {
     const f = await seed();
     const id = await rawLine(f, {});
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { siteId: f.otherSiteId } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { siteId: f.otherSiteId } as never, f.actor)))
       .rejects.toMatchObject({ code: 'SITE_NOT_IN_ORG', status: 400 });
   });
 
@@ -174,7 +186,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
     // And the value that IS in range round-trips through the column.
     const f = await seed();
     const id = await rawLine(f, {});
-    const { line } = await withSystemDbAccessContext(() => updateContractLine(f.contractId, id, { unitPrice: '9999999999.99', sortOrder: 2147483647 } as never, f.actor));
+    const { line } = await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { unitPrice: '9999999999.99', sortOrder: 2147483647 } as never, f.actor));
     expect(line).toMatchObject({ unitPrice: '9999999999.99', sortOrder: 2147483647 });
   });
 
@@ -211,7 +223,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
     expect(gen.generated).toBe(true);
     const [beforeLine] = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, gen.invoiceId!)));
 
-    await withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '250.00', description: 'Renamed' } as never, f.actor));
+    await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { unitPrice: '250.00', description: 'Renamed' } as never, f.actor));
     const [afterLine] = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, gen.invoiceId!)));
     expect(afterLine).toEqual(beforeLine);
     await expect(withSystemDbAccessContext(() => issueInvoice(gen.invoiceId!, {
@@ -222,7 +234,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
     const g2 = await seed('active');
     const lineId2 = await rawLine(g2, { lineType: 'flat', description: 'Monthly fee', unitPrice: '100.00' });
     const gen2 = await withSystemDbAccessContext(() => db.transaction(() => generateDueInvoice(g2.contractId, new Date('2026-07-01T06:00:00Z'))));
-    await withSystemDbAccessContext(() => removeContractLine(g2.contractId, lineId2, g2.actor));
+    await withDbAccessContext(requestCtx(g2), () => removeContractLine(g2.contractId, lineId2, g2.actor));
     await withSystemDbAccessContext(() => addContractLineToContract(g2.contractId, {
       lineType: 'flat', description: 'Monthly fee', unitPrice: '250.00', taxable: false,
     } as never, g2.actor));
@@ -237,13 +249,26 @@ describe('contract line editing (real DB) #3205 W03', () => {
     const lineId = await rawLine(f, { lineType: 'flat', description: 'Monthly fee', unitPrice: '100.00' });
     // Both take contracts.id FOR UPDATE as their first statement, so they
     // serialise. The hold makes the interleaving observable, not the outcome.
+    let generationLocked!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { generationLocked = resolve; });
+    let releaseGeneration!: () => void;
+    const holdGeneration = new Promise<void>((resolve) => { releaseGeneration = resolve; });
     const generation = withSystemDbAccessContext(() => db.transaction(async () => {
       const r = await generateDueInvoice(f.contractId, new Date('2026-07-01T06:00:00Z'));
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      generationLocked();
+      await holdGeneration;
       return r;
     }));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const edit = withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '250.00' } as never, f.actor));
+    // Race against generation so an early throw fails fast instead of hanging on lockHeld.
+    await Promise.race([lockHeld, generation]);
+    let editIssued!: () => void;
+    const issued = new Promise<void>((resolve) => { editIssued = resolve; });
+    const edit = withDbAccessContext(requestCtx(f), () => {
+      editIssued();
+      return updateContractLine(f.contractId, lineId, { unitPrice: '250.00' } as never, f.actor);
+    });
+    await issued;
+    releaseGeneration();
     const [gen] = await Promise.all([generation, edit]);
     const [invLine] = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, gen.invoiceId!)));
     expect(invLine!.unitPrice).toBe('100.00');
@@ -254,7 +279,7 @@ describe('contract line editing (real DB) #3205 W03', () => {
   runDb('an edit that commits first is billed by the next generation', async () => {
     const f = await seed('active');
     const lineId = await rawLine(f, { lineType: 'flat', description: 'Monthly fee', unitPrice: '100.00' });
-    await withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '250.00' } as never, f.actor));
+    await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { unitPrice: '250.00' } as never, f.actor));
     const gen = await withSystemDbAccessContext(() => db.transaction(() => generateDueInvoice(f.contractId, new Date('2026-07-01T06:00:00Z'))));
     const [invLine] = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, gen.invoiceId!)));
     expect(invLine!.unitPrice).toBe('250.00');
@@ -265,14 +290,14 @@ describe('contract line editing (real DB) #3205 W03', () => {
     const f = await seed();
     const lineId = await rawLine(f, { lineType: 'flat', description: 'Original', unitPrice: '10.00' });
     await Promise.all([
-      withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { description: 'Renamed' } as never, f.actor)),
-      withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '11.00' } as never, f.actor)),
+      withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { description: 'Renamed' } as never, f.actor)),
+      withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { unitPrice: '11.00' } as never, f.actor)),
     ]);
     const [both] = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.id, lineId)));
     expect(both).toMatchObject({ description: 'Renamed', unitPrice: '11.00' });
 
-    await withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '20.00' } as never, f.actor));
-    await withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { unitPrice: '30.00' } as never, f.actor));
+    await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { unitPrice: '20.00' } as never, f.actor));
+    await withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { unitPrice: '30.00' } as never, f.actor));
     const [last] = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.id, lineId)));
     expect(last!.unitPrice).toBe('30.00');
   });
@@ -282,23 +307,30 @@ describe('contract line editing (real DB) #3205 W03', () => {
     const f = await seed();
     const lineId = await rawLine(f, {});
     await withSystemDbAccessContext(() => db.update(contracts).set({ status }).where(eq(contracts.id, f.contractId)));
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { description: 'x' } as never, f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, lineId, { description: 'x' } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
-  runDb('an actor whose accessibleOrgIds excludes the org gets 403 and changes no row', async () => {
+  runDb("the OTHER org's forced-RLS context cannot read or update the line", async () => {
     const f = await seed();
     const lineId = await rawLine(f, { description: 'Original' });
     const foreign: ContractActorT = { ...f.actor, accessibleOrgIds: [f.otherOrgId] };
-    await expect(withSystemDbAccessContext(() => updateContractLine(f.contractId, lineId, { description: 'Hijacked' } as never, foreign)))
-      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    const visible = await withDbAccessContext(requestCtx(f, f.otherOrgId), () => db.select()
+      .from(contractLines).where(eq(contractLines.id, lineId)));
+    expect(visible).toEqual([]);
+    const directlyUpdated = await withDbAccessContext(requestCtx(f, f.otherOrgId), () => db.update(contractLines)
+      .set({ description: 'Hijacked directly' }).where(eq(contractLines.id, lineId)).returning({ id: contractLines.id }));
+    expect(directlyUpdated).toEqual([]);
+    await expect(withDbAccessContext(requestCtx(f, f.otherOrgId), () => updateContractLine(
+      f.contractId, lineId, { description: 'Hijacked' } as never, foreign,
+    ))).rejects.toMatchObject({ code: 'CONTRACT_NOT_FOUND', status: 404 });
     const [row] = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.id, lineId)));
     expect(row!.description).toBe('Original');
   });
 
   runDb('DELETE for a line that does not exist is 404 LINE_NOT_FOUND', async () => {
     const f = await seed();
-    await expect(withSystemDbAccessContext(() => removeContractLine(f.contractId, '99999999-9999-4999-8999-999999999999', f.actor)))
+    await expect(withDbAccessContext(requestCtx(f), () => removeContractLine(f.contractId, '99999999-9999-4999-8999-999999999999', f.actor)))
       .rejects.toMatchObject({ code: 'LINE_NOT_FOUND', status: 404 });
   });
 });

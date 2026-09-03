@@ -5,6 +5,7 @@ import ContractEditor from './ContractEditor';
 import { fetchWithAuth } from '../../stores/auth';
 import * as api from '../../lib/api/contracts';
 import type { ContractLine, ContractStatus } from '../../lib/api/contracts';
+import type { CatalogItem } from '../../lib/api/catalog';
 import { showToast } from '../shared/Toast';
 
 const authState = vi.hoisted(() => ({
@@ -21,9 +22,23 @@ vi.mock('../../stores/auth', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
-vi.mock('../catalog/CatalogItemPicker', () => ({ default: () => null }));
+vi.mock('../catalog/CatalogItemPicker', () => ({
+  default: ({ items, onSelect }: { items: CatalogItem[]; onSelect: (item: CatalogItem) => void }) => (
+    <div>{items.map((item) => (
+      <button key={item.id} type="button" data-testid={`catalog-pick-${item.id}`} onClick={() => onSelect(item)}>
+        {item.name}
+      </button>
+    ))}</div>
+  ),
+}));
+const catalogRows = vi.hoisted(() => ({
+  items: [
+    { id: 'cat-1', name: 'Catalog one', isBundle: false },
+    { id: 'cat-2', name: 'Catalog two', isBundle: false },
+  ] as CatalogItem[],
+}));
 vi.mock('../../lib/api/catalog', () => ({
-  listCatalog: vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [] }) }),
+  listCatalog: vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: catalogRows.items }) }),
   resolveCatalogPrice: vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: null }) }),
 }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
@@ -94,6 +109,15 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
     expect(screen.queryByTestId('line-remove-0')).toBeNull();
   });
 
+  it.each(['paused', 'cancelled', 'expired'] as const)('disables Add on a %s contract', async (status) => {
+    renderEdit([baseLine], status as ContractStatus);
+    fireEvent.change(await screen.findByTestId('contract-line-desc'), { target: { value: 'Should not add' } });
+    const add = await screen.findByTestId('add-line-btn');
+    expect(add).toBeDisabled();
+    fireEvent.click(add);
+    expect(api.addContractLine).not.toHaveBeenCalled();
+  });
+
   it('renders no Edit or Remove affordance without contracts:write', async () => {
     authState.permissions = [];
     renderEdit();
@@ -162,12 +186,61 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
     expect(patchBody()).toEqual({ catalogItemId: null, unitPrice: '20.00', taxable: true });
   });
 
+  it('relinks an unlinked line with only the new catalogItemId', async () => {
+    renderEdit();
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    const form = await screen.findByTestId('line-edit-form-0');
+    fireEvent.click(within(form).getByTestId('catalog-pick-cat-2'));
+    expect(screen.getByTestId('line-edit-price-0')).toBeDisabled();
+    expect(screen.getByTestId('line-edit-price-source-0')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('line-edit-save-0'));
+    await waitFor(() => expect(api.updateContractLine).toHaveBeenCalled());
+    expect(patchBody()).toEqual({ catalogItemId: 'cat-2' });
+  });
+
+  it('relinks a linked line to a different item without sending price fields', async () => {
+    renderEdit([{ ...baseLine, catalogItemId: 'cat-1', unitPrice: '20.00', taxable: true }]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    const form = await screen.findByTestId('line-edit-form-0');
+    fireEvent.click(within(form).getByTestId('catalog-pick-cat-2'));
+    fireEvent.click(screen.getByTestId('line-edit-save-0'));
+    await waitFor(() => expect(api.updateContractLine).toHaveBeenCalled());
+    expect(patchBody()).toEqual({ catalogItemId: 'cat-2' });
+  });
+
+  it('picking the already-linked item leaves Save disabled', async () => {
+    renderEdit([{ ...baseLine, catalogItemId: 'cat-1', unitPrice: '20.00' }]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    const form = await screen.findByTestId('line-edit-form-0');
+    fireEvent.click(within(form).getByTestId('catalog-pick-cat-1'));
+    expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
+    expect(api.updateContractLine).not.toHaveBeenCalled();
+  });
+
+  it('restores the persisted catalog link after unlinking', async () => {
+    renderEdit([{ ...baseLine, catalogItemId: 'cat-1', unitPrice: '20.00' }]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    fireEvent.click(screen.getByTestId('line-edit-unlink-0'));
+    fireEvent.click(screen.getByTestId('line-edit-restore-catalog-0'));
+    expect(screen.getByTestId('line-edit-price-0')).toBeDisabled();
+    expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
+  });
+
   it('"Refresh price from catalog" sends exactly { refreshCatalogPrice: true }', async () => {
     renderEdit([{ ...baseLine, catalogItemId: 'cat-1', unitPrice: '20.00' }]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     fireEvent.click(screen.getByTestId('line-edit-refresh-0'));
     await waitFor(() => expect(api.updateContractLine).toHaveBeenCalled());
     expect(patchBody()).toEqual({ refreshCatalogPrice: true });
+  });
+
+  it('refreshes catalog price without discarding an unsaved description edit', async () => {
+    renderEdit([{ ...baseLine, catalogItemId: 'cat-1', unitPrice: '20.00' }]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    fireEvent.change(screen.getByTestId('line-edit-desc-0'), { target: { value: 'Renamed before refresh' } });
+    fireEvent.click(screen.getByTestId('line-edit-refresh-0'));
+    await waitFor(() => expect(api.updateContractLine).toHaveBeenCalled());
+    expect(patchBody()).toEqual({ description: 'Renamed before refresh', refreshCatalogPrice: true });
   });
 
   it('shows a catalog-linked price read-only, and keeps Save disabled after an unlink until a price is entered', async () => {
@@ -188,6 +261,16 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
     fireEvent.click(screen.getByTestId('line-edit-role-server-0'));
+    expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
+  });
+
+  it('disables Save when a manual line quantity is empty or invalid', async () => {
+    renderEdit([{ ...baseLine, lineType: 'manual', manualQuantity: '1.00' }]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    const quantity = screen.getByTestId('line-edit-qty-0');
+    fireEvent.change(quantity, { target: { value: '' } });
+    expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
+    fireEvent.change(quantity, { target: { value: '1.234' } });
     expect(screen.getByTestId('line-edit-save-0')).toBeDisabled();
   });
 
@@ -214,6 +297,11 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
 
   it('renders a site-scoped line with the labelled site sub-label from line.site', async () => {
     renderEdit([{ ...baseLine, siteId: 'site-1', site: { id: 'site-1', name: 'HQ' } }]);
+    expect((await screen.findByTestId('line-site-0')).textContent).toBe('Site: HQ');
+  });
+
+  it('renders the site sub-label whenever line.site is present', async () => {
+    renderEdit([{ ...baseLine, lineType: 'flat', siteId: 'site-1', site: { id: 'site-1', name: 'HQ' } }]);
     expect((await screen.findByTestId('line-site-0')).textContent).toBe('Site: HQ');
   });
 

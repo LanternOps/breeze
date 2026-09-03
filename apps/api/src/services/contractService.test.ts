@@ -192,6 +192,16 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
     ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409, message: expect.stringContaining('Managed endpoint') });
     expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
   });
+
+  it('maps a missing catalog item to CATALOG_ITEM_NOT_FOUND (400)', async () => {
+    queueResult([draft]);
+    queueResult([{ id: 'l1', catalogItemId: 'missing-cat' }]);
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND'));
+    await expect(
+      svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_NOT_FOUND', status: 400 });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
 });
 
 // #3774 phantom-line race: contract line writers must take the contract row
