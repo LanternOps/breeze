@@ -125,6 +125,18 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
+  // #3205: a per_device_role line, so the archive's contract_lines.json is
+  // exercised with the text[] column populated.
+  const contractId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO contracts (id, partner_id, org_id, name, interval_months, start_date, currency_code)
+    VALUES (${contractId}, ${partnerId}, ${orgA}, ${'Roundtrip contract ' + suffix}, 1, '2026-07-01', 'USD')
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_roles)
+    VALUES (${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false, ARRAY['switch','router','firewall']::text[])
+  `);
+
   return { partnerId, orgA, orgB, prohibitedSentinels };
 }
 
@@ -152,6 +164,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const byName = new Map(manifest.files.map((f) => [f.name, f]));
     // Org A has exactly 2 sites + 2 device_groups; Org B's rows must not leak.
     expect(byName.get('sites.json')?.rowCount).toBe(2);
+    expect(byName.get('contracts.json')?.rowCount).toBe(1);
+    expect(byName.get('contract_lines.json')?.rowCount).toBe(1);
     expect(byName.get('device_groups.json')?.rowCount).toBe(2);
     // organizations.json is the org's own id-keyed row.
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
@@ -207,6 +221,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // Target org fully wiped.
     expect(await rowCount(db, 'sites', orgA)).toBe(0);
     expect(await rowCount(db, 'device_groups', orgA)).toBe(0);
+    expect(await rowCount(db, 'contracts', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_lines', orgA)).toBe(0);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
@@ -227,6 +243,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(7);
     expect(stats.tablesDeleted['sites']).toBe(2);
     expect(stats.tablesDeleted['device_groups']).toBe(2);
+    expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
+    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(1);
     expect(stats.tablesDeleted['organizations']).toBe(1);
     // device_mtls_certificates is deleted explicitly (via its cascade-list
     // registration), not merely as a side effect of the devices row's

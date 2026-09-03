@@ -135,6 +135,44 @@ describe('contractLineInputSchema — catalog lines omit taxable', () => {
   });
 });
 
+// #3205: a per_device_role line bills a SET of device roles. deviceRoles is
+// required on that type and forbidden on every other, mirrors the DB CHECK,
+// never contains 'unknown' (a classification gap, not a rate) or duplicates.
+describe('contractLineInputSchema — per_device_role (#3205)', () => {
+  const base = { description: 'Network gear', unitPrice: '25.00', taxable: true };
+  const parse = (v: unknown) => contractLineInputSchema.safeParse(v).success;
+
+  it('requires a non-empty deviceRoles array on per_device_role', () => {
+    expect(parse({ ...base, lineType: 'per_device_role' })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: [] })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['switch', 'router', 'firewall'] })).toBe(true);
+  });
+
+  it('rejects deviceRoles on every other line type', () => {
+    for (const lineType of ['flat', 'per_device', 'per_seat'] as const) {
+      expect(parse({ ...base, lineType, deviceRoles: ['server'] })).toBe(false);
+    }
+    expect(parse({ ...base, lineType: 'manual', manualQuantity: '2', deviceRoles: ['server'] })).toBe(false);
+  });
+
+  it('rejects unknown and unrecognised roles', () => {
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['unknown'] })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['server', 'mainframe'] })).toBe(false);
+  });
+
+  it('rejects duplicate roles', () => {
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['server', 'server'] })).toBe(false);
+  });
+
+  it('accepts siteId on per_device_role and still rejects it on flat / per_seat / manual', () => {
+    const siteId = '22222222-2222-2222-2222-222222222222';
+    expect(parse({ ...base, lineType: 'per_device_role', deviceRoles: ['workstation'], siteId })).toBe(true);
+    expect(parse({ ...base, lineType: 'flat', siteId })).toBe(false);
+    expect(parse({ ...base, lineType: 'per_seat', siteId })).toBe(false);
+    expect(parse({ ...base, lineType: 'manual', manualQuantity: '1', siteId })).toBe(false);
+  });
+});
+
 describe('changeContractCurrencySchema (#3778)', () => {
   it('defaults confirmActiveChange to false — an ACTIVE restamp is never implicit', () => {
     const parsed = changeContractCurrencySchema.parse({ currencyCode: 'eur' });

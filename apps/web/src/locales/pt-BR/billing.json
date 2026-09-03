@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Taxa fixa",
         "perDevice": "Por dispositivo",
+        "perDeviceRole": "Por função do dispositivo",
         "perSeat": "Por assento",
         "manual": "Quantidade manual"
+      },
+      "coverage": {
+        "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
+        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
       },
       "transition": {
         "activate": "Ativar",
@@ -96,6 +101,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "uncoveredDevices": "Fatura gerada, mas {{count}} dispositivo(s) não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Adicionar do catálogo Pax8",
         "importFromTdSynnex": "Importar da TD SYNNEX",
         "lineType": "Tipo de linha",
+        "deviceRoles": "Funções do dispositivo (um dispositivo é cobrado quando sua função é uma destas)",
+        "deviceRolesRequired": "Escolha pelo menos uma função.",
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
