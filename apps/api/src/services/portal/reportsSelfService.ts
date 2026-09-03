@@ -9,8 +9,7 @@ import {
 import { db } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { reportRuns, reports } from '../../db/schema';
-import { checkRateLimit } from '../../routes/portal/helpers';
-import { PORTAL_USE_REDIS } from '../../routes/portal/schemas';
+import { checkRateLimit, PORTAL_USE_REDIS } from './rateLimit';
 import { getRedis } from '../redis';
 import {
   generateReport,

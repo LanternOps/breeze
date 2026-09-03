@@ -68,8 +68,9 @@ vi.mock('../reportGenerationService', () => ({
   previousBaselineFor: state.previousBaselineFor,
 }));
 
-vi.mock('../../routes/portal/helpers', () => ({
+vi.mock('./rateLimit', () => ({
   checkRateLimit: state.checkRateLimit,
+  PORTAL_USE_REDIS: false,
 }));
 
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => null) }));
