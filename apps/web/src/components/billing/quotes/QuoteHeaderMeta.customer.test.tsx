@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QuoteCustomerSwitcher } from './QuoteHeaderMeta';
@@ -62,6 +63,23 @@ function detail(): QuoteDetailData {
 const customerPatchCalls = () =>
   fetchMock.mock.calls.filter((c) => c[0] === '/quotes/q-1' && (c[1] as RequestInit | undefined)?.method === 'PATCH'
     && String((c[1] as RequestInit).body).includes('orgId'));
+
+/**
+ * Records the customer trigger's committed `title` attribute (the selected
+ * org's full name). A layout effect runs synchronously in the mutation phase
+ * of the very commit that produced the DOM, so it reads what the trigger
+ * actually showed at that commit without depending on when React's scheduler
+ * gets around to passive effects — same technique used to pin down #4659
+ * (AiBudgetThresholdsInput).
+ */
+function CommitProbe({ seen }: { seen: string[] }) {
+  useLayoutEffect(() => {
+    const el = document.querySelector('[data-testid="quote-customer-trigger"]');
+    if (!el) throw new Error('CommitProbe: no element matching [data-testid="quote-customer-trigger"]');
+    seen.push(el.getAttribute('title') ?? '');
+  });
+  return null;
+}
 
 describe('QuoteCustomerSwitcher customer reassignment', () => {
   beforeEach(() => {
@@ -154,5 +172,34 @@ describe('QuoteCustomerSwitcher customer reassignment', () => {
 
     await waitFor(() => expect(customerPatchCalls()).toHaveLength(1));
     await waitFor(() => expect(screen.getByTestId('quote-customer-trigger')).toHaveTextContent('Acme'));
+  });
+
+  // #4807 (mirrors #4659/#4033): `customerOrgId` used to re-seed from
+  // `quote.orgId` in a `useEffect`, i.e. in a commit AFTER the one that
+  // delivered the new prop. Because a passive effect is deferred, an
+  // optimistic `setCustomerOrgId` (from `saveCustomer`, or any local
+  // selection) landing in that one-commit window would be reverted by the
+  // stale org id the effect had captured. Mirroring during render (this fix)
+  // leaves no such commit — assert the trigger already shows the new
+  // customer in the very commit that delivers the new `orgId` prop, using
+  // the same layout-effect probe technique as #4659.
+  it('re-seeds a changed quote.orgId prop within the same commit, not a later one (#4807)', () => {
+    const seen: string[] = [];
+    const view = (orgId: string) => (
+      <>
+        <QuoteCustomerSwitcher detail={{ ...detail(), quote: { ...detail().quote, orgId } }} onChanged={vi.fn()} />
+        <CommitProbe seen={seen} />
+      </>
+    );
+
+    const { rerender } = render(view('org-1'));
+    seen.length = 0;
+
+    rerender(view('org-2'));
+
+    // One commit, already showing the new customer's name. An earlier entry
+    // still reading 'Acme' is the old effect-driven seed — the window that
+    // made the selection clobberable by a stale local optimistic update.
+    expect(seen).toEqual(['Beta Corp']);
   });
 });
