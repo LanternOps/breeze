@@ -248,15 +248,21 @@ export function rejectProof(
 }
 
 /**
- * #4746: the step-up throttle body populates `error` AND `message`, exactly as
- * {@link rejectProof} does, because clients are split on which key they read.
- * The web profile form renders `data.message` and falls back to a generic
- * string when it is absent (`apps/web/src/components/settings/ProfilePage.tsx`),
- * so a 429 carrying only `error` would surface as "Failed to change password"
- * rather than the real reason — a throttle the user cannot see is a throttle
- * they will keep hammering.
+ * #4746: both non-rejection failure bodies of the step-up helpers populate
+ * `error` AND `message`, exactly as {@link rejectProof} does, because clients
+ * are split on which key they read. The web profile form renders
+ * `data.message` and — unlike its siblings in the same file — does NOT fall
+ * back to `data.error`, so it shows a generic "Failed to change password" when
+ * `message` is absent (`apps/web/src/components/settings/ProfilePage.tsx`).
+ *
+ * That makes both of these indistinguishable from a mistyped password unless
+ * `message` is set: a throttle the user cannot see is a throttle they will keep
+ * hammering, and a Redis outage the user cannot see is one they will retry as
+ * though they got their own password wrong. `/auth/change-password` acquired
+ * both branches when it moved onto this helper, so both are fixed together.
  */
 const STEP_UP_THROTTLED_MESSAGE = 'Too many attempts. Please try again later.';
+const STEP_UP_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable';
 
 export async function requireCurrentPasswordStepUp(
   c: Context,
@@ -297,7 +303,7 @@ export async function requireCurrentPasswordStepUp(
   const noPasswordMessage = opts.noPasswordMessage ?? invalidMessage;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
@@ -348,7 +354,7 @@ export async function requireFreshMfaStepUp(
   const rejectionStatus: ProofRejectionStatus = 401;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);

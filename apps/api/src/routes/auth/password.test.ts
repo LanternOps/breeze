@@ -788,6 +788,35 @@ describe('password reset eligibility (#719)', () => {
       );
     });
 
+    // #4746: routing through the step-up helper gave this route a Redis
+    // dependency it did not have before (the old inline `verifyPassword` needed
+    // none), so it now fails CLOSED on an outage rather than verifying
+    // unthrottled. That is the right posture — an unavailable limiter must not
+    // silently become no limiter — but it is a new failure mode for this
+    // endpoint and needs its own guard.
+    it('fails closed with 503 when Redis is unavailable, without verifying the password (#4746)', async () => {
+      const { getRedis } = await import('../../services');
+      vi.mocked(getRedis).mockReturnValueOnce(null as never);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(503);
+      const body = await res.json() as { error: string; message: string };
+      // Both keys: the profile form reads `data.message` and does NOT fall back
+      // to `data.error` (unlike its siblings in that file), so an `error`-only
+      // body would render as the generic "Failed to change password" — an
+      // outage the user cannot tell apart from their own typo, and would retry
+      // as though it were one.
+      expect(body.error).toBe('Service temporarily unavailable');
+      expect(body.message).toBe('Service temporarily unavailable');
+      // Fail CLOSED: no verify, no rotation.
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it('still accepts the correct password after a few wrong guesses under the limit (#4746)', async () => {
       vi.mocked(verifyPassword).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
