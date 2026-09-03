@@ -4,6 +4,7 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
   partnerIdForDevice,
+  unresolvedPartnerDecision,
   type TrustDenyCode,
 } from './partnerTrust';
 
@@ -65,6 +66,11 @@ export async function createRemoteSession(
       });
       if (!decision.allow) {
         throw new RemoteSessionDeniedError(decision.code, decision.reason);
+      }
+    } else {
+      const unresolved = await unresolvedPartnerDecision('remote_control');
+      if (!unresolved.allow) {
+        throw new RemoteSessionDeniedError(unresolved.code, unresolved.reason);
       }
     }
   }

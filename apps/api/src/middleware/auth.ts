@@ -92,7 +92,6 @@ export interface AuthContext {
   };
   token: TokenPayload | null;
   partnerId: string | null;
-  trustState?: PartnerTrustState;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
 
@@ -715,7 +714,6 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     },
     token: payload,
     partnerId: payload.partnerId,
-    trustState: c.get('trustState'),
     orgId: payload.orgId,
     scope: payload.scope,
     accessibleOrgIds,

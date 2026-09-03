@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   evaluateCapability: vi.fn(),
   partnerIdForDevice: vi.fn(),
   partnerTrustMode: vi.fn(),
+  unresolvedPartnerDecision: vi.fn(),
   insert: vi.fn(),
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn()),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./partnerTrust', () => ({
   evaluateCapability: mocks.evaluateCapability,
   partnerIdForDevice: mocks.partnerIdForDevice,
+  unresolvedPartnerDecision: mocks.unresolvedPartnerDecision,
 }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: mocks.partnerTrustMode }));
 vi.mock('../db', () => ({
@@ -122,6 +124,44 @@ describe.each([
     await expect(createRemoteSession(kind as never, input as never)).resolves.toBe(row);
     expect(mocks.partnerIdForDevice).not.toHaveBeenCalled();
     expect(mocks.evaluateCapability).not.toHaveBeenCalled();
+  });
+});
+
+// Only device-keyed kinds (remote, tunnel) resolve a partnerId via
+// `partnerIdForDevice` and can hit the unresolved-partner branch; 'support'
+// always carries a caller-supplied `partnerId` and never calls it.
+describe.each([
+  ['remote', remoteInput],
+  ['tunnel', tunnelInput],
+] as const)('createRemoteSession(%s) — unresolved device partner', (kind, input) => {
+  it('throws with TRUST_RESTRICTED under enforce when the device partner cannot be resolved', async () => {
+    mocks.partnerIdForDevice.mockResolvedValue(null);
+    mocks.unresolvedPartnerDecision.mockResolvedValue({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+
+    await expect(createRemoteSession(kind as never, input as never)).rejects.toMatchObject({
+      code: 'TRUST_RESTRICTED',
+      reason: 'partner_unresolved',
+      capability: 'remote_control',
+    } satisfies Partial<RemoteSessionDeniedError>);
+    expect(mocks.unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+    expect(mocks.evaluateCapability).not.toHaveBeenCalled();
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows under shadow when the device partner cannot be resolved', async () => {
+    mocks.partnerTrustMode.mockReturnValue('shadow');
+    mocks.partnerIdForDevice.mockResolvedValue(null);
+    mocks.unresolvedPartnerDecision.mockResolvedValue({ allow: true });
+    const row = { id: `${kind}-unresolved-shadow`, status: 'pending' };
+    insertReturning(row);
+
+    await expect(createRemoteSession(kind as never, input as never)).resolves.toBe(row);
+    expect(mocks.unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
   });
 });
 

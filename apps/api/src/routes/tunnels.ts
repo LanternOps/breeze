@@ -26,7 +26,7 @@ import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from 
 import type { AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createRemoteSession, RemoteSessionDeniedError } from '../services/remoteSessionCreate';
-import { evaluateCapability, partnerIdForDevice, trustDenyBody } from '../services/partnerTrust';
+import { evaluateCapability, partnerIdForDevice, trustDenyBody, unresolvedPartnerDecision } from '../services/partnerTrust';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 
 export const tunnelRoutes = new Hono();
@@ -60,14 +60,14 @@ async function tunnelTicketTrustDenyBody(deviceId: string, userId: string) {
   if (partnerTrustMode() === 'off') return null;
 
   const partnerId = await partnerIdForDevice(deviceId);
-  if (!partnerId) return null;
-
-  const decision = await evaluateCapability('remote_control', {
-    partnerId,
-    deviceId,
-    userId,
-    detail: { stage: 'ticket', kind: 'tunnel' },
-  });
+  const decision = partnerId
+    ? await evaluateCapability('remote_control', {
+      partnerId,
+      deviceId,
+      userId,
+      detail: { stage: 'ticket', kind: 'tunnel' },
+    })
+    : await unresolvedPartnerDecision('remote_control');
   if (decision.allow) return null;
 
   return trustDenyBody({

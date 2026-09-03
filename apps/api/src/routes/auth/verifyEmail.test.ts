@@ -171,6 +171,14 @@ vi.mock('../../config/env', () => ({
   isHosted: vi.fn(() => true),
 }));
 
+vi.mock('../../config/partnerTrustMode', () => ({
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
+vi.mock('../../services/ipClassify', () => ({
+  enqueueIpClassify: vi.fn(async () => undefined),
+}));
+
 vi.mock('./schemas', async () => {
   const actual = await vi.importActual<typeof import('./schemas')>('./schemas');
   return { ...actual, ENABLE_REGISTRATION: true, ENABLE_2FA: false };
@@ -264,6 +272,8 @@ import { beginAuthIssuance } from '../../services/authBrowserTransition';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { writeAuthAudit } from './helpers';
 import { getEmailService } from '../../services/email';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 function updateChain() {
   const terminal = Promise.resolve(undefined) as Promise<undefined> & {
@@ -354,6 +364,7 @@ describe('POST /verify-email', () => {
     transitionState.installedFamilyId = null;
     transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
   });
 
   it('creates no account authority, family, cookie, or success audit when logout wins after binding admission', async () => {
@@ -643,6 +654,18 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
       }),
       expect.objectContaining({ tx: expect.anything() }),
     );
+  });
+
+  it('fire-and-forgets signup IP classification after the partner commit', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+
+    const res = await postJson('/verify-email', { token: 'raw' });
+    expect(res.status).toBe(200);
+    expect(enqueueIpClassify).toHaveBeenCalledWith({
+      kind: 'partner', partnerId: 'p-1', ip: '203.0.113.7',
+    });
   });
 
   it('a second click on the same token is a no-op (single-winner GETDEL falls through to generic 400)', async () => {

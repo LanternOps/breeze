@@ -63,6 +63,7 @@ import {
   evaluateCapability,
   partnerIdForDevice,
   trustDenyBody,
+  unresolvedPartnerDecision,
 } from '../services/partnerTrust';
 
 // Zod validation for desktop user messages.
@@ -1349,21 +1350,21 @@ export function createDesktopWsRoutes(
 
       if (partnerTrustMode() !== 'off') {
         const partnerId = await partnerIdForDevice(session.deviceId);
-        if (partnerId) {
-          const decision = await evaluateCapability('remote_control', {
+        const decision = partnerId
+          ? await evaluateCapability('remote_control', {
             partnerId,
             deviceId: session.deviceId,
             userId: codeRecord.userId,
             detail: { stage: 'ticket', kind: 'desktop' },
-          });
-          if (!decision.allow) {
-            return c.json(trustDenyBody({
-              allow: false,
-              code: decision.code,
-              capability: 'remote_control',
-              reason: decision.reason,
-            }, false), 403);
-          }
+          })
+          : await unresolvedPartnerDecision('remote_control');
+        if (!decision.allow) {
+          return c.json(trustDenyBody({
+            allow: false,
+            code: decision.code,
+            capability: 'remote_control',
+            reason: decision.reason,
+          }, false), 403);
         }
       }
 

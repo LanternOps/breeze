@@ -120,6 +120,10 @@ vi.mock('../../services/warrantyWorker', () => ({
   queueWarrantySyncForDevice: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../services/ipClassify', () => ({
+  enqueueIpClassify: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../services/partnerHooks', () => ({
   dispatchHook: vi.fn(async () => undefined),
 }));
@@ -138,6 +142,7 @@ vi.mock('../../config/partnerTrustMode', () => ({
 
 vi.mock('../../services/partnerTrust', () => ({
   evaluateCapability: vi.fn(async () => ({ allow: true })),
+  unresolvedPartnerDecision: vi.fn(async () => ({ allow: true })),
   trustDenyBody: vi.fn((decision: Record<string, unknown>, reviewRequested: boolean) => ({
     error: decision.code,
     capability: decision.capability,
@@ -156,9 +161,10 @@ import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { enqueueIpClassify } from '../../services/ipClassify';
 import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
-import { evaluateCapability } from '../../services/partnerTrust';
+import { evaluateCapability, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import {
   devices as devicesTable,
   enrollmentKeys as enrollmentKeysTable,
@@ -382,8 +388,8 @@ describe('POST /agents/enroll — partner trust probation enrollment counter (Ta
   function installTrustTransaction(trustRow: {
     trustState: 'probation' | 'trusted';
     probationEnrollments: number;
-  }) {
-    const forUpdate = vi.fn().mockResolvedValue([trustRow]);
+  } | null) {
+    const forUpdate = vi.fn().mockResolvedValue(trustRow ? [trustRow] : []);
     const select = vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ for: forUpdate }),
@@ -526,6 +532,58 @@ describe('POST /agents/enroll — partner trust probation enrollment counter (Ta
     expect(tx.select).not.toHaveBeenCalled();
     expect(tx.forUpdate).not.toHaveBeenCalled();
     expect(evaluateCapability).not.toHaveBeenCalled();
+  });
+
+  it('denies with the trust contract and no device insert when the partner row cannot be resolved under enforce', async () => {
+    arrangeEnrollment();
+    const tx = installTrustTransaction(null);
+    vi.mocked(unresolvedPartnerDecision).mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'agent_enroll',
+      reason: 'partner_unresolved',
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(await resp.json()).toEqual({
+      error: 'TRUST_RESTRICTED',
+      capability: 'agent_enroll',
+      reason: 'partner_unresolved',
+      reviewRequested: false,
+      meetingUrl: null,
+    });
+    expect(unresolvedPartnerDecision).toHaveBeenCalledWith('agent_enroll');
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(tx.insertedTables).not.toContain(devicesTable);
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org-trust',
+      action: 'agent.enroll',
+      resourceType: 'device',
+      result: 'denied',
+      details: { reason: 'partner_unresolved' },
+    });
+  });
+
+  it('inserts the device under shadow when the partner row cannot be resolved', async () => {
+    arrangeEnrollment();
+    const tx = installTrustTransaction(null);
+    vi.mocked(unresolvedPartnerDecision).mockResolvedValueOnce({ allow: true });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(unresolvedPartnerDecision).toHaveBeenCalledWith('agent_enroll');
+    expect(tx.insertedTables).toContain(devicesTable);
   });
 });
 
@@ -2914,6 +2972,7 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     vi.clearAllMocks();
     delete process.env.AGENT_ENROLLMENT_SECRET;
     process.env.NODE_ENV = 'test';
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
   });
 
   // Stands up the full happy fresh-enroll path and returns the spy that
@@ -2982,6 +3041,23 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     expect(deviceInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ enrollmentIp: '127.0.0.1' }),
     );
+  });
+
+  it('fire-and-forgets IP classification after a successful hosted enrollment', async () => {
+    // The first mode read is the in-transaction probation gate; keep this
+    // fixture on its simple trusted path. The post-commit read enables the
+    // enqueue under test.
+    vi.mocked(partnerTrustMode).mockReturnValueOnce('off').mockReturnValue('shadow');
+    setupSuccessfulEnrollTransaction();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBe(201);
+    expect(enqueueIpClassify).toHaveBeenCalledWith({
+      kind: 'device', deviceId: 'device-ip', ip: '127.0.0.1',
+    });
   });
 
   it('stores NULL enrollmentIp when the client IP could not be determined', async () => {

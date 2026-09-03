@@ -17,10 +17,11 @@ const { rateLimiterMock } = vi.hoisted(() => ({
   })),
 }));
 
-const { evaluateCapability, partnerIdForDevice, partnerTrustMode } = vi.hoisted(() => ({
+const { evaluateCapability, partnerIdForDevice, partnerTrustMode, unresolvedPartnerDecision } = vi.hoisted(() => ({
   evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
-  partnerIdForDevice: vi.fn(() => Promise.resolve('pppppppp-pppp-4ppp-8ppp-pppppppppppp')),
+  partnerIdForDevice: vi.fn((): Promise<string | null> => Promise.resolve('pppppppp-pppp-4ppp-8ppp-pppppppppppp')),
   partnerTrustMode: vi.fn(() => 'off'),
+  unresolvedPartnerDecision: vi.fn(async (): Promise<any> => ({ allow: true })),
 }));
 
 // --- DB mock ---
@@ -164,6 +165,7 @@ vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
 vi.mock('../services/partnerTrust', () => ({
   evaluateCapability,
   partnerIdForDevice,
+  unresolvedPartnerDecision,
   trustDenyBody: (d: Record<string, unknown>, reviewRequested: boolean) => ({
     error: d.code,
     capability: d.capability,
@@ -1305,6 +1307,41 @@ describe.each([
     expect(res.status).toBe(200);
     expect(partnerIdForDevice).not.toHaveBeenCalled();
     expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(minted()).toHaveBeenCalledOnce();
+  });
+
+  it('returns TRUST_RESTRICTED under enforce when the device partner cannot be resolved', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    partnerIdForDevice.mockResolvedValueOnce(null);
+    unresolvedPartnerDecision.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    }));
+    expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(minted()).not.toHaveBeenCalled();
+  });
+
+  it('mints the ticket or code under shadow when the device partner cannot be resolved', async () => {
+    partnerTrustMode.mockReturnValueOnce('shadow');
+    partnerIdForDevice.mockResolvedValueOnce(null);
+    unresolvedPartnerDecision.mockResolvedValueOnce({ allow: true });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
     expect(minted()).toHaveBeenCalledOnce();
   });
 });

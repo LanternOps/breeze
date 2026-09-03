@@ -3,29 +3,42 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { audit, publish, state } = vi.hoisted(() => ({
-  audit: vi.fn(async () => {}),
-  publish: vi.fn(async () => 1),
-  state: {
-    trustState: 'probation' as 'probation' | 'trusted' | 'restricted',
-    probationEnrollments: 0,
-    trustReviewRequestedAt: null as Date | null,
-  },
-}));
+const { audit, publish, state, tryAutoPromote, dbUpdateChain } = vi.hoisted(() => {
+  const chain = {
+    set: vi.fn(() => chain),
+    where: vi.fn(() => chain),
+    returning: vi.fn(async () => [{ id: 'p1' }]),
+  };
+  return {
+    audit: vi.fn(async () => {}),
+    publish: vi.fn(async () => 1),
+    state: {
+      trustState: 'probation' as 'probation' | 'trusted' | 'restricted',
+      probationEnrollments: 0,
+      trustReviewRequestedAt: null as Date | null,
+    },
+    tryAutoPromote: vi.fn(async () => false),
+    dbUpdateChain: chain,
+  };
+});
 
 vi.mock('./auditService', () => ({ createAuditLog: audit }));
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ publish })) }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: vi.fn(() => 'enforce') }));
 vi.mock('../db', () => ({
-  db: {},
+  // `update` backs the real-implementation writeTrust test below; every
+  // other test in this file goes through the mocked partnerTrust.repo and
+  // never touches it.
+  db: { update: vi.fn(() => dbUpdateChain) },
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
 vi.mock('./partnerTrust.repo', () => ({
   readTrust: vi.fn(async () => state),
-  writeTrust: vi.fn(async () => {}),
+  writeTrust: vi.fn(async () => 1),
   partnerForDevice: vi.fn(async () => 'p1'),
 }));
+vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
@@ -34,6 +47,7 @@ import {
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
   setTrustState,
+  unresolvedPartnerDecision,
 } from './partnerTrust';
 import { readTrust, writeTrust } from './partnerTrust.repo';
 
@@ -146,7 +160,13 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 beforeEach(() => {
   audit.mockClear();
   publish.mockClear();
+  tryAutoPromote.mockClear();
   vi.mocked(writeTrust).mockClear();
+  vi.mocked(writeTrust).mockResolvedValue(1);
+  dbUpdateChain.set.mockClear();
+  dbUpdateChain.where.mockClear();
+  dbUpdateChain.returning.mockClear();
+  dbUpdateChain.returning.mockResolvedValue([{ id: 'p1' }]);
   state.trustState = 'probation';
   state.probationEnrollments = 0;
   vi.mocked(partnerTrustMode).mockReturnValue('enforce');
@@ -154,8 +174,9 @@ beforeEach(() => {
 
 describe('setTrustState', () => {
   it('publishes the new trust state after persisting it', async () => {
-    await setTrustState('p1', 'trusted', 'review approved', 'user-1');
+    const result = await setTrustState('p1', 'trusted', 'review approved', 'user-1');
 
+    expect(result).toBe(true);
     expect(writeTrust).toHaveBeenCalledWith('p1', 'trusted', 'review approved', 'user-1');
     expect(publish).toHaveBeenCalledWith(
       'partner-trust:changed',
@@ -163,6 +184,44 @@ describe('setTrustState', () => {
     );
     expect(vi.mocked(writeTrust).mock.invocationCallOrder[0])
       .toBeLessThan(publish.mock.invocationCallOrder[0]!);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.promoted' }));
+  });
+
+  it('passes expectedFrom through to writeTrust when supplied', async () => {
+    await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(writeTrust).toHaveBeenCalledWith('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+  });
+
+  it('returns false and skips the audit row and Redis publish when the CAS affects no rows', async () => {
+    vi.mocked(writeTrust).mockResolvedValueOnce(0);
+
+    const result = await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(result).toBe(false);
+    expect(publish).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('partnerTrust.repo writeTrust (real implementation)', () => {
+  it('affects zero rows when expectedFrom no longer matches the stored trust_state', async () => {
+    const { writeTrust: realWriteTrust } = await vi.importActual<typeof import('./partnerTrust.repo')>('./partnerTrust.repo');
+    dbUpdateChain.returning.mockResolvedValueOnce([]);
+
+    const affected = await realWriteTrust('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+
+    expect(affected).toBe(0);
+    expect(dbUpdateChain.where).toHaveBeenCalled();
+  });
+
+  it('affects one row when the CAS condition matches', async () => {
+    const { writeTrust: realWriteTrust } = await vi.importActual<typeof import('./partnerTrust.repo')>('./partnerTrust.repo');
+    dbUpdateChain.returning.mockResolvedValueOnce([{ id: 'p1' }]);
+
+    const affected = await realWriteTrust('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+
+    expect(affected).toBe(1);
   });
 });
 
@@ -178,10 +237,18 @@ describe('evaluateCapability', () => {
     },
   );
 
+  it('starts a lazy promotion attempt after auditing a probation denial', async () => {
+    await evaluateCapability('remote_control', { partnerId: 'p1' });
+
+    expect(tryAutoPromote).toHaveBeenCalledWith('p1');
+    expect(audit.mock.invocationCallOrder[0]).toBeLessThan(tryAutoPromote.mock.invocationCallOrder[0]!);
+  });
+
   it('denies with TRUST_RESTRICTED when restricted', async () => {
     state.trustState = 'restricted';
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' }))
       .toMatchObject({ allow: false, code: 'TRUST_RESTRICTED' });
+    expect(tryAutoPromote).not.toHaveBeenCalled();
   });
 
   it('denies an unresolved partner in enforce mode and audits the denial', async () => {
@@ -294,6 +361,52 @@ describe('evaluateCapability', () => {
   it('off mode allows and touches nothing', async () => {
     vi.mocked(partnerTrustMode).mockReturnValue('off');
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('unresolvedPartnerDecision', () => {
+  it('denies with TRUST_RESTRICTED under enforce and audits with no resourceId', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+
+    expect(await unresolvedPartnerDecision('remote_control')).toEqual({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.capability_denied',
+      resourceType: 'partner',
+      result: 'denied',
+      details: expect.objectContaining({
+        mode: 'enforce',
+        capability: 'remote_control',
+        code: 'TRUST_RESTRICTED',
+        reason: 'partner_unresolved',
+      }),
+    }));
+    const [firstCallArgs] = audit.mock.calls as unknown[][];
+    expect(firstCallArgs?.[0]).not.toHaveProperty('resourceId');
+  });
+
+  it('allows under shadow but records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+
+    expect(await unresolvedPartnerDecision('agent_enroll')).toEqual({
+      allow: true,
+      shadowDenied: { code: 'TRUST_RESTRICTED', reason: 'partner_unresolved' },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({ mode: 'shadow', capability: 'agent_enroll' }),
+    }));
+  });
+
+  it('allows and audits nothing when trust mode is off', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+
+    expect(await unresolvedPartnerDecision('device_execute')).toEqual({ allow: true });
     expect(audit).not.toHaveBeenCalled();
   });
 });
