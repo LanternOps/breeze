@@ -167,7 +167,7 @@ describe('report run requester tombstones', () => {
       )).rejects.toMatchObject({
         cause: expect.objectContaining({
           code: '23514',
-          constraint: 'report_runs_requested_by_shape_chk',
+          constraint_name: 'report_runs_requested_by_shape_chk',
         }),
       });
     } finally {
