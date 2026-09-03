@@ -21,6 +21,7 @@ import type {
   ExposureBudgetDto,
   NarrativeSection,
   OrgNarrativeReportSummary,
+  SweepProposalReason,
   TicketTriageSkip,
 } from '@breeze/shared';
 
@@ -501,18 +502,26 @@ const SWEEP_SEVERITY_BADGE: Record<AiSweepSeverity, string> = {
 
 /**
  * Every `reason` a non-created sweep proposal can carry (the gate order in
- * `projectSweep`/`sweepProposals`, #4189 Task 7). Checked before the dynamic
- * `t()` so an unrecognized token renders as itself rather than as a raw
- * `aiAgentsPage.runs.sweep.reasons.<token>` key path.
+ * `projectSweep`/`sweepProposals`, #4189 Task 7), keyed to itself so `satisfies
+ * Record<SweepProposalReason, true>` fails to compile if this map ever falls
+ * out of sync with the shared union (#4458) — a member added or removed from
+ * `SweepProposalReason` without a matching update here is a missing/excess
+ * property error, not a silent runtime gap.
  */
-const SWEEP_PROPOSAL_REASONS: readonly string[] = [
-  'device_not_in_evidence',
-  'device_not_in_org',
-  'not_allowlisted',
-  'no_eligible_approvers',
-  'intent_error',
-  'max_actions_per_run',
-];
+const SWEEP_PROPOSAL_REASON_TOKENS = {
+  device_not_in_evidence: true,
+  device_not_in_org: true,
+  not_allowlisted: true,
+  no_eligible_approvers: true,
+  intent_error: true,
+  max_actions_per_run: true,
+} satisfies Record<SweepProposalReason, true>;
+
+/**
+ * Checked before the dynamic `t()` so an unrecognized token renders as itself
+ * rather than as a raw `aiAgentsPage.runs.sweep.reasons.<token>` key path.
+ */
+const SWEEP_PROPOSAL_REASONS: readonly string[] = Object.keys(SWEEP_PROPOSAL_REASON_TOKENS);
 
 function sweepKindLabel(t: (key: string) => string, kind: AiSweepKind): string {
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.kinds.${kind}`);
