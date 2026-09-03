@@ -720,9 +720,9 @@ describe('ScriptForm sourced parameters', () => {
       />
     );
 
-    expect(
-      await screen.findByRole('button', { name: 'About the device custom field binding' })
-    ).toBeInTheDocument();
+    const trigger = await screen.findByRole('button', { name: 'About the device custom field binding' });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
   });
 
   it('clears the previous arm\'s binding key when the source changes', async () => {

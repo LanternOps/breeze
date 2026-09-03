@@ -25,8 +25,8 @@ describe('CustomFieldsPage — field key help (issue #4198)', () => {
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole('button', { name: 'Add your first custom field' }));
 
-    expect(
-      await screen.findByRole('button', { name: 'About using this field in scripts' })
-    ).toBeInTheDocument();
+    const trigger = await screen.findByRole('button', { name: 'About using this field in scripts' });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
   });
 });
