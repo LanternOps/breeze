@@ -57,6 +57,7 @@ vi.mock('./catalogPricing', async (importOriginal) => {
 
 import * as svc from './contractService';
 import { db } from '../db';
+import { contractLines } from '../db/schema';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
@@ -65,7 +66,13 @@ import { GroupEvaluationError } from './groupMembership';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
-type Chain = { set: { mock: { calls: unknown[][] } }; delete: { mock: { calls: unknown[][] } } };
+type Chain = {
+  set: { mock: { calls: unknown[][] } };
+  delete: { mock: { calls: unknown[][] } };
+  update: { mock: { calls: unknown[][] } };
+  limit: { mock: { calls: unknown[][] } };
+  for: { mock: { calls: unknown[][] } };
+};
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -285,6 +292,7 @@ describe('contract line writers lock the contract row first (#3774)', () => {
 
   it('removeContractLine locks the contract row FOR UPDATE before deleting', async () => {
     queueResult([{ id: 'c1', status: 'active', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // lockContract (active is line-editable)
+    queueResult([{ id: 'l1', lineType: 'flat' }]); // pre-delete audit read
     queueResult([]); // delete (unused result)
 
     await svc.removeContractLine('c1', 'l1', actor);
@@ -330,6 +338,20 @@ describe('catalog contract lines price through the resolver (#3775)', () => {
         lineType: 'flat', description: 'Managed endpoint', taxable: false, catalogItemId: 'cat-1',
       } as never, actor)
     ).rejects.toMatchObject({ code: 'NO_PRICE_FOR_CURRENCY', status: 409 });
+    expect((db as unknown as ValuesChain).values.mock.calls.length).toBe(0);
+  });
+
+  it('addContractLineToContract maps ITEM_NOT_FOUND to non-enumerating CATALOG_ITEM_NOT_FOUND (400) and inserts nothing', async () => {
+    resolvePriceMock.mockRejectedValue(new CatalogServiceError('Catalog item cat-secret not found', 404, 'ITEM_NOT_FOUND'));
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // lockContract
+    await expect(
+      svc.addContractLineToContract('c1', {
+        lineType: 'flat', description: 'Managed endpoint', taxable: false, catalogItemId: 'cat-secret',
+      } as never, actor)
+    ).rejects.toMatchObject({
+      code: 'CATALOG_ITEM_NOT_FOUND', status: 400,
+      message: 'That catalog item is not available on this contract',
+    });
     expect((db as unknown as ValuesChain).values.mock.calls.length).toBe(0);
   });
 
@@ -1062,5 +1084,325 @@ describe('per_device_group quantities (#3205 W02)', () => {
 
     expect(out.has('org1')).toBe(false);
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3205 W03 — contract line editing.
+// The db mock is a single chain whose `then` shifts the next queued result, so
+// every awaited query consumes one queueResult() in call order. updateContractLine
+// issues, in order: lockContract SELECT, the line SELECT, [resolvePrice is mocked,
+// not queued], [assertSiteInOrg / assertGroupInOrg SELECTs when reached], UPDATE.
+// ---------------------------------------------------------------------------
+describe('updateContractLine (#3205 W03)', () => {
+  const CONTRACT = { id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'draft', currencyCode: 'USD' };
+  const CATALOG_A = '55555555-5555-4555-8555-555555555555';
+  const CATALOG_B = '66666666-6666-4666-8666-666666666666';
+  const SITE_B = '77777777-7777-4777-8777-777777777777';
+  const GROUP_B = '88888888-8888-4888-8888-888888888888';
+  const line = (over: Record<string, unknown> = {}) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device', description: 'Managed device',
+    catalogItemId: null, unitPrice: '10.00', manualQuantity: null, siteId: null, deviceRoles: null,
+    deviceGroupId: null, deviceGroupName: null, taxable: true, sortOrder: 0,
+    createdAt: new Date('2026-06-01T00:00:00Z'), ...over,
+  });
+  const setArgs = () => (db as unknown as Chain).set.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('locks the contract before reading the line', async () => {
+    // The line has no siteId and no deviceGroupId, so withLineRefs issues no
+    // extra query and three queued results are exactly what is consumed.
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([line({ description: 'Renamed' })]);
+    await svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor);
+    expect((db as unknown as Chain).for.mock.calls[0]).toEqual(['update']);
+  });
+
+  it.each(['paused', 'cancelled', 'expired'])('rejects a %s contract with INVALID_STATE (409)', async (status) => {
+    queueResult([{ ...CONTRACT, status }]);
+    await expect(svc.updateContractLine('c1', 'l1', { description: 'x' } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('throws LINE_NOT_FOUND (404) when the line is not on this contract', async () => {
+    queueResult([CONTRACT]); queueResult([]);
+    await expect(svc.updateContractLine('c1', 'l1', { description: 'x' } as never, actor))
+      .rejects.toMatchObject({ code: 'LINE_NOT_FOUND', status: 404 });
+  });
+
+  it('throws ORG_DENIED (403) for an inaccessible org', async () => {
+    queueResult([{ ...CONTRACT, orgId: 'other-org' }]);
+    await expect(svc.updateContractLine('c1', 'l1', { description: 'x' } as never, actor))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  // ---- catalog transition table, one test per row -------------------------
+  it('row 1: unlinked, link untouched — the client price is written', async () => {
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([line({ unitPrice: '12.50' })]);
+    await svc.updateContractLine('c1', 'l1', { unitPrice: '12.50' } as never, actor);
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect(setArgs()).toMatchObject({ unitPrice: '12.50', catalogItemId: null });
+  });
+
+  it('row 2: linked, link untouched — no reprice and the client price is ignored', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00', description: 'Renamed' })]);
+    await svc.updateContractLine('c1', 'l1', { description: 'Renamed', unitPrice: '1.00' } as never, actor);
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect(setArgs()).toMatchObject({ unitPrice: '20.00', description: 'Renamed' });
+  });
+
+  it('row 3: manual -> catalog re-resolves and ignores a client price in the same patch', async () => {
+    resolvePriceMock.mockResolvedValueOnce({ unitPrice: '7.25', taxable: false } as never);
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '7.25' })]);
+    await svc.updateContractLine('c1', 'l1', { catalogItemId: CATALOG_A, unitPrice: '1.00' } as never, actor);
+    expect(resolvePriceMock).toHaveBeenCalledWith(
+      CATALOG_A, 'USD', 'org1',
+      { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] },
+      expect.anything(),
+    );
+    expect(setArgs()).toMatchObject({ unitPrice: '7.25', taxable: false, catalogItemId: CATALOG_A });
+  });
+
+  it('row 4: the SAME catalog id is idempotent — no resolve, no price move', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    await svc.updateContractLine('c1', 'l1', { catalogItemId: CATALOG_A } as never, actor);
+    expect(resolvePriceMock).not.toHaveBeenCalled();
+    expect(setArgs()).toMatchObject({ unitPrice: '20.00', catalogItemId: CATALOG_A });
+  });
+
+  it('row 5: a DIFFERENT catalog id re-resolves against the new item', async () => {
+    resolvePriceMock.mockResolvedValueOnce({ unitPrice: '9.00', taxable: true } as never);
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    queueResult([line({ catalogItemId: CATALOG_B, unitPrice: '9.00' })]);
+    await svc.updateContractLine('c1', 'l1', { catalogItemId: CATALOG_B } as never, actor);
+    expect(resolvePriceMock).toHaveBeenCalledWith(CATALOG_B, 'USD', 'org1', expect.anything(), expect.anything());
+    expect(setArgs()).toMatchObject({ unitPrice: '9.00', catalogItemId: CATALOG_B });
+  });
+
+  it('row 6a: unlink without unitPrice is 400 INVALID_LINE_PATCH', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A })]);
+    await expect(svc.updateContractLine('c1', 'l1', { catalogItemId: null, taxable: true } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
+  });
+
+  it('row 6b: unlink without taxable is 400 INVALID_LINE_PATCH', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A })]);
+    await expect(svc.updateContractLine('c1', 'l1', { catalogItemId: null, unitPrice: '3.00' } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
+  });
+
+  it('row 6c: unlink with both writes the hand-entered price and clears the link', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    queueResult([line({ catalogItemId: null, unitPrice: '3.00' })]);
+    await svc.updateContractLine('c1', 'l1', { catalogItemId: null, unitPrice: '3.00', taxable: false } as never, actor);
+    expect(setArgs()).toMatchObject({ catalogItemId: null, unitPrice: '3.00', taxable: false });
+  });
+
+  it('row 7: null on an already-unlinked line imposes no price requirement and still applies siblings', async () => {
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([line({ description: 'Renamed' })]);
+    await svc.updateContractLine('c1', 'l1', { catalogItemId: null, description: 'Renamed' } as never, actor);
+    expect(setArgs()).toMatchObject({ catalogItemId: null, description: 'Renamed' });
+  });
+
+  it('refreshCatalogPrice re-resolves a linked row and is 400 on an unlinked one', async () => {
+    resolvePriceMock.mockResolvedValueOnce({ unitPrice: '11.00', taxable: true } as never);
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '20.00' })]);
+    queueResult([line({ catalogItemId: CATALOG_A, unitPrice: '11.00' })]);
+    await svc.updateContractLine('c1', 'l1', { refreshCatalogPrice: true } as never, actor);
+    expect(setArgs()).toMatchObject({ unitPrice: '11.00' });
+
+    results.length = 0;
+    queueResult([CONTRACT]); queueResult([line()]);
+    await expect(svc.updateContractLine('c1', 'l1', { refreshCatalogPrice: true } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400, details: { issues: [{ path: 'refreshCatalogPrice' }] } });
+  });
+
+  it('refreshCatalogPrice combined with catalogItemId null is the same 400', async () => {
+    queueResult([CONTRACT]); queueResult([line({ catalogItemId: CATALOG_A })]);
+    await expect(svc.updateContractLine('c1', 'l1', { catalogItemId: null, refreshCatalogPrice: true, unitPrice: '1.00', taxable: false } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
+  });
+
+  // ---- catalog error mapping ---------------------------------------------
+  it.each([
+    ['NO_PRICE_FOR_CURRENCY'],
+    ['PRICE_NOT_REPRESENTABLE'],
+  ])('maps CatalogServiceError %s to 409 with the code preserved', async (code) => {
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('nope', 409, code as never));
+    queueResult([CONTRACT]); queueResult([line()]);
+    await expect(svc.updateContractLine('c1', 'l1', { catalogItemId: CATALOG_A } as never, actor))
+      .rejects.toMatchObject({ code, status: 409 });
+  });
+
+  // Non-enumerating on purpose: missing, foreign and RLS-invisible are ONE answer.
+  it('maps ITEM_NOT_FOUND to 400 CATALOG_ITEM_NOT_FOUND with a non-enumerating message', async () => {
+    resolvePriceMock.mockRejectedValueOnce(new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND'));
+    queueResult([CONTRACT]); queueResult([line()]);
+    await expect(svc.updateContractLine('c1', 'l1', { catalogItemId: CATALOG_A } as never, actor))
+      .rejects.toMatchObject({
+        code: 'CATALOG_ITEM_NOT_FOUND', status: 400,
+        message: 'That catalog item is not available on this contract',
+      });
+  });
+
+  it('assertRepresentable fires for a hand-entered price on a non-catalog line', async () => {
+    queueResult([{ ...CONTRACT, currencyCode: 'JPY' }]); queueResult([line()]);
+    await expect(svc.updateContractLine('c1', 'l1', { unitPrice: '10.50' } as never, actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+  });
+
+  // ---- merged-row invariants ---------------------------------------------
+  it('rejects roles onto a per_device line with INVALID_LINE_PATCH and the failing path', async () => {
+    queueResult([CONTRACT]); queueResult([line()]);
+    await expect(svc.updateContractLine('c1', 'l1', { deviceRoles: ['server'] } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400, details: { issues: [{ path: 'deviceRoles' }] } });
+  });
+
+  it('rejects a siteId onto a per_device_group line', async () => {
+    queueResult([CONTRACT]);
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'VIP' })]);
+    await expect(svc.updateContractLine('c1', 'l1', { siteId: SITE_B } as never, actor))
+      .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400, details: { issues: [{ path: 'siteId' }] } });
+  });
+
+  // ---- ownership re-checks ------------------------------------------------
+  // lockContract and the line read each use .limit(1); assertSiteInOrg would be
+  // a third. Counting limit() calls is what distinguishes "checked" from "not".
+  it('does NOT re-check the site when the patch does not move it', async () => {
+    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B })]);
+    queueResult([line({ siteId: SITE_B, description: 'Renamed' })]);
+    queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);        // withLineRefs sites
+    await svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor);
+    expect((db as unknown as Chain).limit.mock.calls).toHaveLength(2);
+  });
+
+  it('re-checks the site when the patch moves it', async () => {
+    queueResult([CONTRACT]); queueResult([line()]);
+    queueResult([{ id: SITE_B }]);                                   // assertSiteInOrg
+    queueResult([line({ siteId: SITE_B })]);
+    queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);        // withLineRefs sites
+    await svc.updateContractLine('c1', 'l1', { siteId: SITE_B } as never, actor);
+    expect((db as unknown as Chain).limit.mock.calls).toHaveLength(3);
+    expect(setArgs()).toMatchObject({ siteId: SITE_B });
+  });
+
+  it('re-stamps device_group_name from the resolved group', async () => {
+    queueResult([CONTRACT]);
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'Old name' })]);
+    queueResult([{ id: GROUP_B, name: 'New name', type: 'static', siteId: null }]);  // assertGroupInOrg
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'New name' })]);
+    queueResult([{ id: GROUP_B, orgId: 'org1', name: 'New name', type: 'static' }]); // withLineRefs groups
+    await svc.updateContractLine('c1', 'l1', { deviceGroupId: GROUP_B } as never, actor);
+    expect(setArgs()).toMatchObject({ deviceGroupId: GROUP_B, deviceGroupName: 'New name' });
+  });
+
+  it('maps a 23503 on contract_lines_device_group_org_fk to 400 GROUP_NOT_IN_ORG', async () => {
+    queueResult([CONTRACT]);
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'VIP' })]);
+    queueResult([{ id: GROUP_B, name: 'VIP', type: 'static', siteId: null }]);
+    const chain = db as unknown as Chain & { update: ReturnType<typeof vi.fn> };
+    chain.update.mockImplementationOnce(() => { throw Object.assign(new Error('fk'), { code: '23503', constraint_name: 'contract_lines_device_group_org_fk' }); });
+    await expect(svc.updateContractLine('c1', 'l1', { deviceGroupId: GROUP_B } as never, actor))
+      .rejects.toMatchObject({ code: 'GROUP_NOT_IN_ORG', status: 400 });
+  });
+
+  it('throws LINE_NOT_FOUND (404) when the UPDATE loses a racing cascade delete', async () => {
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([]);
+    await expect(svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor))
+      .rejects.toMatchObject({ code: 'LINE_NOT_FOUND', status: 404 });
+  });
+
+  // ---- audit diff ---------------------------------------------------------
+  it('lists only genuinely changed columns and carries old/new price only on a price change', async () => {
+    queueResult([CONTRACT]); queueResult([line()]); queueResult([line({ unitPrice: '12.50', description: 'Renamed' })]);
+    const { audit } = await svc.updateContractLine('c1', 'l1', { unitPrice: '12.50', description: 'Renamed' } as never, actor);
+    expect(audit.changedFields!.sort()).toEqual(['description', 'unitPrice']);
+    expect(audit).toMatchObject({ oldUnitPrice: '10.00', newUnitPrice: '12.50', lineType: 'per_device', contractLineId: 'l1' });
+  });
+
+  it('does not treat a deviceRoles reorder as a change, and returns changedFields [] for a no-op patch', async () => {
+    const roleLine = line({ lineType: 'per_device_role', deviceRoles: ['server', 'switch'] });
+    queueResult([CONTRACT]); queueResult([roleLine]);
+    queueResult([line({ lineType: 'per_device_role', deviceRoles: ['switch', 'server'] })]);
+    const { audit } = await svc.updateContractLine('c1', 'l1', { deviceRoles: ['switch', 'server'] } as never, actor);
+    expect(audit.changedFields).toEqual([]);
+  });
+
+  // The no-free-text rule (decision 6): assert the KEY SET, so a future field
+  // cannot leak a description, a site name or a group name into the audit log.
+  it('never carries a value of any string column', async () => {
+    queueResult([CONTRACT]);
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'VIP laptops', description: 'Secret' })]);
+    queueResult([{ id: GROUP_B, name: 'VIP laptops', type: 'static', siteId: null }]);
+    queueResult([line({ lineType: 'per_device_group', deviceGroupId: GROUP_B, deviceGroupName: 'VIP laptops', description: 'Also secret' })]);
+    const { audit } = await svc.updateContractLine('c1', 'l1', { deviceGroupId: GROUP_B, description: 'Also secret' } as never, actor);
+    expect(Object.keys(audit).sort()).toEqual(
+      ['changedFields', 'contractId', 'contractLineId', 'contractName', 'lineType', 'orgId'].sort(),
+    );
+    expect(JSON.stringify(audit)).not.toContain('VIP laptops');
+    expect(JSON.stringify(audit)).not.toContain('Also secret');
+  });
+
+  it('returns the line decorated with site and deviceGroup', async () => {
+    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B })]);
+    queueResult([line({ siteId: SITE_B, description: 'Renamed' })]);
+    queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);   // withLineRefs sites
+    const { line: decorated } = await svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor);
+    expect(decorated).toMatchObject({ site: { id: SITE_B, name: 'HQ' }, deviceGroup: null });
+  });
+});
+
+describe('removeContractLine pre-read (#3205 W03)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('returns the lineType read BEFORE the delete', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'active', currencyCode: 'USD' }]);
+    queueResult([{ id: 'l1', lineType: 'per_seat' }]);
+    queueResult([]);
+    const audit = await svc.removeContractLine('c1', 'l1', actor);
+    expect(audit).toMatchObject({ orgId: 'org1', contractId: 'c1', contractName: 'Acme MSA', contractLineId: 'l1', lineType: 'per_seat' });
+    expect(audit.changedFields).toBeUndefined();
+  });
+
+  // Deliberate behaviour change: a DELETE for a line that does not exist was a
+  // silent 200. Its permissiveness is what would make the removal audit lie.
+  it('throws LINE_NOT_FOUND (404) when nothing matched, and never issues the delete', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'active', currencyCode: 'USD' }]);
+    queueResult([]);
+    await expect(svc.removeContractLine('c1', 'missing', actor)).rejects.toMatchObject({ code: 'LINE_NOT_FOUND', status: 404 });
+    expect((db as unknown as Chain).delete.mock.calls).toHaveLength(0);
+  });
+});
+
+describe('deterministic line ordering (#3205 W03)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  // generateDueInvoice's third read is covered behaviourally in
+  // contractLineEditing.integration.test.ts (its invoice lines come back in
+  // (sortOrder, createdAt, id) order) — mocking its whole transaction here
+  // would assert the mock, not the order.
+  it.each([
+    ['getContract', () => svc.getContract('c1', actor)],
+    ['computeContractEstimate', () => svc.computeContractEstimate('c1', actor)],
+  ])('%s orders by (sortOrder, createdAt, id)', async (_name, run) => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'C', status: 'active', currencyCode: 'USD' }]);
+    queueResult([]); queueResult([]); queueResult([]);
+    await run();
+    const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
+    expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
+  });
+
+  it('generateDueInvoice orders by (sortOrder, createdAt, id)', async () => {
+    queueResult([{
+      id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD',
+      startDate: '2026-07-01', intervalMonths: 1, billingTiming: 'advance', nextBillingAt: '2026-07-01',
+      endDate: null, autoIssue: false, createdBy: 'u1', notes: null, terms: null,
+    }]);
+    queueResult([]);
+    await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
+    const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
+    expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
   });
 });

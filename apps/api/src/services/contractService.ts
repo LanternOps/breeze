@@ -1,9 +1,13 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
-import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
+import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
+import {
+  BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS,
+  contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
+  type DeviceRole, type UpdateContractLineInput,
+} from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
@@ -53,16 +57,87 @@ async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
   return c;
 }
 
-/** #3205 W02: label group lines without a second fetch. Matched on (id, org_id)
- *  as defence in depth beside the composite FK; null when the group is gone
- *  (the stamped deviceGroupName still says what it was). */
-async function withDeviceGroup<T extends { deviceGroupId: string | null; orgId: string }>(lines: T[]) {
-  const ids = [...new Set(lines.map((l) => l.deviceGroupId).filter((x): x is string => x !== null))];
-  const groups = ids.length === 0 ? [] : await db
+export type DecoratedContractLine = typeof contractLines.$inferSelect & {
+  site: { id: string; name: string } | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+};
+
+/** #3205 W03: one decorator for every line read. The group leg is W02's
+ *  (renamed from withDeviceGroup); the site leg is the W01-deferred detail-page
+ *  legibility fix — ContractDetail loads no sites of its own, so the name has to
+ *  travel on the line. Both legs match on (id, org_id): defence in depth beside
+ *  the composite FKs, and null when the referenced row is gone (site_id is
+ *  ON DELETE SET NULL). Two batched inArray selects, never a per-line query. */
+async function withLineRefs<T extends { siteId: string | null; deviceGroupId: string | null; orgId: string }>(
+  lines: T[],
+): Promise<Array<T & {
+  site: { id: string; name: string } | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+}>> {
+  const siteIds = [...new Set(lines.map((l) => l.siteId).filter((x): x is string => x !== null))];
+  const groupIds = [...new Set(lines.map((l) => l.deviceGroupId).filter((x): x is string => x !== null))];
+  const siteRows = siteIds.length === 0 ? [] : await db
+    .select({ id: sites.id, orgId: sites.orgId, name: sites.name })
+    .from(sites).where(inArray(sites.id, siteIds));
+  const groupRows = groupIds.length === 0 ? [] : await db
     .select({ id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type })
-    .from(deviceGroups).where(inArray(deviceGroups.id, ids));
-  const byKey = new Map(groups.map((g) => [`${g.id}|${g.orgId}`, { id: g.id, name: g.name, type: g.type }]));
-  return lines.map((l) => ({ ...l, deviceGroup: l.deviceGroupId ? (byKey.get(`${l.deviceGroupId}|${l.orgId}`) ?? null) : null }));
+    .from(deviceGroups).where(inArray(deviceGroups.id, groupIds));
+  const siteByKey = new Map(siteRows.map((s) => [`${s.id}|${s.orgId}`, { id: s.id, name: s.name }]));
+  const groupByKey = new Map(groupRows.map((g) => [`${g.id}|${g.orgId}`, { id: g.id, name: g.name, type: g.type }]));
+  return lines.map((l) => ({
+    ...l,
+    site: l.siteId ? (siteByKey.get(`${l.siteId}|${l.orgId}`) ?? null) : null,
+    deviceGroup: l.deviceGroupId ? (groupByKey.get(`${l.deviceGroupId}|${l.orgId}`) ?? null) : null,
+  }));
+}
+
+/** Columns a line PATCH can move. The audit reports NAMES from this list only. */
+const AUDITED_LINE_COLUMNS = [
+  'description', 'unitPrice', 'taxable', 'catalogItemId', 'manualQuantity',
+  'siteId', 'deviceRoles', 'deviceGroupId', 'deviceGroupName', 'sortOrder',
+] as const;
+type AuditedLineColumn = typeof AUDITED_LINE_COLUMNS[number];
+type ContractLineRowT = typeof contractLines.$inferSelect;
+
+function lineColumnChanged(field: AuditedLineColumn, before: ContractLineRowT, after: ContractLineRowT): boolean {
+  if (field === 'deviceRoles') {
+    // A reorder is not a change: the set is what bills.
+    const norm = (v: readonly string[] | null) => (v === null ? null : JSON.stringify([...v].sort()));
+    return norm(before.deviceRoles) !== norm(after.deviceRoles);
+  }
+  // String()-normalise: Postgres hands numerics back as strings, and a numeric
+  // column round-tripped through Drizzle must not read as "changed".
+  const norm = (v: unknown) => (v === null || v === undefined ? null : String(v));
+  return norm(before[field]) !== norm(after[field]);
+}
+
+/** #3205 W03: changedFields comes from the PERSISTED rows, never from the patch
+ *  keys — an ignored client price (transition rows 2/4) must never claim to have
+ *  applied, and a patch that changes nothing must report []. */
+function diffLineAudit(
+  before: ContractLineRowT, after: ContractLineRowT,
+  c: { id: string; orgId: string; name: string },
+): ContractLineAudit {
+  const changedFields = AUDITED_LINE_COLUMNS.filter((f) => lineColumnChanged(f, before, after));
+  return {
+    orgId: c.orgId, contractId: c.id, contractName: c.name,
+    contractLineId: after.id, lineType: after.lineType,
+    changedFields: [...changedFields],
+    ...(changedFields.includes('unitPrice')
+      ? { oldUnitPrice: before.unitPrice, newUnitPrice: after.unitPrice }
+      : {}),
+  };
+}
+
+/** #3205 W03: the shared, no-free-text audit detail payload for HTTP and AI. */
+export function contractLineAuditDetails(audit: ContractLineAudit) {
+  return {
+    contractLineId: audit.contractLineId,
+    lineType: audit.lineType,
+    ...(audit.changedFields !== undefined ? { changedFields: audit.changedFields } : {}),
+    ...(audit.oldUnitPrice !== undefined ? { oldUnitPrice: audit.oldUnitPrice } : {}),
+    ...(audit.newUnitPrice !== undefined ? { newUnitPrice: audit.newUnitPrice } : {}),
+  };
 }
 
 function assertDraft(c: { status: string }): void {
@@ -166,11 +241,15 @@ export async function createContract(input: {
 
 export async function getContract(contractId: string, actor: ContractActor) {
   const contract = await getOwnedContractOr404(contractId, actor);
+  // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
+  // — addContractLineToContract defaults it to 0, so everything created through
+  // the editor ties — and Postgres was free to reshuffle the table on any edit.
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
   const periods = await db.select().from(contractBillingPeriods)
     .where(eq(contractBillingPeriods.contractId, contractId)).orderBy(desc(contractBillingPeriods.periodStart));
-  return { contract, lines: await withDeviceGroup(lines), periods };
+  return { contract, lines: await withLineRefs(lines), periods };
 }
 
 type ContractRow = typeof contracts.$inferSelect;
@@ -389,7 +468,8 @@ export interface ContractEstimate {
 export async function computeContractEstimate(contractId: string, actor: ContractActor): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
   let total = 0;
@@ -1012,6 +1092,30 @@ function assertRepresentable(value: string, currencyCode: string): void {
   }
 }
 
+/**
+ * #3205 W03: one mapping for every resolvePrice failure on a contract line.
+ *
+ * ITEM_NOT_FOUND was UNMAPPED on the add path: resolvePrice opens with
+ * getOwnedItemOr404, which throws CatalogServiceError('Catalog item not found',
+ * 404, 'ITEM_NOT_FOUND'), and handleContractError rethrows anything that is not
+ * a ContractServiceError — so a stale or foreign catalog item id on add was a
+ * live 500. 400, not 404: the contract line exists; the id in the body is what
+ * is wrong. The message deliberately does NOT distinguish missing / foreign /
+ * RLS-invisible, because a 404 that fires only for foreign ids is a
+ * partner-enumeration oracle.
+ */
+function mapCatalogResolveError(err: unknown): never {
+  if (err instanceof CatalogServiceError) {
+    if (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE') {
+      throw new ContractServiceError(err.message, 409, err.code);
+    }
+    if (err.code === 'ITEM_NOT_FOUND') {
+      throw new ContractServiceError('That catalog item is not available on this contract', 400, 'CATALOG_ITEM_NOT_FOUND');
+    }
+  }
+  throw err;
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
@@ -1029,10 +1133,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
           tx
         );
       } catch (err) {
-        if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
-            throw new ContractServiceError(err.message, 409, err.code);
-        }
-        throw err;
+        mapCatalogResolveError(err);
       }
       unitPrice = resolved.unitPrice;
       taxable = resolved.taxable;
@@ -1073,11 +1174,147 @@ export async function addContractLineToContract(contractId: string, input: Contr
   });
 }
 
-export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
-  await db.transaction(async (tx) => {
+/**
+ * PATCH one contract line in place (#3205 W03). Keeping the line's id is the
+ * whole point: invoice_lines.source_id carries it, and issueInvoice refuses a
+ * draft whose source line is gone (invoiceService.ts:1194-1199), so
+ * delete-and-re-add wedges any unissued generated invoice.
+ *
+ * Lock order is the one every contract writer takes — contracts FOR UPDATE, then
+ * contract_lines — the same order issueInvoice/voidInvoice take, so there is no
+ * new deadlock edge. No FOR UPDATE on the line itself: the contract lock already
+ * excludes every other line writer.
+ *
+ * Edits affect FUTURE periods only, by construction rather than by a guard:
+ * invoice lines carry their own copies of description, quantity, unit price and
+ * taxable (invoiceService.ts:405-450), and nothing re-reads a contract line's
+ * CONTENT after generation.
+ */
+export async function updateContractLine(
+  contractId: string, lineId: string, patch: UpdateContractLineInput, actor: ContractActor,
+): Promise<{ line: DecoratedContractLine; audit: ContractLineAudit }> {
+  const { before, after, contract } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
     assertEditable(c);
+
+    const [current] = await tx.select().from(contractLines)
+      .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
+    if (!current) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+
+    // ---- catalog transition table (spec § Validators (d)) ------------------
+    const touchesLink = patchHasKey(patch, 'catalogItemId');
+    const targetItemId = touchesLink ? (patch.catalogItemId ?? null) : current.catalogItemId;
+    // Row 4 is excluded here on purpose: the SAME id re-sent is a no-op, not a
+    // reprice — a form echoing the current id must change nothing.
+    const relinking = touchesLink && patch.catalogItemId != null && patch.catalogItemId !== current.catalogItemId;
+    const unlinking = touchesLink && patch.catalogItemId === null && current.catalogItemId !== null;
+    const refreshing = patch.refreshCatalogPrice === true;
+
+    if (refreshing && targetItemId === null) {
+      throw new ContractServiceError('The line is not linked to a catalog item', 400, 'INVALID_LINE_PATCH', {
+        issues: [{ path: 'refreshCatalogPrice', message: 'the line is not linked to a catalog item' }],
+      });
+    }
+
+    let resolved: { unitPrice: string; taxable: boolean; catalogItemId: string | null } | undefined;
+    if (relinking || (refreshing && targetItemId !== null)) {
+      let priced: Awaited<ReturnType<typeof resolvePrice>>;
+      try {
+        priced = await resolvePrice(
+          targetItemId!, c.currencyCode, c.orgId,
+          { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds },
+          tx,
+        );
+      } catch (err) {
+        mapCatalogResolveError(err);
+      }
+      resolved = { unitPrice: priced.unitPrice, taxable: priced.taxable, catalogItemId: targetItemId };
+    } else if (unlinking) {
+      // After an unlink nothing re-resolves this number ever again, so the
+      // operator has to supply it now.
+      if (patch.unitPrice === undefined || patch.taxable === undefined) {
+        throw new ContractServiceError('unitPrice and taxable are required when clearing catalogItemId', 400, 'INVALID_LINE_PATCH', {
+          issues: [{ path: 'unitPrice', message: 'unitPrice and taxable are required when clearing catalogItemId' }],
+        });
+      }
+      assertRepresentable(patch.unitPrice, c.currencyCode);
+    } else if (targetItemId === null && patch.unitPrice !== undefined) {
+      assertRepresentable(patch.unitPrice, c.currencyCode);
+    }
+    // When the merged row stays LINKED and no resolve ran (rows 2 and 4),
+    // mergeContractLinePatch drops patch.unitPrice / patch.taxable.
+
+    const merged = mergeContractLinePatch(current, patch, resolved);
+    const issues = contractLineInvariantIssues(merged, { mode: 'persisted' });
+    if (issues.length > 0) {
+      throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_LINE_PATCH', { issues });
+    }
+
+    // Ownership checks, only when the patch actually moves them.
+    if (merged.siteId !== null && merged.siteId !== current.siteId) {
+      await assertSiteInOrg(tx, merged.siteId, c.orgId);
+    }
+    // Ordering note: the invariants above read deviceGroupName from `current`,
+    // which W02's CHECK guarantees non-null on any persisted group line.
+    // Re-stamping here changes the STRING, never its null-ness. Sound as
+    // written — do not reorder to "fix" an imagined dependency.
+    let deviceGroupName = current.deviceGroupName;
+    if (patch.deviceGroupId !== undefined) {
+      const group = await assertGroupInOrg(tx, patch.deviceGroupId, c.orgId);
+      deviceGroupName = group.name;
+    }
+
+    let updated: ContractLineRowT;
+    try {
+      const [row] = await tx.update(contractLines).set({
+        description: merged.description,
+        unitPrice: merged.unitPrice,
+        taxable: merged.taxable,
+        catalogItemId: merged.catalogItemId,
+        manualQuantity: merged.manualQuantity,
+        siteId: merged.siteId,
+        // The merged shape is readonly string[] for portability across the web
+        // editor; the column is DeviceRole[] and the schema edge already proved
+        // membership (z.enum(BILLABLE_DEVICE_ROLES)).
+        deviceRoles: merged.deviceRoles === null ? null : ([...merged.deviceRoles] as DeviceRole[]),
+        deviceGroupId: merged.deviceGroupId,
+        deviceGroupName,
+        sortOrder: merged.sortOrder,
+      }).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).returning();
+      if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+      updated = row;
+    } catch (err) {
+      // The delete race: deleteDeviceGroup holds FOR UPDATE on the group row, so
+      // this update waited and then lost. Same answer as a cross-org group.
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
+
+    return { before: current, after: updated, contract: c };
+  });
+
+  const [line] = await withLineRefs([after]);
+  return { line: line as DecoratedContractLine, audit: diffLineAudit(before, after, contract) };
+}
+
+export async function removeContractLine(
+  contractId: string, lineId: string, actor: ContractActor,
+): Promise<ContractLineAudit> {
+  return db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    // #3205 W03: read before deleting so contract.line.removed names the real
+    // lineType, and so a miss is a typed 404 rather than a silent 200 (the
+    // pre-W03 behaviour deleted by (id, contract_id) and never checked whether
+    // a row matched). Its permissiveness is exactly what would make the audit lie.
+    const [row] = await tx.select({ id: contractLines.id, lineType: contractLines.lineType })
+      .from(contractLines)
+      .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
+    if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
     await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+    return { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
   });
 }
 
@@ -1252,10 +1489,12 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     accessibleOrgIds: [c.orgId]
   };
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
 
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
-  // (removeContractLine stays permissive; this generation-side guard is the backstop.)
+  // This generation-side guard remains the backstop for an active contract whose
+  // final line was removed before the billing run.
   if (lines.length === 0) {
     return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
