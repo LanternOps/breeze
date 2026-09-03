@@ -317,6 +317,26 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 // has no cancel flag), so granting a deferral there would report success while
 // the machine still went down — the same class of lie Cancel() documents.
 func (r *RebootManager) Defer() (time.Duration, error) {
+	return r.deferSchedule(nil)
+}
+
+// deferForGeneration is Defer bound to the schedule that was live when the
+// caller started, refusing once that schedule has been superseded.
+//
+// The prompt needs this and the public Defer cannot provide it. A dialog blocks
+// for up to two minutes, and Defer's own checks only ask whether SOME reboot is
+// scheduled — so a user answering a prompt for the reboot that was replaced while
+// they read it would postpone the REPLACEMENT and spend its budget. That is the
+// same resurrection class Defer's comment describes for Cancel, one schedule
+// along: not a reboot brought back from the dead, but a different administrator's
+// reboot moved by a click that was never about it.
+func (r *RebootManager) deferForGeneration(gen uint64) (time.Duration, error) {
+	return r.deferSchedule(&gen)
+}
+
+// deferSchedule is the whole of Defer. gen, when non-nil, is the generation the
+// caller's decision belongs to.
+func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	// ONE atomic section: check, re-schedule, record the increment and persist
 	// it, without ever releasing mu. Every split version of this has a hole:
 	//
@@ -345,6 +365,9 @@ func (r *RebootManager) Defer() (time.Duration, error) {
 	}
 	if !r.state.RebootScheduled {
 		return 0, fmt.Errorf("no reboot scheduled")
+	}
+	if gen != nil && *gen != r.generation {
+		return 0, fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
 
 	// One clock sample for both the decision and the re-schedule; see
@@ -519,7 +542,21 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 		RebootActionRestartNow,
 		rebootActionPostpone(time.Duration(policy.DeferralMinutes) * time.Minute),
 	}
-	clicked := promptFn(n.Title, body, n.Urgency, actions, rung.promptWindow)
+	clicked, shown := promptFn(n.Title, body, n.Urgency, actions, rung.promptWindow)
+	if !shown {
+		// The prompt reached nobody: no helper session, an IPC failure, or a
+		// helper that could put nothing on screen. The user must still be TOLD,
+		// so fall back to the notification this rung would have sent with
+		// deferral off. Without this the interactive path SWALLOWS every
+		// deferrable rung on any device with no signed-in helper — a headless
+		// server, a Windows box at the logon screen, a crashed helper — leaving
+		// only the closing notice and quietly reintroducing #3197 for exactly the
+		// machines the ladder was written for.
+		if notifyFn != nil {
+			notifyFn(n.Title, body, n.Urgency)
+		}
+		return
+	}
 
 	switch clicked {
 	case "":
@@ -534,10 +571,10 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 	case actions[1]:
 		// Compared against the label we sent rather than a well-known constant:
 		// the helper echoes back a string, and only the exact offer counts.
-		if _, err := r.Defer(); err != nil {
-			// Refused after the fact — the operator cancelled while the dialog
-			// was open, or the deadline moved. Say so rather than leaving the
-			// click looking like it worked.
+		if _, err := r.deferForGeneration(gen); err != nil {
+			// Refused after the fact — the operator cancelled or replaced the
+			// schedule while the dialog was open, or the deadline moved. Say so
+			// rather than leaving the click looking like it worked.
 			log.Info("postponement refused", "reason", err.Error())
 			r.notifyUser("Restart Cannot Be Postponed", err.Error(), "critical")
 		}

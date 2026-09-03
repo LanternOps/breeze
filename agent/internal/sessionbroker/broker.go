@@ -555,7 +555,13 @@ func (b *Broker) listenOn(listener net.Listener, stopChan <-chan struct{}) error
 // Close shuts down the broker and all sessions.
 func (b *Broker) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), HandshakeTimeout)
-	_ = b.StopAcceptingAndWait(ctx)
+	// Logged here rather than discarded: the caller that reaches Close without
+	// having called StopAcceptingAndWait itself (listenOn's own shutdown, a test
+	// harness, a future reordering of the daemon's teardown) would otherwise see
+	// a stalled listener as a perfectly clean shutdown.
+	if err := b.StopAcceptingAndWait(ctx); err != nil {
+		log.Warn("broker close: listener shutdown did not complete", "error", err.Error())
+	}
 	cancel()
 
 	b.mu.Lock()

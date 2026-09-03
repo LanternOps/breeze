@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // TestRebootManagerIsBuiltWithThePromptSeam is a source assertion, in the idiom
@@ -34,38 +36,104 @@ func TestRebootManagerIsBuiltWithThePromptSeam(t *testing.T) {
 	if !strings.Contains(src, "patching.NewRebootManagerWithPrompt(") {
 		t.Error("heartbeat no longer builds the reboot manager with a prompt seam; the postponement dialog would never appear")
 	}
+	if !strings.Contains(src, "rebootPromptFunc(") {
+		t.Error("the prompt seam no longer routes through rebootPromptFunc, whose error handling is what the tests below pin")
+	}
 	if !strings.Contains(src, "RequestNotificationDecision(") {
 		t.Error("the prompt seam no longer routes through the broker's correlated notification request")
 	}
 }
 
-// TestRebootPromptSeamShapeMatchesTheBroker pins that the two halves of the seam
-// still fit: patching.PromptFunc's signature on one side, and the broker request
-// it is implemented with on the other. A change to either that did not update the
-// other would otherwise only surface at the heartbeat's own build.
-func TestRebootPromptSeamShapeMatchesTheBroker(t *testing.T) {
-	var seen ipc.NotifyRequest
-	var fn patching.PromptFunc = func(title, body, urgency string, actions []string, timeout time.Duration) string {
-		seen = ipc.NotifyRequest{
-			Title:     title,
-			Body:      body,
-			Urgency:   urgency,
-			Actions:   actions,
-			TimeoutMs: int(timeout.Milliseconds()),
-		}
-		return actions[0]
+// TestRebootPromptFuncTranslatesTheBrokerResult drives the REAL translation, not
+// a hand-rolled stand-in. The distinction this pins is the one that decides
+// whether a headless box gets warned at all: an unconfirmed prompt must report
+// shown=false so the manager falls back, while a delivered one must not, or every
+// rung would double.
+func TestRebootPromptFuncTranslatesTheBrokerResult(t *testing.T) {
+	cases := []struct {
+		name      string
+		res       ipc.NotifyResult
+		err       error
+		wantLabel string
+		wantShown bool
+	}{
+		{
+			name:      "the user clicked postpone",
+			res:       ipc.NotifyResult{Delivered: true, ActionClicked: "Postpone 1 hour"},
+			wantLabel: "Postpone 1 hour",
+			wantShown: true,
+		},
+		{
+			name:      "a real person saw the dialog and did nothing",
+			res:       ipc.NotifyResult{Delivered: true},
+			wantShown: true,
+		},
+		{
+			// The headless case, and the one the earlier version of this code got
+			// wrong: no notify-scoped session means the broker returns a zero
+			// result and NO error, which must not be mistaken for a silent user.
+			name:      "no helper session at all",
+			res:       ipc.NotifyResult{},
+			wantShown: false,
+		},
+		{
+			// The helper answered honestly that neither the dialog nor its toast
+			// fallback rendered.
+			name:      "the helper reached nobody",
+			res:       ipc.NotifyResult{Delivered: false},
+			wantShown: false,
+		},
+		{
+			name:      "the prompt went unanswered",
+			err:       fmt.Errorf("session s1: %w", sessionbroker.ErrCommandTimeout),
+			wantShown: false,
+		},
+		{
+			name:      "the transport broke",
+			err:       fmt.Errorf("session s1: broken pipe"),
+			wantShown: false,
+		},
 	}
 
-	got := fn("Restart Scheduled", "in 15 minutes", "normal",
-		[]string{patching.RebootActionRestartNow, "Postpone 1 hour"}, 90*time.Second)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen ipc.NotifyRequest
+			fn := rebootPromptFunc(func(req ipc.NotifyRequest, _ time.Duration) (ipc.NotifyResult, error) {
+				seen = req
+				return tc.res, tc.err
+			})
 
-	if got != patching.RebootActionRestartNow {
-		t.Errorf("prompt returned %q, want %q", got, patching.RebootActionRestartNow)
+			label, shown := fn("Restart Scheduled", "in 15 minutes", "normal",
+				[]string{patching.RebootActionRestartNow, "Postpone 1 hour"}, 90*time.Second)
+
+			if label != tc.wantLabel {
+				t.Errorf("clicked = %q, want %q", label, tc.wantLabel)
+			}
+			if shown != tc.wantShown {
+				t.Errorf("shown = %v, want %v", shown, tc.wantShown)
+			}
+			if seen.TimeoutMs != 90_000 {
+				t.Errorf("TimeoutMs = %d, want 90000 — the manager's window must reach the helper's countdown", seen.TimeoutMs)
+			}
+			if len(seen.Actions) != 2 || seen.Actions[0] != patching.RebootActionRestartNow {
+				t.Errorf("Actions = %v, want the affirmative first", seen.Actions)
+			}
+			if seen.Title != "Restart Scheduled" || seen.Urgency != "normal" {
+				t.Errorf("request = %+v, want the manager's title and urgency passed through", seen)
+			}
+		})
 	}
-	if seen.TimeoutMs != 90_000 {
-		t.Errorf("TimeoutMs = %d, want 90000 — the manager's timeout must reach the helper's countdown", seen.TimeoutMs)
-	}
-	if len(seen.Actions) != 2 {
-		t.Fatalf("Actions = %v, want the two-button pair", seen.Actions)
+}
+
+// TestRebootPromptFuncWithNoBrokerIsNotADecision covers the agent starting up
+// before the session broker exists.
+func TestRebootPromptFuncWithNoBrokerIsNotADecision(t *testing.T) {
+	fn := rebootPromptFunc(func(ipc.NotifyRequest, time.Duration) (ipc.NotifyResult, error) {
+		return ipc.NotifyResult{}, nil
+	})
+	label, shown := fn("Restart Scheduled", "in 15 minutes", "normal",
+		[]string{patching.RebootActionRestartNow, "Postpone 1 hour"}, time.Minute)
+	if label != "" || shown {
+		t.Errorf("clicked = %q, shown = %v; want no decision and no delivery", label, shown)
 	}
 }

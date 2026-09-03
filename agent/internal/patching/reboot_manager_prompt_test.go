@@ -28,15 +28,15 @@ func newPromptTestManager(t *testing.T, maxPerDay int, replies ...string) (
 	rm, timers, notifications, osCalls, clock, _ := newDeferralTestManager(t, maxPerDay)
 	var mu sync.Mutex
 	prompts := []promptCall{}
-	rm.promptFn = func(title, body, urgency string, actions []string, timeout time.Duration) string {
+	rm.promptFn = func(title, body, urgency string, actions []string, timeout time.Duration) (string, bool) {
 		mu.Lock()
 		i := len(prompts)
 		prompts = append(prompts, promptCall{title, body, urgency, append([]string{}, actions...), timeout})
 		mu.Unlock()
 		if i < len(replies) {
-			return replies[i]
+			return replies[i], true
 		}
-		return ""
+		return "", true
 	}
 	return rm, timers, notifications, osCalls, clock, &prompts
 }
@@ -330,10 +330,10 @@ func TestPromptDoesNotHoldTheManagerLock(t *testing.T) {
 	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
 	inPrompt := make(chan struct{})
 	release := make(chan struct{})
-	rm.promptFn = func(string, string, string, []string, time.Duration) string {
+	rm.promptFn = func(string, string, string, []string, time.Duration) (string, bool) {
 		close(inPrompt)
 		<-release
-		return ""
+		return "", true
 	}
 	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
 		allowDeferral(2, 60)); err != nil {
@@ -368,10 +368,10 @@ func TestPostponeIsRefusedAfterACancelAndTheUserIsTold(t *testing.T) {
 	rm, timers, notifications, osCalls, clock, _ := newDeferralTestManager(t, 3)
 	inPrompt := make(chan struct{})
 	release := make(chan struct{})
-	rm.promptFn = func(_, _, _ string, actions []string, _ time.Duration) string {
+	rm.promptFn = func(_, _, _ string, actions []string, _ time.Duration) (string, bool) {
 		close(inPrompt)
 		<-release
-		return actions[1] // Postpone
+		return actions[1], true // Postpone
 	}
 	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
 		allowDeferral(2, 60)); err != nil {
@@ -420,10 +420,10 @@ func TestRestartNowIsRefusedAfterACancel(t *testing.T) {
 	rm, timers, _, osCalls, clock, _ := newDeferralTestManager(t, 3)
 	inPrompt := make(chan struct{})
 	release := make(chan struct{})
-	rm.promptFn = func(string, string, string, []string, time.Duration) string {
+	rm.promptFn = func(string, string, string, []string, time.Duration) (string, bool) {
 		close(inPrompt)
 		<-release
-		return RebootActionRestartNow
+		return RebootActionRestartNow, true
 	}
 	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
 		allowDeferral(2, 60)); err != nil {
@@ -625,5 +625,129 @@ func TestFailedOSInvocationLeavesNothingToAbort(t *testing.T) {
 	// rather than refused as "an OS reboot is being invoked".
 	if err := rm.Schedule(time.Hour, clock.now().Add(6*time.Hour), "Retry", "manual"); err != nil {
 		t.Fatalf("re-schedule after a failed OS invocation: %v", err)
+	}
+}
+
+// TestPostponeIsRefusedAfterTheScheduleWasReplaced is the review finding this
+// wave created and the public Defer() cannot catch on its own.
+//
+// Defer() asks only whether SOME reboot is scheduled. A dialog blocks for up to
+// two minutes, so a user answering a prompt for the reboot that was REPLACED
+// while they read it would postpone the replacement and spend its budget — a
+// different administrator's reboot moved by a click that was never about it.
+// Cancel-without-replacement was already caught; this is the same hazard one
+// schedule along.
+func TestPostponeIsRefusedAfterTheScheduleWasReplaced(t *testing.T) {
+	rm, timers, notifications, _, clock, _ := newDeferralTestManager(t, 3)
+	inPrompt := make(chan struct{})
+	release := make(chan struct{})
+	rm.promptFn = func(_, _, _ string, actions []string, _ time.Duration) (string, bool) {
+		close(inPrompt)
+		<-release
+		return actions[1], true // Postpone
+	}
+	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "First", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		timers.runAt(0)
+		close(done)
+	}()
+	<-inPrompt
+
+	// A second, unrelated dispatch supersedes the first while the dialog is open.
+	if err := rm.ScheduleWithOptions(30*time.Minute, clock.now().Add(5*time.Hour), "Second", "manual",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("replacement ScheduleWithOptions: %v", err)
+	}
+	replacementAt := rm.State().ScheduledAt
+
+	close(release)
+	<-done
+
+	st := rm.State()
+	if st.DeferralsUsed != 0 {
+		t.Errorf("DeferralsUsed = %d — the stale answer spent the replacement's budget", st.DeferralsUsed)
+	}
+	if !st.ScheduledAt.Equal(replacementAt) {
+		t.Errorf("the replacement moved from %v to %v because of a click about the schedule it replaced",
+			replacementAt, st.ScheduledAt)
+	}
+	if st.Reason != "Second" {
+		t.Errorf("Reason = %q, want the replacement's", st.Reason)
+	}
+	var told bool
+	for _, n := range *notifications {
+		if strings.Contains(n.title, "Cannot Be Postponed") {
+			told = true
+		}
+	}
+	if !told {
+		t.Errorf("the user was never told their postponement did not apply; notifications = %+v", *notifications)
+	}
+}
+
+// TestPublicDeferStillWorksWithoutAGeneration guards against the generation
+// check leaking into the public API, which the console's own postpone command
+// calls with no prompt and no generation in hand.
+func TestPublicDeferStillWorksWithoutAGeneration(t *testing.T) {
+	rm, _, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Errorf("DeferralsUsed = %d, want 1", got)
+	}
+}
+
+// TestHeadlessBoxStillGetsEveryWarning is the production shape my earlier
+// headless test missed. TestPromptAbsentFallsBackToAPlainNotification uses a NIL
+// promptFn — but the heartbeat always wires one, so on a real headless box (or a
+// Windows server at the logon screen, or a machine whose helper crashed) promptFn
+// is non-nil and simply reports that nothing was shown. Every deferrable rung
+// must still warn through the ordinary notification path.
+func TestHeadlessBoxStillGetsEveryWarning(t *testing.T) {
+	rm, timers, notifications, _, clock, _ := newDeferralTestManager(t, 3)
+	rm.promptFn = func(string, string, string, []string, time.Duration) (string, bool) {
+		return "", false // no session, nothing rendered
+	}
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	timers.runAt(0)
+
+	if len(*notifications) != 1 {
+		t.Fatalf("notifications = %d, want 1 — a deferrable rung warned nobody at all (#3197)", len(*notifications))
+	}
+	if rm.State().DeferralsUsed != 0 {
+		t.Error("a prompt that never rendered deferred something")
+	}
+}
+
+// TestAShownPromptIsNotFollowedByARedundantToast: when the dialog really did
+// render, it WAS the warning. Emitting a toast on top would double every rung.
+func TestAShownPromptIsNotFollowedByARedundantToast(t *testing.T) {
+	rm, timers, notifications, _, clock, _ := newDeferralTestManager(t, 3)
+	rm.promptFn = func(string, string, string, []string, time.Duration) (string, bool) {
+		return "", true // shown, user did nothing
+	}
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	timers.runAt(0)
+
+	if len(*notifications) != 0 {
+		t.Errorf("notifications = %d, want 0 — the dialog was the warning: %+v", len(*notifications), *notifications)
 	}
 }

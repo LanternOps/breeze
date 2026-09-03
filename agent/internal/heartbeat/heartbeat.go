@@ -1011,26 +1011,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				h.sessionBroker.BroadcastNotification(title, body, urgency)
 			}
 		},
-		func(title, body, urgency string, actions []string, timeout time.Duration) string {
+		rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
 			if h.sessionBroker == nil {
-				return ""
+				return ipc.NotifyResult{}, nil
 			}
-			res, err := h.sessionBroker.RequestNotificationDecision(ipc.NotifyRequest{
-				Title:     title,
-				Body:      body,
-				Urgency:   urgency,
-				Actions:   actions,
-				TimeoutMs: int(timeout.Milliseconds()),
-			}, timeout)
-			if err != nil {
-				// Not a failure: no helper, an old helper that ignores Actions, or
-				// a user who simply did not answer. All of them mean "no decision",
-				// and the reboot proceeds exactly as scheduled.
-				log.Debug("reboot prompt returned no decision; proceeding as scheduled", "error", err.Error())
-				return ""
-			}
-			return res.ActionClicked
-		},
+			return h.sessionBroker.RequestNotificationDecision(req, timeout)
+		}),
 		cfg.PatchRebootMaxPerDay,
 	)
 

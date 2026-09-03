@@ -12,14 +12,22 @@ import (
 	"time"
 )
 
-// PromptFunc shows an interactive notification and returns the LABEL of the
-// clicked button. "" means no decision: the countdown expired, the dialog could
-// not render, or the user dismissed it. A nil PromptFunc means this build has no
-// interactive surface at all, which is the normal case on a headless box.
+// PromptFunc shows an interactive notification and reports what came back.
+//
+// clicked is the LABEL of the clicked button, or "" for no decision: the
+// countdown expired, or the user dismissed the dialog.
+//
+// shown reports whether anything was actually put in front of a person. It is
+// the difference between "a user looked at the prompt and did nothing" and "no
+// user was reachable at all", and the caller MUST branch on it: a reboot warning
+// that rendered nowhere still has to reach the user through the ordinary
+// notification path, or the #3197 always-warn invariant is lost on every device
+// with no signed-in helper. Returning ("", false) is the normal, expected answer
+// on a headless box, and is not an error.
 //
 // It blocks for up to timeout, so callers must not hold the manager lock across
 // it.
-type PromptFunc func(title, body, urgency string, actions []string, timeout time.Duration) string
+type PromptFunc func(title, body, urgency string, actions []string, timeout time.Duration) (clicked string, shown bool)
 
 // RebootActionRestartNow is the affirmative button. It is a constant because the
 // manager compares what came back against what it sent; the postponement label
