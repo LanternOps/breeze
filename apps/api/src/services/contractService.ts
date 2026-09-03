@@ -6,7 +6,7 @@ import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import {
   ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
-  contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
+  contractLineInvariantIssues, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
   type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
@@ -156,12 +156,14 @@ function assertEditable(c: { status: string }): void {
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** A line may only be scoped to a site of ITS OWN org. The composite FK
- *  contract_lines_site_org_fk is the backstop; this is the 400 the operator sees. */
-async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<void> {
-  const [row] = await tx.select({ id: sites.id }).from(sites)
+/** #4693: returns the site row so the caller can STAMP its name with no second
+ *  query — the shape W02's assertGroupInOrg already has. The 400 SITE_NOT_IN_ORG
+ *  behaviour is unchanged. */
+async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<{ id: string; name: string }> {
+  const [row] = await tx.select({ id: sites.id, name: sites.name }).from(sites)
     .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
   if (!row) throw new ContractServiceError('Site does not belong to this organization', 400, 'SITE_NOT_IN_ORG');
+  return row;
 }
 
 async function assertGroupInOrg(tx: DbExecutor, groupId: string, orgId: string) {
@@ -179,8 +181,6 @@ function isGroupFkViolation(err: unknown): boolean {
   const constraint = node?.constraint_name ?? node?.constraint;
   return node?.code === '23503' && constraint === 'contract_lines_device_group_org_fk';
 }
-
-const SITE_SCOPABLE = new Set(['per_device', 'per_device_role']);
 
 /**
  * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
@@ -296,12 +296,14 @@ export async function listContracts(query: {
   for (const c of rows) {
     let cents = 0;
     let estimateError: 'GROUP_EVALUATION_FAILED' | undefined;
+    let unresolved = false;
     try {
       const lines = byContract.get(c.id) ?? [];
       const groupIds = groupIdsOf(lines);
       if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
       for (const l of lines) {
         const r = await resolveLineQty(c.orgId, l, dc, sc);
+        if (r.unresolved) unresolved = true;
         cents += lineCents(r, l.unitPrice, l, c.currencyCode);
       }
     } catch (err) {
@@ -311,7 +313,7 @@ export async function listContracts(query: {
     }
     out.push(estimateError
       ? { ...c, estimatedPeriodValue: null, estimateError }
-      : { ...c, estimatedPeriodValue: fromCents(cents) });
+      : { ...c, estimatedPeriodValue: unresolved ? null : fromCents(cents) });
   }
   return out;
 }
@@ -400,7 +402,12 @@ async function orgSnapshot(orgId: string, dc: DeviceCache, groupIds: readonly st
 /** Lines the pure helpers can resolve: a group line whose group is absent from
  *  the snapshot (deleted) covers nothing and is left out. */
 function resolvableLines(lines: readonly ContractLineRow[], snapshot: OrgDeviceSnapshot): ContractLineRow[] {
-  return lines.filter((l) => l.lineType !== 'per_device_group' || (l.deviceGroupId !== null && snapshot.groups.has(l.deviceGroupId)));
+  return lines.filter((l) =>
+    (l.lineType !== 'per_device_group' || (l.deviceGroupId !== null && snapshot.groups.has(l.deviceGroupId)))
+    // #4693: a site-deleted per_device / per_device_role line (id NULL, stamp kept)
+    // covers NOTHING — the same rule resolveLineQty applies. Without this the
+    // coverage notice would report the whole org as covered by a dead line.
+    && !(SITE_SCOPABLE_LINE_TYPES.has(l.lineType) && l.siteId === null && l.siteName != null));
 }
 
 /** True when `line` is a per_device_role line whose deviceRoles is missing,
@@ -477,7 +484,7 @@ function assertSpecDeviceSetLine(line: {
  */
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' }> {
+): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' | 'site_deleted' }> {
   switch (line.lineType) {
     case 'flat':
       return { ...applyAllowance(1, line, 'included_units'), live: false };
@@ -485,6 +492,12 @@ async function resolveLineQty(
       return { ...applyAllowance(Number(line.manualQuantity ?? '0'), line, 'included_units'), live: false };
     case 'per_device':
     case 'per_device_role': {
+      // #4693: site_id NULL with a stamped name means the site was DELETED.
+      // Counting here would silently bill every device in the org. A line with
+      // neither column set never had a site and correctly remains org-wide.
+      if (line.siteId === null && line.siteName != null) {
+        return { ...UNRESOLVED_QTY, live: true, unresolved: 'site_deleted' };
+      }
       assertRoleLineHasRoles(line);
       const counted = quantityFor(await orgSnapshot(orgId, dc), line);
       return { ...applyAllowance(counted, line, 'included_units'), live: true };
@@ -625,7 +638,7 @@ export interface ContractEstimate {
     overageMode: 'bill' | 'flag' | null;
     /** multiplyToCurrency(overage, overageUnitPrice), or the currency's zero. NEVER folded into `value`. */
     overageValue: string;
-    unresolved?: 'group_deleted';
+    unresolved?: 'group_deleted' | 'site_deleted';
   }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
    *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
@@ -822,6 +835,7 @@ export async function summarizeActiveContractMrrByOrg(
 
   for (const c of rows) {
     let cents = 0;
+    let siteDeleted = false;
     try {
       const lines = byContract.get(c.id) ?? [];
       const groupIds = groupIdsOf(lines);
@@ -835,6 +849,16 @@ export async function summarizeActiveContractMrrByOrg(
             l.id,
             l.deviceGroupName,
           );
+        }
+        if (r.unresolved === 'site_deleted') {
+          console.warn(
+            '[contracts] MRR rollup skipped contract %s: line %s bills deleted site %s',
+            c.id,
+            l.id,
+            l.siteName,
+          );
+          siteDeleted = true;
+          break;
         }
         const unitPrice = l.catalogItemId
           ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
@@ -850,6 +874,7 @@ export async function summarizeActiveContractMrrByOrg(
       }
       throw err;
     }
+    if (siteDeleted) continue;
     const periodValue = Number(fromCents(cents));
     const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
     // Round each contract in ITS OWN currency before grouping — a JPY contract
@@ -1356,8 +1381,8 @@ export async function addContractLineToContract(contractId: string, input: Contr
     // Note this runs on BOTH branches: a catalog-linked base line still carries
     // a hand-entered overage rate (the overage leg is never catalog-priced).
     if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, c.currencyCode);
-    const siteId = SITE_SCOPABLE.has(input.lineType) ? (input.siteId ?? null) : null;
-    if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
+    const siteId = SITE_SCOPABLE_LINE_TYPES.has(input.lineType) ? (input.siteId ?? null) : null;
+    const site = siteId ? await assertSiteInOrg(tx, siteId, c.orgId) : null;
     const group = input.lineType === 'per_device_group' && input.deviceGroupId
       ? await assertGroupInOrg(tx, input.deviceGroupId, c.orgId) : null;
     try {
@@ -1365,7 +1390,8 @@ export async function addContractLineToContract(contractId: string, input: Contr
         contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
         catalogItemId: input.catalogItemId ?? null, unitPrice,
         manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-        siteId,
+        siteId: site?.id ?? null,
+        siteName: site?.name ?? null,
         // #3205: roles only on per_device_role (CHECK-enforced); the validator
         // already guarantees a non-empty, duplicate-free, billable set.
         deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
@@ -1455,6 +1481,13 @@ export async function updateContractLine(
     // mergeContractLinePatch drops patch.unitPrice / patch.taxable.
 
     const merged = mergeContractLinePatch(current, patch, resolved);
+    // #4693: re-stamp from the resolved site when the id changed; clearing the
+    // id makes the line deliberately org-wide, rather than marking it deleted.
+    if (patchHasKey(patch, 'siteId')) {
+      merged.siteName = merged.siteId && SITE_SCOPABLE_LINE_TYPES.has(merged.lineType)
+        ? (await assertSiteInOrg(tx, merged.siteId, c.orgId)).name
+        : null;
+    }
     const issues = contractLineInvariantIssues(merged, { mode: 'persisted' });
     if (issues.length > 0) {
       throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_LINE_PATCH', { issues });
@@ -1468,10 +1501,6 @@ export async function updateContractLine(
       assertRepresentable(merged.overageUnitPrice, c.currencyCode);
     }
 
-    // Ownership checks, only when the patch actually moves them.
-    if (merged.siteId !== null && merged.siteId !== current.siteId) {
-      await assertSiteInOrg(tx, merged.siteId, c.orgId);
-    }
     // Ordering note: the invariants above read deviceGroupName from `current`,
     // which W02's CHECK guarantees non-null on any persisted group line.
     // Re-stamping here changes the STRING, never its null-ness. Sound as
@@ -1491,6 +1520,7 @@ export async function updateContractLine(
         catalogItemId: merged.catalogItemId,
         manualQuantity: merged.manualQuantity,
         siteId: merged.siteId,
+        siteName: merged.siteName,
         // The merged shape is readonly string[] for portability across the web
         // editor; the column is DeviceRole[] and the schema edge already proved
         // membership (z.enum(BILLABLE_DEVICE_ROLES)).
@@ -1732,6 +1762,18 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
+  // #4693: refusing before invoice creation makes the whole run a no-write
+  // result. A stamped name with no id means the formerly scoped site is gone;
+  // treating the line as org-wide would over-bill every remaining device.
+  for (const l of lines) {
+    if ((l.lineType === 'per_device' || l.lineType === 'per_device_role') && l.siteId === null && l.siteName != null) {
+      throw new ContractServiceError(
+        `contract line ${l.id} is scoped to site "${l.siteName}", which no longer exists`,
+        409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },
+      );
+    }
+  }
+
   const hasDeviceLine = lines.some(isDeviceLine);
   const dc: DeviceCache = new Map();
   const snapshot = hasDeviceLine ? await orgSnapshot(c.orgId, dc, groupIdsOf(lines)) : emptySnapshot();
@@ -1894,8 +1936,8 @@ export async function createContractWithLinesDetailed(
     assertRepresentable(l.unitPrice, spec.currencyCode);
     const allowance = allowanceColumnsFor(l);
     if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, spec.currencyCode);
-    const siteId = SITE_SCOPABLE.has(l.lineType) ? (l.siteId ?? null) : null;
-    if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
+    const siteId = SITE_SCOPABLE_LINE_TYPES.has(l.lineType) ? (l.siteId ?? null) : null;
+    const site = siteId ? await assertSiteInOrg(db, siteId, spec.orgId) : null;
     const group = l.lineType === 'per_device_group' && l.deviceGroupId
       ? await assertGroupInOrg(db, l.deviceGroupId, spec.orgId) : null;
     let insertedLine: { id: string } | undefined;
@@ -1908,7 +1950,10 @@ export async function createContractWithLinesDetailed(
         catalogItemId: l.catalogItemId ?? null,
         unitPrice: l.unitPrice,
         manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
-        siteId,
+        siteId: site?.id ?? null,
+        // #4693: acceptance passes the string the customer SIGNED. Prefer it
+        // over a fresh read; every other caller falls back to the live name.
+        siteName: site ? (l.siteName ?? site.name) : null,
         deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
         deviceGroupId: group?.id ?? null,
         deviceGroupName: group?.name ?? null,

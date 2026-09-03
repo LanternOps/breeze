@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "gruppo eliminato"
+        "groupDeleted": "gruppo eliminato",
+        "siteDeleted": "sede eliminata",
+        "siteDeletedNamed": "sede eliminata: {{name}}"
       },
       "lineScope": {
         "site": "Sede: {{name}}"

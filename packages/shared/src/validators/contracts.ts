@@ -33,7 +33,7 @@ const ALLOWANCE_LINE_TYPE_SET: ReadonlySet<string> = new Set(ALLOWANCE_LINE_TYPE
  *  note on deviceRoles below). One predicate set has to serve both. */
 const present = (v: unknown): boolean => v !== undefined && v !== null;
 
-const SITE_SCOPABLE_LINE_TYPES = new Set<ContractLineType>(['per_device', 'per_device_role']);
+export const SITE_SCOPABLE_LINE_TYPES = new Set<ContractLineType>(['per_device', 'per_device_role']);
 
 export interface ContractLineShape {
   lineType: ContractLineType;

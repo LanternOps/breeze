@@ -65,7 +65,7 @@ const contract = {
 const baseLine: ContractLine = {
   id: 'l1', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Managed device',
   catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
-  includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, deviceRoles: null,
+  includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, siteName: null, deviceRoles: null,
   deviceGroupId: null, deviceGroupName: null, deviceGroup: null, site: null, taxable: false, sortOrder: 0,
   createdAt: '2026-06-01T00:00:00Z',
 };
@@ -297,12 +297,12 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
   });
 
   it('renders a site-scoped line with the labelled site sub-label from line.site', async () => {
-    renderEdit([{ ...baseLine, siteId: 'site-1', site: { id: 'site-1', name: 'HQ' } }]);
+    renderEdit([{ ...baseLine, siteId: 'site-1', siteName: 'HQ', site: { id: 'site-1', name: 'HQ' } }]);
     expect((await screen.findByTestId('line-site-0')).textContent).toBe('Site: HQ');
   });
 
   it('renders the site sub-label whenever line.site is present', async () => {
-    renderEdit([{ ...baseLine, lineType: 'flat', siteId: 'site-1', site: { id: 'site-1', name: 'HQ' } }]);
+    renderEdit([{ ...baseLine, lineType: 'flat', siteId: 'site-1', siteName: 'HQ', site: { id: 'site-1', name: 'HQ' } }]);
     expect((await screen.findByTestId('line-site-0')).textContent).toBe('Site: HQ');
   });
 

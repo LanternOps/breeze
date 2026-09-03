@@ -34,6 +34,8 @@ export interface NewContractLineSpec {
   catalogItemId?: string | null;
   manualQuantity?: string | null;
   siteId?: string | null;
+  /** #4693: Task 9 populates this from the accepted quote. */
+  siteName?: string | null;
   /** #3205: required (non-empty) when lineType is per_device_role, otherwise absent. */
   deviceRoles?: DeviceRole[] | null;
   /** #3205 W02: required when lineType is per_device_group, otherwise absent. Name is stamped by the writer. */

@@ -375,6 +375,42 @@ describe('contract line writers lock the contract row first (#3774)', () => {
   });
 });
 
+// #4693: every writer stamps the site's name from the row assertSiteInOrg now
+// RETURNS, with no extra query — the shape W02's assertGroupInOrg already has.
+describe('contract line site stamp writers (#4693)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('addContractLineToContract writes site_name beside site_id', async () => {
+    const siteId = '11111111-1111-4111-8111-111111111111';
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'C', status: 'draft', currencyCode: 'USD' }]);
+    queueResult([{ id: siteId, name: 'Dallas' }]);
+    queueResult([{ id: 'line-1' }]);
+
+    await svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true, siteId,
+    } as never, actor);
+
+    const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
+    expect(values.at(-1)?.[0]).toMatchObject({ siteId, siteName: 'Dallas' });
+  });
+
+  it('createContractWithLinesDetailed writes site_name beside site_id', async () => {
+    const siteId = '11111111-1111-4111-8111-111111111111';
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    queueResult([{ id: siteId, name: 'Dallas' }]);
+    queueResult([{ id: 'line-1' }]);
+
+    await svc.createContractWithLinesDetailed({
+      partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+      startDate: '2026-01-01', currencyCode: 'USD',
+      lines: [{ lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true, siteId }],
+    } as never);
+
+    const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
+    expect(values.at(-1)?.[0]).toMatchObject({ siteId, siteName: 'Dallas' });
+  });
+});
+
 describe('catalog contract lines price through the resolver (#3775)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
   type ValuesChain = { values: { mock: { calls: unknown[][] } } };
@@ -1152,6 +1188,47 @@ describe('computeContractEstimate — allowance and overage (#3205 W04)', () => 
   });
 });
 
+// #4693: the resolver's whole job here is to REFUSE to count. Counting a line
+// whose site is gone is the org-wide over-bill this stamp exists to make visible.
+describe('resolveLineQty — deleted site (#4693)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    vi.mocked(snapshotContractDevices).mockResolvedValue([
+      { id: 'd1', role: 'server', siteId: 'site-a' },
+      { id: 'd2', role: 'server', siteId: 'site-b' },
+    ]);
+  });
+
+  const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD' };
+  const line = (lineType: 'per_device' | 'per_device_role', siteName: string | null) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', lineType, description: 'Endpoints',
+    unitPrice: '10.00', taxable: true, catalogItemId: null, manualQuantity: null,
+    siteId: null, siteName, deviceRoles: lineType === 'per_device_role' ? ['server'] : null,
+    deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null,
+  });
+
+  it.each(['per_device', 'per_device_role'] as const)(
+    'reports site_deleted for a %s line with a stamp and no id',
+    async (lineType) => {
+      queueResult([contract]);
+      queueResult([line(lineType, 'Dallas')]);
+      const out = await svc.computeContractEstimate('c1', actor);
+      expect(out.lines[0]).toMatchObject({ quantity: 0, live: true, unresolved: 'site_deleted' });
+    },
+  );
+
+  // THE CONTROL. Without it this suite cannot tell a fix from a blanket refusal.
+  it('still counts org-wide for a line that never had a site', async () => {
+    queueResult([contract]);
+    queueResult([line('per_device', null)]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({ quantity: 2 });
+    expect(out.lines[0]).not.toHaveProperty('unresolved');
+  });
+});
+
 describe('listContracts estimatedPeriodValue with allowances (#3205 W04)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
@@ -1537,12 +1614,21 @@ describe('updateContractLine (#3205 W03)', () => {
 
   it('re-checks the site when the patch moves it', async () => {
     queueResult([CONTRACT]); queueResult([line()]);
-    queueResult([{ id: SITE_B }]);                                   // assertSiteInOrg
-    queueResult([line({ siteId: SITE_B, siteName: 'Site B' })]);
+    queueResult([{ id: SITE_B, name: 'HQ' }]);                       // assertSiteInOrg
+    queueResult([line({ siteId: SITE_B, siteName: 'HQ' })]);
     queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);        // withLineRefs sites
-    await svc.updateContractLine('c1', 'l1', { siteId: SITE_B } as never, actor);
+    const { line: updated } = await svc.updateContractLine('c1', 'l1', { siteId: SITE_B } as never, actor);
     expect((db as unknown as Chain).limit.mock.calls).toHaveLength(3);
-    expect(setArgs()).toMatchObject({ siteId: SITE_B });
+    expect(setArgs()).toMatchObject({ siteId: SITE_B, siteName: 'HQ' });
+    expect(updated).toMatchObject({ siteId: SITE_B, siteName: 'HQ' });
+  });
+
+  it('clears the site stamp when siteId is explicitly null', async () => {
+    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B, siteName: 'Dallas' })]);
+    queueResult([line({ siteId: null, siteName: null })]);
+    const { line: updated } = await svc.updateContractLine('c1', 'l1', { siteId: null } as never, actor);
+    expect(setArgs()).toMatchObject({ siteId: null, siteName: null });
+    expect(updated).toMatchObject({ siteId: null, siteName: null });
   });
 
   it('re-stamps device_group_name from the resolved group', async () => {

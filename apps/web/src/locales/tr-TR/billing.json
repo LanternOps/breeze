@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "otomatik",
-        "groupDeleted": "grup silindi"
+        "groupDeleted": "grup silindi",
+        "siteDeleted": "konum silindi",
+        "siteDeletedNamed": "konum silindi: {{name}}"
       },
       "lineScope": {
         "site": "Konum: {{name}}"

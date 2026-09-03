@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "group deleted"
+        "groupDeleted": "group deleted",
+        "siteDeleted": "site deleted",
+        "siteDeletedNamed": "site deleted: {{name}}"
       },
       "lineScope": {
         "site": "Site: {{name}}"

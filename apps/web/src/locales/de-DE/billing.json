@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "Gruppe gelöscht"
+        "groupDeleted": "Gruppe gelöscht",
+        "siteDeleted": "Standort gelöscht",
+        "siteDeletedNamed": "Standort gelöscht: {{name}}"
       },
       "lineScope": {
         "site": "Standort: {{name}}"
