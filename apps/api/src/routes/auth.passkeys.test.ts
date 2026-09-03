@@ -694,7 +694,11 @@ describe('passkey MFA auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(await res.json()).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
     });
 
@@ -737,7 +741,11 @@ describe('passkey MFA auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(await res.json()).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
     });
   });
 

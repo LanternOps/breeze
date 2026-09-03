@@ -39,16 +39,28 @@ export type RegisterReauth =
 
 class RegisterStepError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /**
+   * #4470: the API's stable machine code for a rejected proof
+   * (`mfa_proof_invalid`, `invalid_credentials`, ...). Carried through so the
+   * UI can branch on it instead of string-matching the human message, which
+   * was the only discriminator available while every rejection was a 401.
+   */
+  code?: string;
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new RegisterStepError(data?.error ?? fallback, response.status);
+    throw new RegisterStepError(
+      data?.error ?? fallback,
+      response.status,
+      typeof data?.code === 'string' ? data.code : undefined,
+    );
   }
   // A 2xx with an unparseable body (empty body, truncated proxy response) must
   // not silently resolve to `null` — every caller immediately reads a field
@@ -105,9 +117,11 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     await fetchWithAuth('/auth/mfa/step-up', {
       method: 'POST',
       body: JSON.stringify(stepUpBody),
-      // Same reasoning: a 401 means the TOTP code / passkey assertion was
-      // rejected (wrong code, or the assertion is already burned), not that
-      // the access token is stale — never replay it.
+      // #4470 moved a REJECTED proof here to 400 + `code: 'mfa_proof_invalid'`,
+      // so a 401 no longer means "wrong code". The opt-out stays anyway for the
+      // reason the flag actually documents: the passkey body carries a
+      // single-use WebAuthn assertion the server has already burned, and
+      // replaying it after a refresh can only fail again.
       skipUnauthorizedRetry: true,
     }),
     'Verification failed.'
