@@ -11,7 +11,8 @@
  */
 import './setup';
 import { getTestDb } from './setup';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { Hono } from 'hono';
 import { sql, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -22,6 +23,18 @@ import {
 import { generateDueInvoice } from '../../services/contractService';
 import { removeLine, updateLine } from '../../services/invoiceService';
 import type { DeviceRole } from '@breeze/shared';
+import type { AuthContext } from '../../middleware/auth';
+
+// Endpoint-level pagination uses the real route and service against Postgres;
+// auth itself is covered by the route-unit suite, so these two gates simply
+// admit the system actor installed by the local Hono harness below.
+vi.mock('../../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../middleware/auth')>()),
+  requireScope: () => async (_c: any, next: any) => next(),
+  requirePermission: () => async (_c: any, next: any) => next(),
+}));
+
+import { invoiceEvidenceRoutes } from '../../routes/invoices/evidence';
 
 /** The generation path is system-scoped; these two draft-line writers are not. */
 const ACTOR = { userId: null, partnerId: null, accessibleOrgIds: null } as const;
@@ -131,6 +144,45 @@ const hosts = (n: number, prefix = 'host') =>
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('billing evidence at generation (real DB) #3205 W07', () => {
+  runDb('GET evidence pages by (hostname, evidence-row id) without overlap across duplicate hostnames', async () => {
+    const f = await seedContract(['dup', 'dup', 'dup'], { lineType: 'per_device' });
+    const generated = await generate(f.contractId);
+    const [line] = await linesFor(generated.invoiceId!);
+
+    const app = new Hono<{ Variables: { auth: AuthContext } }>();
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: {
+          id: '00000000-0000-4000-8000-000000000001',
+          email: 'billing-evidence@example.test',
+          name: 'Billing Evidence',
+          isPlatformAdmin: true,
+        },
+        scope: 'system', partnerId: null, orgId: null, accessibleOrgIds: null,
+      } as AuthContext);
+      await next();
+    });
+    app.route('/', invoiceEvidenceRoutes);
+
+    const page1Res = await withSystemDbAccessContext(async () => app.request(
+      `/${generated.invoiceId}/lines/${line!.id}/devices?limit=2`,
+    ));
+    expect(page1Res.status).toBe(200);
+    const page1 = (await page1Res.json() as any).data;
+    expect(page1.devices).toHaveLength(2);
+    expect(page1.nextCursor).toEqual(expect.any(String));
+
+    const page2Res = await withSystemDbAccessContext(async () => app.request(
+      `/${generated.invoiceId}/lines/${line!.id}/devices?limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`,
+    ));
+    expect(page2Res.status).toBe(200);
+    const page2 = (await page2Res.json() as any).data;
+    expect(page2.devices).toHaveLength(1);
+    expect(page2.nextCursor).toBeNull();
+    expect([...page1.devices, ...page2.devices].map((d: any) => d.hostname)).toEqual(['dup', 'dup', 'dup']);
+    expect(new Set([...page1.devices, ...page2.devices].map((d: any) => d.id)).size).toBe(3);
+  });
+
   // ---------------------------------------------------------------- matrix
   runDb('no allowance, M=12 -> 12 included on the base line, 0 tail, quantity 12.00', async () => {
     const f = await seedContract(hosts(12), { lineType: 'per_device' });

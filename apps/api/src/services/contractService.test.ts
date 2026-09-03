@@ -1670,6 +1670,24 @@ describe('deterministic line ordering (#3205 W03)', () => {
   });
 });
 
+describe('getContract billing outcome summaries (#3205 W07)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('#3205 W07: getContract periods carry the outcome summary scalars, and null for a pre-W07 period', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'C', status: 'active', currencyCode: 'USD' }]);
+    queueResult([]); // lines
+    queueResult([
+      { id: 'p1', snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 },
+      { id: 'p0', snapshotDeviceTotal: null, uncoveredTotal: null, flaggedTotal: null, billedOverageTotal: null },
+    ]);
+    const { periods } = await svc.getContract('c1', actor);
+    expect(periods[0]).toMatchObject({ snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 });
+    expect(periods[1]).toMatchObject({ snapshotDeviceTotal: null, uncoveredTotal: null });
+    expect(periods[0]).not.toHaveProperty('uncoveredByRole');
+    expect(periods[0]).not.toHaveProperty('overages');
+  });
+});
+
 describe('allowance writers (#3205 W04)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 

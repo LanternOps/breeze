@@ -59,7 +59,7 @@ function requireOrgAccess(actor: ContractActor, orgId: string): void {
   }
 }
 
-async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
+export async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
   const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
   if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
   requireOrgAccess(actor, c.orgId);
@@ -258,8 +258,29 @@ export async function getContract(contractId: string, actor: ContractActor) {
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId))
     .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
-  const periods = await db.select().from(contractBillingPeriods)
-    .where(eq(contractBillingPeriods.contractId, contractId)).orderBy(desc(contractBillingPeriods.periodStart));
+  // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
+  // detail table. JSON digests remain exclusive to the expanded outcome read.
+  const periods = await db
+    .select({
+      id: contractBillingPeriods.id,
+      contractId: contractBillingPeriods.contractId,
+      orgId: contractBillingPeriods.orgId,
+      periodStart: contractBillingPeriods.periodStart,
+      periodEnd: contractBillingPeriods.periodEnd,
+      invoiceId: contractBillingPeriods.invoiceId,
+      generatedAt: contractBillingPeriods.generatedAt,
+      snapshotDeviceTotal: contractBillingPeriodOutcomes.snapshotDeviceTotal,
+      uncoveredTotal: contractBillingPeriodOutcomes.uncoveredTotal,
+      flaggedTotal: contractBillingPeriodOutcomes.flaggedTotal,
+      billedOverageTotal: contractBillingPeriodOutcomes.billedOverageTotal,
+    })
+    .from(contractBillingPeriods)
+    .leftJoin(
+      contractBillingPeriodOutcomes,
+      eq(contractBillingPeriodOutcomes.contractBillingPeriodId, contractBillingPeriods.id),
+    )
+    .where(eq(contractBillingPeriods.contractId, contractId))
+    .orderBy(desc(contractBillingPeriods.periodStart));
   return { contract, lines: await withLineRefs(lines), periods };
 }
 

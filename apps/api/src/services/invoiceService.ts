@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
+import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
@@ -88,7 +88,7 @@ export function requireInvoiceAccess(actor: InvoiceActor, inv: { orgId: string; 
 /** Either the ambient `db` handle or a `db.transaction` callback handle. */
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
+export async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
   const rows = await dbc.select().from(invoices).where(eq(invoices.id, id)).limit(1);
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return rows[0];
@@ -691,6 +691,18 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
+  // out of listInvoices and the customer projection.
+  const evidenceCounts = await db
+    .select({ lineId: invoiceLineDevices.invoiceLineId, n: count() })
+    .from(invoiceLineDevices)
+    .where(eq(invoiceLineDevices.invoiceId, invoiceId))
+    .groupBy(invoiceLineDevices.invoiceLineId);
+  const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
+  const linesWithDeviceCount = lines.map((line) => ({
+    ...line,
+    deviceCount: deviceCountByLine.get(line.id) ?? 0,
+  }));
   // Whether this invoice's partner can collect online (gates the "Send payment
   // link" UI). Partner-axis read under a partner/system request scope, so the
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
@@ -705,7 +717,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,

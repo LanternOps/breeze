@@ -30,6 +30,8 @@ export type InvoiceServiceErrorCode =
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
+  | 'INVOICE_LINE_NOT_FOUND'
+  | 'INVALID_CURSOR'
   | 'CURRENCY_MISMATCH'
   // Draft currency immutability (#3774): the change-currency op refused because
   // monetary lines exist and the caller didn't opt into clearLines.

@@ -198,6 +198,27 @@ async function evidenceRowsFor(invoiceId: string) {
 }
 
 describe.runIf(RUN)('reissue clones billing evidence (#3205 W07)', () => {
+  runDb('clones every evidence field row-for-row while remapping invoice and line ids', async () => {
+    const f = await seedInvoiceWithEvidence();
+    const sourceRows = await evidenceRowsFor(f.invoiceId);
+    const [sourceLine] = await withSystemDbAccessContext(() => db
+      .select({ id: invoiceLines.id, description: invoiceLines.description })
+      .from(invoiceLines).where(eq(invoiceLines.invoiceId, f.invoiceId)));
+
+    const draft = await withSystemDbAccessContext(() => voidInvoice(f.invoiceId, 'test', { reissue: true }, ACTOR));
+    const clonedRows = await evidenceRowsFor(draft.invoice.id);
+    const [clonedLine] = await withSystemDbAccessContext(() => db
+      .select({ id: invoiceLines.id, description: invoiceLines.description })
+      .from(invoiceLines).where(eq(invoiceLines.invoiceId, draft.invoice.id)));
+
+    expect(clonedLine!.description).toBe(sourceLine!.description);
+    expect(clonedLine!.id).not.toBe(sourceLine!.id);
+    expect(clonedRows).toHaveLength(sourceRows.length);
+    expect(clonedRows.map(({ id: _id, invoiceId: _invoiceId, invoiceLineId: _lineId, ...fields }) => fields))
+      .toEqual(sourceRows.map(({ id: _id, invoiceId: _invoiceId, invoiceLineId: _lineId, ...fields }) => fields));
+    expect(clonedRows.every((row) => row.invoiceId === draft.invoice.id && row.invoiceLineId === clonedLine!.id)).toBe(true);
+  });
+
   runDb('every evidence row lands under the line that matches its hostnames — three parents, distinguishable sets', async () => {
     // Ordering-independence, asserted directly: the old clone built oldToNew
     // POSITIONALLY from RETURNING, which SQL does not promise to return in input
