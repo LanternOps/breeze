@@ -664,6 +664,20 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_forms",
   "ticket_outbox",
   "ticket_parts",
+  // #4524: a merge repoints tickets.org_id by direct SQL, so it changes a
+  // ticket's org WITHOUT going through moveTicketOrg — which is where the
+  // ai_agent_runs.ticket_id / ticket_comments.agent_run_id detach lives, and
+  // there is no `UPDATE OF org_id ON tickets` trigger to back it up (the device
+  // axis has breeze_cascade_device_org_id(); the ticket axis has nothing).
+  // That is deliberate and safe HERE, unlike a cross-org ticket move: Phase A
+  // fences the loser to status='merging' BEFORE this repoint runs, which drops
+  // it out of accessibleOrgIds and every ingress gate, so no token can read a
+  // loser-org run at all; and ai_agent_runs is `leave-for-erasure` above, so
+  // those rows are destroyed with the loser shell in Phase C rather than
+  // outliving it. Its ticket_id is also a plain single-column FK, so — unlike
+  // ticket_drafts above — it can never 23503 the repoint. No custom executor
+  // needed. If either premise ever changes (the loser stays readable, or
+  // ai_agent_runs starts repointing), this entry needs one.
   "tickets",
   "time_entries",
   "time_series_metrics",

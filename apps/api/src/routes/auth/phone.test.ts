@@ -428,7 +428,7 @@ describe('phone routes', () => {
 
       const res = await send();
 
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(400);
       expect(redis.del).not.toHaveBeenCalled();
       expect(sendVerificationCode).not.toHaveBeenCalled();
     });
@@ -454,7 +454,7 @@ describe('phone routes', () => {
 
       const res = await send();
 
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(400);
       expect(redis.del).toHaveBeenCalledWith('mfa:pending:temp-token');
       expect(sendVerificationCode).not.toHaveBeenCalled();
     });
@@ -639,7 +639,7 @@ describe('phone routes', () => {
         }),
       });
 
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(400);
       // Only the non-consuming validate ran — the grant is still spendable.
       expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
       expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(

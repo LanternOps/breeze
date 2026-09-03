@@ -7,11 +7,19 @@ import { captureException } from '../../services/sentry';
  * Alert columns that hold a user id. Each gets a `<field>Name` companion in the
  * API response so clients render the technician's name instead of a raw UUID
  * (#3966).
+ *
+ * `feedbackBy` (#4445) is not an alert column — it lives on the `ai_alert_verdicts`
+ * row a verdict badge shows. The alerts route builds pseudo-rows (`{ id:
+ * verdict.id, feedbackBy: verdict.feedbackBy }`) to run through this same
+ * batched lookup rather than duplicating `resolveUserDisplayNames`, since the
+ * safety argument below (ids only ever come from already access-checked rows)
+ * holds just as well for verdict ids as alert ids.
  */
 const ACTOR_NAME_KEY = {
   acknowledgedBy: 'acknowledgedByName',
   resolvedBy: 'resolvedByName',
   dismissedBy: 'dismissedByName',
+  feedbackBy: 'feedbackByName',
 } as const;
 
 type ActorIdField = keyof typeof ACTOR_NAME_KEY;

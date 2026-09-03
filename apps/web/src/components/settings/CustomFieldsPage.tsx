@@ -5,6 +5,7 @@ import { Plus, Pencil, Trash2, Search, Settings, ChevronDown, AlertCircle } from
 import { fetchWithAuth } from '../../stores/auth';
 import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from '@breeze/shared';
 import { asList } from '@/lib/asList';
+import HelpTooltip from '../shared/HelpTooltip';
 
 interface CustomField extends Omit<CustomFieldDefinition, 'createdAt' | 'updatedAt'> {
   createdAt: string | Date;
@@ -475,7 +476,13 @@ export default function CustomFieldsPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">{t('customFieldsPage.form.fieldKey')}</label>
+                  <label className="flex items-center gap-1 text-sm font-medium">
+                    {t('customFieldsPage.form.fieldKey')}
+                    <HelpTooltip
+                      text={t('customFieldsPage.form.fieldKeyScriptHelp')}
+                      ariaLabel={t('customFieldsPage.form.fieldKeyScriptHelpAriaLabel')}
+                    />
+                  </label>
                   <input
                     type="text"
                     value={formFieldKey}
