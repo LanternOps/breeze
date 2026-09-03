@@ -245,15 +245,42 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
- * Registered device/org tables whose org stamp is propagated by a composite
- * foreign key on `devices(id, org_id)`. They remain in the complete registry
- * above, but move-org must not issue its ordinary app-role UPDATE against
- * them. In particular, health observations revoke UPDATE from `breeze_app` so
- * immutable evidence can only be restamped by PostgreSQL's referential action.
+ * Registered device/org tables whose org stamp is propagated by some OTHER
+ * privileged mechanism, so move-org must NOT also issue its ordinary
+ * app-role UPDATE against them (breeze_app lacks UPDATE on some of these,
+ * and for the rest it would just be redundant with what already ran).
+ *
+ * Two different mechanisms populate this list:
+ *  - `agent_health_observations` / `software_inventory_observations`: a
+ *    composite FK on `devices(id, org_id)` declared `ON UPDATE CASCADE`, so
+ *    PostgreSQL's own referential action restamps them the instant the
+ *    `devices` row's org_id changes (line ~234's `.update(devices)` above)
+ *    — immutable evidence can only be restamped this way, never by a
+ *    direct app-role UPDATE.
+ *  - `agent_rollback_events` (#4371 fixup): breeze_app has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), so restamping it
+ *    the ordinary way here would 42501. It does NOT have its own `ON
+ *    UPDATE CASCADE` FK (only `ON DELETE CASCADE` — ON UPDATE defaults to
+ *    NO ACTION, so it must actually be re-tenanted, not just left alone).
+ *    That happens via `breeze_cascade_device_org_id()` (migrations/
+ *    2026-05-18-device-child-orgid-cascade.sql) instead: a SECURITY
+ *    DEFINER trigger on `devices` (AFTER UPDATE OF org_id) that discovers
+ *    every ordinary table with both a uuid `device_id` and `org_id` column
+ *    and restamps it under the function owner's privileges, bypassing
+ *    breeze_app's revoke the same way FK actions do. It fires as a row
+ *    trigger on the SAME `.update(devices)` statement above, so by the
+ *    time this loop runs, agent_rollback_events.org_id is already correct
+ *    — verified against real Postgres:
+ *    `SELECT * FROM breeze_device_child_orgid_tables()` includes it.
+ *    (`pam_actuation_results` is deliberately EXCLUDED from that same
+ *    discovery function — migrations/2026-09-17-pam-device-move-guard.sql
+ *    — because a device with PAM history cannot move orgs at all; see
+ *    devices_pam_history_move_guard / PamDeviceMoveBlockedError below.)
  */
 export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'agent_health_observations',
   'software_inventory_observations',
+  'agent_rollback_events',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {

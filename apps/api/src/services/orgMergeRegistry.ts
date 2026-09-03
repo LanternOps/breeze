@@ -113,6 +113,25 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   audit_log_chain: { kind: 'leave-for-erasure', note: 'genesis-row unique per org' },
   audit_chain_anchors: { kind: 'leave-for-erasure', note: 'append-only' },
   ml_feedback_events: { kind: 'leave-for-erasure', note: 'append-only' },
+  // agent_rollback_events (#4371 fixup): breeze_app has UPDATE, DELETE,
+  // TRUNCATE revoked by migrations/2026-09-13-agent-rollback-lifecycle.sql,
+  // and breeze_audit_admin only gets DELETE for retention — the same
+  // privilege topology as ml_feedback_events above, so no role the merge
+  // could assume can issue the repoint UPDATE. Before #4371,
+  // ensureAppRole.ts's blanket per-boot GRANT silently re-permitted UPDATE
+  // on this table (a gap that predated this table's own migration, not
+  // caused by it), which is what let REPOINT_TABLES membership work by
+  // accident; #4371 closed that gap, which is the correct fix — this entry
+  // reclassifies the merge side to match, rather than reopening the
+  // privilege hole to keep working around it.
+  //
+  // Note the append-only trigger (agent_rollback_events_append_only) DOES
+  // special-case a same-org-as-device org_id-only UPDATE as a "trusted
+  // restamp" — but that branch is presently unreachable by any role able to
+  // even attempt the UPDATE, so it isn't a live repoint path today; wiring
+  // one up (e.g. a SECURITY DEFINER restamp function) is a separate,
+  // deliberate follow-up, not something to back into via this fix.
+  agent_rollback_events: { kind: 'leave-for-erasure', note: 'append-only rollback evidence; breeze_app has no UPDATE (and breeze_audit_admin has none either) — rows die with the loser shell, same as ml_feedback_events' },
 
   // Column-level immutability: a BEFORE UPDATE row trigger RAISEs when
   // `org_id` changes, so these cannot be re-tenanted by ANY role the merge
@@ -437,7 +456,8 @@ const REPOINT_TABLES: readonly string[] = [
   "account_deletion_requests",
   "agent_logs",
   "agent_rollback_directives",
-  "agent_rollback_events",
+  // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
+  // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
   "ai_action_plans",
   "ai_screenshots",
   "ai_sessions",
