@@ -364,10 +364,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // against pg_constraint) and raises 23503 instead. Same shape as
   // plugin_installations/plugin_logs, so the same remedy.
   //
-  // Only narrative definitions dedupe: every other report has a NULL
-  // source_ai_agent_schedule_id, and the executor's key match is a plain `=`,
-  // which is NULL-blind exactly like the partial index it mirrors.
-  reports: { kind: 'custom', note: "re-home report_runs.report_id onto the survivor's definition for the same source_ai_agent_schedule_id, then delete the duplicate definition, then repoint the rest; NEVER delete the runs — they are the customer's generated artifacts and report_runs.report_id is a NOT NULL NO ACTION child" },
+  // Narrative definitions dedupe by non-NULL source_ai_agent_schedule_id.
+  // Portal self-service definitions have a second pass keyed by type and
+  // explicitly restricted to portal_self_service=true on both sides, so
+  // ordinary reports of the same type remain independent.
+  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id and portal-self-service definitions by type; re-home report_runs.report_id in both passes, dedupe report_schedule_recipients by (report_id, contact_id) before re-homing them for portal definitions, then delete duplicate definitions and repoint the rest; NEVER delete report runs — they are the customer's generated artifacts" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -610,6 +611,7 @@ const REPOINT_TABLES: readonly string[] = [
   "recovery_readiness",
   "recovery_tokens",
   "remote_sessions",
+  "report_schedule_recipients",
   // "reports" is SPECIAL (custom) — see its note there.
   "restore_jobs",
   "roles",
