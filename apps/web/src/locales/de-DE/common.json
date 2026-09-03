@@ -66,6 +66,7 @@
     "sectionExtensions": "Erweiterungen",
     "variables": "Variablen",
     "llmProviderCatalog": "LLM-Anbieterkatalog",
+    "aiKillSwitch": "KI-Notausschalter",
     "sectionAi": "KI",
     "sectionFleetManagement": "Flottenverwaltung",
     "sectionBilling": "Abrechnung",

@@ -293,6 +293,46 @@ describe('moveTicketOrg — service-level integration', () => {
     expect(movedLink?.orgId).toBe(orgB.id);
   });
 
+  it('#4596: the deferred ticket/org FKs are re-enforced after the move, not left deferred', async () => {
+    // moveTicketOrg issues `SET CONSTRAINTS time_entries_ticket_org_fk,
+    // ticket_parts_ticket_org_fk DEFERRED` so the tickets UPDATE can precede
+    // the child rewrites. SET CONSTRAINTS is transaction-local, so the
+    // constraints must be IMMEDIATE again for everyone else the moment that
+    // transaction commits. Without this test a regression that leaked the
+    // deferral (e.g. issuing it outside the tx) would still show a green move
+    // suite while silently reopening the hole this wave closes.
+    const { orgA, orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    // The move itself succeeded and both children followed.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    expect((await readTimeEntry(timeEntry.id))?.orgId).toBe(orgB.id);
+    expect((await readTicketPart(ticketPart.id))?.orgId).toBe(orgB.id);
+
+    // …and a fresh forge against the MOVED ticket is still refused, in a new
+    // transaction that issued no SET CONSTRAINTS of its own.
+    const forgeCtx: DbAccessContext = {
+      scope: 'organization',
+      orgId: orgA.id,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [],
+      userId: actor.userId,
+    };
+    await expect(
+      withDbAccessContext(forgeCtx, () =>
+        db.insert(ticketParts).values({
+          ticketId: ticket.id,
+          orgId: orgA.id, // the SOURCE org — the ticket now lives in orgB
+          description: 'post-move forge',
+          quantity: '1.00',
+          unitPrice: '0',
+          currencyCode: 'USD',
+        }),
+      ),
+    ).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
   it('rejects a cross-partner target org with status 400', async () => {
     const { ticket, orgOtherPartner } = await seedCrossPartnerFixture();
     const unique = uid();

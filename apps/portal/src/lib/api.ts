@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
+import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -149,6 +149,12 @@ export function buildServerForwardHeaders(request: Request): Headers {
 export interface ApiRequestConfig {
   headers?: HeadersInit;
   redirectOnUnauthorized?: boolean;
+  /** Abort the request after this many ms, falling into the existing
+   *  network-error catch path below (so callers that already fail closed on
+   *  a network error — e.g. loadPortalBranding — also fail closed on a
+   *  hang, not just a hard error). Undefined = no bound, matching prior
+   *  behavior for every other call site. */
+  timeoutMs?: number;
 }
 
 export interface ApiResponse<T> {
@@ -197,7 +203,8 @@ export async function apiRequest<T>(
     const response = await fetch(url, {
       ...options,
       headers,
-      credentials: 'include'
+      credentials: 'include',
+      signal: config.timeoutMs !== undefined ? AbortSignal.timeout(config.timeoutMs) : options.signal
     });
 
     if (response.status === 401) {
@@ -298,15 +305,7 @@ export interface PaginatedResult<T> extends ApiResponse<T[]> {
   pagination?: Pagination;
 }
 
-export interface Device {
-  id: string;
-  hostname: string;
-  displayName: string | null;
-  osType: string | null;
-  osVersion: string | null;
-  status: 'online' | 'offline' | 'warning';
-  lastSeenAt: string | null;
-}
+export type Device = EnrichedPortalDevice;
 
 /** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
  *  (it becomes 'open' when a technician picks it up); 'pending' is waiting on
@@ -693,6 +692,11 @@ export interface BrandingConfig {
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
   enablePasswordReset?: boolean;
+  enableDashboard?: boolean;
+  enableSecurity?: boolean;
+  enableBackups?: boolean;
+  enableReports?: boolean;
+  enableSupportUsage?: boolean;
 }
 
 export interface ListParams {
@@ -724,13 +728,14 @@ export const portalApi = {
   getDevices: async (
     params: ListParams = {},
     config: ApiRequestConfig = {}
-  ): Promise<PaginatedResult<Device>> => {
+  ): Promise<PaginatedResult<EnrichedPortalDevice>> => {
     const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
-    const response = await apiGet<{ data: Device[]; pagination: Pagination }>(
-      `/portal/devices${query}`,
-      config
+    return mapPaginatedData(
+      await apiGet<{
+        data: EnrichedPortalDevice[];
+        pagination: Pagination;
+      }>(`/portal/devices${query}`, config)
     );
-    return mapPaginatedData(response);
   },
 
   getTickets: async (
@@ -937,6 +942,31 @@ export const portalApi = {
 
   getBranding: async (config: ApiRequestConfig = {}): Promise<ApiResponse<BrandingConfig>> => {
     const response = await apiGet<{ branding: BrandingConfig }>('/portal/branding', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.branding,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  // Public (unauthenticated) branding lookup by custom domain / forwarded host —
+  // used for the anonymous landing/redirect path before a portal session exists.
+  getBrandingByDomain: async (
+    domain: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BrandingConfig>> => {
+    const response = await apiGet<{ branding: BrandingConfig }>(
+      `/portal/branding/${encodeURIComponent(domain)}`,
+      config
+    );
     if (!response.data) {
       return {
         error: response.error,

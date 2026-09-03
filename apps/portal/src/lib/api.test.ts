@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { buildPortalApiUrl, portalApi } from './api';
+import { buildPortalApiUrl, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -78,6 +78,34 @@ describe('publicApiPath (rendered into HTML)', () => {
   });
 });
 
+it('preserves enriched device fields and exposes a same-origin CSV path', async () => {
+  const row = {
+    id: 'd-1',
+    hostname: 'Laptop',
+    displayName: null,
+    osType: 'windows',
+    osVersion: '11',
+    status: 'online',
+    lastSeenAt: null,
+    lastPatchAt: null,
+    protection: 'unknown',
+    encryption: null,
+    lastBackupAt: null,
+    warrantyEndsAt: null,
+  };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      data: [row],
+      pagination: { page: 1, limit: 50, total: 1 },
+    }), { status: 200 }),
+  ));
+
+  await expect(portalApi.getDevices()).resolves.toMatchObject({ data: [row] });
+  expect(publicApiPath('/portal/devices/export.csv')).toBe(
+    '/api/v1/portal/devices/export.csv',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // W08 #3902
 // ---------------------------------------------------------------------------
@@ -87,5 +115,73 @@ describe('portalAttachmentContentPath', () => {
     const path = portalAttachmentContentPath('t-1', 'a-1');
     expect(path).toBe('/api/v1/portal/tickets/t-1/attachments/a-1/content');
     expect(path.startsWith('http')).toBe(false);
+  });
+});
+
+describe('portalApi.getBrandingByDomain', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('loads public branding by encoded domain', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        branding: { name: 'Customer Portal' },
+      }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getBrandingByDomain(
+      'customer portal.example',
+    );
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/branding/customer%20portal.example',
+    );
+    expect(result.data).toEqual({ name: 'Customer Portal' });
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('ApiRequestConfig.timeoutMs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches an AbortSignal built from timeoutMs to the fetch call', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('omits signal when timeoutMs is not set, unchanged from prior behavior', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeUndefined();
+  });
+
+  it('falls through to the existing network-error path when the fetch aborts', async () => {
+    const abortError = new DOMException('The operation was aborted.', 'TimeoutError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+
+    const result = await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    expect(result.data).toBeUndefined();
+    expect(result.error).toBe('Network error');
   });
 });

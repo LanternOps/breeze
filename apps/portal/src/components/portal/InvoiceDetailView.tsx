@@ -43,8 +43,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   // common path needs no client fetch at all.
   //
   // The fetch below is the fallback for an API that predates that field. It
-  // reads GET /portal/branding, which resolves by verified custom domain and so
-  // 404s on the shared hosted domain — fine as a fallback, not as the source.
+  // reads GET /portal/branding, which is authenticated and org-scoped; it 404s
+  // only when the org has never saved portal settings, in which case defaults
+  // apply — fine as a fallback, not as the source.
   const payloadBranding = detail?.branding;
   const [fetchedBranding, setFetchedBranding] = useState<BrandingConfig | null>(null);
   const branding: DocBranding | null = payloadBranding

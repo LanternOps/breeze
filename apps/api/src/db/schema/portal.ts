@@ -31,6 +31,13 @@ export const portalBranding = pgTable('portal_branding', {
   enableAssetCheckout: boolean('enable_asset_checkout').notNull().default(false),
   enableSelfService: boolean('enable_self_service').notNull().default(true),
   enablePasswordReset: boolean('enable_password_reset').notNull().default(true),
+  // Portal visibility Wave 1 (#4562): per-org gates for the customer portal
+  // left-nav sections. Fail-closed defaults — false for every existing org.
+  enableDashboard: boolean('enable_dashboard').notNull().default(false),
+  enableSecurity: boolean('enable_security').notNull().default(false),
+  enableBackups: boolean('enable_backups').notNull().default(false),
+  enableReports: boolean('enable_reports').notNull().default(false),
+  enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

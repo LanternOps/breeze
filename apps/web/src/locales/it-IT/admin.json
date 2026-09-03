@@ -512,6 +512,53 @@
         "passed": "Superata",
         "failed": "Non superata"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Interruttore di emergenza IA",
+      "description": "Arresto di emergenza a livello di piattaforma per l'attività non supervisionata degli agenti IA. Attivarlo influisce su tutti i partner contemporaneamente — è un'operazione di piattaforma, non un'impostazione per tenant.",
+      "refresh": "Aggiorna",
+      "loading": "Caricamento dello stato dell'interruttore di emergenza…",
+      "impactNote": "Attivare l'interruttore interrompe le azioni IA non supervisionate per tutti i partner entro circa 5 secondi. Le azioni già in corso non vengono interrotte.",
+      "platformAdmin": {
+        "title": "È richiesto l'accesso come amministratore di piattaforma",
+        "description": "L'interruttore di emergenza IA è un controllo a livello di piattaforma gestito dagli amministratori di piattaforma di Breeze. Il tuo account non può visualizzarlo né modificarlo."
+      },
+      "status": {
+        "active": "Azioni IA attive",
+        "killed": "Azioni IA interrotte"
+      },
+      "fields": {
+        "epoch": "Epoca",
+        "updatedBy": "Ultima modifica di",
+        "updatedAt": "Ultima modifica il",
+        "lastReason": "Ultimo motivo",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Interrompi le azioni IA su tutta la piattaforma",
+        "restore": "Ripristina le azioni IA"
+      },
+      "confirm": {
+        "killTitle": "Interrompere le azioni IA su tutta la piattaforma?",
+        "killDescription": "Questo interrompe immediatamente l'attività non supervisionata degli agenti IA per tutti i partner su Breeze. Usalo solo per un incidente attivo.",
+        "restoreTitle": "Ripristinare le azioni IA?",
+        "restoreDescription": "Questo riattiva l'attività non supervisionata degli agenti IA per tutti i partner su Breeze.",
+        "reasonLabel": "Motivo (obbligatorio, per il registro di controllo)",
+        "reasonPlaceholder": "Descrivi l'incidente o il motivo di questa modifica…",
+        "cancel": "Annulla",
+        "killSubmit": "Interrompi azioni IA",
+        "restoreSubmit": "Ripristina azioni IA"
+      },
+      "notice": {
+        "killed": "Azioni IA interrotte su tutta la piattaforma.",
+        "restored": "Azioni IA ripristinate su tutta la piattaforma."
+      },
+      "errors": {
+        "load": "Impossibile caricare lo stato dell'interruttore di emergenza",
+        "generic": "Si è verificato un errore",
+        "flip": "Impossibile aggiornare l'interruttore di emergenza",
+        "mfaRequired": "Attivare l'interruttore di emergenza IA richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
+      }
     }
   },
   "audit": {

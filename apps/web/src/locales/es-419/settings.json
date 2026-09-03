@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilidad",
+      "description": "Elija qué información de servicio puede ver este cliente en el portal.",
+      "enableAll": "Habilitar toda la visibilidad",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Panel",
+          "description": "Muestra un resumen del estado del servicio al iniciar sesión."
+        },
+        "enableSecurity": {
+          "label": "Seguridad",
+          "description": "Muestra la postura de seguridad, protección, amenazas y vulnerabilidades."
+        },
+        "enableBackups": {
+          "label": "Copias de seguridad",
+          "description": "Muestra la cobertura de copias de seguridad, verificación, pruebas de restauración y preparación."
+        },
+        "enableReports": {
+          "label": "Informes",
+          "description": "Permite a los clientes generar y descargar informes aprobados."
+        },
+        "enableSupportUsage": {
+          "label": "Uso de soporte",
+          "description": "Muestra el total de tiempo de soporte facturable del mes en curso."
+        }
+      }
+    },
     "support": {
       "title": "Contacto de soporte",
       "description": "Mostrado a los clientes en el portal.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Borrador de respuesta",
           "resolutionNote": "Borrador de nota de resolución"
+        },
+        "skippedTitle": "No aplicado",
+        "skipped": {
+          "item": {
+            "fields": "Actualizaciones de campos",
+            "link": "Vínculo de dispositivo",
+            "note": "Nota privada",
+            "draftReply": "Borrador de respuesta",
+            "draftResolution": "Borrador de nota de resolución"
+          },
+          "reason": {
+            "noFieldsProposed": "No se propuso ningún campo.",
+            "belowConfidenceFloor": "La confianza estaba por debajo del umbral para una escritura automática.",
+            "humanSet": "Una persona ya estableció este campo.",
+            "noDeviceProposed": "No se propuso ningún dispositivo.",
+            "deviceAlreadyLinked": "El ticket ya tiene un dispositivo vinculado.",
+            "noDraftReply": "No se propuso ninguna respuesta.",
+            "noDraftResolution": "No se propuso ninguna nota de resolución.",
+            "resolutionNoteExists": "El ticket ya tiene una nota de resolución.",
+            "maxActionsPerRun": "Primero se alcanzó el límite de acciones de la ejecución.",
+            "intentError": "No se pudo crear el cambio.",
+            "ticketNotFound": "No se pudo encontrar el ticket."
+          }
         }
       }
     },

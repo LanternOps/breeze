@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilità",
+      "description": "Scegli quali informazioni sul servizio questo cliente può vedere nel portale.",
+      "enableAll": "Abilita tutta la visibilità",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Pannello di controllo",
+          "description": "Mostra un riepilogo dello stato del servizio all'accesso."
+        },
+        "enableSecurity": {
+          "label": "Sicurezza",
+          "description": "Mostra postura di sicurezza, protezione, minacce e vulnerabilità."
+        },
+        "enableBackups": {
+          "label": "Backup",
+          "description": "Mostra copertura backup, verifica, test di ripristino e prontezza."
+        },
+        "enableReports": {
+          "label": "Report",
+          "description": "Consente ai clienti di generare e scaricare i report approvati."
+        },
+        "enableSupportUsage": {
+          "label": "Utilizzo assistenza",
+          "description": "Mostra il totale del tempo di assistenza fatturabile del mese in corso."
+        }
+      }
+    },
     "support": {
       "title": "Contatto assistenza",
       "description": "Mostrato ai clienti nel portale.",
@@ -1715,6 +1742,29 @@
         "draftKinds": {
           "reply": "Bozza di risposta",
           "resolutionNote": "Bozza della nota di risoluzione"
+        },
+        "skippedTitle": "Non applicato",
+        "skipped": {
+          "item": {
+            "fields": "Aggiornamenti dei campi",
+            "link": "Collegamento dispositivo",
+            "note": "Nota privata",
+            "draftReply": "Bozza di risposta",
+            "draftResolution": "Bozza della nota di risoluzione"
+          },
+          "reason": {
+            "noFieldsProposed": "Non è stato proposto alcun campo.",
+            "belowConfidenceFloor": "La confidenza era inferiore alla soglia per una scrittura automatica.",
+            "humanSet": "Questo campo è già stato impostato da una persona.",
+            "noDeviceProposed": "Non è stato proposto alcun dispositivo.",
+            "deviceAlreadyLinked": "Il ticket ha già un dispositivo collegato.",
+            "noDraftReply": "Non è stata proposta alcuna risposta.",
+            "noDraftResolution": "Non è stata proposta alcuna nota di risoluzione.",
+            "resolutionNoteExists": "Il ticket ha già una nota di risoluzione.",
+            "maxActionsPerRun": "Il limite di azioni dell’esecuzione è stato raggiunto per primo.",
+            "intentError": "Impossibile creare la modifica.",
+            "ticketNotFound": "Il ticket non è stato trovato."
+          }
         }
       }
     },
