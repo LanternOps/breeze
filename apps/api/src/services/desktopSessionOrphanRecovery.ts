@@ -15,6 +15,32 @@ import {
 import {
   enqueueDesktopSessionFinalization,
 } from '../jobs/desktopSessionFinalizationWorker';
+import { captureException } from './sentry';
+
+/**
+ * How long a persisted finalization intent may sit in `stop_pending` before
+ * the scanner escalates it (#3945).
+ *
+ * `drivePersistedIntent` re-adds the same stable BullMQ jobId every scan when
+ * the agent has not acked the stop command yet. Once that job hash exists in
+ * a terminal state, BullMQ's `queue.add({ jobId })` is a silent no-op
+ * (`removeOnFail` retains the failed hash) -- no new job, no new attempts, no
+ * further BullMQ-side signal. Recovery still happens (this scanner re-drives
+ * `finalize` directly on every pass), so a short-lived disconnect resolves
+ * fine; the gap is purely observability for the case where the agent never
+ * comes back: before this, that produced exactly one warning and then silence
+ * for as long as the row stayed non-terminal. 10 minutes is well past any
+ * ordinary reconnect blip (the scan cadence is REMOTE_WS_SHARED_LEASE_TTL_MS,
+ * 30s) but short enough that a genuinely abandoned session pages promptly.
+ */
+export const STALLED_STOP_PENDING_ESCALATION_MS = 10 * 60 * 1000;
+
+export class StalledStopPendingFinalizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StalledStopPendingFinalizationError';
+  }
+}
 
 export interface DesktopOrphanSession {
   id: string;
@@ -74,6 +100,46 @@ export function createDesktopSessionOrphanRecoveryService(
 ) {
   const firstAbsentObservation = new Map<string, number>();
 
+  // Escalation state for the stalled-stop_pending check (#3945), keyed by
+  // finalizationId rather than sessionId so a fresh finalization attempt on
+  // the same session starts its own episode. Cleared as soon as the intent
+  // resolves off `stop_pending`, which both ends the episode and bounds the
+  // set to ids that are currently stalled -- same shape as
+  // `reportedWedgedJobIds` in jobs/patchJobExecutor.ts.
+  const stopPendingSince = new Map<string, number>();
+  const reportedStalledFinalizations = new Set<string>();
+
+  function noteStopPendingObservation(input: DesktopSessionFinalizationInput): void {
+    const key = input.finalizationId;
+    const now = deps.now();
+    const since = stopPendingSince.get(key);
+    if (since === undefined) {
+      stopPendingSince.set(key, now);
+      return;
+    }
+    const ageMs = now - since;
+    if (ageMs < STALLED_STOP_PENDING_ESCALATION_MS) return;
+    if (reportedStalledFinalizations.has(key)) return;
+    reportedStalledFinalizations.add(key);
+    const message =
+      '[desktopSessionOrphanRecovery] finalization intent stuck in stop_pending '
+      + `past the ${STALLED_STOP_PENDING_ESCALATION_MS}ms escalation window; `
+      + 're-enqueue is a BullMQ no-op on this retained jobId, so recovery now '
+      + 'depends entirely on the agent reconnecting';
+    console.error(message, {
+      sessionId: input.sessionId,
+      finalizationId: input.finalizationId,
+      deviceId: input.deviceId,
+      ageMs,
+    });
+    captureException(new StalledStopPendingFinalizationError(message));
+  }
+
+  function clearStopPendingEscalation(finalizationId: string): void {
+    stopPendingSince.delete(finalizationId);
+    reportedStalledFinalizations.delete(finalizationId);
+  }
+
   async function drivePersistedIntent(
     input: DesktopSessionFinalizationInput,
     canonicalPayload: string,
@@ -84,8 +150,10 @@ export function createDesktopSessionOrphanRecoveryService(
         sessionId: input.sessionId,
         finalizationId: input.finalizationId,
       });
+      noteStopPendingObservation(input);
       return 'retained';
     }
+    clearStopPendingEscalation(input.finalizationId);
     if (!await deps.releaseIntent(
       input.sessionId,
       input.finalizationId,

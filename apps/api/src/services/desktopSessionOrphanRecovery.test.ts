@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const { captureExceptionMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+}));
+
+vi.mock('./sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
 import {
   __desktopSessionOrphanRecoveryTestOnly,
   createDesktopSessionOrphanRecoveryService,
+  STALLED_STOP_PENDING_ESCALATION_MS,
   type DesktopOrphanRecoveryDependencies,
 } from './desktopSessionOrphanRecovery';
 
@@ -210,6 +219,73 @@ describe('desktop orphan recovery', () => {
       sessionId: session.id,
       finalizationId: persistedInput.finalizationId,
     });
+  });
+
+  it('escalates a stop_pending intent that outlives the BullMQ re-enqueue no-op (#3945)', async () => {
+    // `deps.enqueue` re-adds the same stable jobId every scan, which BullMQ
+    // silently no-ops once that job hash exists in a terminal state
+    // (removeOnFail retention) -- so a permanently offline agent used to
+    // yield one 'retained' result and then zero further signal, forever
+    // (#3945). The scanner itself must escalate once the intent has outlived
+    // that no-op for long enough to mean "not coming back soon".
+    const deps = dependencies();
+    const persistedInput = {
+      version: 1 as const,
+      finalizationId: '66666666-6666-4666-8666-666666666666',
+      sessionId: session.id,
+      connection: {
+        connectionId: '77777777-7777-4777-8777-777777777777',
+        generation: 4,
+        instanceId: '88888888-8888-4888-8888-888888888888',
+        leaseToken: '99999999-9999-4999-8999-999999999999',
+      },
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: 'socket_error' as const,
+      terminalStatus: 'failed' as const,
+      endedAt: '2026-07-25T12:01:00.000Z',
+      startedAt: '2026-07-25T12:00:00.000Z',
+      inputEvents: 4,
+      frameBytes: 128,
+    };
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: persistedInput.finalizationId,
+      canonicalPayload: JSON.stringify(persistedInput),
+      consistent: true,
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    deps.setNow!(0);
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // First observation of this stop_pending episode: too early to escalate.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+
+    // Still under the escalation age on a later scan.
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS - 1);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+
+    // Past the escalation age: must now report once.
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS + 1);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('stop_pending'),
+      expect.anything(),
+    );
+
+    // A further scan while still stalled must NOT report again (once per
+    // episode, matching the reportedWedgedJobIds pattern in
+    // jobs/patchJobExecutor.ts).
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS + 60_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('reuses the unique durable pre-intent stop identity after a crash', async () => {
