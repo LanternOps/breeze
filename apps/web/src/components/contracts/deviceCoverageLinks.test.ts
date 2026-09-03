@@ -34,6 +34,12 @@ describe('devicesUrlForRole (#3205 W06)', () => {
     expect(decodeFilterFromHash(url.slice(url.indexOf('#')))).toMatchObject({ operator: 'AND' });
   });
 
+  it('an org id that is not a uuid returns null — nothing unvalidated reaches the href', () => {
+    expect(devicesUrlForRole('server', 'javascript:alert(1)')).toBeNull();
+    expect(devicesUrlForRole('server', 'org-1')).toBeNull();
+    expect(devicesUrlForRole('server', ORG)).toContain(`#orgId=${ORG}&`);
+  });
+
   it('a role the filter engine does not know returns null, never a dead link', () => {
     expect(devicesUrlForRole('toaster', ORG)).toBeNull();
     expect(devicesUrlForRole('', ORG)).toBeNull();

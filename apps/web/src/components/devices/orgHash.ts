@@ -11,6 +11,11 @@ import { useOrgStore } from '../../stores/orgStore';
 const HASH_KEY = 'orgId';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** The only org id shape the hash key accepts, shared with the link producer. */
+export function isOrgIdForHash(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
 export function readOrgIdFromHash(hash: string): string | null {
   if (!hash) return null;
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;
