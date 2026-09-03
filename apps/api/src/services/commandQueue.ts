@@ -1,5 +1,11 @@
 import { eq, and, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+} from '../db';
 import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { captureException } from './sentry';
@@ -935,59 +941,88 @@ export async function queueBackupStopCommand(
   );
 }
 
+export interface ExecuteCommandOptions {
+  userId?: string;
+  timeoutMs?: number;
+  preferHeartbeat?: boolean;
+  /**
+   * Which polling consumer on the device picks up this command.
+   * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
+   *   executeCommand dispatches over WS for low latency.
+   * - 'watchdog': the separate breeze-watchdog process. Has NO WebSocket —
+   *   it polls via heartbeat (`claimPendingCommandsForDevice(..., 'watchdog')`
+   *   in routes/agents/heartbeat.ts). When targetRole is 'watchdog' we
+   *   MUST skip the WS dispatch path entirely and just write the row;
+   *   otherwise the command is sent to the agent WS (wrong consumer) and
+   *   the row's default target_role='agent' hides it from the heartbeat
+   *   claim query, leaving it pending forever.
+   *
+   * NOTE: because the watchdog polls every heartbeat (~5–10s per device,
+   * sometimes slower), callers targeting the watchdog should pass a larger
+   * timeoutMs than they would for an agent command.
+   */
+  targetRole?: 'agent' | 'watchdog';
+}
+
 /**
- * Execute a command and wait for result (convenience wrapper).
- *
- * When called from routes protected by authMiddleware, the entire request
- * handler runs inside a long-lived PostgreSQL transaction (via
- * withDbAccessContext).  If the device_commands INSERT stays inside that
- * transaction it is invisible to the WebSocket handler that processes the
- * agent's response (separate transaction) — so the result is silently
- * dropped and waitForCommandResult times out after 30 s.
- *
- * Fix: fetch the device (needs RLS → runs in the auth transaction), then
- * break out of the DB context for the device_commands lifecycle.
- * device_commands has no org_id column so RLS does not apply.
+ * Watchdog-targeted commands have no WS consumer; the WS pre-check and the
+ * dispatch path must be skipped entirely for them. The heartbeat poll path in
+ * routes/agents/heartbeat.ts picks them up. Derived in ONE place so the
+ * precheck and the dispatch phase can never disagree about it.
  */
-export async function executeCommand(
+function dispatchesViaWs(options: ExecuteCommandOptions): boolean {
+  return (options.targetRole ?? 'agent') === 'agent' && !(options.preferHeartbeat ?? false);
+}
+
+/**
+ * The columns of the device row the dispatch phase still needs once the
+ * precheck's DB context has closed. Named explicitly so the two phases cannot
+ * silently start depending on a column the precheck stopped selecting.
+ */
+interface PreparedCommandDevice {
+  id: string;
+  status: string;
+  agentId: string | null;
+  orgId: string;
+  hostname: string | null;
+  watchdogLastSeen: Date | null;
+  agentEdition: string | null;
+  agentVersion: string | null;
+  watchdogVersion: string | null;
+}
+
+type CommandPrecheckOutcome =
+  | { ok: true; device: PreparedCommandDevice }
+  | { ok: false; result: CommandResult };
+
+/**
+ * Phase 1 of `executeCommand` — every gate that must clear BEFORE a
+ * `device_commands` row exists: the device lookup, the partner-trust
+ * capability check, the artifact-edition gate, the liveness gates and the
+ * interactive WS fast-fail, in exactly that order.
+ *
+ * Reads `devices` and evaluates partner trust, so it needs an RLS access
+ * context — and deliberately does NOT open one of its own, because which
+ * context is correct belongs to the caller: a request route runs this inside
+ * its auth transaction (RLS-gated, the security property `executeCommand` has
+ * always had), while a background caller uses
+ * `executeCommandWithSystemPrecheck` to get a short system context that closes
+ * before anything waits on the device.
+ *
+ * Every terminal `CommandResult` returned here predates the row, so none of
+ * them carries a `commandId` — that preserves the "commandId present ⇔ row
+ * exists" contract the dispatch phase relies on.
+ */
+async function precheckCommandExecution(
   deviceId: string,
   type: CommandType | string,
-  payload: CommandPayload = {},
-  options: {
-    userId?: string;
-    timeoutMs?: number;
-    preferHeartbeat?: boolean;
-    /**
-     * Which polling consumer on the device picks up this command.
-     * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
-     *   executeCommand dispatches over WS for low latency.
-     * - 'watchdog': the separate breeze-watchdog process. Has NO WebSocket —
-     *   it polls via heartbeat (`claimPendingCommandsForDevice(..., 'watchdog')`
-     *   in routes/agents/heartbeat.ts). When targetRole is 'watchdog' we
-     *   MUST skip the WS dispatch path entirely and just write the row;
-     *   otherwise the command is sent to the agent WS (wrong consumer) and
-     *   the row's default target_role='agent' hides it from the heartbeat
-     *   claim query, leaving it pending forever.
-     *
-     * NOTE: because the watchdog polls every heartbeat (~5–10s per device,
-     * sometimes slower), callers targeting the watchdog should pass a larger
-     * timeoutMs than they would for an agent command.
-     */
-    targetRole?: 'agent' | 'watchdog';
-  } = {}
-): Promise<CommandResult> {
-  const {
-    timeoutMs = 30000,
-    userId,
-    preferHeartbeat = false,
-    targetRole = 'agent',
-  } = options;
-  // Watchdog-targeted commands have no WS consumer; the WS pre-check /
-  // dispatch path below must be skipped entirely for them. The heartbeat
-  // poll path in routes/agents/heartbeat.ts picks them up.
-  const dispatchViaWs = targetRole === 'agent' && !preferHeartbeat;
+  options: ExecuteCommandOptions,
+): Promise<CommandPrecheckOutcome> {
+  const { userId } = options;
+  const targetRole = options.targetRole ?? 'agent';
+  const dispatchViaWs = dispatchesViaWs(options);
 
-  // 1. Verify device inside the auth transaction (RLS-protected).
+  // 1. Verify device inside the caller's transaction (RLS-protected).
   // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
   // below (#4093) — cheap here because this SELECT already runs.
   const [device] = await db
@@ -1007,7 +1042,7 @@ export async function executeCommand(
     .limit(1);
 
   if (!device) {
-    return { status: 'failed', error: 'Device not found' };
+    return { ok: false, result: { status: 'failed', error: 'Device not found' } };
   }
 
   try {
@@ -1015,9 +1050,12 @@ export async function executeCommand(
   } catch (e) {
     if (e instanceof TrustDeniedError) {
       return {
-        status: 'failed',
-        error: e.code,
-        trust: { capability: e.capability, reason: e.reason },
+        ok: false,
+        result: {
+          status: 'failed',
+          error: e.code,
+          trust: { capability: e.capability, reason: e.reason },
+        },
       };
     }
     throw e;
@@ -1038,7 +1076,7 @@ export async function executeCommand(
     console.warn(
       `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
     );
-    return { status: 'failed', error: editionRefusal };
+    return { ok: false, result: { status: 'failed', error: editionRefusal } };
   }
 
   if (targetRole === 'watchdog') {
@@ -1057,12 +1095,18 @@ export async function executeCommand(
       : Infinity;
     if (watchdogAgeMs > WATCHDOG_STALE_MS) {
       return {
-        status: 'failed',
-        error: 'Watchdog is not reporting; cannot dispatch watchdog command',
+        ok: false,
+        result: {
+          status: 'failed',
+          error: 'Watchdog is not reporting; cannot dispatch watchdog command',
+        },
       };
     }
   } else if (device.status !== 'online') {
-    return { status: 'failed', error: `Device is ${device.status}, cannot execute command` };
+    return {
+      ok: false,
+      result: { status: 'failed', error: `Device is ${device.status}, cannot execute command` },
+    };
   }
 
   // Fast-fail interactive commands when the WS is known-dead. The user is
@@ -1084,11 +1128,35 @@ export async function executeCommand(
       agentId: device.agentId,
       type,
     });
-    return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR };
+    return { ok: false, result: { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR } };
   }
 
-  // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
-  //    INSERT commits immediately and is visible to the WS handler.
+  return { ok: true, device };
+}
+
+/**
+ * Phase 2 of `executeCommand` — queue, dispatch, and poll. Runs entirely
+ * OUTSIDE the caller's DB context so the INSERT commits immediately and is
+ * visible to the WebSocket handler that processes the agent's response
+ * (a separate transaction); its own short system contexts cover the writes
+ * that would otherwise be contextless bare-pool writes (#1375).
+ *
+ * `device` is the snapshot the precheck resolved. Re-reading it here would
+ * defeat the point of the split, and there was never an atomic
+ * authorisation-to-insert guarantee to lose: the precheck's SELECT has always
+ * been a non-locking read.
+ */
+async function dispatchPreparedCommand(
+  device: PreparedCommandDevice,
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload,
+  options: ExecuteCommandOptions,
+): Promise<CommandResult> {
+  const { timeoutMs = 30000, userId } = options;
+  const targetRole = options.targetRole ?? 'agent';
+  const dispatchViaWs = dispatchesViaWs(options);
+
   return runOutsideDbContextSafe(async () => {
     // Validate userId for the created_by FK. Shared with queueCommand — see
     // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
@@ -1250,6 +1318,80 @@ export async function executeCommand(
     };
     return { ...finalResult, commandId: command.id };
   });
+}
+
+/**
+ * Execute a command and wait for result (convenience wrapper).
+ *
+ * When called from routes protected by authMiddleware, the entire request
+ * handler runs inside a long-lived PostgreSQL transaction (via
+ * withDbAccessContext).  If the device_commands INSERT stays inside that
+ * transaction it is invisible to the WebSocket handler that processes the
+ * agent's response (separate transaction) — so the result is silently
+ * dropped and waitForCommandResult times out after 30 s.
+ *
+ * Fix: fetch the device (needs RLS → runs in the auth transaction), then
+ * break out of the DB context for the device_commands lifecycle.
+ * device_commands has no org_id column so RLS does not apply.
+ *
+ * NOTE for background callers (workers, schedulers, AI-agent runs): the
+ * `runOutsideDbContext` inside the dispatch phase exits the AsyncLocalStorage,
+ * but it CANNOT release a transaction the caller opened — so wrapping this
+ * call in `withSystemDbAccessContext` just to satisfy the precheck pins a
+ * pooled connection idle-in-transaction for the whole `timeoutMs` wait (#1105).
+ * Use `executeCommandWithSystemPrecheck` instead.
+ */
+export async function executeCommand(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: ExecuteCommandOptions = {}
+): Promise<CommandResult> {
+  const precheck = await precheckCommandExecution(deviceId, type, options);
+  if (!precheck.ok) return precheck.result;
+  return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
+}
+
+/**
+ * `executeCommand` for callers that hold NO DB access context of their own —
+ * BullMQ workers, schedulers, and the AI-agent run loop (which deliberately
+ * runs contextless; see jobs/aiAgentRunner.ts).
+ *
+ * Such a caller cannot invoke `executeCommand` directly: the precheck's
+ * `devices` SELECT would run on the bare pool, RLS would deny it, and every
+ * dispatch would report "Device not found". Wrapping the whole call in a
+ * system context makes it work — and pins a pooled Postgres connection
+ * idle-in-transaction for the entire device round-trip, which is the #1105
+ * pool-exhaustion shape (#4150, and #4133/3ec0439d2 before it in the workers).
+ *
+ * This entry point opens a system context for the PRECHECK ONLY and closes it
+ * before anything waits on the device. The dispatch phase — the WS send and
+ * the `waitForCommandResult` poll — runs at depth 0, holding nothing.
+ *
+ * Scope is system, matching what the background callers already passed. A
+ * caller that needs the command gated by a specific tenant's RLS must open
+ * that context itself and call `executeCommand` — but see the note there
+ * about how long it will then hold a connection.
+ */
+export async function executeCommandWithSystemPrecheck(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: ExecuteCommandOptions = {}
+): Promise<CommandResult> {
+  // Joins an ambient system context rather than opening a second one: a nested
+  // withSystemDbAccessContext would check out a SECOND pooled connection while
+  // the first is still held, which is strictly worse than the bug being fixed.
+  const precheck = getCurrentDbAccessContext()?.scope === 'system'
+    ? await precheckCommandExecution(deviceId, type, options)
+    : await runOutsideDbContextSafe(() =>
+      withSystemDbAccessContext(
+        () => precheckCommandExecution(deviceId, type, options),
+        'commandQueue.executeCommandWithSystemPrecheck',
+      ));
+
+  if (!precheck.ok) return precheck.result;
+  return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
 }
 
 /**
