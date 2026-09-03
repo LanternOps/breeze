@@ -229,6 +229,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null, // mobile devices never set credentialId
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
@@ -260,6 +261,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     mockConsumeNonce.mockResolvedValue({ nonce: issuedNonce, issuedAt: Date.now() });
@@ -286,6 +288,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: enrolled.spkiB64, // stored = the enrolled device's key
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
@@ -310,6 +313,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     // server issued a different nonce than the proof claims
@@ -335,6 +339,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     mockConsumeNonce.mockResolvedValue(null); // getdel returned nothing
@@ -373,6 +378,7 @@ describe('assertApprovalAssurance — mobile_hw_key (L2)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 7,
     });
     mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
@@ -416,6 +422,7 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
       platformBoundBasis: 'ios_se_p256_app_attest',
@@ -456,6 +463,7 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       credentialId: null,
       kind: 'mobile_hw_key',
       publicKey: spkiB64,
+      publicKeyAlg: 'RS256',
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
       platformBoundBasis: opts.platformBoundBasis ?? 'ios_se_p256_app_attest',
@@ -900,5 +908,99 @@ describe('assertDecisionConsistent — runtime backstop (as-cast / untyped build
         authenticatorDeviceId: 'dev-1',
       }),
     ).not.toThrow();
+  });
+});
+
+// --- #1374 W02: the approval path reads the algorithm from the DEVICE ROW ---
+describe('assertApprovalAssurance — mobile public_key_alg (#1374 W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadPolicy.mockResolvedValue(null);
+  });
+
+  function makeEcDeviceKeypair() {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    return { spkiB64: publicKey.export({ type: 'spki', format: 'der' }).toString('base64'), privateKey };
+  }
+
+  it('verifies an ES256 device with a real P-256 signature (Secure Enclave / StrongBox shape)', async () => {
+    const { spkiB64, privateKey } = makeEcDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    const capture = setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      publicKeyAlg: 'ES256',
+      signCount: 3,
+    });
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
+
+    const d = await assertApprovalAssurance({
+      approvalId: 'appr-1',
+      userId: 'user-1',
+      riskTier: 'medium',
+      proof: mobileProof({
+        nonce,
+        signature: crypto.sign('SHA256', Buffer.from(nonce, 'utf8'), privateKey).toString('base64'),
+      }),
+    });
+
+    expect(d.decidedVia).toBe('mobile_hw_key');
+    expect(d.decidedAssuranceLevel).toBe(2);
+    expect(capture.updateSet?.signCount).toBe(4);
+  });
+
+  it('rejects an RSA key stored as ES256 — the row, not the proof, picks the algorithm', async () => {
+    // Algorithm confusion the other way round: a row mislabelled ES256 must not
+    // fall back to verifying its RSA signature.
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      publicKeyAlg: 'ES256',
+      signCount: 1,
+    });
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'medium',
+        proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      }),
+    ).rejects.toThrow();
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('throws (never silently verifies as RSA) when the stored public_key_alg is unrecognised', async () => {
+    const { spkiB64, privateKey } = makeDeviceKeypair();
+    const nonce = 'server-nonce-xyz';
+    setupDbMocks({
+      id: 'mobile-dev-1',
+      userId: 'user-1',
+      credentialId: null,
+      kind: 'mobile_hw_key',
+      publicKey: spkiB64,
+      publicKeyAlg: 'HS256',
+      signCount: 1,
+    });
+    mockConsumeNonce.mockResolvedValue({ nonce, issuedAt: Date.now() });
+
+    await expect(
+      assertApprovalAssurance({
+        approvalId: 'appr-1',
+        userId: 'user-1',
+        riskTier: 'medium',
+        proof: mobileProof({ nonce, signature: signNonce(privateKey, nonce) }),
+      }),
+    ).rejects.toThrow(/public_key_alg/);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 });
