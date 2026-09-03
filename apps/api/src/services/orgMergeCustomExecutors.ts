@@ -51,8 +51,9 @@
  * `fleet_findings`, `ai_agents` or `incidents`: their registry notes each
  * record the cascade, the credential material, the RESTRICT child or the case
  * file that a delete would take with it. `reports` deletes only the duplicate
- * DEFINITION, never a `report_runs` row — those are generated artifacts the
- * customer can download, so they are re-homed onto the surviving definition.
+ * DEFINITION, never a `report_runs` or `report_schedule_recipients` row — those
+ * children are re-homed onto the surviving definition (after recipient
+ * collisions are deduplicated).
  */
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -851,9 +852,11 @@ const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
 const PORTAL_REPORT_KEY = ['type'] as const;
 const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_self_service = true`;
 
-async function rehomePortalReportChildrenThenDelete(
+async function rehomeReportChildrenThenDelete(
   loser: string,
   survivor: string,
+  key: readonly string[],
+  whereBoth?: SQL,
 ): Promise<{
   dropped: number;
   reportRunsRehomed: number;
@@ -866,8 +869,7 @@ async function rehomePortalReportChildrenThenDelete(
       FROM reports t
       JOIN reports s
         ON s.org_id = ${uuid(survivor)}
-       AND ${keyMatch(PORTAL_REPORT_KEY)}
-       AND ${PORTAL_REPORT_WHERE_BOTH}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
      WHERE t.org_id = ${uuid(loser)}
        AND c.report_id = t.id`);
 
@@ -876,8 +878,7 @@ async function rehomePortalReportChildrenThenDelete(
      USING reports t
       JOIN reports s
         ON s.org_id = ${uuid(survivor)}
-       AND ${keyMatch(PORTAL_REPORT_KEY)}
-       AND ${PORTAL_REPORT_WHERE_BOTH}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
      WHERE t.org_id = ${uuid(loser)}
        AND c.report_id = t.id
        AND EXISTS (
@@ -893,8 +894,7 @@ async function rehomePortalReportChildrenThenDelete(
       FROM reports t
       JOIN reports s
         ON s.org_id = ${uuid(survivor)}
-       AND ${keyMatch(PORTAL_REPORT_KEY)}
-       AND ${PORTAL_REPORT_WHERE_BOTH}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
      WHERE t.org_id = ${uuid(loser)}
        AND c.report_id = t.id`);
 
@@ -903,9 +903,9 @@ async function rehomePortalReportChildrenThenDelete(
      WHERE t.org_id = ${uuid(loser)}
        AND ${collidesWithSurvivor(
          'reports',
-         PORTAL_REPORT_KEY,
+         key,
          survivor,
-         PORTAL_REPORT_WHERE_BOTH,
+         whereBoth,
        )}`);
 
   return {
@@ -917,22 +917,23 @@ async function rehomePortalReportChildrenThenDelete(
 }
 
 const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
-  const narrative = await rehomeChildrenThenDelete(
-    'reports',
-    REPORTS_KEY,
-    [{ table: 'report_runs', column: 'report_id' }],
+  const narrative = await rehomeReportChildrenThenDelete(
     loser,
     survivor,
+    REPORTS_KEY,
   );
-  const portal = await rehomePortalReportChildrenThenDelete(loser, survivor);
+  const portal = await rehomeReportChildrenThenDelete(
+    loser,
+    survivor,
+    PORTAL_REPORT_KEY,
+    PORTAL_REPORT_WHERE_BOTH,
+  );
   const moved = await run(buildRepoint('reports', loser, survivor));
   const notes: string[] = [];
   if (narrative.dropped > 0) {
     notes.push(
       `reports: dropped ${narrative.dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
-      + (narrative.rehomed.length > 0
-        ? ` and re-homed its generated reports onto the survivor's definition (${describeRehomed(narrative.rehomed)})`
-        : ''),
+      + ` and re-homed its children onto the survivor's definition (report_runs: ${narrative.reportRunsRehomed}; report_schedule_recipients: ${narrative.recipientsDeduplicated} deduplicated, ${narrative.recipientsRehomed} re-homed)`,
     );
   }
   if (portal.dropped > 0) {

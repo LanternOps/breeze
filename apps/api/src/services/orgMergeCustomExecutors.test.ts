@@ -39,6 +39,8 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
   it('restricts portal collisions to flagged definitions and dedupes recipients before repointing them', async () => {
     executeMock
       .mockResolvedValueOnce({ rowCount: 0 }) // narrative report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative recipient re-home
       .mockResolvedValueOnce({ rowCount: 0 }) // narrative duplicate delete
       .mockResolvedValueOnce({ rowCount: 1 }) // portal report_runs re-home
       .mockResolvedValueOnce({ rowCount: 1 }) // colliding recipient delete
@@ -49,12 +51,12 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
     const outcome = await mergeReports(L, S);
 
     expect(outcome).toMatchObject({ moved: 2, dropped: 1 });
-    expect(executeMock).toHaveBeenCalledTimes(7);
+    expect(executeMock).toHaveBeenCalledTimes(9);
 
-    const reportRunSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql;
-    const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[3]![0] as SQL).sql;
-    const recipientRepointSql = dialect.sqlToQuery(executeMock.mock.calls[4]![0] as SQL).sql;
-    const reportDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[5]![0] as SQL).sql;
+    const reportRunSql = dialect.sqlToQuery(executeMock.mock.calls[4]![0] as SQL).sql;
+    const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[5]![0] as SQL).sql;
+    const recipientRepointSql = dialect.sqlToQuery(executeMock.mock.calls[6]![0] as SQL).sql;
+    const reportDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[7]![0] as SQL).sql;
 
     for (const statement of [reportRunSql, recipientDeleteSql, recipientRepointSql, reportDeleteSql]) {
       expect(statement).toMatch(/t\.portal_self_service\s*=\s*true/i);
@@ -64,6 +66,37 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
     expect(recipientDeleteSql).toMatch(/contact_id/i);
     expect(recipientRepointSql).toMatch(/update "?report_schedule_recipients"?/i);
     expect(outcome.notes.join('\n')).toMatch(/report_schedule_recipients: 1 deduplicated, 1 re-homed/);
+  });
+
+  it('dedupes and re-homes narrative recipients before deleting the duplicate definition', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 1 }) // narrative report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 1 }) // colliding narrative recipient delete
+      .mockResolvedValueOnce({ rowCount: 2 }) // remaining narrative recipients re-home
+      .mockResolvedValueOnce({ rowCount: 1 }) // narrative duplicate delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal duplicate delete
+      .mockResolvedValueOnce({ rowCount: 3 }); // remaining reports repoint
+
+    const outcome = await mergeReports(L, S);
+
+    expect(executeMock).toHaveBeenCalledTimes(9);
+    const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql;
+    const recipientRepointSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql;
+    const reportDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[3]![0] as SQL).sql;
+
+    expect(recipientDeleteSql).toMatch(/delete from "?report_schedule_recipients"?/i);
+    expect(recipientDeleteSql).toMatch(/source_ai_agent_schedule_id/i);
+    expect(recipientDeleteSql).toMatch(/contact_id/i);
+    expect(recipientRepointSql).toMatch(/update "?report_schedule_recipients"?/i);
+    expect(recipientRepointSql).toMatch(/source_ai_agent_schedule_id/i);
+    expect(reportDeleteSql).toMatch(/delete from "?reports"?/i);
+    expect(outcome).toMatchObject({ moved: 3, dropped: 1 });
+    expect(outcome.notes.join('\n')).toMatch(
+      /report_schedule_recipients: 1 deduplicated, 2 re-homed/,
+    );
   });
 });
 
