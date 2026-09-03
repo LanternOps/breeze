@@ -47,8 +47,6 @@ import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
-  resolveEffectiveTimezone,
-  canonicalizeTimezone,
   rowsToCsv,
   lastOccurrenceKey,
   isDue,
@@ -58,6 +56,10 @@ import {
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { loadReportBrandingForOrg } from '../services/reportBranding';
+import {
+  resolveOrgTimezone,
+  resolveTimezoneFromRows,
+} from '../services/portal/timezone';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import {
@@ -118,35 +120,6 @@ type DueCandidate = {
 function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
   const raw = config.schedule;
   return raw && typeof raw === 'object' ? (raw as ScheduleConfig) : {};
-}
-
-// Org -> partner -> UTC timezone chain (no site axis for org-level reports),
-// same source-of-truth rules as featureConfigResolver's partnerTimezoneFrom.
-function timezoneFor(
-  orgSettings: unknown,
-  partnerTzColumn: string | null,
-  partnerSettings: unknown,
-): string {
-  const orgTz =
-    orgSettings && typeof orgSettings === 'object'
-      ? (orgSettings as Record<string, unknown>).timezone
-      : null;
-  const partnerColumn = canonicalizeTimezone(partnerTzColumn);
-  const partnerFromSettings =
-    partnerSettings && typeof partnerSettings === 'object'
-      ? (partnerSettings as Record<string, unknown>).timezone
-      : null;
-  const partnerTz =
-    partnerColumn !== null && partnerColumn !== 'UTC'
-      ? partnerColumn
-      : typeof partnerFromSettings === 'string' && partnerFromSettings.length > 0
-        ? partnerFromSettings
-        : partnerColumn;
-  return resolveEffectiveTimezone({
-    siteTz: null,
-    orgTz: typeof orgTz === 'string' ? orgTz : null,
-    partnerTz,
-  });
 }
 
 /**
@@ -225,7 +198,7 @@ export async function findDueReports(
       schedule: row.schedule as ScheduleCadence,
       lastGeneratedAt: row.lastGeneratedAt,
       config: (row.config ?? {}) as Record<string, unknown>,
-      timeZone: timezoneFor(row.orgSettings, row.partnerTimezone, row.partnerSettings),
+      timeZone: resolveTimezoneFromRows(row.orgSettings, row.partnerTimezone, row.partnerSettings),
     };
     const key = lastOccurrenceKey(now, candidate.schedule, scheduleConfigOf(candidate.config), candidate.timeZone);
     if (isDue(candidate.lastGeneratedAt, key, candidate.timeZone)) {
@@ -622,13 +595,7 @@ export async function processRunScheduledReport(
         // transient failure in either lookup can't sink a no-recipient run's
         // occurrence-keyed job (a failed job blocks re-enqueue of that
         // occurrence, and by this point the run row is already stored).
-        const [tzRow] = await db
-          .select({ orgSettings: organizations.settings, partnerTimezone: partners.timezone, partnerSettings: partners.settings })
-          .from(organizations)
-          .leftJoin(partners, eq(organizations.partnerId, partners.id))
-          .where(eq(organizations.id, report.orgId))
-          .limit(1);
-        const timeZone = timezoneFor(tzRow?.orgSettings ?? null, tzRow?.partnerTimezone ?? null, tzRow?.partnerSettings ?? null);
+        const timeZone = await resolveOrgTimezone(report.orgId);
         const branding = await loadReportBrandingForOrg(report.orgId).catch((err) => {
           console.error('[ReportScheduleWorker] Branding load failed; sending unbranded:', err);
           return { name: null, logoDataUrl: null, logoAspect: null };

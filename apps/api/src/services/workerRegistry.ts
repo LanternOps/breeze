@@ -115,6 +115,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'aiBudgetAlertDeliveryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiBudgetAlertDelivery');
+      return { init: m.initializeAiBudgetAlertWorker, shutdown: m.shutdownAiBudgetAlertWorker };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {
@@ -339,6 +347,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/agentLogRetention');
       return { init: m.initializeAgentLogRetention, shutdown: m.shutdownAgentLogRetention };
+    },
+  },
+  {
+    // #4210 — prunes ticket_outbox rows once ticketOutboxPublisher has
+    // drained them (delivered or permanently stuck). No agent-socket-local
+    // dispatch dependency, so 'global'.
+    name: 'ticketOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketOutboxRetention');
+      return { init: m.initializeTicketOutboxRetention, shutdown: m.shutdownTicketOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for intent_outbox.
+    name: 'intentOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/intentOutboxRetention');
+      return { init: m.initializeIntentOutboxRetention, shutdown: m.shutdownIntentOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for metric_anomaly_incidents.
+    name: 'metricAnomalyIncidentRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/metricAnomalyIncidentRetention');
+      return {
+        init: m.initializeMetricAnomalyIncidentRetention,
+        shutdown: m.shutdownMetricAnomalyIncidentRetention,
+      };
     },
   },
   {
@@ -1078,6 +1118,32 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // QuickBooks Phase C, Task 4 (invoice push worker). `global`, verified by
+    // `workerEntrypointClosure.contract.test.ts`'s per-entry check: this
+    // module's runtime closure (accountingConnectionService, accountingTokens,
+    // accountingInvoicePush, the QuickBooks provider) never reaches
+    // `routes/agentWs.ts` or `services/agentCommandAwait.ts` — no socket
+    // ownership, no agent involvement at all.
+    name: 'accountingSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingSyncWorker');
+      return { init: m.initializeAccountingSyncWorkers, shutdown: m.shutdownAccountingSyncWorkers };
+    },
+  },
+  {
+    // QuickBooks Phase D, Task 4 (payment pull-back): the CDC reconcile worker
+    // plus its 15-minute sweep. `global`, and NOT copied from the sibling
+    // above on faith — `workerEntrypointClosure.contract.test.ts` re-derives
+    // this module's real runtime import closure per entry and is the authority.
+    name: 'accountingReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingReconcileWorker');
+      return { init: m.initializeAccountingReconcileWorkers, shutdown: m.shutdownAccountingReconcileWorkers };
+    },
+  },
+  {
     // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
     // impact rollup fan-out.
     //
@@ -1093,6 +1159,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentImpactRollup');
       return { init: m.initializeAiAgentImpactRollupWorker, shutdown: m.shutdownAiAgentImpactRollupWorker };
+    },
+  },
+  {
+    // Phase 2 wave P2-5 (#4192), Task 9: retention sweep for the
+    // `ai_agent_op_evidence` ledger. `global`, same reasoning as
+    // `aiUnattendedExposureRetention` above — this module's closure reaches
+    // only `db` + `services/retentionMetrics.ts`; it must never import
+    // `aiTools.ts` (the promotion executor lives there and would drag
+    // socket-local dispatch into what is otherwise a plain batched DELETE).
+    name: 'aiAgentGraduation',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentGraduationWorker');
+      return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
     },
   },
 ];

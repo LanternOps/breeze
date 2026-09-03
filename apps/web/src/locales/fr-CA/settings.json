@@ -120,7 +120,9 @@
     "maxTurns": "Nombre maximal de tours par session",
     "messagesPerMinute": "Messages par minute et utilisateur",
     "messagesPerHour": "Messages par heure et par organisation",
-    "notSet": "Non défini — les organisations se configurent individuellement",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un courriel pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
+    "notSet": "Non défini, les organisations se configurent individuellement",
     "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
@@ -128,6 +130,9 @@
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
   },
   "partnerAiProvider": {
     "title": "Fournisseur d'IA",
@@ -1049,6 +1054,7 @@
     },
     "toasts": {
       "inviteSent": "Invitation envoyée",
+      "inviteSentAmbiguousContact": "Invitation envoyée, mais aucun contact n'a pu être lié — plusieurs contacts partagent cette adresse courriel. Cet utilisateur ne verra pas les tickets reçus par courriel tant qu'un contact ne sera pas lié.",
       "pendingInvited": "Invité {{count}} utilisateur(s) en attente",
       "inviteResent": "Invitation résignée",
       "reactivated": "Utilisateur réactivé",
@@ -1295,6 +1301,13 @@
     "monthlyBudget": "Budget mensuel ($)",
     "noLimit": "Aucune limite",
     "dailyBudget": "Budget quotidien ($)",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
+    "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
+    "periodLabel": {
+      "daily": "quotidienne",
+      "monthly": "mensuelle"
+    },
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",
@@ -1322,7 +1335,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}} — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze"
+    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
+    "creditsRemaining": "Crédits IA Breeze restants"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1703,6 +1717,172 @@
           "reply": "Brouillon de réponse",
           "resolutionNote": "Brouillon de note de résolution"
         }
+      }
+    },
+    "impact": {
+      "title": "Impact de l’IA",
+      "description": "Ce que vos agents IA ont traité dans les organisations que vous pouvez voir, et le temps de travail que cela représente selon l’estimation.",
+      "windowLabel": "Période du rapport",
+      "windows": {
+        "d7": "7 derniers jours",
+        "d30": "30 derniers jours",
+        "d90": "90 derniers jours"
+      },
+      "loading": "Chargement du rapport d’impact…",
+      "refresh": "Actualiser",
+      "refreshing": "Reconstruction en cours…",
+      "retry": "Réessayer",
+      "errors": {
+        "load": "Impossible de charger le rapport d’impact.",
+        "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente.",
+        "tooManyOrgs": "Cette reconstruction couvre plus de {{limit}} organisations. Choisissez une seule organisation dans le sélecteur d’organisation, puis réessayez.",
+        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact.",
+        "exportPdf": "L'export PDF n'a pas pu être généré."
+      },
+      "toasts": {
+        "rebuildQueued": "Reconstruction du rapport mise en file d’attente.",
+        "rebuildComplete": "Le rapport d’impact a été reconstruit.",
+        "rebuildStillRunning": "La reconstruction est toujours en cours. Rechargez cette page dans quelques minutes pour voir les nouveaux chiffres."
+      },
+      "tiles": {
+        "alertsJudged": "Alertes évaluées",
+        "noiseFlagged": "Signalées comme bruit",
+        "ticketsTriaged": "Tickets triés",
+        "draftsSent": "Brouillons envoyés",
+        "fixesExecuted": "Correctifs appliqués",
+        "promoteEligible": "Opérations admissibles à la promotion",
+        "promoteEligibleHint": "Opérations disposant d'assez de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.",
+        "estTimeSaved": "Temps gagné estimé",
+        "estTimeSavedValue": "{{hours}} heures",
+        "llmSpend": "Dépenses LLM"
+      },
+      "weightsTooltipTitle": "Une estimation uniquement — chaque résultat est crédité d’une durée fixe :",
+      "weightsTooltipLine": "{{label}} : {{minutes}} min créditées par résultat",
+      "weightLabels": {
+        "alertJudged": "Alerte évaluée",
+        "noiseFlagged": "Signalée comme bruit",
+        "ticketTriaged": "Ticket trié",
+        "draftSent": "Brouillon envoyé",
+        "fixExecuted": "Correctif appliqué",
+        "narrativeDelivered": "Rapport hebdomadaire livré"
+      },
+      "chart": {
+        "title": "Résultats par jour",
+        "empty": "Aucun résultat n’a été enregistré sur cette période.",
+        "noiseFlagged": "Signalées comme bruit",
+        "alertsJudgedNet": "Alertes évaluées, hors bruit",
+        "ticketsTriaged": "Tickets triés",
+        "fixesExecuted": "Correctifs appliqués"
+      },
+      "byOrg": {
+        "title": "Par organisation",
+        "truncated": "Affichage des {{limit}} organisations ayant le temps gagné estimé le plus élevé.",
+        "columns": {
+          "organization": "Organisation",
+          "alertsJudged": "Alertes évaluées",
+          "ticketsTriaged": "Tickets triés",
+          "fixesExecuted": "Correctifs appliqués",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM"
+        }
+      },
+      "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Données jusqu’au {{through}} (UTC) · jamais reconstruit",
+      "positiveFeedbackRate": "Taux d’avis positifs",
+      "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles",
+      "editWeights": "Modifier les pondérations",
+      "exportPdf": "Exporter en PDF",
+      "weightsDrawer": {
+        "title": "Modifier les pondérations de temps gagné",
+        "description": "Définissez le nombre de secondes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "reset": "Rétablir les valeurs par défaut",
+        "resetting": "Rétablissement…",
+        "customized": "Personnalisé",
+        "errors": {
+          "save": "Les pondérations n'ont pas pu être enregistrées.",
+          "reset": "Les pondérations n'ont pas pu être réinitialisées."
+        },
+        "toasts": {
+          "saved": "Pondérations enregistrées.",
+          "reset": "Pondérations réinitialisées aux valeurs par défaut."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertes évaluées",
+          "noiseFlagged": "Signalées comme bruit",
+          "suppressionsApplied": "Suppressions appliquées",
+          "ticketsTriaged": "Tickets triés",
+          "draftsSent": "Brouillons envoyés",
+          "fixesProposed": "Correctifs proposés",
+          "fixesExecuted": "Correctifs appliqués",
+          "fixWatchesHeld": "Surveillances de correctif maintenues",
+          "fixWatchesRecurred": "Surveillances de correctif récurrentes",
+          "narrativesDelivered": "Rapports hebdomadaires livrés",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM",
+          "window": "Fenêtre du rapport (jours)",
+          "through": "Données jusqu'au (UTC)",
+          "rebuiltAt": "Dernière reconstruction"
+        },
+        "weightRowLabel": "{{label}} (secondes créditées)",
+        "neverRebuilt": "Jamais reconstruit"
+      }
+    },
+    "graduation": {
+      "title": "Habilitation graduelle",
+      "description": "Ce que cet agent a démontré au cours des 30 derniers jours, opération par opération, et si ces preuves suffisent pour demander une exécution préautorisée.",
+      "loading": "Chargement des preuves d’habilitation…",
+      "error": "Impossible de charger les preuves d’habilitation.",
+      "retry": "Réessayer",
+      "orgRequired": "Choisissez une seule organisation dans le sélecteur d’organisations pour voir ses preuves d’habilitation.",
+      "empty": "Aucune preuve n’a encore été consignée pour cet agent.",
+      "readOnlyNote": "L’exécution préautorisée est désactivée dans ce déploiement; ces chiffres sont donnés à titre indicatif.",
+      "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
+      "thresholdPerOrgNote": "Chaque organisation résout son propre seuil d’habilitation : les exécutions vérifiées sont donc affichées ici sans cible. Choisissez une seule organisation dans le sélecteur d’organisations pour voir sa cible.",
+      "approvalsLink": "Suivre cette demande dans la boîte des approbations",
+      "ceilingHint": "Les clés au niveau du partenaire constituent un plafond, non une autorisation. L’agent de chaque organisation doit obtenir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
+      "promote": "Promouvoir",
+      "verifiedOfThreshold": "{{verified}} sur {{threshold}}",
+      "columns": {
+        "opKey": "Opération",
+        "state": "État",
+        "verified": "Vérifiées",
+        "executed": "Exécutées",
+        "failed": "Échouées",
+        "recurred": "Récurrences",
+        "firstVerified": "Première vérification",
+        "blockedReason": "Pourquoi pas encore"
+      },
+      "states": {
+        "tracking": "En observation",
+        "eligible": "Admissible",
+        "promoted": "Promue",
+        "demoted": "Rétrogradée"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "L’agent du partenaire ne permet pas encore cette opération.",
+        "below_threshold": "Il n’y a pas encore assez d’exécutions vérifiées.",
+        "too_recent": "La première exécution vérifiée est encore trop récente.",
+        "has_failures": "Un échec ou une récurrence a été consigné durant cette période.",
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+      },
+      "confirm": {
+        "title": "Demander une préautorisation",
+        "message": "Cela demande à une deuxième personne de préautoriser {{opKey}} pour l’agent de cette organisation. Cela s’applique uniquement aux exécutions futures et n’autorise jamais une demande qui attend déjà une décision.",
+        "action": "Demander l’approbation"
+      },
+      "toasts": {
+        "requested": "Préautorisation demandée. Une deuxième personne doit l’approuver avant que cette opération s’exécute sans surveillance, et cela s’applique uniquement aux exécutions futures."
+      },
+      "errors": {
+        "promote": "Impossible de soumettre la demande de préautorisation.",
+        "policyDecideDisabled": "L’exécution préautorisée est désactivée dans ce déploiement; cette opération ne peut donc pas être promue."
+      },
+      "reliability": {
+        "caption": "Opérations du mode action, en lecture seule : ce ne sont pas des clés de politique, elles ne peuvent donc jamais être préautorisées."
       }
     }
   },
@@ -2991,6 +3171,8 @@
       "organization": "Organisation",
       "general": "Généralités",
       "generalDescription": "Profil et paramètres par défaut",
+      "contacts": "Contacts",
+      "contactsDescription": "Personnes à joindre chez ce client, par site ou pour toute l’organisation",
       "contracts": "Contrats",
       "contractsDescription": "Accords récurrents",
       "billing": "Facturation",
@@ -3590,7 +3772,8 @@
       "title": "Appareils",
       "assigned": "Appareils attribués à ce site",
       "viewAll": "Voir tous les appareils"
-    }
+    },
+    "allContactsLink": "Tous les contacts de ce client"
   },
   "siteForm": {
     "description": "Seul le nom du site est requis. L’adresse et le contact sont optionnels — vous pourrez les remplir plus tard.",
@@ -3980,5 +4163,180 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
     "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "Les personnes que votre équipe joint chez ce client. Un contact peut être rattaché à un site ou viser l’organisation entière.",
+    "organizationLevel": "Organisation",
+    "unknownSite": "Site indisponible",
+    "empty": "Aucun contact pour le moment. Ajoutez-en un, ou importez un CSV de votre ancien outil.",
+    "loading": "Chargement des contacts…",
+    "confirmDelete": "Supprimer {{name}} ? Cette opération est irréversible.",
+    "actions": {
+      "add": "Ajouter un contact",
+      "import": "Importer un CSV",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer le contact",
+      "saving": "Enregistrement en cours…",
+      "cancel": "Annuler",
+      "retry": "Réessayer"
+    },
+    "filters": {
+      "site": "Filtrer par site",
+      "role": "Filtrer par rôle",
+      "allSites": "Tous les sites",
+      "allRoles": "Tous les rôles"
+    },
+    "columns": {
+      "name": "Nom",
+      "reach": "Comment les joindre",
+      "jobTitle": "Titre du poste",
+      "roles": "Rôles",
+      "site": "Rattaché à",
+      "actions": "Opérations"
+    },
+    "primary": {
+      "organization": "Principal (organisation)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Facturation",
+      "technical": "Technique",
+      "escalation": "Escalade",
+      "admin": "Administration",
+      "site": "Site",
+      "afterHours": "En dehors des heures d’ouverture",
+      "portal": "Portail"
+    },
+    "form": {
+      "addHeading": "Nouveau contact",
+      "editHeading": "Modifier le contact",
+      "identifierRequired": "Remplissez au moins un champ : nom, adresse courriel, téléphone ou cellulaire.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse courriel",
+        "phone": "Téléphone",
+        "mobile": "Cellulaire",
+        "title": "Titre du poste",
+        "site": "Rattaché à",
+        "roles": "Rôles",
+        "notes": "Remarques",
+        "isPrimary": "Faire de ce contact le principal pour la portée choisie ci-dessus"
+      }
+    },
+    "pagination": {
+      "summary": "Affichage de {{from}} à {{to}} sur {{total}}",
+      "previous": "Précédent",
+      "next": "Suivant"
+    },
+    "toasts": {
+      "created": "Contact ajouté",
+      "updated": "Contact enregistré",
+      "deleted": "Contact supprimé"
+    },
+    "errors": {
+      "load": "Impossible de charger les contacts de cette organisation.",
+      "sites": "Impossible de charger les sites de cette organisation. Les noms de site et le filtre par site restent indisponibles.",
+      "create": "Impossible d’ajouter le contact.",
+      "update": "Impossible d’enregistrer le contact.",
+      "delete": "Impossible de supprimer le contact."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importer des contacts à partir d’un CSV",
+    "description": "Téléversez un export de contacts de votre ancien RMM ou PSA. Chaque ligne est classée sous cette organisation.",
+    "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
+    "dropzoneHint": "Associez au moins un champ : nom, adresse courriel, téléphone ou cellulaire — il en faut un.",
+    "actions": {
+      "close": "Fermer",
+      "preview": "Vérifier {{count}} lignes",
+      "previewing": "Vérification en cours…",
+      "import": "Importer les {{count}} sélectionnées",
+      "importing": "Importation en cours…"
+    },
+    "mapping": {
+      "heading": "Correspondance des colonnes",
+      "unmapped": "Non associée",
+      "identifierRequired": "Associez une colonne nom, adresse courriel, téléphone ou cellulaire pour continuer.",
+      "droppedRows_one": "{{count}} ligne ignorée : ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "droppedRows_other": "{{count}} lignes ignorées : ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "tooManyRows": "Ce fichier associe {{count}} lignes, soit plus que les {{max}} acceptées par importation. Divisez-le en fichiers plus petits.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse courriel",
+        "phone": "Téléphone",
+        "mobile": "Cellulaire",
+        "title": "Titre du poste",
+        "roles": "Rôles",
+        "site": "Site",
+        "externalId": "Identifiant du contact dans le système source",
+        "externalSystem": "Système source"
+      }
+    },
+    "mode": {
+      "label": "Contacts déjà liés",
+      "skip": "Les laisser tels quels",
+      "update": "Y fusionner le fichier"
+    },
+    "preview": {
+      "heading": "Ce qui va se produire"
+    },
+    "summary": {
+      "imported": "{{count}} ajoutés",
+      "updated": "{{count}} fusionnés",
+      "skipped": "{{count}} laissés tels quels",
+      "failed": "{{count}} refusées",
+      "allFailed": "Rien n’a été importé — {{summary}}.",
+      "nothingImported": "Rien d’importé : {{count}} déjà liés.",
+      "nothingImportedEmpty": "Rien n’a été importé."
+    },
+    "failures": {
+      "title_one": "{{count}} ligne a été refusée",
+      "title_other": "{{count}} lignes ont été refusées"
+    },
+    "skipped": {
+      "title_one": "{{count}} ligne a été laissée telle quelle",
+      "title_other": "{{count}} lignes ont été laissées telles quelles",
+      "reasons": {
+        "alreadyLinked": "déjà lié à un contact existant"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La ligne est ambiguë par rapport aux contacts déjà présents.",
+      "orgNotFound": "Cette organisation n’est plus à votre portée.",
+      "annotationChanged": "Cette ligne a changé depuis l’aperçu. Vérifiez le fichier de nouveau.",
+      "matchChanged": "Cette ligne correspond maintenant à un autre contact. Vérifiez le fichier de nouveau.",
+      "matchUnconfirmed": "Cochez la ligne et relancez l’importation pour confirmer la correspondance.",
+      "writeFailed": "La base de données a refusé l’écriture. Rien n’a été enregistré pour cette ligne.",
+      "noIdentifier": "Il ne reste à la ligne ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "invalidRole": "La ligne nomme un rôle que Breeze ne connaît pas.",
+      "siteNotInOrg": "Le site de cette ligne n’appartient pas à cette organisation."
+    },
+    "errors": {
+      "previewFailed": "Impossible de comparer le fichier aux contacts déjà présents.",
+      "importFailed": "Impossible d’importer les contacts sélectionnés.",
+      "fileRead": "Impossible de lire ce fichier. Sélectionnez-le de nouveau.",
+      "noColumns": "Ce fichier n’a pas de ligne d’en-tête : il n’y a donc rien à associer."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Sélectionner toutes les lignes nouvelles et liées",
+    "organizationLevel": "Organisation",
+    "matches": "correspond à « {{name}} »",
+    "columns": {
+      "name": "Nom",
+      "email": "Adresse courriel",
+      "site": "Site",
+      "status": "Résultat"
+    },
+    "badges": {
+      "create": "Nouveau",
+      "linkMatch": "Déjà lié",
+      "emailMatch": "Correspondance de courriel — à confirmer",
+      "nameMatch": "Correspondance de nom — à confirmer",
+      "conflict": "Conflit",
+      "orgNotFound": "Organisation introuvable"
+    }
   }
 }

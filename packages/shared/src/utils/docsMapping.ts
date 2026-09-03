@@ -99,6 +99,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
   { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
   { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
+  { pattern: '/admin/llm-provider-catalog', docsPath: '/features/bring-your-own-llm-key/', label: 'LLM Provider Catalog' },
   { pattern: '/admin', docsPath: '/reference/partner-management/', label: 'Administration' },
 
   // Feature pages — specific sub-routes first
@@ -217,6 +218,8 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/audit', docsPath: '/reference/audit-logs/', label: 'Audit Logs' },
   { pattern: '/logs', docsPath: '/features/log-shipping/', label: 'Log Shipping' },
   { pattern: '/fleet', docsPath: '/features/fleet-hygiene/', label: 'Fleet Hygiene Findings' },
+  { pattern: '/ai-agents/impact', docsPath: '/features/ai-impact/', label: 'AI Impact' },
+  { pattern: '/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
 

@@ -35,6 +35,12 @@ import {
  * deferred — the default action on a new failure is to fix the handler,
  * not extend the allowlist.
  *
+ * NOTE: the scanner is `:deviceId`-only — the contact routes
+ * (`routes/orgContacts.ts`, #3258) carry no device in their path and are
+ * covered by their own suites (`orgContacts.test.ts`, `contacts/crud.test.ts`,
+ * `contacts/import.test.ts`, `contactImport.integration.test.ts`); do not
+ * extend the scanner to reach them.
+ *
  * NOTE: this test only catches per-device URL patterns. Handlers that take
  * a `deviceId` via query/body filter are still vulnerable to the same
  * class of bug; those are caught by route-level reviews and the targeted
@@ -179,7 +185,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/tunnels.ts:POST /upgrade-to-webrtc',
   // ---- Not the bug class: platform-admin-only, portal-session auth, or a
   // mobile/OAuth device row (not an RMM device with a site).
-  'routes/admin/abuse.ts:POST /partners/:id/suspend-for-abuse',
   // Resolves a mobile/OAuth device row (mobile_devices, no site_id/org_id) to
   // scope authenticator registration — already narrowed by userId, tighter
   // than site-scope, so a site gate is not meaningful here.

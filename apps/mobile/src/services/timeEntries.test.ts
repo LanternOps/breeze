@@ -16,6 +16,11 @@ import {
 const ENTRY = {
   id: 'e1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', endedAt: null,
   durationMinutes: null, isBillable: true, billingStatus: 'not_billed', isApproved: false, description: null,
+  // The API joins the ticket onto every entry (entrySelection in
+  // timeEntryService.ts) so the timesheet can label a row without the ticket
+  // being in the phone's filter-scoped ticket list, which excludes resolved
+  // and other people's tickets.
+  ticketNumber: 'T-2026-0002', ticketSubject: 'Printer offline',
 };
 
 beforeEach(() => { coreRequest.mockReset(); });
@@ -34,7 +39,10 @@ describe('getRunningTimer', () => {
 
   it('narrows the running-timer payload', async () => {
     coreRequest.mockResolvedValue({
-      data: { id: 't1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', description: 'onsite', extra: 'ignored' },
+      data: {
+        id: 't1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', description: 'onsite',
+        ticketNumber: 'T-2026-0002', ticketSubject: 'Printer offline', extra: 'ignored',
+      },
     });
     const timer = await getRunningTimer();
     // `localId: null` is the marker that the SERVER owns this timer, as
@@ -45,7 +53,17 @@ describe('getRunningTimer', () => {
       ticketId: 'k1',
       startedAt: '2026-08-23T10:00:00Z',
       description: 'onsite',
+      ticketNumber: 'T-2026-0002',
+      ticketSubject: 'Printer offline',
     });
+  });
+
+  it('defaults the ticket label fields to null when the entry has no ticket', async () => {
+    coreRequest.mockResolvedValue({
+      data: { id: 't2', ticketId: null, startedAt: '2026-08-23T10:00:00Z', description: null },
+    });
+    const timer = await getRunningTimer();
+    expect(timer).toMatchObject({ ticketId: null, ticketNumber: null, ticketSubject: null });
   });
 });
 
@@ -139,6 +157,8 @@ describe('createTimeEntry', () => {
     expect(entry).toEqual({
       id: 'e2',
       ticketId: null,
+      ticketNumber: null,
+      ticketSubject: null,
       startedAt: '2026-08-23T10:00:00Z',
       endedAt: null,
       durationMinutes: null,

@@ -1,4 +1,5 @@
 import { coreRequest } from './api';
+import type { TicketCommentType } from './ticketCommentTypes';
 import type { TicketAttachmentMeta } from './ticketAttachmentContract';
 
 /**
@@ -47,21 +48,11 @@ export interface TicketSummary {
   statusColor: string | null;
 }
 
-export type TicketCommentType =
-  | 'comment'
-  | 'internal'
-  | 'status_change'
-  | 'assignment'
-  | 'time_entry'
-  | 'system';
-
-/** Entry kinds the API emits as activity rather than a person's comment. */
-export const SYSTEM_COMMENT_TYPES: ReadonlySet<TicketCommentType> = new Set([
-  'status_change',
-  'assignment',
-  'time_entry',
-  'system',
-]);
+// Defined in a leaf module so pure copy/logic modules can import the VALUE
+// without dragging this file's `./api` (and therefore react-native) graph into
+// the Vitest runner. Re-exported here so existing importers are unaffected.
+export type { TicketCommentType } from './ticketCommentTypes';
+export { SYSTEM_COMMENT_TYPES } from './ticketCommentTypes';
 
 export interface TicketComment {
   id: string;
@@ -146,6 +137,25 @@ export async function getTickets(params: ListTicketsParams = {}): Promise<Ticket
     page: response.pagination?.page ?? params.page ?? 1,
     limit: response.pagination?.limit ?? params.limit ?? DEFAULT_LIMIT,
   };
+}
+
+export interface CreateTicketInput {
+  orgId: string;
+  subject: string;
+  description?: string;
+  priority: TicketPriority;
+}
+
+/**
+ * `POST /tickets` (`createTicketSchema`). The server allocates the internal
+ * number and stamps `source: 'manual'`; the response is the full ticket row.
+ */
+export async function createTicket(input: CreateTicketInput): Promise<TicketSummary> {
+  const response = await coreRequest<{ data: TicketSummary }>('/tickets', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return response.data;
 }
 
 export async function getTicket(id: string): Promise<TicketDetail> {

@@ -39,7 +39,23 @@
     "expired": "Cette demande a expiré avant qu’une décision ne soit prise.",
     "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
     "batchStepUp": "Ce lot nécessite une connexion plus forte. Approuvez les demandes une par une.",
-    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble."
+    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble.",
+    "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits."
   },
-  "registerDevice": "Enregistrer l’appareil"
+  "registerDevice": "Enregistrer l’appareil",
+  "alwaysAllow": {
+    "button": "Approuver et toujours autoriser",
+    "confirm": {
+      "title": "Approuver et demander une préautorisation",
+      "message": "Ceci approuve la demande que vous consultez actuellement. Cela demande aussi à un deuxième approbateur de préautoriser {{opKey}} pour l’agent de cette organisation — cela s’applique uniquement aux exécutions futures et n’autorise jamais cette demande ni aucune autre déjà en attente d’une décision.",
+      "action": "Approuver et demander"
+    },
+    "toasts": {
+      "requested": "Approuvé. Un deuxième approbateur doit approuver la préautorisation avant que cette opération s’exécute sans surveillance, et cela s’applique uniquement aux exécutions futures."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Approuvé, mais la demande de préautorisation n’a pas pu être envoyée. Réessayez depuis les paramètres de l’agent.",
+      "policyDecideDisabled": "Approuvé. La préautorisation n’a pas pu être demandée, car elle est désactivée pour ce déploiement."
+    }
+  }
 }

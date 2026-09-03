@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, type TicketOutboxEvent } from '../db/schema';
+import { matchContactByEmail } from './contacts/crud';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -37,6 +38,10 @@ export type TicketServiceErrorCode =
   | 'ASSIGNEE_WRONG_PARTNER'
   | 'REQUESTER_NOT_FOUND'
   | 'REQUESTER_WRONG_ORG'
+  // #3258 W03: the requester CONTACT (the canonical person), distinct from the
+  // portal LOGIN codes above so a caller can tell which of the two it fumbled.
+  | 'REQUESTER_CONTACT_NOT_FOUND'
+  | 'REQUESTER_CONTACT_WRONG_ORG'
   | 'CATEGORY_NOT_FOUND'
   | 'CATEGORY_WRONG_PARTNER'
   | 'TICKET_PARTNER_UNRESOLVABLE'
@@ -193,11 +198,15 @@ async function assertAssigneeInPartner(assigneeId: string, partnerId: string | n
  */
 export async function getPortalUserForValidation(
   portalUserId: string
-): Promise<{ id: string; orgId: string; name: string | null; email: string } | null> {
+): Promise<{ id: string; orgId: string; name: string | null; email: string; contactId: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, email: portalUsers.email })
+        // contactId (#3258 W03): a portal login is a login ATTACHED to a
+        // contact, and the ticket's canonical requester is that contact — so
+        // every path that resolves a portal user for a ticket write also
+        // carries the link it should stamp.
+        .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, email: portalUsers.email, contactId: portalUsers.contactId })
         .from(portalUsers)
         .where(eq(portalUsers.id, portalUserId))
         .limit(1)
@@ -319,6 +328,100 @@ async function assertRequesterInOrg(portalUserId: string, orgId: string) {
 }
 
 /**
+ * Tenant guard: a requester CONTACT must belong to the ticket's org (#3258 W03).
+ *
+ * Deliberately the same shape as assertRequesterInOrg above — a same-org
+ * equality check on a system-context read, 404 for missing and 400 for the
+ * wrong org. `contacts.org_id` scopes a contact to exactly one organization,
+ * so the equality IS the complete cross-tenant boundary. The composite FK
+ * `tickets_requester_contact_org_fk` makes a cross-org link unrepresentable at
+ * the DB level too; this check exists so the caller gets a typed 400 instead
+ * of a raw constraint violation.
+ *
+ * Deliberately reads on the CURRENT DB context, NOT through the
+ * `runOutsideDbContext(withSystemDbAccessContext(...))` escape the portal-user
+ * guard above uses. That escape opens a second pooled connection, which cannot
+ * see rows written by the caller's still-open transaction — and the inbound
+ * path creates the contact and the ticket in ONE transaction, so the escape
+ * would fail every emailed ticket from a first-time sender with a spurious
+ * "Requester contact not found". (It did: the integration suite caught it.)
+ *
+ * Reading in-context is also no weaker. `contacts` is org-axis RLS, so a
+ * system context sees everything and a request context sees exactly the orgs
+ * the caller can reach; an invisible row degrades to 404 rather than a wrong-org
+ * 400, which is the stricter of the two. The explicit comparison below remains
+ * the security boundary either way.
+ */
+async function assertRequesterContactInOrg(contactId: string, orgId: string) {
+  const rows = await db
+    .select({ id: contacts.id, orgId: contacts.orgId, name: contacts.name, email: contacts.email })
+    .from(contacts)
+    .where(eq(contacts.id, contactId))
+    .limit(1);
+  const contact = rows[0];
+  if (!contact) throw new TicketServiceError('Requester contact not found', 404, 'REQUESTER_CONTACT_NOT_FOUND');
+  if (contact.orgId !== orgId) {
+    throw new TicketServiceError('Requester contact must belong to the ticket organization', 400, 'REQUESTER_CONTACT_WRONG_ORG');
+  }
+  return contact;
+}
+
+/**
+ * The CONTACT behind a portal LOGIN, and the login's org (#3258 W03).
+ *
+ * Reads on the CURRENT DB context for exactly the reason
+ * `assertRequesterContactInOrg` above spells out, and which
+ * `getPortalUserForValidation` violates: that helper wraps its read in
+ * `runOutsideDbContext(withSystemDbAccessContext(...))`, which opens a SECOND
+ * pooled connection. A second connection cannot see rows the caller's
+ * still-open transaction has written — and the create paths that reach this
+ * derivation (inbound email, the portal) write inside one transaction. Using
+ * the escape here would make the derivation depend on commit timing.
+ *
+ * Reading in-context is not weaker: `portal_users` is org-axis RLS, so a
+ * system context sees everything and a request context sees exactly the orgs
+ * the caller can reach — an invisible row degrades to "no link", which is the
+ * stricter outcome. The explicit org comparison at the call site remains the
+ * security boundary either way.
+ *
+ * `contactId` needs no org of its own: `portal_users_contact_org_fk`
+ * (contact_id, org_id) -> contacts (id, org_id) makes the contact's org
+ * IDENTICAL to the `orgId` returned here (#3258 follow-up), so comparing that
+ * one value against the ticket's org settles both.
+ */
+async function readPortalUserContactLink(
+  portalUserId: string
+): Promise<{ orgId: string; contactId: string | null } | null> {
+  const rows = await db
+    .select({ orgId: portalUsers.orgId, contactId: portalUsers.contactId })
+    .from(portalUsers)
+    .where(eq(portalUsers.id, portalUserId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Re-resolve a ticket's requester CONTACT from a free-text email address
+ * (#3258 W03). Exactly one contact on that address in the ticket's org links;
+ * zero, several (a shared mailbox) or an unusable address leave the ticket
+ * unlinked — the same rule inbound email applies, through the same core
+ * (`matchContactByEmail`).
+ *
+ * Deliberately takes NO advisory lock, unlike the inbound path. That lock
+ * exists to stop two concurrent first-time senders from each CREATING a
+ * contact for the same address; nothing is created here (a staff requester
+ * edit is not an onboarding action, and silently minting a contact from a
+ * typed-in address would be a surprise), so there is nothing to serialise.
+ */
+async function resolveRequesterContactByEmail(
+  orgId: string,
+  email: string | null | undefined
+): Promise<string | null> {
+  const match = await matchContactByEmail(db, orgId, email);
+  return match.kind === 'contact' ? match.contactId : null;
+}
+
+/**
  * Tenant guard: a ticket's category must belong to the ticket's partner.
  * The read runs in a system-scope DB context for the same reason as
  * getAssigneeForValidation: ticket_categories is partner-axis RLS, invisible
@@ -351,6 +454,14 @@ export async function assertCategoryInPartner(categoryId: string, partnerId: str
 
 interface BaseCreateTicketInput {
   orgId: string;
+  /**
+   * The canonical requester PERSON (#3258 W03). Independent of `submittedBy`,
+   * which names the optional portal LOGIN: an inbound email has a contact and
+   * no login at all, a portal submission has both, and a manual ticket may
+   * have neither. When omitted and a portal user IS named, it is DERIVED from
+   * that login's `contact_id` — so a ticket never silently loses the person.
+   */
+  requesterContactId?: string;
   subject?: string;
   description?: string;
   deviceId?: string;
@@ -439,23 +550,41 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   // Resolve the requester before number allocation (a rejected requester must
   // not burn a counter value). Portal/email sources carry it via their required
   // fields. Other sources may name one: a picked portal user (validated same-org,
-  // backfills name/email) and/or free text; otherwise the acting staff member's
-  // name is stamped with NO email (preserves "no external requester" semantics —
-  // the notify worker emails submitterEmail on every public comment/resolution).
+  // backfills name/email), a named CONTACT (`namedContact` below — the #3258 W03
+  // requesterContactId input, tenant-validated first and used to backfill the
+  // name/email snapshot when there is no login), and/or free text; otherwise the
+  // acting staff member's name is stamped with NO email (preserves "no external
+  // requester" semantics — the notify worker emails submitterEmail on every
+  // public comment/resolution).
   const isPortalOrEmail = input.source === 'portal' || input.source === 'email';
+
+  // #3258 W03: an explicitly named contact is tenant-validated FIRST, before
+  // number allocation and any write, so a cross-org link is rejected without
+  // burning a counter value (same ordering rationale as the device guard).
+  const namedContact = input.requesterContactId
+    ? await assertRequesterContactInOrg(input.requesterContactId, input.orgId)
+    : null;
+
   let resolvedSubmittedBy: string | null;
   let resolvedSubmitterName: string | null;
   let resolvedSubmitterEmail: string | null;
+  // Non-null only on the branch that already loaded it, so the contact
+  // derivation below never issues a second read for the same row.
+  let validatedPortalUser: Awaited<ReturnType<typeof assertRequesterInOrg>> | null = null;
   if (isPortalOrEmail) {
     resolvedSubmittedBy = input.submittedBy ?? null;
     resolvedSubmitterName = input.submitterName ?? null;
     resolvedSubmitterEmail = input.submitterEmail ?? null;
   } else if (input.submittedBy) {
     const portalUser = await assertRequesterInOrg(input.submittedBy, input.orgId);
+    validatedPortalUser = portalUser;
     resolvedSubmittedBy = portalUser.id;
     resolvedSubmitterName = input.submitterName ?? portalUser.name ?? null;
     resolvedSubmitterEmail = input.submitterEmail ?? portalUser.email ?? null;
-  } else if (input.submitterName || input.submitterEmail) {
+  } else if (input.submitterName || input.submitterEmail || namedContact) {
+    // `namedContact` joins this branch so a contact-backed ticket with no free
+    // text does NOT fall through to the acting staff member's name below — it
+    // has a real requester, and the snapshot is backfilled from them.
     resolvedSubmittedBy = null;
     resolvedSubmitterName = input.submitterName ?? null;
     resolvedSubmitterEmail = input.submitterEmail ?? null;
@@ -463,6 +592,44 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     resolvedSubmittedBy = null;
     resolvedSubmitterName = actor.name ?? null;
     resolvedSubmitterEmail = null;
+  }
+
+  // Derive the person from the login when the caller named no contact. A
+  // portal login IS a contact's login, so this is the link the ticket should
+  // have carried all along — it makes `requester_contact_id` the one column
+  // every person-backed ticket has, whatever the source.
+  let resolvedRequesterContactId: string | null = namedContact?.id ?? null;
+  if (!resolvedRequesterContactId && resolvedSubmittedBy) {
+    // `validatedPortalUser` was already read (and org-checked) by
+    // assertRequesterInOrg on the staff branch; the portal/email branch trusts
+    // its caller's submittedBy and has not read anything yet.
+    const link = validatedPortalUser ?? (await readPortalUserContactLink(resolvedSubmittedBy));
+    // A login from another org carries a contact from that other org —
+    // `portal_users_contact_org_fk` makes login-org and contact-org provably
+    // equal (#3258 follow-up), so this ONE comparison is the complete
+    // cross-tenant boundary for the derived link, not an approximation of it.
+    // Kept as an explicit guard rather than left to the database: without it
+    // the write reaches `tickets_requester_contact_org_fk` and comes back as a
+    // raw 23503 (a 500 carrying a Postgres message) instead of the typed 400
+    // every other requester tenant guard returns. A MISSING login is not an
+    // error — it simply yields no link, matching the pre-existing behaviour.
+    if (link && link.orgId !== input.orgId) {
+      throw new TicketServiceError(
+        'Requester contact must belong to the ticket organization',
+        400,
+        'REQUESTER_CONTACT_WRONG_ORG'
+      );
+    }
+    resolvedRequesterContactId = link?.contactId ?? null;
+  }
+
+  // Snapshot backfill from the contact, only when there is no portal login to
+  // take it from (that branch already backfilled). The snapshot is what the
+  // notify worker mails and what threadMatcher binds on, so it stays a
+  // point-in-time copy — never re-read from the contact later.
+  if (namedContact && !resolvedSubmittedBy) {
+    resolvedSubmitterName = resolvedSubmitterName ?? namedContact.name ?? null;
+    resolvedSubmitterEmail = resolvedSubmitterEmail ?? namedContact.email ?? null;
   }
 
   const priority = input.priority ?? intake?.defaultPriority ?? 'normal';
@@ -502,6 +669,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     statusId: statusId ?? null,
     source: input.source,
     submittedBy: resolvedSubmittedBy,
+    requesterContactId: resolvedRequesterContactId,
     submitterEmail: resolvedSubmitterEmail,
     submitterName: resolvedSubmitterName,
     category: null,
@@ -954,24 +1122,74 @@ export async function updateTicketFields(
     fields.submittedBy !== undefined ||
     fields.submitterName !== undefined ||
     fields.submitterEmail !== undefined;
-  const requesterPatch: { submittedBy?: string | null; submitterName?: string | null; submitterEmail?: string | null } = {};
+  //
+  // #3258 W03: `requester_contact_id` is kept COHERENT with that triple rather
+  // than editable on its own — a requester edit either names a portal login
+  // (re-derive the person from that login's contact_id) or replaces the
+  // requester with free text (the ticket no longer points at a contact). A
+  // stale link left behind would silently keep the old person's portal
+  // ownership over the ticket (routes/portal/tickets.ts reads it).
+  const requesterPatch: {
+    submittedBy?: string | null;
+    submitterName?: string | null;
+    submitterEmail?: string | null;
+    requesterContactId?: string | null;
+  } = {};
+  const tRow = ticket as Record<string, unknown>;
   if (requesterEdit) {
     if (typeof fields.submittedBy === 'string') {
       const portalUser = await assertRequesterInOrg(fields.submittedBy, ticket.orgId);
       requesterPatch.submittedBy = portalUser.id;
+      requesterPatch.requesterContactId = portalUser.contactId ?? null;
       requesterPatch.submitterName = fields.submitterName !== undefined ? fields.submitterName : (portalUser.name ?? null);
       requesterPatch.submitterEmail = fields.submitterEmail !== undefined ? fields.submitterEmail : (portalUser.email ?? null);
     } else {
       if (fields.submittedBy === null) requesterPatch.submittedBy = null;
       if (fields.submitterName !== undefined) requesterPatch.submitterName = fields.submitterName;
       if (fields.submitterEmail !== undefined) requesterPatch.submitterEmail = fields.submitterEmail;
+
+      // The link is NOT cleared just because this branch was taken. The old
+      // rule did exactly that, and it is how a customer's emailed ticket
+      // disappeared from their portal: the web requester editor renders an
+      // emailed ticket as "someone else" (there is no portal login to select)
+      // and its Save posts this exact shape, so opening the editor and saving
+      // it UNCHANGED silently unlinked the requester, with no way back through
+      // the UI. `requester_contact_id` now moves only when something that
+      // actually determines it moved.
+      const hadLogin = (tRow.submittedBy ?? null) !== null;
+      const losesLogin = hadLogin && fields.submittedBy === null;
+      const emailChanged =
+        fields.submitterEmail !== undefined &&
+        (fields.submitterEmail ?? null) !== (tRow.submitterEmail ?? null);
+
+      if (!hadLogin || losesLogin) {
+        // No login owns the link after this patch, so the ADDRESS is the only
+        // thing left that identifies the person.
+        if (emailChanged) {
+          requesterPatch.requesterContactId = await resolveRequesterContactByEmail(
+            ticket.orgId,
+            fields.submitterEmail
+          );
+        } else if (losesLogin) {
+          // The link was DERIVED from the login being removed and nothing
+          // replaces it.
+          requesterPatch.requesterContactId = null;
+        }
+        // else: nothing that determines the link changed — leave it absent
+        // from the patch entirely, so a concurrent re-link is not clobbered.
+      }
+      // A ticket that KEEPS its portal login keeps the link derived from it;
+      // an address correction does not re-attribute a login-backed ticket.
     }
   }
-  const tRow = ticket as Record<string, unknown>;
   const requesterChanged =
     ('submittedBy' in requesterPatch && (requesterPatch.submittedBy ?? null) !== (tRow.submittedBy ?? null)) ||
     ('submitterName' in requesterPatch && (requesterPatch.submitterName ?? null) !== (tRow.submitterName ?? null)) ||
-    ('submitterEmail' in requesterPatch && (requesterPatch.submitterEmail ?? null) !== (tRow.submitterEmail ?? null));
+    ('submitterEmail' in requesterPatch && (requesterPatch.submitterEmail ?? null) !== (tRow.submitterEmail ?? null)) ||
+    // A re-derivation that changes ONLY the contact link is still a change:
+    // without this the coherence rule above would compute the right value and
+    // then discard it as a no-op edit.
+    ('requesterContactId' in requesterPatch && (requesterPatch.requesterContactId ?? null) !== (tRow.requesterContactId ?? null));
 
   // Compute the actually-changed fields; ignore no-op keys so the feed and
   // event stream don't accumulate noise from idempotent saves.
@@ -2044,9 +2262,20 @@ export async function moveTicketOrg(
     // The UPDATE takes the ticket row lock; the currency guard then locks the
     // unbilled monetary children, and the org_id rewrites follow. A throw here
     // rolls this UPDATE back — nothing moves on a block.
+    // `requesterContactId: null` (#3258 W03 final review C1) is part of THIS
+    // statement, not a follow-up: `tickets_requester_contact_org_fk` is the
+    // composite (requester_contact_id, org_id) -> contacts(id, org_id), and it
+    // is DEFERRABLE INITIALLY IMMEDIATE with no `SET CONSTRAINTS ... DEFERRED`
+    // in this transaction — so it is checked the instant this UPDATE finishes.
+    // A contact-linked ticket moved to another org would 23503 here, and
+    // permanently: contacts are org-pinned and the requester does NOT move with
+    // the ticket. Detaching is the same ruling as `deviceId: null` beside it —
+    // the person stays with their organization, and the ticket keeps the
+    // submitter name/email SNAPSHOT, so "who filed this" survives the move even
+    // though the link to the live contact row does not.
     const [row] = await tx
       .update(tickets)
-      .set({ orgId: targetOrgId, deviceId: null, updatedAt: new Date() })
+      .set({ orgId: targetOrgId, deviceId: null, requesterContactId: null, updatedAt: new Date() })
       .where(eq(tickets.id, ticketId))
       .returning();
     updated = row;

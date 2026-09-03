@@ -469,21 +469,29 @@ export function BlockCard({
                 {t('quotes.editor.table.showSubtotal')}
               </label>
             )}
-            {/* Four data columns (Item flexes, Qty/Price/Total are content-sized) so
-                the per-line Total — the most-checked figure on a quote — is always
-                visible without sideways scrolling at desktop widths. Billing cadence
-                rides in the Price cell; Taxable moved to each line's controls row;
-                per-line tax renders as a sub-line under the Total. The wrapper only
-                scrolls HORIZONTALLY on genuinely narrow screens (phone) — the page is
-                the editor's single vertical scroller. An earlier design capped this
-                div at max-h-[70vh] to make sticky header cells work, but a vertical
-                scrollport per pricing block made the editor read as nested boxes of
+            {/* Four data columns, ranked by priority (#4668): Item is the
+                lowest-priority column and the one that gives — it already has
+                its own text input plus a title tooltip for overflow, so it
+                shrinks first. Qty/Price/Total are content-sized (never
+                squeezed below their own natural width) and Total — the
+                most-checked figure on a quote — stays on-screen without
+                sideways scrolling at desktop widths, including 1280px with
+                the left nav sidebar expanded (the sidebar's 256px plus the
+                rail's 300px left ~576px for the table there; the table's own
+                floor must stay safely under that). Billing cadence rides in
+                the Price cell; Taxable moved to each line's controls row;
+                per-line tax renders as a sub-line under the Total. The
+                wrapper only scrolls HORIZONTALLY on genuinely narrow screens
+                (phone) — the page is the editor's single vertical scroller.
+                An earlier design capped this div at max-h-[70vh] to make
+                sticky header cells work, but a vertical scrollport per
+                pricing block made the editor read as nested boxes of
                 scrollbars, so the block now grows to its content instead. */}
             <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[36rem] text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            <table className="w-full min-w-[26rem] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="min-w-[12rem] px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="min-w-[8rem] px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
                   <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
                   <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
                   <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>

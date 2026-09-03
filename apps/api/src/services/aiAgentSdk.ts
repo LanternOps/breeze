@@ -387,7 +387,18 @@ export async function runPreFlightChecks(
   }
 
   if (session.status !== 'active') {
-    return { ok: false, error: 'Session is not active' };
+    // 'expired' must read as expired to the caller: routes map on the word to
+    // return 410, and a session retired eagerly by openaiSessionManager's
+    // eviction reaches this branch BEFORE the age checks below would have
+    // produced that wording lazily. Without this, the same terminal state
+    // surfaced as 410 or 400 depending purely on which path got there first.
+    return {
+      ok: false,
+      error:
+        session.status === 'expired'
+          ? 'Session has expired. Please start a new session.'
+          : 'Session is not active',
+    };
   }
 
   if (session.turnCount >= session.maxTurns) {

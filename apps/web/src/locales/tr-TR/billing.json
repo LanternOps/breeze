@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Sabit ücret",
         "perDevice": "Cihaz başına",
+        "perDeviceRole": "Cihaz rolüne göre",
         "perSeat": "Koltuk başına",
         "manual": "Manuel miktar"
+      },
+      "coverage": {
+        "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
+        "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor."
       },
       "transition": {
         "activate": "Etkinleştir",
@@ -96,6 +101,7 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Pax8 kataloğundan ekle",
         "importFromTdSynnex": "TD SYNNEX'ten içe aktar",
         "lineType": "Hat türü",
+        "deviceRoles": "Cihaz rolleri (rolü bunlardan biri olan cihazlar faturalandırılır)",
+        "deviceRolesRequired": "En az bir rol seçin.",
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
@@ -557,7 +565,7 @@
       "addSection": {
         "captionPlaceholder": "Altyazı (isteğe bağlı)",
         "headingPlaceholder": "Başlık metni",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Bölüm ekle",
         "richTextPlaceholder": "Teklif metni…",
@@ -703,7 +711,8 @@
         "updateSection": "Bölüm güncellenemedi.",
         "uploadImage": "Resim yüklenemedi.",
         "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
-        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
+        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
+        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -883,7 +892,7 @@
         "preparedForPlaceholder": "Müşteri adını geçersiz kılın",
         "showPreparedBy": "“Şirketiniz tarafından hazırlanan”ı göster",
         "imageLabel": "Kapak resmi",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "removeImage": "Resmi kaldır"
       },
       "ghost": {
@@ -1622,6 +1631,8 @@
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "QuickBooks aracılığıyla",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {
@@ -1660,6 +1671,21 @@
       "confirm": "Bağlantıyı sıfırla",
       "success": "Bağlantı sıfırlandı — önceki bağlantılar artık çalışmıyor",
       "error": "Bağlantı sıfırlanamadı"
+    },
+    "accountingSync": {
+      "title": "QuickBooks eşitlemesi",
+      "status": {
+        "pending": "Henüz gönderilmedi",
+        "synced": "Eşitlendi",
+        "error": "Eşitleme başarısız",
+        "synced_with_tax_variance": "Vergi farkıyla eşitlendi"
+      },
+      "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
+      "docNumber": "QuickBooks belgesi {{docNumber}}",
+      "lastSynced": "Son eşitleme: {{when}}",
+      "push": "QuickBooks'a gönder",
+      "pushed": "Fatura QuickBooks'a gönderildi.",
+      "pushFailed": "Fatura QuickBooks'a gönderilemedi."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1745,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} atlandı{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Geçersiz",
-      "voidedVerb": "geçersiz kılındı"
+      "voidedVerb": "geçersiz kılındı",
+      "quickbooks": "QuickBooks'a gönder",
+      "quickbooksQueued": "{{enqueued}} kayıt QuickBooks kuyruğunda",
+      "quickbooksQueuedPartial": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı",
+      "quickbooksQueuedFailed": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
+      "quickbooksFailed": "QuickBooks gönderimi kuyruğa alınamadı. Yeniden deneyin."
     },
     "bulkDelete": {
       "message": "Seçilen {{count}} fatura(lar) silinsin mi? Yalnızca TASLAK faturalar silinecektir; bu geri alınamaz.",

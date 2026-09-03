@@ -62,6 +62,13 @@ function hrefsOf(id: string) {
 }
 
 describe('navSections structure (#1321, #1324)', () => {
+  it('includes a Billing entry in the Settings section (#4605)', () => {
+    const settings = section('settings');
+    const billingItem = settings.items.find((i) => i.href === '/settings/billing');
+    expect(billingItem, 'Settings section should link to /settings/billing').toBeDefined();
+    expect(billingItem?.labelKey).toBe('nav.billing');
+  });
+
   it('has a dedicated Backup section with Backup, Cloud Backup, Disaster Recovery, in that order', () => {
     const backup = section('backup');
     expect(backup.label).toBe('Backup');
@@ -97,7 +104,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/settings/ai-usage', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/settings/ai-usage', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);

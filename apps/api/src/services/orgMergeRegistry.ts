@@ -164,7 +164,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // across two orgs. Same composite (org_id, partner_id) FK fragility as
   // llm_egress_events/ai_unattended_exposure applies too.
   ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ai_agent_graduation (P2-5, #4192): derived history — a colon-key's
+  // promotion journey is computed from ai_agent_op_evidence rows that are
+  // themselves tied to runs which stay with the source org (ai_agent_runs
+  // disposition above). Repointing the graduation row while its evidence
+  // stays under the loser shell would split one key's story across two
+  // orgs, same reasoning as ai_agent_fix_watches immediately above.
+  ai_agent_graduation: { kind: 'leave-for-erasure', note: 'graduation state is derived from evidence tied to runs that stay with the source org (ai_agent_runs disposition); rows die with the loser shell rather than repoint into a story the evidence cannot follow' },
   ai_agent_impact_daily: { kind: 'leave-for-erasure', note: 'derived per-org daily rollup of runs/verdicts/watches that all themselves stay with the loser org (ai_agent_runs disposition) — repointing would double-count the survivor and nothing can regenerate under it; rows die with the loser shell' },
+  // ai_agent_op_evidence (P2-5, #4192): each row is a historical copy of a
+  // single terminal outcome (an intent, a watch verdict, an act execution,
+  // a verdict vote) tied to a run/watch that itself stays with the source
+  // org — same "history stays put" decision as ai_agent_fix_watches /
+  // ai_agent_runs above, not a separate call.
+  ai_agent_op_evidence: { kind: 'leave-for-erasure', note: 'evidence rows are historical copies of outcomes tied to runs/watches that stay with the source org (ai_agent_runs disposition); rows die with the loser shell' },
   // ticket_drafts (P2-4, #4191): CUSTOM, not leave-for-erasure — the row
   // must not survive INTO the merge, or `tickets`' own `repoint` aborts it.
   //
@@ -292,6 +305,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   sso_verified_domains: { kind: 'repoint-dedupe', key: ['domain'] }, // verified: sso_verified_domains_org_domain_idx (org_id, domain)
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)
   ai_cost_usage: { kind: 'repoint-dedupe', key: ['period', 'period_key'] }, // verified: ai_cost_usage_org_period_idx (org_id, period, period_key)
+  ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)

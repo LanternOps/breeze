@@ -46,7 +46,7 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow. Once co
 |------|-----------|-------|
 | **Customers** | QuickBooks → Breeze | Import your existing QuickBooks customers as Breeze organizations (see below). |
 | **Invoices** | Breeze → QuickBooks | Issued invoices push to QuickBooks, either automatically or manually (your choice). |
-| **Payments** | Breeze → QuickBooks | Payments recorded against invoices flow to your books alongside the invoice. |
+| **Payments** | QuickBooks → Breeze | Payments recorded **in QuickBooks** against a pushed invoice mirror back into Breeze (see [Payment pull-back](#payment-pull-back) below). Pushing a Breeze-recorded payment out to QuickBooks is not yet supported. |
 
 ### Invoice push mode
 
@@ -56,6 +56,151 @@ On the connected panel, choose how issued invoices reach QuickBooks:
 - **Manual** — invoices are held so you push them on your own schedule.
 
 You can switch between the two at any time; the change is saved immediately.
+
+### Invoice sync status
+
+Each pushed invoice carries one of these statuses, shown on the invoice detail
+page:
+
+| Status | Meaning |
+|---|---|
+| **Pending** | Queued to push, or a push is in flight. |
+| **Synced** | Pushed successfully and QuickBooks' totals match Breeze's. |
+| **Synced (tax variance)** | Pushed successfully, but QuickBooks computed a tax total more than 1¢ different from Breeze's — usually because the QuickBooks customer or item has its own tax settings that override Breeze's line-level `TaxCodeRef`. The invoice is still synced; the variance is informational, so you can reconcile the difference in your books. |
+| **Error** | The push failed. The sync status carries the last error so you can see why before retrying. |
+
+A pushed invoice's QuickBooks `DocNumber` is shown alongside the status when
+QuickBooks assigned one different from the Breeze invoice number — this
+happens when QuickBooks already held a document under Breeze's number and
+Breeze retried the push letting QuickBooks assign its own.
+
+### Home-currency limitation
+
+QuickBooks invoice push is **home-currency only**: an invoice can only be
+pushed when its currency matches the currency your connected QuickBooks
+company books in (its "home currency"). Foreign-currency invoicing against a
+QuickBooks realm that uses a different currency, or against a company whose
+currency Breeze hasn't captured yet, is not supported — Breeze blocks the
+push with a clear error rather than mis-booking the invoice at the wrong
+currency or silently converting it.
+
+You'll see one of two errors on a blocked push:
+
+- **Home currency unavailable:** `QuickBooks home currency is unavailable, so
+  this invoice cannot be pushed safely. Reconnect QuickBooks to capture it,
+  then retry.` — QuickBooks' home currency was never captured (or the capture
+  failed). Reconnecting QuickBooks re-captures it.
+- **Currency mismatch:** `Invoice currency <code> does not match the
+  connected QuickBooks home currency <code>. Cross-currency accounting
+  pushes are not supported.`, followed by either `Enable multi-currency in
+  QuickBooks or invoice in <home currency>.` (when your QuickBooks company
+  isn't confirmed to have multi-currency turned on) or `QuickBooks
+  foreign-currency invoice push is not yet supported.` (when it does — the
+  seams to support it exist, but the push itself is a later release).
+
+A QuickBooks **customer** stamped with its own currency (set the first time
+that customer synced) is checked the same way: if the mapped QuickBooks
+customer's currency doesn't match the invoice's currency, the push is
+blocked with a customer-currency mismatch error before anything reaches
+QuickBooks, even if the realm-level check above would have passed.
+
+### Payment pull-back
+
+Once an invoice has been pushed to QuickBooks, payments **recorded in
+QuickBooks against that invoice** mirror back into Breeze automatically —
+the invoice's balance, status (`partially_paid` / `paid`), and payment list
+update without you doing anything in Breeze. Each mirrored payment carries a
+**QuickBooks** badge on the payment row so you can tell it apart from a
+payment you recorded manually or one collected online through
+[Stripe](/features/online-payments/).
+
+**What's mirrored:** a payment (full or partial) entered in QuickBooks
+against an invoice Breeze pushed there, and a payment **deleted** in
+QuickBooks (Breeze removes the matching payment row and recomputes the
+invoice — a payment you recorded manually on the same invoice is never
+touched).
+
+**What's not mirrored, on purpose:**
+
+- **Payments you record in Breeze, or Stripe payments Breeze collects, are
+  not pushed to QuickBooks.** That direction — Breeze → QuickBooks payment
+  push — isn't built yet, which is exactly why the **Pull QuickBooks
+  payments** switch below exists: with both directions live at once, a
+  payment could double-count (pushed out, then pulled back in as if it were
+  a second, QuickBooks-originated payment).
+- **Credit memos and QuickBooks-originated refunds** don't flow into Breeze.
+- **Foreign-currency payments** aren't supported — like invoice push, a
+  payment pull is blocked (and the invoice's mapping flips to an error you
+  can see) if its currency doesn't match the invoice's.
+- If QuickBooks records a payment against an invoice **you've voided in
+  Breeze**, Breeze does not apply it — the invoice mapping flips to an error
+  ("Payment pull: Payment received in QuickBooks against a voided invoice")
+  rather than silently reopening a document you closed. Errors that came from
+  the payment pull are prefixed **"Payment pull:"** and clear themselves once a
+  payment for that invoice lands cleanly; errors from the invoice push (such as
+  "Deleted in QuickBooks") are never cleared by a payment.
+- If an invoice itself is **voided or deleted in QuickBooks**, its mapping
+  shows an **Error** status with the message **"Deleted in QuickBooks"** in
+  the sync card, and Breeze never recreates it automatically.
+
+**How fast it happens:** Breeze checks for QuickBooks-side changes every
+**15 minutes** — this scheduled sweep is the guaranteed path and runs the
+same way in every hosted region. Where available, an Intuit webhook
+notification triggers an immediate check instead of waiting for the next
+sweep, but Intuit only supports **one webhook URL per app**, and Breeze's
+hosted deployment uses one Intuit app for both regions — so only the US
+region receives instant notifications today; the EU region (and any
+self-hosted deployment without a public webhook URL configured) always
+mirrors on the 15-minute sweep. Either way, the end state is the same.
+
+**Pull QuickBooks payments** is a switch on the connected panel. Turn it off
+to stop pulling payments from QuickBooks into Breeze — for example, while
+you're still reconciling manually and don't want QuickBooks payments
+overwriting Breeze's own record. A **Sync now** button next to the switch runs
+a pull immediately rather than waiting for the sweep or a webhook.
+
+Turn it back on and the next sweep resumes from where it stopped — but only
+**within QuickBooks' 30-day change history**. QuickBooks cannot report changes
+older than that, so if the switch was off (or the connection was disconnected
+or erroring) for more than a month, payments recorded in the gap are **not**
+picked up by the sweep and have to be entered in Breeze by hand. Breeze logs a
+warning and raises an alert to its operators when it detects that gap, and the
+connection panel shows the last pull's outcome.
+
+### Customer and item mapping
+
+Before an invoice can push cleanly, Breeze needs to know which QuickBooks
+customer each of your organizations corresponds to, and which QuickBooks item
+each of your catalog items corresponds to. The **Customer and item mapping**
+panel does this, with **Customers** and **Items** tabs.
+
+Click **Load mappings** and Breeze proposes a match for each record, labelled so
+you can see how much to trust it:
+
+| Label | Meaning |
+|---|---|
+| **Linked** | Already mapped — nothing to do. |
+| **Suggested match** | One confident match, on an exact email (customers) or SKU (items), or an exact name. |
+| **Ambiguous match** | More than one plausible candidate. Pick the right one yourself. |
+| **No match** | Nothing in QuickBooks looks like this record. |
+
+Suggestions are proposals only — nothing is written to QuickBooks until you act
+on a row:
+
+- **Confirm match** accepts the proposed record, or one you pick from the search box.
+- **Create new** creates a matching customer or item in QuickBooks.
+- **Unlink** breaks an existing mapping.
+- **Sync now** pushes the mapped record's details to QuickBooks.
+
+<Aside>
+  Set a default **Income account** before creating or syncing items — QuickBooks
+  requires one, and Breeze blocks the action rather than creating an unusable
+  item without it.
+</Aside>
+
+Mappings feed invoice push directly: a mapped customer is the one the invoice is
+raised against in QuickBooks. Getting these right before you start pushing
+invoices avoids duplicate customers in your books.
 
 ### Importing customers
 

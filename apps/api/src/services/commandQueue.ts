@@ -13,6 +13,7 @@ import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
   agentBinaryUpdateDispatchRefusal,
 } from './agentEditionCompat';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { recordCommandDispatch } from './anomalyMetrics';
 import {
   decryptCommandForDelivery,
@@ -217,6 +218,7 @@ export interface CommandResult {
   error?: string;
   durationMs?: number;
   data?: unknown;
+  trust?: { capability: 'device_execute'; reason: string };
   /**
    * The device_commands row id, attached by executeCommand once a command row
    * exists (success or failure). Lets callers point at the persisted result
@@ -275,6 +277,7 @@ const runOutsideDbContextSafe = runOutsideDbContext;
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
+  trust?: { capability: 'device_execute'; reason: string };
 }
 
 export type RearmIdempotentCommandResult =
@@ -624,6 +627,8 @@ export async function queueCommand(
     );
   }
 
+  await assertDeviceExecuteAllowed(deviceId, type, userId);
+
   // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
   // `users` row, which would fail the created_by FK with 23503 (#3978).
   const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
@@ -696,7 +701,17 @@ export async function queueCommand(
           resourceId: deviceId,
           resourceName: device.hostname,
           details: commandAuditDetails(commandId, type, payload),
-          result: 'success',
+          // Dispatch-time row: the agent hasn't reported back yet, so this
+          // cannot claim 'success' (#4225). A completion-time audit event
+          // DOES exist (action: 'agent.command.result.submit', written in
+          // agentWs.ts and routes/agents/commands.ts with a real success/
+          // failure result) — but it can't join THIS device's feed: it's
+          // keyed on resourceId = commandId with no deviceId in `details`,
+          // while the device feed matches on resourceId = deviceId OR
+          // details->>'deviceId' (events.ts). Adding a deviceId to that
+          // existing event's details would close the loop; this PR does not
+          // do that — out of scope per the issue.
+          result: 'dispatched',
         });
       })
     ).catch((err) => {
@@ -830,6 +845,18 @@ export async function queueCommandForExecution(
 
   if (device.status !== 'online') {
     return { error: `Device is ${device.status}, cannot execute command` };
+  }
+
+  try {
+    await assertDeviceExecuteAllowed(deviceId, type, userId);
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return {
+        error: e.code,
+        trust: { capability: e.capability, reason: e.reason },
+      };
+    }
+    throw e;
   }
 
   const command = await queueCommand(deviceId, type, payload, userId);
@@ -971,6 +998,19 @@ export async function executeCommand(
     return { status: 'failed', error: 'Device not found' };
   }
 
+  try {
+    await assertDeviceExecuteAllowed(deviceId, type, userId);
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return {
+        status: 'failed',
+        error: e.code,
+        trust: { capability: e.capability, reason: e.reason },
+      };
+    }
+    throw e;
+  }
+
   // #4093 — artifact-edition gate for agent-binary updates, at the dispatch
   // chokepoint. Runs BEFORE the liveness gates below on purpose: an edition
   // mismatch is a permanent property of the installed build, so reporting the
@@ -1108,7 +1148,9 @@ export async function executeCommand(
               resourceId: deviceId,
               resourceName: device.hostname,
               details: commandAuditDetails(command.id, type, payload),
-              result: 'success',
+              // Dispatch-time row: the agent hasn't reported back yet, so
+              // this cannot claim 'success' (#4225).
+              result: 'dispatched',
             })
             .execute()
       )

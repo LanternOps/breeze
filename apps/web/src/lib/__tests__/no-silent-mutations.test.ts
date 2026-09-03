@@ -72,6 +72,19 @@ const TARGET_GLOBS = [
   // cron, unattended. A silent create/update/delete here is invisible until the
   // next occurrence fires — or fails to.
   'src/components/settings/AiAgentSchedulesSection.tsx',
+  // Graduation (P2-5, #4192): the promote POST raises a four-eyes authority
+  // change that widens what an agent may do unattended. A silent failure here
+  // reads as "requested" while no approval was ever queued.
+  'src/components/settings/AiAgentGraduationPanel.tsx',
+  // P2-6 (#4193): Refresh enqueues a fleet-wide 90-day rebuild and the weights
+  // drawer re-prices every estimate the MSP shows its customers — a silent
+  // failure here is invisible until someone quotes a wrong number.
+  'src/components/aiAgents/ImpactPage.tsx',
+  // P2-6 Task 11 (#4193): the weights drawer's own PUT/DELETE against
+  // /impact/weights are a separate file from ImpactPage.tsx above — this
+  // guard's TARGET_GLOBS is a literal file list, not directory-wide, so the
+  // drawer needs its own entry or its mutations are invisible to it.
+  'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
@@ -107,6 +120,11 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
+  // Invoice → QuickBooks push (Phase C): the button's whole job is to reach an
+  // external system of record. A silent failure here reads as "pushed" while
+  // the books stay short an invoice, so this file is in the guarded set from
+  // its first commit rather than after the first regression.
+  'src/components/billing/AccountingSyncCard.tsx',
   'src/components/billing/PartnerBillingSettings.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
@@ -186,6 +204,15 @@ const TARGET_GLOBS = [
   // the partner's tenant tree from a remote list. A silent failure would leave
   // the tech believing a tenant tree was provisioned when nothing was written.
   'src/components/psa/PsaCompanyImport.tsx',
+  // Contact CSV import (#3258 W04): preview is advisory, but the commit writes
+  // customer PII across a whole organization in one click. The preview table is
+  // listed alongside its host because this guard's TARGET_GLOBS is a literal
+  // file list, not directory-wide.
+  'src/components/organizations/BulkContactImport.tsx',
+  'src/components/organizations/ContactImportPreviewTable.tsx',
+  // Contact CRUD (#3258 W04): create/update/delete write customer PII, and a
+  // silent failure would leave a tech believing a contact was filed.
+  'src/components/settings/ContactsCard.tsx',
   // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
   // the service, and the two components must not grow their own bare mutations
   // alongside it.
@@ -204,6 +231,19 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
+  // QuickBooks connection panel (Phase D): connect/disconnect/push-mode/settings
+  // -refresh already routed through runAction, but the file was never guarded —
+  // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
+  // unguarded next to them. A silent failure on either reads as "payment sync
+  // is on / a sync is running" while the books and Breeze quietly diverge.
+  'src/components/integrations/QuickbooksIntegration.tsx',
+  // Partner trust action links approve or suspend an entire partner. Keep the
+  // TOTP-confirmed mutation inside runAction so this high-impact result cannot
+  // fail without operator feedback.
+  'src/components/admin/TrustActionPage.tsx',
+  // Partner trust queue actions promote, restrict, or irreversibly suspend a
+  // partner. Every POST must retain runAction feedback for the operator.
+  'src/components/admin/TrustQueue.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -496,16 +536,47 @@ describe('no silent mutations in targeted set', () => {
   const checker = program.getTypeChecker();
 
   it('finds files to scan', () => {
-    // 104: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // 106: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
     // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
     // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6).
-    expect(absoluteFiles.length).toBe(104);
+    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
+    // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
+    // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
+    // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
+    // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
+    // enqueue joined four pre-existing unguarded mutations in that file), plus
+    // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
+    // already guarded before P2-5 — Task 21's promote mutation needed no list
+    // edit. Also plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
+    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer), plus
+    // TrustActionPage.tsx (partner trust probation, #4549 — the TOTP-confirmed
+    // approve/suspend action), plus TrustQueue.tsx (partner trust probation,
+    // #4549 W07 — the admin trust queue page's approve/suspend actions).
+    // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
+    // main added 3 in parallel, so the true merged count was 113. This commit
+    // adds 1 more (TrustQueue.tsx), so the count is now 114 — bump it
+    // deliberately on every merge, never by resolving the hunk.
+    expect(absoluteFiles.length).toBe(114);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
+  });
+
+  it('lists every guarded file exactly once', () => {
+    // A duplicated entry inflates the count above without adding coverage: the
+    // file is scanned twice and the next person to bump the counter inherits an
+    // off-by-one that is invisible unless they dedupe the list by hand. Assert
+    // it mechanically instead, and name the offenders so the fix is obvious.
+    const seen = new Set<string>();
+    const duplicates = TARGET_GLOBS.filter((rel) => {
+      if (seen.has(rel)) return true;
+      seen.add(rel);
+      return false;
+    });
+    expect(duplicates).toEqual([]);
+    expect(seen.size).toBe(absoluteFiles.length);
   });
 
   for (const absPath of absoluteFiles) {

@@ -39,7 +39,23 @@
     "expired": "Bu istek, karar verilmeden önce sona erdi.",
     "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
     "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
-    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez."
+    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez.",
+    "batchTooLarge": "Bu toplu işlemde birlikte karar verilemeyecek kadar çok istek var. Bunları daha küçük gruplar halinde onaylayın."
   },
-  "registerDevice": "Cihazı kaydet"
+  "registerDevice": "Cihazı kaydet",
+  "alwaysAllow": {
+    "button": "Onayla ve her zaman izin ver",
+    "confirm": {
+      "title": "Onayla ve ön yetkilendirme iste",
+      "message": "Bu, şu anda görüntülediğiniz isteği onaylar. Ayrıca ikinci bir onaylayıcıdan bu kuruluşun aracısı için {{opKey}} işlemini ön yetkilendirmesini ister; bu yalnızca gelecekteki çalıştırmalar için geçerlidir ve bu isteği veya karar bekleyen başka herhangi bir isteği geçmişe dönük olarak yetkilendirmez.",
+      "action": "Onayla ve iste"
+    },
+    "toasts": {
+      "requested": "Onaylandı. Bu işlem gözetimsiz çalıştırılmadan önce ikinci bir onaylayıcının ön yetkilendirmeyi onaylaması gerekir ve bu yalnızca gelecekteki çalıştırmalar için geçerlidir."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Onaylandı, ancak ön yetkilendirme isteği gönderilemedi. Aracı ayarlarından yeniden deneyin.",
+      "policyDecideDisabled": "Onaylandı. Bu dağıtım için kapalı olduğundan ön yetkilendirme istenemedi."
+    }
+  }
 }

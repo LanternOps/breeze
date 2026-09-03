@@ -104,7 +104,7 @@ describe('metric rollups queue helpers', () => {
     groupByMock.mockReset();
     workerProcessorMock.mockReset();
     rollupDeviceMetricsRangeMock.mockReset();
-    rollupDeviceMetricsRangeMock.mockResolvedValue({ statements: 24, skipped: false });
+    rollupDeviceMetricsRangeMock.mockResolvedValue({ statements: 9, skipped: false });
     runOutsideDbContextMock.mockClear();
     withSystemDbAccessContextMock.mockClear();
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
@@ -254,8 +254,8 @@ describe('metric rollups queue helpers', () => {
   });
 
   // #4276 — the worker used to wrap ALL of rollupDeviceMetricsRange in one
-  // system context, pinning a pooled connection across 26 sequential statements
-  // for 2s+ every 5 minutes. The service now owns one short-lived context per
+  // system context, pinning a pooled connection across every sequential
+  // statement of the pass for 2s+ every 5 minutes. The service now owns one short-lived context per
   // statement; a wrap here would make each of those short-circuit back into a
   // single transaction and silently restore the hold (the alertWorker/#3216
   // trap).

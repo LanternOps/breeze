@@ -1,6 +1,5 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
-import { contacts } from './contacts';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -52,11 +51,30 @@ export const portalUsers = pgTable('portal_users', {
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
   linkedUserId: uuid('linked_user_id').references(() => users.id),
   // A portal user is a LOGIN attached to a contact, not a second kind of
-  // person (#3258). Nullable because the link is established by the backfill
-  // in 2026-08-19-contacts.sql and by inboundEmail/resolveOrg.ts going
-  // forward; ON DELETE SET NULL so deleting a contact never silently destroys
-  // someone's portal login.
-  contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+  // person (#3258). Nullable because the link is established after the fact by
+  // three writers: the backfill in 2026-08-19-contacts.sql, the INVITE path
+  // (`resolveInviteContact` in routes/orgPortalUsers.ts, which links an
+  // existing contact or creates one and never overwrites a link already
+  // there), and the same backfill again in
+  // 2026-10-04-100000-ticket-requester-contact.sql for tickets.
+  //
+  // Inbound email does NOT write here any more (#3258 W03): it used to mint a
+  // password-less row per unknown sender, and now resolves the sender onto
+  // `contacts` instead — see inboundEmail/resolveOrg.resolveEmailRequester.
+  // Rows can therefore still have a null link (Entra SSO provisioning and the
+  // Outlook add-in's "create contact" both create logins without one).
+  //
+  // Declared as a plain nullable uuid on purpose: the real constraint is the
+  // COMPOSITE same-org FK `portal_users_contact_org_fk` (contact_id, org_id)
+  // -> contacts (id, org_id), DEFERRABLE INITIALLY IMMEDIATE with a column-list
+  // `ON DELETE SET NULL (contact_id)` so deleting a contact unlinks the login
+  // instead of failing on the NOT NULL org_id. A login and its contact
+  // therefore CANNOT belong to different organizations — that is a database
+  // guarantee now, not a convention every writer has to honour. It lives in
+  // SQL only (2026-10-04-100002-portal-users-contact-composite-fk.sql), the
+  // same convention as tickets.requesterContactId below and this table's
+  // partial unique index on the Entra identity.
+  contactId: uuid('contact_id'),
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
@@ -78,6 +96,19 @@ export const tickets = pgTable('tickets', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   ticketNumber: varchar('ticket_number', { length: 50 }).notNull().unique(),
   submittedBy: uuid('submitted_by').references(() => portalUsers.id),
+  // #3258 W03: the canonical PERSON on the ticket. `submitted_by` stays the
+  // OPTIONAL portal LOGIN — an inbound email now creates a contact and no
+  // portal_users row at all, so it is this column, not submitted_by, that
+  // every person-backed ticket carries.
+  //
+  // Declared as a plain nullable uuid on purpose: the real constraint is the
+  // COMPOSITE same-org FK `tickets_requester_contact_org_fk`
+  // (requester_contact_id, org_id) -> contacts (id, org_id), DEFERRABLE
+  // INITIALLY IMMEDIATE with a column-list `ON DELETE SET NULL
+  // (requester_contact_id)` so deleting a contact never nulls the NOT NULL
+  // org_id. That lives in SQL only (2026-10-04-100000-ticket-requester-contact.sql)
+  // — same "SQL migration only" convention as this table's categoryId/statusId.
+  requesterContactId: uuid('requester_contact_id'),
   submitterEmail: varchar('submitter_email', { length: 255 }),
   submitterName: varchar('submitter_name', { length: 255 }),
   subject: varchar('subject', { length: 255 }).notNull(),

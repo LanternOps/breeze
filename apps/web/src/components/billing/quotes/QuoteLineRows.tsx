@@ -1017,10 +1017,14 @@ export function EditableLineRow({
   return (
     <>
     <tr ref={rowRef} className={`group/row border-t align-top [&>td]:pt-4 ${dragging ? 'opacity-40' : ''}`} data-testid={`quote-line-${line.id}`}>
-      {/* Column min-width (min-w-[12rem]) is declared on the cell so table
+      {/* Column min-width (min-w-[8rem]) is declared on the cell so table
           auto-layout reserves the name column instead of squeezing it below the
-          input's width (which used to overflow into the qty cell). */}
-      <td className="min-w-[12rem] px-1.5 py-2">
+          input's width (which used to overflow into the qty cell). Item is the
+          lowest-priority column (#4668) — this floor must match the header
+          th's in QuoteBlockCard.tsx, and stay well under the space available
+          at 1280px with the left nav sidebar open, so Qty/Price/Total never
+          get pushed into horizontal scroll to make room for it. */}
+      <td className="min-w-[8rem] px-1.5 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {/* Bulk-select checkbox — leading, in the same quiet reveal grammar as
               the gutter grip: hidden at rest, shown on row hover/focus-within,
@@ -1409,7 +1413,7 @@ export function EditableLineRow({
           <input
             ref={imageInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/png,image/jpeg"
             className="hidden"
             data-testid={`quote-line-image-input-${line.id}`}
             onChange={(e) => {

@@ -27,7 +27,8 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
-import { ACTOR_TYPES, INVOICE_STATUSES } from '@breeze/shared';
+import { CONTACT_ROLES } from './contacts/types';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -219,6 +220,9 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
+  // AI agent governance (P2-5, #4192). Base tier 3 — there is no lower-tier
+  // action on this tool, and its single action is four_eyes in guardrails.
+  manage_ai_agents: 3,
   // Billing / quoting / catalog / contracts (#3156). Same #2605 failure mode as
   // the vulnerability tools: registered in the aiTools execution registry (all
   // Tier 2 there) and reachable by external MCP clients, but never listed here
@@ -387,7 +391,7 @@ function makeHandler(
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
       let check:
-        | { allowed: true; context?: ToolExecutionContext }
+        | { allowed: true; intentId?: string; context?: ToolExecutionContext }
         | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
@@ -398,7 +402,20 @@ function makeHandler(
         const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
-      if (check.allowed) verifiedContext = check.context;
+      // P2-5 (#4192): `intentId` is set by createSessionPreToolUse ONLY after
+      // it won the approved -> executing CAS on a durable intent, i.e. this
+      // invocation IS that intent's inline release — the same fact the durable
+      // worker carries as `intent.id`. Carried on the context (not on args,
+      // not on auth — see toolExecutionContext.ts) so a handler that may only
+      // run as an approved release can name the approval it is executing.
+      // Left entirely absent for an ordinary chat call, which keeps the
+      // three-argument executeTool call below unchanged for every tool that
+      // neither verified anything nor went through an intent.
+      if (check.allowed) {
+        verifiedContext = check.intentId
+          ? { ...check.context, actionIntentId: check.intentId }
+          : check.context;
+      }
       if (!check.allowed) {
         const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
         await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
@@ -2240,7 +2257,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_organizations',
-      'Create and manage organizations and sites (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (not yet supported — returns guidance). create_org, update_org, and create_site require approval.',
+      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId required; at least one of name/email/phone/mobile required — mirrors contacts_identifiable_chk; optional title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
       {
         action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
         orgId: uuid.optional(),
@@ -2248,8 +2265,30 @@ export function createBreezeMcpServer(
         status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
         address: z.record(z.string(), z.unknown()).optional(),
         email: z.string().email().max(255).optional(),
+        siteId: uuid.optional(),
+        phone: z.string().max(64).optional(),
+        mobile: z.string().max(64).optional(),
+        title: z.string().max(255).optional(),
+        roles: z.array(z.enum(CONTACT_ROLES)).optional(),
+        isPrimary: z.boolean().optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ai_agents',
+      'Govern the autonomous AI agents for the current organization. Action: authorize_supervised_key — grant the organization\'s agent of the given kind a pre-authorized action key (opKey, e.g. "manage_services:restart") so future agent runs may execute it without raising an approval. The key must already sit inside the partner baseline ceiling and the agent must have earned it on recent evidence. Requires a SECOND approver (four-eyes). orgId must be the CURRENT organization — it is not a target selector, and naming any other organization is rejected both when the approval is raised and again before it executes.',
+      {
+        action: z.enum(['authorize_supervised_key']),
+        kind: z.enum(AI_AGENT_KINDS),
+        opKey: z.string().min(3).max(120),
+        // Required, and re-checked against the intent's own org at creation and
+        // again at execution. It is here so the approval can PIN this org's
+        // authorized-key list (services/actionIntents/effectDigest.ts), not so
+        // a caller can choose a target.
+        orgId: uuid,
+      },
+      makeHandler('manage_ai_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Billing, quoting, catalog and contract tools (#3156). Identical failure

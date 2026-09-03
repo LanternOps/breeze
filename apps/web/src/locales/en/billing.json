@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Flat fee",
         "perDevice": "Per device",
+        "perDeviceRole": "Per device role",
         "perSeat": "Per seat",
         "manual": "Manual quantity"
+      },
+      "coverage": {
+        "uncovered": "{{count}} device(s) on this organization are not billed by any line on this contract: {{breakdown}}",
+        "allCovered": "Every device on this organization is billed by a line on this contract."
       },
       "transition": {
         "activate": "Activate",
@@ -96,6 +101,7 @@
           "cancel": "Contract cancelled"
         },
         "invoiceGenerated": "Invoice generated",
+        "uncoveredDevices": "Invoice generated, but {{count}} device(s) are not billed by any line on this contract: {{breakdown}}",
         "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
         "draftDeleted": "Draft deleted"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Add from Pax8 catalog",
         "importFromTdSynnex": "Import from TD SYNNEX",
         "lineType": "Line type",
+        "deviceRoles": "Device roles (a device is billed when its role is one of these)",
+        "deviceRolesRequired": "Pick at least one role.",
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",
@@ -557,7 +565,7 @@
       "addSection": {
         "captionPlaceholder": "Caption (optional)",
         "headingPlaceholder": "Heading text",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
@@ -695,7 +703,8 @@
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
-        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",
@@ -875,7 +884,7 @@
         "preparedForPlaceholder": "Override the customer name",
         "showPreparedBy": "Show “prepared by” (your company)",
         "imageLabel": "Cover image",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "removeImage": "Remove image"
       },
       "ghost": {
@@ -1622,6 +1631,8 @@
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
@@ -1660,6 +1671,21 @@
       "confirm": "Reset link",
       "success": "Link reset — previous links no longer work",
       "error": "Could not reset the link"
+    },
+    "accountingSync": {
+      "title": "QuickBooks sync",
+      "status": {
+        "pending": "Not pushed yet",
+        "synced": "Synced",
+        "error": "Sync failed",
+        "synced_with_tax_variance": "Synced with tax difference"
+      },
+      "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
+      "docNumber": "QuickBooks document {{docNumber}}",
+      "lastSynced": "Last synced {{when}}",
+      "push": "Push to QuickBooks",
+      "pushed": "Invoice pushed to QuickBooks.",
+      "pushFailed": "Failed to push the invoice to QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1745,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} skipped{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Void",
-      "voidedVerb": "voided"
+      "voidedVerb": "voided",
+      "quickbooks": "Push to QuickBooks",
+      "quickbooksQueued": "{{enqueued}} queued for QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped",
+      "quickbooksQueuedFailed": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped, {{failed}} failed to queue",
+      "quickbooksFailed": "Failed to queue the QuickBooks push. Retry."
     },
     "bulkDelete": {
       "message": "Delete {{count}} selected invoice(s)? Only DRAFT invoices will be deleted; this cannot be undone.",

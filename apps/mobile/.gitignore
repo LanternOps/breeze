@@ -46,6 +46,13 @@ sentry.options.json
 # typescript
 *.tsbuildinfo
 
-# generated native folders
-/ios
+# generated native folders — `expo prebuild` regenerates both, so they stay out
+# of git (Continuous Native Generation).
+#
+# `/ios/*` rather than `/ios` on purpose: git cannot re-include a path whose
+# parent directory is excluded, so the `!` line below only works against the
+# wildcard form. Xcode Cloud requires ci_scripts to sit beside the
+# .xcworkspace, which lands it inside this otherwise-ignored directory.
+/ios/*
+!/ios/ci_scripts
 /android

@@ -80,12 +80,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // alphabetization (same reasoning as ai_unattended_exposure below).
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
+  // ai_agent_graduation (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, promoted_intent_id/org_id composite SET
+  // NULL) so position relative to ai_agents/action_intents is cosmetic —
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the
+  // actual DELETE, not this list's alphabetization.
+  'ai_agent_graduation',
   // ai_agent_impact_daily (P2-6, #4193): derived daily rollup. Its ONLY FK
   // is org_id -> organizations ON DELETE CASCADE, so it has no
   // child-before-parent constraint of its own and
   // topologicalCascadeOrder()'s runtime pg_constraint read orders the real
   // DELETE.
   'ai_agent_impact_daily',
+  // ai_agent_op_evidence (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, run_id/org_id composite SET NULL) — same
+  // position-independence reasoning as ai_agent_graduation above.
+  'ai_agent_op_evidence',
   'ai_agent_runs',
   // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
   // cascade with the org; partner rows have org_id NULL and are untouched by
@@ -101,6 +111,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // orders the actual DELETE, not this list's alphabetization (same
   // reasoning as ai_unattended_exposure above).
   'ai_alert_verdicts',
+  // ai_budget_alert_events (#4388, W01): durable outbox row, FK org_id ON
+  // DELETE CASCADE. No cross-references to ai_budgets, so its position is
+  // pure alphabetization ('_' sorts before letters under localeCompare).
+  'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',
@@ -634,16 +648,26 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // no UI anywhere that can show or clear the offending row, because its org
   // no longer exists.
   //
-  // Only the 'org' rows are keyed by an organization id. 'catalog_item' rows
-  // are partner-scoped and must survive. Phase C's 'invoice'/'payment' rows WILL
-  // need their own arms here (join through invoices/invoice_payments to the
-  // org) — this is the file to add them to, and the same trap applies: nothing
-  // in CI will notice their absence.
+  // Only the 'org' rows are keyed by an organization id; 'catalog_item' rows
+  // are partner-scoped and must survive. Phase C added 'invoice'/'payment'
+  // rows, which are keyed by an invoice/invoice_payments row that DOES carry
+  // org_id — but since accounting_entity_mappings itself has no org_id column
+  // (and no FK), reaching them still needs an explicit join through those
+  // tables, done here BEFORE the main cascade loop (this whole
+  // ASSOCIATED_SYSTEM_SCOPED_TABLES pass runs in step 1b of cascadeDeleteOrg,
+  // ahead of the CORE_ORG_CASCADE_DELETE_ORDER walk that deletes
+  // invoices/invoice_payments themselves) so the subqueries below still see
+  // the rows they need to join through.
   {
     table: 'accounting_entity_mappings',
     clearSql: (orgId) => sql`
-      DELETE FROM accounting_entity_mappings
-      WHERE breeze_entity_type = 'org' AND breeze_entity_id = ${orgId}::uuid
+      DELETE FROM accounting_entity_mappings m
+      WHERE (m.breeze_entity_type = 'org' AND m.breeze_entity_id = ${orgId}::uuid)
+         OR (m.breeze_entity_type = 'invoice' AND m.breeze_entity_id IN (
+               SELECT id FROM invoices WHERE org_id = ${orgId}::uuid))
+         OR (m.breeze_entity_type = 'payment' AND m.breeze_entity_id IN (
+               SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
+                WHERE i.org_id = ${orgId}::uuid))
     `,
   },
 ];

@@ -38,7 +38,8 @@ vi.mock('../db/schema/maintenance', () => ({
   maintenanceOccurrences: {}
 }));
 
-vi.mock('../db/schema/orgs', () => ({
+vi.mock('../db/schema/orgs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/schema/orgs')>()),
   organizations: {}
 }));
 

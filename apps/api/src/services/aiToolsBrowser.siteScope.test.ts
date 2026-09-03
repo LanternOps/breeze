@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
+  assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
+}));
+
 // aiToolsBrowser imports the db hub (which pulls commandQueue), so the db mock
 // must expose the context helpers too — same shape as aiTools.verifyDeviceAccess.test.ts.
 vi.mock('../db', () => ({
@@ -9,10 +13,17 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 
+vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => undefined) }));
+vi.mock('./partnerTrust.commands', async () => ({
+  ...(await vi.importActual<typeof import('./partnerTrust.commands')>('./partnerTrust.commands')),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
+
 import { db } from '../db';
 import { policyWithinSiteWriteScope, registerBrowserTools } from './aiToolsBrowser';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { TrustDeniedError } from './partnerTrust.commands';
 
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
@@ -129,6 +140,59 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
     );
     expect(result).not.toContain('"error"');
     expect(mockDb.insert).toHaveBeenCalled();
+  });
+
+  it('apply: trust denial returns the tool error shape without inserting', async () => {
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+          id: 'p1', orgId: 'org-1', name: 'Policy', targetType: 'org', targetIds: null, isActive: true,
+          allowedExtensions: [], blockedExtensions: [], requiredExtensions: [], settings: {},
+        }]) }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: () => Promise.resolve([{ id: 'd1', hostname: 'host-1' }]) }),
+      });
+    assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+      new TrustDeniedError('TRUST_PROBATION', 'Partner verification is required.', 'd1', 'apply_browser_policy'),
+    );
+
+    const result = await handlerFor('manage_browser_policy')(
+      { action: 'apply', policyId: 'p1' },
+      makeAuth(undefined),
+    );
+
+    expect(JSON.parse(result)).toEqual({
+      error: 'TRUST_PROBATION',
+      message: 'Remote control and device changes are not available until this account is verified.',
+    });
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith('d1', 'apply_browser_policy', 'u1');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('apply: queues the same command when trust allows execution', async () => {
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+          id: 'p1', orgId: 'org-1', name: 'Policy', targetType: 'org', targetIds: null, isActive: true,
+          allowedExtensions: [], blockedExtensions: [], requiredExtensions: [], settings: {},
+        }]) }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: () => Promise.resolve([{ id: 'd1', hostname: 'host-1' }]) }),
+      });
+    mockDb.insert.mockReturnValue({
+      values: () => ({ returning: () => Promise.resolve([{ id: 'cmd-1', deviceId: 'd1' }]) }),
+    });
+
+    const result = JSON.parse(await handlerFor('manage_browser_policy')(
+      { action: 'apply', policyId: 'p1' },
+      makeAuth(undefined),
+    ));
+
+    expect(result.success).toBe(true);
+    expect(result.queuedCommands).toBe(1);
+    expect(mockDb.insert).toHaveBeenCalledTimes(1);
   });
 });
 

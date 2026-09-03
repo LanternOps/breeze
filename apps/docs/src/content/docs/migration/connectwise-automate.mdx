@@ -25,7 +25,7 @@ Read [Migrating to Breeze](/migration/overview/) first.
 | **Location** | **Site** | Direct match. Automate always creates a default location per client. |
 | Computer group (static/auto-join) | Device Group | Auto-join groups map to Breeze [dynamic device groups](/features/device-groups/). |
 | Computer | Device | |
-| Contact | — | Breeze cannot create contacts programmatically today; enter them by hand or keep them in your PSA. |
+| **Contact** | **Contact** | First-class records, organization-level or pinned to a site. Bulk-load with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts) — matched on `externalId` so re-imports are idempotent, with fuzzy email/name matches held back for an explicit acknowledgement. |
 
 ---
 

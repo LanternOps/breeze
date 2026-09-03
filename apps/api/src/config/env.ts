@@ -142,10 +142,51 @@ export const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID?.trim() ?? '';
 export const QBO_CLIENT_SECRET = process.env.QBO_CLIENT_SECRET?.trim() ?? '';
 export const QBO_REDIRECT_URI = process.env.QBO_REDIRECT_URI?.trim() ?? '';
 export const QBO_ENVIRONMENT = process.env.QBO_ENVIRONMENT?.trim() ?? '';
+// Intuit's shared-secret used to verify inbound CDC webhook signatures
+// (Phase D). '' when unset — a region without the Intuit webhook configured
+// relies entirely on the 15-minute reconcile sweep instead.
+export const QBO_WEBHOOK_VERIFIER_TOKEN = process.env.QBO_WEBHOOK_VERIFIER_TOKEN?.trim() ?? '';
 
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
+}
+
+export type IpClassifyProvider = 'ipinfo' | 'ipdata' | 'none';
+
+let warnedAboutIpClassifyConfig = false;
+
+/**
+ * Optional IP-classification provider configuration. Invalid or incomplete
+ * configuration deliberately degrades to the offline classifier: trust
+ * classification must never prevent API boot or block a request.
+ */
+export function ipClassifyProvider(
+  source: NodeJS.ProcessEnv = process.env,
+): IpClassifyProvider {
+  const raw = (source.IP_CLASSIFY_PROVIDER ?? '').trim().toLowerCase();
+  const key = (source.IP_CLASSIFY_API_KEY ?? '').trim();
+
+  if (raw === '' || raw === 'none') return 'none';
+  if (raw !== 'ipinfo' && raw !== 'ipdata') {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] Unknown provider ${JSON.stringify(raw)}; using offline fallback`);
+    }
+    return 'none';
+  }
+  if (!key) {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] ${raw} is configured without IP_CLASSIFY_API_KEY; using offline fallback`);
+    }
+    return 'none';
+  }
+  return raw;
+}
+
+export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): string {
+  return (source.IP_CLASSIFY_API_KEY ?? '').trim();
 }
 
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:

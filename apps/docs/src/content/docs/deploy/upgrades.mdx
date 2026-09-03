@@ -59,6 +59,39 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 ## Version-specific notes
 
+### v0.110.0 — AI agent graduation and impact accounting
+
+**No new environment variables.** Both features run under the flags you already have — `BREEZE_AI_AGENTS_ENABLED` for the nightly impact rollup, and `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` (still off, still not generally available) for promoting an operation to pre-authorized execution. Automatic demotion is not gated by anything and is always on.
+
+<Aside type="caution" title="Behaviour change: partner-level pre-authorized operations stop applying on their own">
+  A partner-wide agent's `supervisedActionKeys` are now a **ceiling** — what an organization *may* be granted — not an inherited grant. An organization whose agent has no override row of its own now resolves to an **empty** set of pre-authorized operations, whatever the partner baseline lists.
+
+  Nothing is silently revoked and no data changes, but any organization that was relying on the partner list has to be granted the operations explicitly: either through the Graduation panel's approval flow, or by editing that organization's own agent. Do this **before** you turn `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` on, not after. See [AI Agents → Graduation](/features/ai-agents/#graduation-feedback-loop).
+</Aside>
+
+Three new daily background jobs are registered. They run in the container that owns background work — the `api` container by default, or the worker container if you have enabled the [worker split](/deploy/worker-split/):
+
+| Job | Runs daily at (UTC) | What it does |
+|---|---|---|
+| Graduation evaluation | 18:28 | Re-evaluates which agent operations have earned enough clean evidence to be promoted. Read-only with respect to what agents may do — it never grants or revokes anything. |
+| Impact rollup | 18:33 | Rebuilds the last 7 complete UTC days of the [AI Impact](/features/ai-impact/) report per organization, or the full 90 days the first time it sees an organization. Skipped entirely while `BREEZE_AI_AGENTS_ENABLED` is off. |
+| Evidence retention | 18:48 | Prunes agent outcome evidence older than 400 days. |
+
+All three sit in the existing daily lane and are deliberately spaced apart from each other and from the retention sweeps, so they do not add a new nightly spike.
+
+<Aside type="note">
+  The graduation view returns **404 — "No active agent policy for this organization/kind"** for an organization that has no effective agent, which includes an organization-only agent with no partner-wide baseline behind it. That is by design, not a fault: without a baseline there is no ceiling to graduate against.
+</Aside>
+
+### v0.109.0 — AI agents, ticket attachments and org archiving
+
+Mostly additive. Nothing in this release requires a new setting before you upgrade, but note the following:
+
+- **Migrations.** 53 idempotent migrations auto-apply on boot. Two touch tables that can be very large on a long-running self-hosted instance: one builds an index on remote-session history, and one adds a validated constraint to time entries. Both take a brief lock while they run, so expect a slightly longer boot than a routine upgrade — proportional to how much remote-session and time-entry history you hold. Take the database backup in step 1 above and upgrade during a quiet window.
+- **New AI agent capabilities are off by default.** `BREEZE_AI_AGENTS_ENABLED` remains `false`, and even with it on, each agent starts in **Off** — an agent only acts after you deliberately move it to **Act** and confirm with multi-factor. See [AI Agents](/features/ai-agents/).
+- **New partners start with inbound email-to-ticket turned off.** Existing partners are unchanged. See [Ticketing](/features/ticketing/).
+- **Optional worker split.** You can now move background jobs to their own container. Entirely opt-in and off unless you enable it — see [Worker Split](/deploy/worker-split/).
+
 ### v0.95.0 — authentication & tenancy hardening
 
 This release resets the authentication surface. Plan for a short low-traffic window and expect the following the first time the new API boots:

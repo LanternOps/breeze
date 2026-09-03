@@ -264,8 +264,18 @@ moveOrgRoutes.post(
         // runs and device runs on the same ticket, and touches nothing whose
         // ticket stays behind in the source org. Same tickets-join shape as
         // the ticket_attachments/time_entries/ticket_parts rewrites further
-        // down; runs BEFORE the loop for the same reason the reverse pointer
-        // below does, so both sides are still read under the SOURCE org.
+        // down.
+        //
+        // Ordering: breeze_cascade_device_org_id() is an AFTER ... FOR EACH ROW
+        // trigger on the devices UPDATE above, so it has ALREADY run this same
+        // detach (and restamped tickets.org_id) by the time this statement is
+        // sent — the route's copy normally matches nothing, exactly as
+        // 2026-09-06-a notes for the device-keyed detach beside it. It is kept
+        // so the route path stays correct on its own if the trigger is ever
+        // absent, and placed here to mirror the trigger's internal order. The
+        // subselect still resolves post-restamp: the devices UPDATE that got us
+        // here already required source USING + target WITH CHECK, so the
+        // request context spans both orgs.
         await tx.execute(
           sql`UPDATE ai_agent_runs SET ticket_id = NULL
               WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
@@ -304,6 +314,33 @@ moveOrgRoutes.post(
           sql`UPDATE action_intents SET scope_device_id = NULL
               WHERE scope_device_id = ${deviceId}::uuid
                 AND status IN ('pending_approval', 'approved', 'executing')`,
+        );
+
+        // tickets.requester_contact_id (#3258 W03): the requester CONTACT is
+        // org-pinned (`tickets_requester_contact_org_fk` is the composite
+        // (requester_contact_id, org_id) -> contacts(id, org_id), DEFERRABLE
+        // INITIALLY IMMEDIATE) and does NOT travel with the device, so the
+        // org_id re-stamp below would 23503 on any contact-linked ticket. The
+        // ticket keeps its submitter name/email snapshot — only the live link
+        // is dropped, which is the same ruling moveTicketOrg applies.
+        //
+        // Ordering: breeze_cascade_device_org_id() is an AFTER ... FOR EACH ROW
+        // trigger on the devices UPDATE above, so it has ALREADY run this same
+        // detach AND the org re-stamp — this statement normally matches
+        // nothing, exactly like the ai_agent_runs detaches beside it. Kept so
+        // the route path stays correct on its own if the trigger is ever
+        // absent, and placed immediately before the generic loop to mirror the
+        // trigger's internal order (the detach cannot follow the re-stamp: the
+        // re-stamp is the statement that trips the constraint).
+        //
+        // No merge fence check here, unlike the trigger: org merge never calls
+        // this route (the loser org is fenced into 'merging', which the device
+        // routes refuse), so the only caller is a genuine cross-org move.
+        await tx.execute(
+          sql`UPDATE tickets SET requester_contact_id = NULL
+              WHERE device_id = ${deviceId}::uuid
+                AND requester_contact_id IS NOT NULL
+                AND org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
         );
 
         // Rewrite the denormalized org_id on every device-scoped table.

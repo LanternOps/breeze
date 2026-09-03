@@ -57,7 +57,7 @@ vi.mock('../../db/schema', () => ({
     emailVerifiedAt: 'users.emailVerifiedAt',
     mfaEnabled: 'users.mfaEnabled',
   },
-  partners: { id: 'partners.id', name: 'partners.name', slug: 'partners.slug', plan: 'partners.plan', status: 'partners.status', settings: 'partners.settings' },
+  partners: { id: 'partners.id', name: 'partners.name', slug: 'partners.slug', plan: 'partners.plan', status: 'partners.status', trustState: 'partners.trustState', settings: 'partners.settings' },
   roles: { id: 'roles.id', forceMfa: 'roles.forceMfa' },
 }));
 
@@ -151,6 +151,10 @@ vi.mock('../../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
 }));
 
+vi.mock('../../services/auditService', () => ({
+  createAuditLog: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -165,6 +169,14 @@ vi.mock('../../services/clientIp', () => ({
 
 vi.mock('../../config/env', () => ({
   isHosted: vi.fn(() => true),
+}));
+
+vi.mock('../../config/partnerTrustMode', () => ({
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
+vi.mock('../../services/ipClassify', () => ({
+  enqueueIpClassify: vi.fn(async () => undefined),
 }));
 
 vi.mock('./schemas', async () => {
@@ -255,10 +267,13 @@ import {
 import { consumePendingRegistration, peekPendingRegistration } from '../../services/pendingRegistration';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
+import { createAuditLog } from '../../services/auditService';
 import { beginAuthIssuance } from '../../services/authBrowserTransition';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { writeAuthAudit } from './helpers';
 import { getEmailService } from '../../services/email';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 function updateChain() {
   const terminal = Promise.resolve(undefined) as Promise<undefined> & {
@@ -283,10 +298,10 @@ const PENDING_RECORD = {
 
 // db.select call order in the pending-registration finalizer: [0] uniqueness
 // re-check, [1] partner row, [2] user row, [3] admin-role row.
-function primeFinalizeSelects(existingUser: unknown[] = []) {
+function primeFinalizeSelects(existingUser: unknown[] = [], trustState: 'trusted' | 'probation' = 'trusted') {
   vi.mocked(db.select)
     .mockReturnValueOnce(selectChain(existingUser) as never)
-    .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', settings: {} }]) as never)
+    .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', trustState, settings: {} }]) as never)
     .mockReturnValueOnce(selectChain([{ id: 'u-1', email: 'new@corp.com', name: 'A', mfaEnabled: false }]) as never)
     .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as never);
   vi.mocked(db.update).mockReturnValue(updateChain() as never);
@@ -304,7 +319,7 @@ function primeFinalizeSelects(existingUser: unknown[] = []) {
 function primeFinalizeSelectsWithSetSpy(existingUser: unknown[] = []) {
   vi.mocked(db.select)
     .mockReturnValueOnce(selectChain(existingUser) as never)
-    .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', settings: {} }]) as never)
+    .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', trustState: 'trusted', settings: {} }]) as never)
     .mockReturnValueOnce(selectChain([{ id: 'u-1', email: 'new@corp.com', name: 'A', mfaEnabled: false }]) as never)
     .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as never);
   const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
@@ -349,6 +364,7 @@ describe('POST /verify-email', () => {
     transitionState.installedFamilyId = null;
     transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
   });
 
   it('creates no account authority, family, cookie, or success audit when logout wins after binding admission', async () => {
@@ -557,6 +573,71 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     transitionState.events = [];
   });
 
+  it('audits signup probation once under enforce and not under shadow', async () => {
+    const previousMode = process.env.PARTNER_TRUST_MODE;
+    try {
+      process.env.PARTNER_TRUST_MODE = 'enforce';
+      vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'enforce' });
+      primeFinalizeSelects([], 'probation');
+
+      const enforceResponse = await postJson('/verify-email', { token: 'enforce' });
+
+      expect(enforceResponse.status).toBe(200);
+      expect(createAuditLog).toHaveBeenCalledOnce();
+      expect(createAuditLog).toHaveBeenCalledWith({
+        orgId: null,
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        action: 'partner.trust.probation',
+        resourceType: 'partner',
+        resourceId: 'p-1',
+        result: 'success',
+        details: { reason: 'signup', from: null, to: 'probation' },
+      });
+
+      vi.mocked(createAuditLog).mockClear();
+      process.env.PARTNER_TRUST_MODE = 'shadow';
+      vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'shadow' });
+      primeFinalizeSelects([]);
+
+      const shadowResponse = await postJson('/verify-email', { token: 'shadow' });
+
+      expect(shadowResponse.status).toBe(200);
+      expect(createAuditLog).not.toHaveBeenCalled();
+    } finally {
+      if (previousMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+      else process.env.PARTNER_TRUST_MODE = previousMode;
+    }
+  });
+
+  it('returns 200 with successful response and cookies when probation audit log write fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const previousMode = process.env.PARTNER_TRUST_MODE;
+    try {
+      process.env.PARTNER_TRUST_MODE = 'enforce';
+      vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+      primeFinalizeSelects([], 'probation');
+      vi.mocked(createAuditLog).mockRejectedValueOnce(new Error('audit service down'));
+
+      const res = await postJson('/verify-email', { token: 'raw' }, { 'x-breeze-auth-transition': 'v1' });
+
+      expect(res.status).toBe(200);
+      expect(transitionState.cookieKind).toBe('guarded');
+      expect(transitionState.installedFamilyId).toBe('guarded-family-1');
+      const body = await res.json();
+      expect(body.verified).toBe(true);
+      expect(body.user.id).toBe('u-1');
+      expect(consoleError).toHaveBeenCalledWith(
+        '[VerifyEmail] trust probation audit write failed',
+        expect.anything(),
+      );
+    } finally {
+      if (previousMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+      else process.env.PARTNER_TRUST_MODE = previousMode;
+      consoleError.mockRestore();
+    }
+  });
+
   it('a pending-registration token creates the partner with the STEP-1 attribution, not the click IP', async () => {
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
     primeFinalizeSelects([]);
@@ -573,6 +654,18 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
       }),
       expect.objectContaining({ tx: expect.anything() }),
     );
+  });
+
+  it('fire-and-forgets signup IP classification after the partner commit', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    primeFinalizeSelects([]);
+
+    const res = await postJson('/verify-email', { token: 'raw' });
+    expect(res.status).toBe(200);
+    expect(enqueueIpClassify).toHaveBeenCalledWith({
+      kind: 'partner', partnerId: 'p-1', ip: '203.0.113.7',
+    });
   });
 
   it('a second click on the same token is a no-op (single-winner GETDEL falls through to generic 400)', async () => {

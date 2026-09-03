@@ -16,6 +16,7 @@ import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import AiAgentSchedulesSection from './AiAgentSchedulesSection';
+import AiAgentGraduationPanel from './AiAgentGraduationPanel';
 
 // Severities come from @breeze/shared, the same constant the server validator
 // uses. A local copy meant draftFrom() would silently DROP a stored severity
@@ -672,16 +673,36 @@ export default function AiAgentForm({
         )}
 
         {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
-            above (draft.mode === 'act' only) — the "act acknowledgement
-            pattern": this is additional unattended authority an operator is
-            opting into only once they are already looking at the act-mode
-            warning, never offered for shadow/off. */}
-        {draft.mode === 'act' && (
+            above (draft.mode === 'act' only) for ORG rows — the "act
+            acknowledgement pattern": this is additional unattended authority
+            an operator is opting into only once they are already looking at
+            the act-mode warning, never offered for shadow/off.
+            PARTNER rows are the exception (#4583): per P2-5 (#4192) a
+            partner row's keys are a CEILING on org grants, not authority the
+            partner row exercises itself — ticking a key here authorizes
+            nothing on its own regardless of the partner row's own mode, so
+            gating the editor (and its ceiling hint) behind the partner row's
+            act mode hid the warning precisely when it mattered: while
+            editing a Shadow-mode baseline. */}
+        {(draft.mode === 'act' || draft.ownerScope === 'partner') && (
           <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
               {t('aiAgentsPage.sections.policyDecide')}
             </legend>
             <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
+            {/* P2-5 (#4192). A partner row's keys are a CEILING, not an
+                inherited grant: with no org row the effective key set is empty,
+                so ticking a key here authorizes nothing on its own. Said only
+                on the partner form, because that is where the misreading is
+                possible — an org-owned agent's keys really are the live set. */}
+            {draft.ownerScope === 'partner' && (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="ai-agent-supervised-keys-ceiling-hint"
+              >
+                {t('aiAgentsPage.graduation.ceilingHint')}
+              </p>
+            )}
             {policyKeysFailed ? (
               <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
                 {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
@@ -714,6 +735,25 @@ export default function AiAgentForm({
               </div>
             )}
           </fieldset>
+        )}
+
+        {/* Graduation evidence (P2-5, #4192). Edit-only, for the same reason
+            the schedules section is: the evidence ledger is keyed to a
+            persisted agent that does not exist until the first save. NOT gated
+            on `draft.mode === 'act'` — evidence an agent already earned is a
+            fact about the past, so toggling an unsaved draft back to shadow
+            must not make it disappear. The panel is read-only-useful with
+            `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` off; see its module doc.
+            `agent.kind` (stored), not `draft.kind`, since kind is create-only.
+            An org-owned agent always reads its OWN org's evidence; a partner
+            baseline follows the org switcher, and falls through to the
+            partner-wide grouping when it is on "all organizations". */}
+        {!isCreate && (
+          <AiAgentGraduationPanel
+            orgId={agent.orgId ?? orgScope.orgId}
+            kind={agent.kind}
+            isPartnerScope={isPartnerScope}
+          />
         )}
 
         <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">

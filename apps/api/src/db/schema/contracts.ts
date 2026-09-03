@@ -1,3 +1,4 @@
+import type { DeviceRole } from '@breeze/shared';
 import {
   pgTable, uuid, text, varchar, integer, boolean, numeric, date, char,
   timestamp, pgEnum, index, uniqueIndex
@@ -12,7 +13,7 @@ export const contractBillingTimingEnum = pgEnum('contract_billing_timing', [
   'advance', 'arrears'
 ]);
 export const contractLineTypeEnum = pgEnum('contract_line_type', [
-  'flat', 'per_device', 'per_seat', 'manual'
+  'flat', 'per_device', 'per_device_role', 'per_seat', 'manual'
 ]);
 export const contractRenewalNoticeKindEnum = pgEnum('contract_renewal_notice_kind', [
   'advance', 'renewed'
@@ -64,6 +65,11 @@ export const contractLines = pgTable('contract_lines', {
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   manualQuantity: numeric('manual_quantity', { precision: 12, scale: 2 }),
   siteId: uuid('site_id'),
+  // #3205: the SET of roles a per_device_role line bills. NULL on every other
+  // type — enforced by contract_lines_device_roles_chk (SQL-only, like the
+  // catalog_item_id / site_id FKs above). $type narrows the row to DeviceRole[]
+  // so contractCoverage.ts needs no cast.
+  deviceRoles: text('device_roles').array().$type<DeviceRole[]>(),
   taxable: boolean('taxable').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()

@@ -28,7 +28,7 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence`, `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability` |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 <Aside>
@@ -66,6 +66,7 @@ A small, fixed set of actions always requires a different user to approve:
 - **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
 - **Computer control** and unattended remote session creation
 - **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+- **AI agent governance** — granting an agent a pre-authorized action key, so its future runs may take that action unattended
 
 To decide a pending four-eyes request:
 
@@ -319,6 +320,30 @@ When billing is not configured, AI usage is unlimited — cost tracking still re
   Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>
 
+### Budget alerts
+
+Independent of hard budget enforcement, an organisation can get warned as its AI spend approaches its cap. Each period (daily and monthly) is checked against a ladder of percentage thresholds, and once spend crosses a rung, an alert fires for that rung.
+
+Alerts only fire for an organisation that has AI enabled and a daily or monthly cap set. With no cap there is nothing to measure a percentage against, so no rung can be crossed.
+
+The default ladder is 50%, 80%, and 95% of the configured budget. On top of the ladder, a 100% "cap reached" alert always fires when the budget is exhausted, even if the ladder is empty or disabled, since that alert cannot be turned off. Each rung fires once per period; the ladder resets automatically when the daily or monthly period rolls over.
+
+Alerts are delivered to active users with the `billing:manage` permission, whether they belong to the organisation directly or are partner users whose access covers that organisation. Delivery has two channels:
+
+- Monthly rungs and the 100% cap-reached alert are delivered both in-app and by email.
+- Daily 50/80/95 rungs are delivered in-app only, to avoid an email per day as spend climbs toward a much smaller cap.
+
+### Configuring thresholds
+
+The threshold ladder is configured in two places:
+
+- **Organisation**: **Settings → AI Usage** on the org's own budget configuration.
+- **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
+
+A partner-set value locks the field on the organisation page, so the org can see it but can't override it.
+
+Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
+
 ---
 
 ## AI Input Sanitization
@@ -417,7 +442,7 @@ Breeze also provides AI tools for the PSA side of the platform — tickets, invo
 | `list_contracts` / `get_contract` / `manage_contracts` | Browse recurring contracts and manage drafts, lines, and lifecycle (activate, pause, resume, cancel) |
 | `manage_quotes` | Build and manage quotes/proposals — drafts, content blocks, lines, sending, declining, and pay links |
 
-These tools are currently exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools), not the built-in assistant chat. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions.
+These tools are currently exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools), not the built-in assistant chat. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---
 

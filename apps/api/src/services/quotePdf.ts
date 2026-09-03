@@ -699,14 +699,23 @@ async function renderCoverPage(
       captureException(e instanceof Error ? e : new Error(String(e)));
     }
     if (img?.data) {
+      // doc.save() must be paired with doc.restore() even when doc.image()
+      // throws (e.g. a WebP blob stored before upload-time rejection shipped,
+      // #3483) — otherwise the unmatched `q` graphics-state push corrupts the
+      // page's content stream for every draw call after this one. restore()
+      // now runs in `finally` so a failed draw still unwinds cleanly.
+      doc.save();
       try {
-        doc.save();
         doc.rect(0, 0, doc.page.width, doc.page.height).clip();
         doc.image(img.data, 0, 0, { cover: [doc.page.width, doc.page.height] });
-        doc.restore();
         hasBackground = true;
       } catch (e) {
+        // A decode-at-draw failure must not be the one silent gap — report it
+        // the same way the sibling doc.image() catches in this file do.
         console.error('[quotePdf] cover doc.image failed', cp.coverImageId, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      } finally {
+        doc.restore();
       }
     }
   }
@@ -949,8 +958,11 @@ export async function renderQuotePdf(
           doc.image(img.data, c.left, y, { fit: [fitWidth, fitHeight] });
           y += drawnHeight + 6;
         } catch (e) {
-          // A corrupt/unsupported image must not abort the whole document.
+          // A corrupt/unsupported image (e.g. a WebP blob stored before
+          // upload-time rejection shipped, #3483) must not abort the whole
+          // document — but it must not be silent either, so report it.
           console.error('[quotePdf] doc.image failed', imageId, e instanceof Error ? e.message : e);
+          captureException(e instanceof Error ? e : new Error(String(e)));
           y += 6;
         }
         const caption = (b.content as { caption?: string }).caption;

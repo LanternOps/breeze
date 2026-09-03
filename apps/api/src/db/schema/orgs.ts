@@ -8,6 +8,10 @@ export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'int
 // mode until the fleet drains or the window closes, then severed + `churned`.
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned', 'offboarding']);
 export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
+export const partnerTrustStateEnum = pgEnum('partner_trust_state', ['probation', 'trusted', 'restricted']);
+export type PartnerTrustState = (typeof partnerTrustStateEnum.enumValues)[number];
+export const ipClassEnum = pgEnum('ip_class', ['residential', 'business', 'hosting', 'vpn', 'tor', 'unknown']);
+export type IpClass = (typeof ipClassEnum.enumValues)[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
 // 'quick_support' is the hidden per-partner org that holds ephemeral Quick
 // Support devices and support_sessions rows. Exactly one per partner
@@ -57,6 +61,22 @@ export const partners = pgTable('partners', {
   // signups already record mcp_origin_ip/mcp_origin_user_agent above.
   signupIp: varchar('signup_ip', { length: 45 }),
   signupUserAgent: text('signup_user_agent'),
+  // Partner trust probation (spec 2026-09-02). Lifecycle stays in `status`;
+  // this is the capability axis. Default 'trusted' grandfathers every
+  // pre-existing partner; register-partner sets 'probation' under enforce.
+  trustState: partnerTrustStateEnum('trust_state').notNull().default('trusted'),
+  trustChangedAt: timestamp('trust_changed_at', { withTimezone: true }),
+  // FK partners_trust_changed_by_fkey is defined in the SQL migration because
+  // users.ts imports partners from this file, making a Drizzle reference cyclic.
+  trustChangedBy: uuid('trust_changed_by'),
+  trustReason: text('trust_reason'),
+  trustReviewRequestedAt: timestamp('trust_review_requested_at', { withTimezone: true }),
+  // Lifetime count of agent enrollments made while in probation. Never
+  // decremented: deleting a device must not recycle the probation quota.
+  probationEnrollments: integer('probation_enrollments').notNull().default(0),
+  signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
+  signupIpAsn: integer('signup_ip_asn'),
+  signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),

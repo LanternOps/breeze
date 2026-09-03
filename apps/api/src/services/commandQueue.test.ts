@@ -20,6 +20,21 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { TrustDeniedError } from './partnerTrust.commands';
+
+const partnerTrustCommandMocks = vi.hoisted(() => ({
+  assertDeviceExecuteAllowed: vi.fn(),
+}));
+
+vi.mock('./partnerTrust.commands', async () => {
+  const actual = await vi.importActual<typeof import('./partnerTrust.commands')>(
+    './partnerTrust.commands',
+  );
+  return {
+    ...actual,
+    assertDeviceExecuteAllowed: partnerTrustCommandMocks.assertDeviceExecuteAllowed,
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -71,10 +86,85 @@ vi.mock('../db/schema', async (importOriginal) => {
 describe('command queue service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockImplementation(
+      async (_deviceId, type) => {
+        if (type === 'script') {
+          throw new TrustDeniedError(
+            'TRUST_PROBATION',
+            'probation_default_deny',
+            'd1',
+            'script',
+          );
+        }
+      },
+    );
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('queueCommand refuses a gated type for a probation partner and inserts nothing', async () => {
+    await expect(queueCommand('d1', 'script', {}, 'u1')).rejects.toBeInstanceOf(
+      TrustDeniedError,
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('queueCommand still queues self_uninstall', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-self-uninstall' }]),
+      }),
+    } as any);
+
+    await expect(
+      queueCommand('d1', 'self_uninstall', { removeConfig: true }, 'u1'),
+    ).resolves.toBeTruthy();
+  });
+
+  it('queueCommandForExecution returns a structured trust error instead of throwing', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'd1', status: 'online' }]),
+        }),
+      }),
+    } as any);
+
+    await expect(queueCommandForExecution('d1', 'script', {})).resolves.toMatchObject({
+      error: 'TRUST_PROBATION',
+      trust: { reason: 'probation_default_deny' },
+    });
+  });
+
+  it('executeCommand returns a failed CommandResult with the trust code', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'd1', status: 'online' }]),
+        }),
+      }),
+    } as any);
+
+    const result = await executeCommand('d1', 'script', {});
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: 'TRUST_PROBATION',
+      trust: { reason: 'probation_default_deny' },
+    });
+    // Regression guard: the legacy `{ success: false }` shape must never
+    // come back — callers (e.g. routes/backup/vss.ts) check
+    // `result.status === 'failed'`, not `result.success`.
+    expect((result as any).success).toBeUndefined();
   });
 
   it('refuses to re-arm a desktop stop row whose payload is not exact', async () => {
@@ -287,6 +377,11 @@ describe('command queue service', () => {
       'exit-system',
       'exit-outside',
     ]);
+    // #4225: this row is written at DISPATCH time, before the agent has
+    // reported back, so it must NOT claim 'success' — that would assert an
+    // outcome the command hasn't reached yet. Assert the neutral value
+    // explicitly (not just objectContaining) so a regression back to
+    // 'success' fails here rather than only in a UI test.
     expect(auditInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: 'org-42',
@@ -296,7 +391,7 @@ describe('command queue service', () => {
         resourceType: 'device',
         resourceId: 'dev-1',
         resourceName: 'host-1',
-        result: 'success',
+        result: 'dispatched',
       })
     );
   });
@@ -656,12 +751,18 @@ describe('command queue service', () => {
     const result = await executeCommand('dev-2', CommandTypes.CAPTURE_PPROF, { profile: 'all' }, { userId: 'user-1' });
 
     expect(result.status).toBe('completed');
+    // #4225: the audit row is written when the command is DISPATCHED, not
+    // when it completes — `result.status` above being 'completed' is the
+    // polled command outcome, unrelated to the audit row's `result` field.
+    // The audit insert must not claim 'success' regardless of how the
+    // command ultimately resolves.
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
       action: 'agent.command.capture_pprof',
       actorId: 'user-1',
       resourceType: 'device',
       resourceId: 'dev-2',
       orgId: 'org-1',
+      result: 'dispatched',
     }));
   });
 

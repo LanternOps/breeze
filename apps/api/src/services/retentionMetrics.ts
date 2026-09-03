@@ -27,12 +27,15 @@ import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
  */
 export const RETENTION_JOB_NAMES = [
   'agent_log_retention',
+  'ai_agent_op_evidence_retention',
   'ai_unattended_exposure_retention',
   'audit_retention',
   'change_log_retention',
   'device_metrics_retention',
   'event_log_retention',
+  'intent_outbox_retention',
   'ip_history_retention',
+  'metric_anomaly_incident_retention',
   'metric_rollup_maintenance',
   'ml_output_retention',
   'playbook_retention',
@@ -40,6 +43,7 @@ export const RETENTION_JOB_NAMES = [
   'reliability_retention',
   'service_process_check_retention',
   'snmp_retention',
+  'ticket_outbox_retention',
   'user_risk_retention',
 ] as const;
 

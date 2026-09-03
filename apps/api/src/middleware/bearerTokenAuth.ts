@@ -467,10 +467,14 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           accessiblePartnerIds: [],
           userId: payload.sub,
           // Own partner — enables read-only visibility of the partner's
-          // partner-wide CATALOG rows (scripts/alert_templates/script_categories/
-          // script_tags, which have an RLS `breeze_current_partner_id()` read
-          // branch). This is deliberately narrower than the partner-axis
-          // capability above: currentPartnerId feeds only that catalog branch.
+          // partner-wide rows on every table carrying a
+          // `breeze_current_partner_id()` RLS SELECT branch: the CATALOG tables
+          // (scripts/alert_templates/script_categories/script_tags),
+          // cis_baselines, tenant_variables, and as of #2468 the whole
+          // configuration-policy chain + backup_profiles. This is deliberately
+          // narrower than the partner-axis capability above: currentPartnerId
+          // grants READS only — every WRITE still goes through
+          // breeze_has_partner_access, which an org token never holds.
           currentPartnerId: payload.partner_id,
         }
       : {

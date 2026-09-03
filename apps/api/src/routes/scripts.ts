@@ -1138,6 +1138,10 @@ scriptRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #2698 — what the script's custom-field write-back applied/rejected.
+        // NULL for every run that emitted no marker. Wave 2 renders it; without
+        // it here the summary would be stored but unreachable by any caller.
+        customFieldResult: scriptExecutions.customFieldResult,
         createdAt: scriptExecutions.createdAt,
         scriptName: scripts.name,
         scriptLanguage: scripts.language,

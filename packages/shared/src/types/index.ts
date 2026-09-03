@@ -677,6 +677,8 @@ export interface InheritableAiBudgetSettings {
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+  /** #4388 — pre-cap alert rungs (1–99). Empty = off. Omit = inherit. */
+  alertThresholdPercents?: number[];
 }
 
 // A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).
@@ -780,6 +782,7 @@ export * from './filters';
 
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './orgNarrativeReport';
@@ -811,6 +814,12 @@ export * from './vulnerability';
 
 export * from './postureReport';
 export * from './executiveSummaryReport';
+
+// ============================================
+// Portal Visibility DTOs (Wave 1 - #4562)
+// ============================================
+
+export * from './portalVisibility';
 
 // ============================================
 // Public login-context wire contract (#2183)

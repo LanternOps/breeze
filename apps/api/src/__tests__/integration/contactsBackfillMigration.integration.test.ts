@@ -47,6 +47,17 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-08-19-contacts.sql');
+// #3258 follow-up. 2026-08-19's FK guard is name-only (`IF NOT EXISTS (SELECT 1
+// FROM pg_constraint WHERE conname = 'portal_users_contact_fk')`), so replaying
+// that file RE-CREATES the superseded single-column FK this later migration
+// dropped. Replaying this one straight after puts the schema back — it drops
+// any single-column portal_users -> contacts FK by shape and re-asserts the
+// composite. Without it the replay leaks schema damage into every suite
+// sharing this database (portalUserContactCompositeFk runs in the same shard).
+const PORTAL_USER_FK_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-10-04-100002-portal-users-contact-composite-fk.sql',
+);
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -58,6 +69,21 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
  */
 async function replayMigration() {
   await getTestDb().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
+  // Restore the schema this file's name-only FK guard just walked backwards.
+  await getTestDb().execute(sql.raw(readFileSync(PORTAL_USER_FK_MIGRATION_FILE, 'utf8')));
+  const rows = (await getTestDb().execute(sql`
+    SELECT count(*)::int AS count
+      FROM pg_constraint
+     WHERE contype = 'f'
+       AND conrelid = 'portal_users'::regclass
+       AND confrelid = 'contacts'::regclass
+       AND cardinality(conkey) = 1
+  `)) as unknown as Array<{ count: number }>;
+  const count = rows[0]?.count ?? -1;
+  // Fail HERE, not three suites later in whichever file shares the database.
+  if (count !== 0) {
+    throw new Error(`replayMigration left ${count} single-column portal_users -> contacts FK(s) behind`);
+  }
 }
 
 const unique = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

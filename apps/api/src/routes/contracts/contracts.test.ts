@@ -196,6 +196,27 @@ describe('contract line routes', () => {
     expect(svc.addContractLineToContract).not.toHaveBeenCalled();
   });
 
+  it('POST /:id/lines accepts a per_device_role line and forwards deviceRoles (#3205)', async () => {
+    (svc.addContractLineToContract as any).mockResolvedValue({ id: LINE_ID });
+    const res = await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: true, deviceRoles: ['switch', 'router'] })
+    });
+    expect(res.status).toBe(200);
+    expect((svc.addContractLineToContract as any).mock.calls[0][1]).toMatchObject({ lineType: 'per_device_role', deviceRoles: ['switch', 'router'] });
+  });
+
+  it('POST /:id/lines rejects a per_device_role line without deviceRoles (400, no service call)', async () => {
+    const res = await app().request(`/${CONTRACT_ID}/lines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: true })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
   it('DELETE /:id/lines/:lineId removes a line', async () => {
     (svc.removeContractLine as any).mockResolvedValue({ ok: true });
     const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, { method: 'DELETE' });

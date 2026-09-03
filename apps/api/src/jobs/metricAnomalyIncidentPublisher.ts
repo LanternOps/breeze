@@ -45,8 +45,10 @@ const REAPER_QUEUE_NAME = 'metric-anomaly-incident-publisher';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with dispatch_attempts > this are considered stuck: logged as an
-// alarm and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// alarm and left alone rather than retried forever. Exported so
+// metricAnomalyIncidentRetention.ts's prune cutoff stays in sync with this
+// threshold instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 type PublisherJobData = { type: 'publish-anomaly-incidents'; queuedAt: string };
 

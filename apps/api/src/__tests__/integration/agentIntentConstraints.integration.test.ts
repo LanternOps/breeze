@@ -377,7 +377,9 @@ describe('agent-originated action_intents constraints', () => {
     // clause, so replaying it here undoes the org-lifecycle branch's
     // deferrable-FK contract (migrations/2026-09-12-100001-org-lifecycle-foundations.sql
     // Section 2). Restore it rather than editing the shipped migration.
-    await reapplyOrgIdFkDeferrability(getTestDb());
+    await reapplyOrgIdFkDeferrability(getTestDb(), [
+      'action_intents_requesting_agent_run_id_org_id_fkey',
+    ]);
 
     // The re-added composite FK validated existing rows; the pre-existing
     // agent intent must have survived, and the constraints must still fire.

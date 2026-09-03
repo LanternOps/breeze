@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Taxa fixa",
         "perDevice": "Por dispositivo",
+        "perDeviceRole": "Por função do dispositivo",
         "perSeat": "Por assento",
         "manual": "Quantidade manual"
+      },
+      "coverage": {
+        "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
+        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
       },
       "transition": {
         "activate": "Ativar",
@@ -96,6 +101,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "uncoveredDevices": "Fatura gerada, mas {{count}} dispositivo(s) não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Adicionar do catálogo Pax8",
         "importFromTdSynnex": "Importar da TD SYNNEX",
         "lineType": "Tipo de linha",
+        "deviceRoles": "Funções do dispositivo (um dispositivo é cobrado quando sua função é uma destas)",
+        "deviceRolesRequired": "Escolha pelo menos uma função.",
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
@@ -557,7 +565,7 @@
       "addSection": {
         "captionPlaceholder": "Legenda (opcional)",
         "headingPlaceholder": "Texto do título",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Adicionar seção",
         "richTextPlaceholder": "Texto da proposta…",
@@ -695,7 +703,8 @@
         "updateSection": "Não foi possível atualizar a seção.",
         "uploadImage": "Não foi possível enviar a imagem.",
         "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
-        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
+        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -875,7 +884,7 @@
         "preparedForPlaceholder": "Substituir o nome do cliente",
         "showPreparedBy": "Mostrar “preparado por” (sua empresa)",
         "imageLabel": "Imagem de capa",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "removeImage": "Remover imagem"
       },
       "ghost": {
@@ -1622,6 +1631,8 @@
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
@@ -1660,6 +1671,21 @@
       "confirm": "Redefinir link",
       "success": "Link redefinido — os links anteriores não funcionam mais",
       "error": "Não foi possível redefinir o link"
+    },
+    "accountingSync": {
+      "title": "Sincronização com o QuickBooks",
+      "status": {
+        "pending": "Ainda não enviada",
+        "synced": "Sincronizada",
+        "error": "Falha na sincronização",
+        "synced_with_tax_variance": "Sincronizada com diferença de imposto"
+      },
+      "taxVarianceHint": "O QuickBooks calculou um total de impostos diferente. Compare os dois registros antes de fechar o período.",
+      "docNumber": "Documento do QuickBooks {{docNumber}}",
+      "lastSynced": "Última sincronização em {{when}}",
+      "push": "Enviar ao QuickBooks",
+      "pushed": "Fatura enviada ao QuickBooks.",
+      "pushFailed": "Falha ao enviar a fatura ao QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1745,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignoradas{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Anulada",
-      "voidedVerb": "anuladas"
+      "voidedVerb": "anuladas",
+      "quickbooks": "Enviar ao QuickBooks",
+      "quickbooksQueued": "{{enqueued}} na fila para o QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas",
+      "quickbooksQueuedFailed": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas, {{failed}} não enfileiradas",
+      "quickbooksFailed": "Falha ao enfileirar o envio ao QuickBooks. Tente novamente."
     },
     "bulkDelete": {
       "message": "Excluir {{count}} fatura(s) selecionada(s)? Somente faturas em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",

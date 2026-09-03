@@ -12,6 +12,7 @@ import {
   USER_STATUSES,
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
+import { DEVICE_ROLES } from './deviceRoles';
 
 export * from './reliability';
 export * from './businessEmail';
@@ -33,16 +34,11 @@ export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
+export * from './deviceRoles';
 
 // ============================================
 // Device Roles
 // ============================================
-
-export const DEVICE_ROLES = [
-  'workstation', 'server', 'printer', 'router', 'switch',
-  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-] as const;
-export type DeviceRole = typeof DEVICE_ROLES[number];
 
 // Orthogonal virtualization attribute (issue #1387). A virtual/VDI box is still
 // a workstation (or server) — virtualization is a SECOND targeting axis, not a
@@ -747,6 +743,12 @@ export const patchInlineSettingsSchema = z.object({
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
   rebootDelayMinutes: z.number().int().min(1).max(1440).default(15),
+  // #3207: end-user reboot deferral budget. `rebootAllowDeferral` is the opt-in;
+  // there is deliberately no "don't warn the user" switch — #3197 made at least
+  // one warning an invariant and a silence toggle would re-create that defect.
+  rebootAllowDeferral: z.boolean().default(false),
+  rebootMaxDeferrals: z.number().int().min(0).max(10).default(3),
+  rebootDeferralMinutes: z.number().int().min(5).max(1440).default(60),
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
@@ -765,6 +767,35 @@ export const patchInlineSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sources'],
       message: 'The selected patch sources (firmware/drivers) have no patch provider yet and would approve nothing. Include at least one of: os, third_party, custom.',
+    });
+  }
+
+  // #3207: deferral enabled with a zero budget would render a "Postpone"
+  // affordance that can never be used — a UI lie, not a policy.
+  if (data.rebootAllowDeferral && data.rebootMaxDeferrals === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootMaxDeferrals'],
+      message: 'rebootMaxDeferrals must be at least 1 when deferral is enabled.',
+    });
+  }
+
+  // 10080 minutes (7 days) is the agent's own ceiling on a scheduled reboot
+  // (handlers_patch.go rejects delayMinutes outside 1-10080). The API sets the
+  // hard deadline to delay + maxDeferrals x deferralMinutes, so the WHOLE sum
+  // has to stay inside that horizon: bounding only the deferral product would
+  // let a 1440-minute warning delay push the real deadline a day past it, and
+  // this comment would then be promising something the check did not deliver.
+  // With deferral off there is no deferral horizon at all and
+  // rebootDelayMinutes is bounded by its own 1-1440 range instead.
+  if (
+    data.rebootAllowDeferral
+    && data.rebootDelayMinutes + data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootDeferralMinutes'],
+      message: 'rebootDelayMinutes + rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
   }
 
@@ -1052,6 +1083,7 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().g
 
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './orgNarrative';
 export * from './ticketTriage';

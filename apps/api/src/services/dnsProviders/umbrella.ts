@@ -134,8 +134,12 @@ export class UmbrellaProvider implements DnsProvider {
 
     for (let i = 0; i < maxPages; i++) {
       const url = new URL(`https://reports.api.umbrella.com/v2/organizations/${orgId}/security-activity`);
-      url.searchParams.set('from', since.toISOString());
-      url.searchParams.set('to', until.toISOString());
+      // Cisco's reporting API v2 rejects ISO 8601 strings here with
+      // {"errors":[{"param":"from","msg":"invalid timestamp"...}]}; per its
+      // OpenAPI spec, from/to must be Unix epoch milliseconds as a numeric
+      // string (#4597).
+      url.searchParams.set('from', String(since.getTime()));
+      url.searchParams.set('to', String(until.getTime()));
       url.searchParams.set('limit', String(limit));
       if (cursor) {
         url.searchParams.set('cursor', cursor);

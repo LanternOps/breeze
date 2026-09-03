@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -58,6 +59,7 @@ import {
   Puzzle,
   LayoutGrid,
   Cpu,
+  TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -212,6 +214,9 @@ export const navSections: NavSection[] = [
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
+      // time-saved report over the same runs, so it sits beside them.
+      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
@@ -302,6 +307,7 @@ export const navSections: NavSection[] = [
     icon: Building,
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },

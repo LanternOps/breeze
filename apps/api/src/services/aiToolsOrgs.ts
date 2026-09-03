@@ -8,10 +8,12 @@
  *    orgId/siteId that `manage_quotes.create_draft` and
  *    `manage_contracts.create_draft` require.
  *  - `manage_organizations` — write multiplexer: create_org / update_org /
- *    create_site (all approval-gated Tier 3 via TIER3_ACTIONS in
- *    aiGuardrails), plus add_contact which returns a structured
- *    "needs product decision" note (Breeze has no first-class org-contact
- *    entity — see the handler).
+ *    create_site / add_contact (all approval-gated Tier 3 via TIER3_ACTIONS
+ *    in aiGuardrails; add_contact resolves to the `supervised` scope, not
+ *    `four_eyes` — see TIER3_SUPERVISED_ACTIONS). add_contact delegates to
+ *    `createContact` in services/contacts/crud.ts (#3258) — the same service
+ *    the org-contacts routes use — so validation, role checks, and the
+ *    legacy-jsonb re-projection live there, not here.
  *
  * Tenancy is enforced AT THE TOOL LAYER (the route site/org-scope scanner
  * cannot see this parallel path):
@@ -47,6 +49,9 @@ import {
   revokeOrganizationTenantAccess,
 } from './tenantLifecycle';
 import { abortOrganizationOffboarding } from './tenantOffboarding';
+import { createContact, ContactValidationError } from './contacts/crud';
+import { contactCreateAuditEvent } from './contacts/audit';
+import { CONTACT_ROLES } from './contacts/types';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -454,20 +459,80 @@ async function handleCreateSite(
   return JSON.stringify({ site });
 }
 
-function handleAddContact(): string {
-  // Breeze has no first-class organization-contact entity: `sites.contact` and
-  // `organizations.billingContact` are JSONB blobs, and portal users
-  // (orgPortalUsers) carry user-invite semantics we must not trigger from an
-  // AI tool. Surfacing a structured note (instead of inventing an invite flow)
-  // is deliberate — see issue #2366.
-  return JSON.stringify({
-    status: 'not_supported',
-    code: 'CONTACT_ENTITY_UNDEFINED',
-    note:
-      'Breeze has no standalone org-contact record yet, so add_contact needs a product decision before it can write anything. ' +
-      'Available today: a site contact can be set on the site record (web UI Settings → Organizations → site), and the billing ' +
-      'contact lives on the organization record. Portal users are invite-based and are not created by this tool.',
-  });
+async function handleAddContact(
+  input: Record<string, unknown>,
+  auth: AuthContext
+): Promise<string> {
+  // Same tenancy rule as create_site: org-scoped callers may only write their
+  // OWN org; partner-scoped callers may target any org in their accessible set.
+  const resolved = resolveWritableOrgId(
+    auth,
+    typeof input.orgId === 'string' ? input.orgId : undefined
+  );
+  if (resolved.error || !resolved.orgId) {
+    return jsonError(resolved.error ?? 'orgId is required for add_contact');
+  }
+
+  // Site axis. `allowedSiteIds` is app-layer only and RLS on `contacts` is the
+  // ORG axis, so nothing below this line would stop a sub-org-restricted caller
+  // filing a contact under a sibling site. Refused BEFORE createContact, on the
+  // same structured `{error, code}` path a ContactValidationError takes, and
+  // matching the list handler's allowedSiteIds confinement above. An absent
+  // siteId is an org-level contact and stays allowed: the allowlist confines a
+  // caller within an org, it does not narrow their org reach.
+  const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+  if (siteId !== undefined && auth.canAccessSite?.(siteId) === false) {
+    return jsonError(
+      'Access denied to that site. You can only add contacts to sites you have access to.',
+      'site-access-denied'
+    );
+  }
+
+  const roles = Array.isArray(input.roles)
+    ? input.roles.filter((role): role is string => typeof role === 'string')
+    : undefined;
+
+  // Delegates to the shared contact CRUD service (#3258) — the same function
+  // routes/orgContacts.ts calls — under the request's own DB access context,
+  // so validation, role checks, and the legacy-jsonb re-projection all live
+  // there, not here. No direct Drizzle write into `contacts` from this file.
+  // Deliberately no local "name is required" check: `name` is nullable
+  // (contacts.name) and createContact's own `contacts_identifiable_chk`
+  // mirror already requires at least one of name/email/phone/mobile —
+  // duplicating that here would just be a second place to keep in sync.
+  let contact;
+  try {
+    contact = await createContact(
+      db,
+      {
+        orgId: resolved.orgId,
+        siteId,
+        name: typeof input.name === 'string' ? input.name : undefined,
+        email: typeof input.email === 'string' ? input.email : undefined,
+        phone: typeof input.phone === 'string' ? input.phone : undefined,
+        mobile: typeof input.mobile === 'string' ? input.mobile : undefined,
+        title: typeof input.title === 'string' ? input.title : undefined,
+        roles,
+        isPrimary: input.isPrimary === true,
+      },
+      { userId: auth.user.id }
+    );
+  } catch (err) {
+    // A ContactValidationError is the caller's fault (bad role, site not in
+    // org, or no identifying field at all — mirrors contacts_identifiable_chk)
+    // — surface it as a structured tool error the model can act on, the same
+    // shape the /organizations/:id/contacts route uses. Anything else
+    // propagates to the dispatcher's generic catch below.
+    if (err instanceof ContactValidationError) return jsonError(err.message, err.code);
+    throw err;
+  }
+
+  // Built from the same contactCreateAuditEvent the /organizations/:id/contacts
+  // route uses, so the AI-path and route-path CREATE audit payloads cannot
+  // drift out of sync with each other (review finding).
+  auditOrgToolEvent(auth, { orgId: contact.orgId, ...contactCreateAuditEvent(contact) });
+
+  return JSON.stringify({ contact });
 }
 
 export function registerOrgTools(aiTools: Map<string, AiTool>): void {
@@ -506,12 +571,14 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_organizations',
       description:
-        'Create and manage organizations and sites (new-customer intake). Actions: create_org (name required; creates the ' +
+        'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the ' +
         'org under the caller\'s partner WITH a default "Main Office" site — partner scope only), update_org (name/status ' +
         'patch; suspending or churning an org severs its agents), create_site (orgId + name + optional address object), ' +
-        'add_contact (not yet supported — returns guidance). create_org, update_org, and create_site require approval: ' +
-        'update_org needs a second approver only when it includes a status change (suspend/churn/reactivate); a plain ' +
-        'name edit can be self-approved by the requester.',
+        'add_contact (orgId required; at least one of name, email, phone, mobile required — mirrors contacts_identifiable_chk; ' +
+        'optional title, roles, siteId, isPrimary — creates a first-class contact on the organization or one of its sites). ' +
+        'create_org, update_org, create_site, and add_contact ' +
+        'require approval: update_org needs a second approver only when it includes a status change (suspend/churn/' +
+        'reactivate); a plain name edit or add_contact can be self-approved by the requester.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -520,10 +587,23 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
             enum: ['create_org', 'update_org', 'create_site', 'add_contact'],
           },
           orgId: { type: 'string', description: 'Organization UUID (update_org, create_site, add_contact)' },
-          name: { type: 'string', description: 'Org name (create_org/update_org) or site name (create_site)' },
+          name: { type: 'string', description: 'Org name (create_org/update_org), site name (create_site), or contact name (add_contact — optional; add_contact needs at least one of name/email/phone/mobile)' },
           status: { type: 'string', enum: [...ORG_STATUSES], description: 'New org status (update_org)' },
           address: { type: 'object', description: 'Site address object (create_site), e.g. {addressLine1, city, state, postalCode, country}' },
-          email: { type: 'string', description: 'Contact email (add_contact — currently unsupported)' },
+          email: { type: 'string', description: 'Contact email (add_contact)' },
+          siteId: { type: 'string', description: 'Site UUID to scope the contact to a specific site rather than org-level (add_contact)' },
+          phone: { type: 'string', description: 'Contact phone number (add_contact)' },
+          mobile: { type: 'string', description: 'Contact mobile number (add_contact)' },
+          title: { type: 'string', description: 'Contact job title (add_contact)' },
+          roles: {
+            type: 'array',
+            items: { type: 'string', enum: [...CONTACT_ROLES] },
+            description: 'Contact roles (add_contact)',
+          },
+          isPrimary: {
+            type: 'boolean',
+            description: 'Mark as the primary contact for its org/site scope, demoting any existing primary (add_contact)',
+          },
         },
         required: ['action'],
       },
@@ -538,7 +618,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
           case 'create_site':
             return await handleCreateSite(input, auth);
           case 'add_contact':
-            return handleAddContact();
+            return await handleAddContact(input, auth);
           default:
             return jsonError(`Unknown action: ${String(input.action)}`);
         }

@@ -120,7 +120,9 @@
     "maxTurns": "Máximo de turnos por sessão",
     "messagesPerMinute": "Mensagens por minuto por usuário",
     "messagesPerHour": "Mensagens por hora por organização",
-    "notSet": "Não definido — as organizações configuram individualmente",
+    "alertThresholds": "Avisar em (% do orçamento)",
+    "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
+    "notSet": "Não definido, as organizações configuram individualmente",
     "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
       "perStep": "Por etapa",
@@ -128,6 +130,9 @@
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
   },
   "partnerAiProvider": {
     "title": "Provedor de IA",
@@ -1049,6 +1054,7 @@
     },
     "toasts": {
       "inviteSent": "Convite enviado",
+      "inviteSentAmbiguousContact": "Convite enviado, mas nenhum contato pôde ser vinculado — vários contatos compartilham este e-mail. Este usuário não verá os tickets recebidos por e-mail até que um contato seja vinculado.",
       "pendingInvited": "{{count}} usuário(s) pendente(s) convidado(s)",
       "inviteResent": "Convite reenviado",
       "reactivated": "Usuário reativado",
@@ -1295,6 +1301,13 @@
     "monthlyBudget": "Orçamento mensal (US$)",
     "noLimit": "Sem limite",
     "dailyBudget": "Orçamento diário (US$)",
+    "alertThresholds": "Avisar em (% do orçamento)",
+    "alertThresholdsHelp": "Os alertas vão para administradores parceiros com acesso a cobrança. 100% (limite atingido) é sempre enviado.",
+    "firedRung": "Alerta de {{pct}}% {{period}} enviado em {{date}}",
+    "periodLabel": {
+      "daily": "diário",
+      "monthly": "mensal"
+    },
     "maxTurnsPerSession": "Máximo de turnos por sessão",
     "msgsMinPerUser": "Mensagens/minuto por usuário",
     "msgsHrPerOrg": "Mensagens/hora por organização",
@@ -1322,7 +1335,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
     "untitled": "Sem título",
     "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
-    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}} — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze"
+    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}}: o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
+    "creditsRemaining": "Créditos de IA Breeze restantes"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1703,6 +1717,172 @@
           "reply": "Rascunho de resposta",
           "resolutionNote": "Rascunho da nota de resolução"
         }
+      }
+    },
+    "impact": {
+      "title": "Impacto da IA",
+      "description": "O que seus agentes de IA resolveram nas organizações que você enxerga e o tempo de trabalho que se estima que isso represente.",
+      "windowLabel": "Período do relatório",
+      "windows": {
+        "d7": "Últimos 7 dias",
+        "d30": "Últimos 30 dias",
+        "d90": "Últimos 90 dias"
+      },
+      "loading": "Carregando o relatório de impacto…",
+      "refresh": "Atualizar",
+      "refreshing": "Reconstruindo…",
+      "retry": "Tentar novamente",
+      "errors": {
+        "load": "Não foi possível carregar o relatório de impacto.",
+        "rebuild": "Não foi possível enfileirar a reconstrução do relatório.",
+        "tooManyOrgs": "Esta reconstrução abrange mais de {{limit}} organizações. Escolha uma única organização no seletor de organizações e tente novamente.",
+        "orgIdRequired": "Escolha uma única organização no seletor de organizações antes de reconstruir o relatório de impacto.",
+        "exportPdf": "Não foi possível gerar a exportação em PDF."
+      },
+      "toasts": {
+        "rebuildQueued": "Reconstrução do relatório enfileirada.",
+        "rebuildComplete": "O relatório de impacto foi reconstruído.",
+        "rebuildStillRunning": "A reconstrução ainda está em andamento. Recarregue esta página em alguns minutos para ver os novos números."
+      },
+      "tiles": {
+        "alertsJudged": "Alertas avaliados",
+        "noiseFlagged": "Marcados como ruído",
+        "ticketsTriaged": "Chamados triados",
+        "draftsSent": "Rascunhos enviados",
+        "fixesExecuted": "Correções executadas",
+        "promoteEligible": "Operações elegíveis para promoção",
+        "promoteEligibleHint": "Operações com evidências suficientes e sem falhas para serem pré-autorizadas. Abra Configurações → Agentes de IA para revisar e promover.",
+        "estTimeSaved": "Tempo economizado estimado",
+        "estTimeSavedValue": "{{hours}} horas",
+        "llmSpend": "Gasto com LLM"
+      },
+      "weightsTooltipTitle": "Apenas uma estimativa — cada resultado recebe um tempo fixo:",
+      "weightsTooltipLine": "{{label}}: {{minutes}} min creditados por resultado",
+      "weightLabels": {
+        "alertJudged": "Alerta avaliado",
+        "noiseFlagged": "Marcado como ruído",
+        "ticketTriaged": "Chamado triado",
+        "draftSent": "Rascunho enviado",
+        "fixExecuted": "Correção executada",
+        "narrativeDelivered": "Relatório semanal entregue"
+      },
+      "chart": {
+        "title": "Resultados por dia",
+        "empty": "Nenhum resultado registrado neste período.",
+        "noiseFlagged": "Marcados como ruído",
+        "alertsJudgedNet": "Alertas avaliados, sem o ruído",
+        "ticketsTriaged": "Chamados triados",
+        "fixesExecuted": "Correções executadas"
+      },
+      "byOrg": {
+        "title": "Por organização",
+        "truncated": "Exibindo as {{limit}} organizações com maior tempo economizado estimado.",
+        "columns": {
+          "organization": "Organização",
+          "alertsJudged": "Alertas avaliados",
+          "ticketsTriaged": "Chamados triados",
+          "fixesExecuted": "Correções executadas",
+          "estTimeSaved": "Tempo economizado estimado",
+          "llmSpend": "Gasto com LLM"
+        }
+      },
+      "freshness": "Dados até {{through}} (UTC) · reconstruído {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Dados até {{through}} (UTC) · nunca reconstruído",
+      "positiveFeedbackRate": "Taxa de retorno positivo",
+      "positiveFeedbackDetail": "{{up}} úteis, {{down}} não úteis",
+      "editWeights": "Editar pesos",
+      "exportPdf": "Exportar PDF",
+      "weightsDrawer": {
+        "title": "Editar pesos de tempo economizado",
+        "description": "Defina quantos segundos de tempo humano cada resultado deve receber de crédito. Esses pesos alteram apenas a estimativa — nunca o que seus agentes de IA fazem.",
+        "save": "Salvar",
+        "saving": "Salvando…",
+        "reset": "Restaurar padrões",
+        "resetting": "Restaurando…",
+        "customized": "Personalizado",
+        "errors": {
+          "save": "Não foi possível salvar os pesos.",
+          "reset": "Não foi possível restaurar os pesos."
+        },
+        "toasts": {
+          "saved": "Pesos salvos.",
+          "reset": "Pesos restaurados para os padrões."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertas avaliados",
+          "noiseFlagged": "Marcados como ruído",
+          "suppressionsApplied": "Supressões aplicadas",
+          "ticketsTriaged": "Chamados triados",
+          "draftsSent": "Rascunhos enviados",
+          "fixesProposed": "Correções propostas",
+          "fixesExecuted": "Correções executadas",
+          "fixWatchesHeld": "Observações de correção mantidas",
+          "fixWatchesRecurred": "Observações de correção reincidentes",
+          "narrativesDelivered": "Relatórios semanais entregues",
+          "estTimeSaved": "Tempo economizado estimado",
+          "llmSpend": "Gasto com LLM",
+          "window": "Janela do relatório (dias)",
+          "through": "Dados até (UTC)",
+          "rebuiltAt": "Última reconstrução"
+        },
+        "weightRowLabel": "{{label}} (segundos creditados)",
+        "neverRebuilt": "Nunca reconstruído"
+      }
+    },
+    "graduation": {
+      "title": "Graduação",
+      "description": "O que este agente comprovou nos últimos 30 dias, operação por operação, e se essas evidências bastam para pedir execução pré-autorizada.",
+      "loading": "Carregando as evidências de graduação…",
+      "error": "Não foi possível carregar as evidências de graduação.",
+      "retry": "Tentar novamente",
+      "orgRequired": "Escolha uma única organização no seletor de organizações para ver as evidências dela.",
+      "empty": "Ainda não há evidências registradas para este agente.",
+      "readOnlyNote": "A execução pré-autorizada está desligada nesta instalação; estes números são apenas informativos.",
+      "byOrgTruncated": "Mostrando as {{limit}} primeiras organizações por nome. Escolha uma única organização no seletor de organizações para ver as demais.",
+      "thresholdPerOrgNote": "Cada organização resolve o próprio limite de promoção, por isso as execuções verificadas aparecem aqui sem uma meta. Escolha uma única organização no seletor de organizações para ver a meta dela.",
+      "approvalsLink": "Acompanhar esta solicitação na caixa de aprovações",
+      "ceilingHint": "As chaves no nível do parceiro são um teto, não uma concessão. O agente de cada organização precisa receber a chave separadamente — pela graduação ou editando o agente daquela organização.",
+      "promote": "Promover",
+      "verifiedOfThreshold": "{{verified}} de {{threshold}}",
+      "columns": {
+        "opKey": "Operação",
+        "state": "Situação",
+        "verified": "Verificadas",
+        "executed": "Executadas",
+        "failed": "Com falha",
+        "recurred": "Reincidências",
+        "firstVerified": "Primeira verificação",
+        "blockedReason": "Por que ainda não"
+      },
+      "states": {
+        "tracking": "Em acompanhamento",
+        "eligible": "Apta",
+        "promoted": "Promovida",
+        "demoted": "Rebaixada"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "O agente do parceiro ainda não permite esta operação.",
+        "below_threshold": "Ainda não há execuções verificadas suficientes.",
+        "too_recent": "A primeira execução verificada ainda é recente demais.",
+        "has_failures": "Uma falha ou uma reincidência foi registrada neste período.",
+        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada."
+      },
+      "confirm": {
+        "title": "Solicitar pré-autorização",
+        "message": "Isto pede que uma segunda pessoa pré-autorize {{opKey}} para o agente desta organização. Vale somente para execuções futuras e nunca autoriza uma solicitação que já aguarda decisão.",
+        "action": "Solicitar aprovação"
+      },
+      "toasts": {
+        "requested": "Pré-autorização solicitada. Uma segunda pessoa precisa aprová-la antes que esta operação rode sem supervisão, e ela vale somente para execuções futuras."
+      },
+      "errors": {
+        "promote": "Não foi possível abrir a solicitação de pré-autorização.",
+        "policyDecideDisabled": "A execução pré-autorizada está desligada nesta instalação, por isso esta operação não pode ser promovida."
+      },
+      "reliability": {
+        "caption": "Operações do modo de ação, somente leitura: não são chaves de política, portanto nunca podem ser pré-autorizadas."
       }
     }
   },
@@ -2996,6 +3176,8 @@
       "organization": "Organização",
       "general": "Geral",
       "generalDescription": "Perfil e padrões",
+      "contacts": "Contatos",
+      "contactsDescription": "Pessoas para procurar neste cliente, por local ou em toda a organização",
       "contracts": "Contratos",
       "contractsDescription": "Acordos recorrentes",
       "billing": "Cobrança",
@@ -3595,7 +3777,8 @@
       "title": "Dispositivos",
       "assigned": "dispositivos atribuídos a este site",
       "viewAll": "Ver todos os dispositivos"
-    }
+    },
+    "allContactsLink": "Todos os contatos deste cliente"
   },
   "siteForm": {
     "description": "Apenas o nome do site é obrigatório. Endereço e contato são opcionais – você pode preenchê-los mais tarde.",
@@ -3980,5 +4163,180 @@
     "saveFailed": "Não foi possível salvar as configurações de controle de tempo",
     "minSessionRange": "A duração mínima da sessão deve estar entre {{min}} e {{max}} segundos",
     "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos"
+  },
+  "contactsCard": {
+    "title": "Contatos",
+    "description": "As pessoas que sua equipe procura neste cliente. Um contato pode ficar preso a um local ou valer para toda a organização.",
+    "organizationLevel": "Organização",
+    "unknownSite": "Local indisponível",
+    "empty": "Nenhum contato ainda. Adicione um ou importe um CSV da sua ferramenta anterior.",
+    "loading": "Carregando contatos…",
+    "confirmDelete": "Excluir {{name}}? Isso não pode ser desfeito.",
+    "actions": {
+      "add": "Adicionar contato",
+      "import": "Importar CSV",
+      "edit": "Editar",
+      "delete": "Excluir",
+      "save": "Salvar contato",
+      "saving": "Salvando…",
+      "cancel": "Cancelar",
+      "retry": "Tentar novamente"
+    },
+    "filters": {
+      "site": "Filtrar por local",
+      "role": "Filtrar por função",
+      "allSites": "Todos os locais",
+      "allRoles": "Todas as funções"
+    },
+    "columns": {
+      "name": "Nome",
+      "reach": "Como falar com a pessoa",
+      "jobTitle": "Cargo",
+      "roles": "Funções",
+      "site": "Pertence a",
+      "actions": "Ações"
+    },
+    "primary": {
+      "organization": "Principal (organização)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Faturamento",
+      "technical": "Técnico",
+      "escalation": "Escalonamento",
+      "admin": "Administração",
+      "site": "Local",
+      "afterHours": "Fora do horário",
+      "portal": "Portal do cliente"
+    },
+    "form": {
+      "addHeading": "Novo contato",
+      "editHeading": "Editar contato",
+      "identifierRequired": "Preencha pelo menos um: nome, endereço de e-mail, telefone ou celular.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "site": "Pertence a",
+        "roles": "Funções",
+        "notes": "Observações",
+        "isPrimary": "Tornar este o contato principal do escopo escolhido acima"
+      }
+    },
+    "pagination": {
+      "summary": "Exibindo {{from}} a {{to}} de {{total}}",
+      "previous": "Anterior",
+      "next": "Próxima"
+    },
+    "toasts": {
+      "created": "Contato adicionado",
+      "updated": "Contato salvo",
+      "deleted": "Contato excluído"
+    },
+    "errors": {
+      "load": "Não foi possível carregar os contatos desta organização.",
+      "sites": "Não foi possível carregar os locais desta organização. Os nomes de local e o filtro por local ficam indisponíveis até carregarem.",
+      "create": "Não foi possível adicionar o contato.",
+      "update": "Não foi possível salvar o contato.",
+      "delete": "Não foi possível excluir o contato."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importar contatos de um CSV",
+    "description": "Envie uma exportação de contatos do seu RMM ou PSA anterior. Cada linha fica arquivada nesta organização.",
+    "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
+    "dropzoneHint": "Mapeie pelo menos um: nome, endereço de e-mail, telefone ou celular — sem isso não existe contato.",
+    "actions": {
+      "close": "Fechar",
+      "preview": "Conferir {{count}} linhas",
+      "previewing": "Conferindo…",
+      "import": "Importar {{count}} selecionadas",
+      "importing": "Importando…"
+    },
+    "mapping": {
+      "heading": "Mapeamento de colunas",
+      "unmapped": "Não mapeada",
+      "identifierRequired": "Mapeie uma coluna de nome, endereço de e-mail, telefone ou celular para continuar.",
+      "droppedRows_one": "{{count}} linha ignorada: sem nome, e-mail, telefone ou celular.",
+      "droppedRows_other": "{{count}} linhas ignoradas: sem nome, e-mail, telefone ou celular.",
+      "tooManyRows": "Este arquivo mapeia {{count}} linhas, mais do que as {{max}} aceitas por importação. Divida-o em arquivos menores.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "roles": "Funções",
+        "site": "Local",
+        "externalId": "Identificador do contato no sistema de origem",
+        "externalSystem": "Sistema de origem"
+      }
+    },
+    "mode": {
+      "label": "Contatos já vinculados",
+      "skip": "Deixar como estão",
+      "update": "Mesclar o arquivo neles"
+    },
+    "preview": {
+      "heading": "O que vai acontecer"
+    },
+    "summary": {
+      "imported": "{{count}} adicionados",
+      "updated": "{{count}} mesclados",
+      "skipped": "{{count}} sem alteração",
+      "failed": "{{count}} recusadas",
+      "allFailed": "Nada foi importado — {{summary}}.",
+      "nothingImported": "Nada foi importado: {{count}} já vinculados.",
+      "nothingImportedEmpty": "Nada foi importado."
+    },
+    "failures": {
+      "title_one": "{{count}} linha foi recusada",
+      "title_other": "{{count}} linhas foram recusadas"
+    },
+    "skipped": {
+      "title_one": "{{count}} linha ficou sem alteração",
+      "title_other": "{{count}} linhas ficaram sem alteração",
+      "reasons": {
+        "alreadyLinked": "já vinculado a um contato existente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "A linha é ambígua diante dos contatos que já existem aqui.",
+      "orgNotFound": "Esta organização não está mais ao seu alcance.",
+      "annotationChanged": "Esta linha mudou desde a prévia. Confira o arquivo novamente.",
+      "matchChanged": "Esta linha agora corresponde a outro contato. Confira o arquivo novamente.",
+      "matchUnconfirmed": "Marque a linha e importe novamente para confirmar a correspondência.",
+      "writeFailed": "O banco de dados recusou a gravação. Nada desta linha foi salvo.",
+      "noIdentifier": "A linha fica sem nome, e-mail, telefone ou celular.",
+      "invalidRole": "A linha indica um papel que o Breeze não reconhece.",
+      "siteNotInOrg": "O local desta linha não pertence a esta organização."
+    },
+    "errors": {
+      "previewFailed": "Não foi possível comparar o arquivo com os contatos existentes.",
+      "importFailed": "Não foi possível importar os contatos selecionados.",
+      "fileRead": "Não foi possível ler esse arquivo. Selecione-o novamente.",
+      "noColumns": "Esse arquivo não tem linha de cabeçalho, então não há nada a mapear."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Selecionar todas as linhas novas e vinculadas",
+    "organizationLevel": "Organização",
+    "matches": "corresponde a “{{name}}”",
+    "columns": {
+      "name": "Nome",
+      "email": "Endereço de e-mail",
+      "site": "Local",
+      "status": "Resultado"
+    },
+    "badges": {
+      "create": "Novo",
+      "linkMatch": "Já vinculado",
+      "emailMatch": "E-mail coincide — confirme",
+      "nameMatch": "Nome coincide — confirme",
+      "conflict": "Conflito",
+      "orgNotFound": "Organização não encontrada"
+    }
   }
 }

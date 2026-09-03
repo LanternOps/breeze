@@ -22,6 +22,11 @@ curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/scripts/gui
 bash guided-setup.sh
 ```
 
+On Linux the installer also offers to register a boot service (`breeze-rmm`) so
+the stack comes back up on its own after a reboot. Accept it on a server you
+want running unattended; you can install or update it later with
+`bash guided-setup.sh --install-systemd`.
+
 Prefer to configure `.env` yourself? The manual path is below.
 
 <Aside type="tip">
@@ -181,8 +186,9 @@ Pick whichever fits:
   docker compose up -d api
   ```
 
-  From the next release the API accepts same-origin requests on its own, so the
-  extra entry is no longer required — but it stays correct either way.
+  The API now accepts same-origin requests on its own, so this entry is
+  optional — a browser reaching Breeze through the tunnel is already treated as
+  same-origin. It stays correct either way.
 
 - **LAN address** — serve the machine's IP or hostname directly:
 

@@ -35,10 +35,21 @@ Design docs:
 
 The `worker` container publishes its own Prometheus series on
 `http://<worker>:3001/metrics` — **a separate scrape target from the api
-container's `/api/metrics/scrape`**. Add it to your Prometheus config when you
-adopt the split, or the process that runs the heavy jobs is invisible: before
-#4143 its series were not stale or zero, they were ABSENT, and `up` for it did
-not exist at all.
+container's `/api/metrics/scrape`**. Before #4143 its series were not stale or
+zero, they were ABSENT, and `up` for it did not exist at all.
+
+**Scrape wiring (#4523):**
+
+- The local/optional monitoring stack (`docker-compose.monitoring.yml`) scrapes
+  it out of the box as the `breeze-worker` job in `monitoring/prometheus.yml`
+  — no action needed once you `docker compose --profile worker-split up -d
+  worker` on the same host; Prometheus resolves `worker:3001` over the shared
+  `breeze` Docker network.
+- For a **remote** multi-region Prometheus (the droplet pattern), the worker
+  is NOT scraped automatically — it has no host port published by default and
+  isn't proxied through Caddy. See the "(A2) WORKER TARGET" block in
+  `deploy/prometheus-remote-scrape.example.yml` for the Tailscale bind-publish
+  + job config needed on each droplet that adopts the split.
 
 - **Auth is the same gate as the api role's `/api/metrics/scrape`**:
   `METRICS_SCRAPE_TOKEN` as a bearer token (503 when unset), the optional

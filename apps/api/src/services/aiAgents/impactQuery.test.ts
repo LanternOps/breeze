@@ -41,8 +41,12 @@ vi.mock('./impactWeights', () => ({
   loadImpactWeights: loadImpactWeightsMock,
 }));
 
+const { countEligibleGraduationsMock } = vi.hoisted(() => ({ countEligibleGraduationsMock: vi.fn() }));
+vi.mock('./graduationService', () => ({ countEligibleGraduations: countEligibleGraduationsMock }));
+
 import { ImpactOrgAccessDeniedError, loadImpactSummary } from './impactQuery';
 import { lastCompleteUtcDay, shiftUtcDay } from './impactRollup';
+import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';
 
 const PARTNER_ID = '00000000-0000-4000-8000-0000000000a1';
 const ORG_A = '00000000-0000-4000-8000-0000000000b1';
@@ -157,6 +161,7 @@ beforeEach(() => {
     effective: DEFAULT_IMPACT_WEIGHTS,
     overrides: null,
   });
+  countEligibleGraduationsMock.mockResolvedValue(0);
 });
 
 describe('loadImpactSummary — window, zero-fill, ordering', () => {
@@ -182,11 +187,47 @@ describe('loadImpactSummary — window, zero-fill, ordering', () => {
     }
   });
 
-  it('schemaVersion is 1 and promoteEligibleCount is null', async () => {
+  it('schemaVersion stays 1 and promoteEligibleCount carries the graduation count', async () => {
+    countEligibleGraduationsMock.mockResolvedValueOnce(4);
     stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+
     const result = await loadImpactSummary(orgAuth(), { window: 7 });
+
     expect(result.schemaVersion).toBe(1);
-    expect(result.promoteEligibleCount).toBeNull();
+    expect(result.promoteEligibleCount).toBe(4);
+  });
+
+  it('promoteEligibleCount is 0, not null, when no key is eligible', async () => {
+    countEligibleGraduationsMock.mockResolvedValueOnce(0);
+    stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+
+    const result = await loadImpactSummary(orgAuth(), { window: 7 });
+
+    expect(result.promoteEligibleCount).toBe(0);
+  });
+
+  it('org scope passes the caller orgCondition and the requested orgId through', async () => {
+    stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+    const auth = orgAuth();
+
+    await loadImpactSummary(auth, { window: 7, orgId: ORG_A });
+
+    expect(countEligibleGraduationsMock).toHaveBeenCalledTimes(1);
+    const [passedCondition, passedOrgId] = countEligibleGraduationsMock.mock.calls[0]!;
+    expect(passedOrgId).toBe(ORG_A);
+    // The SAME closure the impact aggregates use, proven by compiling what it
+    // builds — not by identity, which a wrapper would satisfy vacuously.
+    expect(compile(passedCondition(aiAgentGraduation.orgId)).params).toEqual([ORG_A]);
+  });
+
+  it('partner scope passes an orgCondition covering exactly the accessible orgs, and no orgId', async () => {
+    stubPartnerScopeQueries([], [], [{ up: 0, down: 0 }]);
+
+    await loadImpactSummary(partnerAuth(), { window: 30 });
+
+    const [passedCondition, passedOrgId] = countEligibleGraduationsMock.mock.calls[0]!;
+    expect(passedOrgId).toBeUndefined();
+    expect(compile(passedCondition(aiAgentGraduation.orgId)).params).toEqual([ORG_A, ORG_B]);
   });
 });
 

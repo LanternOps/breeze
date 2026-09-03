@@ -23,6 +23,7 @@ function invoicePayload(currencyCode: string): PushInvoiceArgs[1] {
     taxTotal: '0.00',
     total: '100.00',
     lines: [],
+    mapping: null,
   };
 }
 
@@ -37,6 +38,9 @@ function payment(overrides: Partial<ChangeSet['payments'][number]> = {}): Change
     amountMinor: 1234,
     currency: 'USD',
     txnDate: '2026-09-04',
+    remotePaymentSyncToken: '0',
+    paymentMethodName: null,
+    paymentRefNum: null,
     ...overrides,
   };
 }
