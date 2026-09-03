@@ -54,6 +54,23 @@ type RebootState struct {
 	// now" and "the reboot failed and the machine is still up", which left a
 	// failed reboot visible only in agent logs. Cleared by the next Schedule.
 	LastError string `json:"lastError,omitempty"`
+
+	// Deferral budget for the current schedule (#3207). Zero-valued when the
+	// policy did not enable it, which is the default and reproduces the
+	// pre-#3207 behaviour exactly. Not omitempty: the console needs to tell
+	// "this restart cannot be postponed" apart from "this agent predates
+	// deferral", and an omitted field reads as the latter.
+	DeferralAllowed bool `json:"deferralAllowed"`
+	DeferralsUsed   int  `json:"deferralsUsed"`
+	MaxDeferrals    int  `json:"maxDeferrals"`
+	DeferralMinutes int  `json:"deferralMinutes"`
+}
+
+// RebootOptions carries everything about a schedule that is not part of the
+// pre-#3207 signature. A zero RebootOptions is exactly today's behaviour, which
+// is what lets Schedule stay a thin wrapper and every old call site stay put.
+type RebootOptions struct {
+	Deferral DeferralPolicy
 }
 
 // NotifyFunc is called to send a notification to the logged-in user.
@@ -61,7 +78,14 @@ type NotifyFunc func(title, body, urgency string)
 
 // RebootManager handles reboot scheduling, notification, and execution.
 type RebootManager struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// deferMu serialises whole Defer calls. mu alone is not enough: Defer has to
+	// release mu to re-enter ScheduleWithOptions, and two callers interleaving in
+	// that window would both read the same pre-increment count and both be
+	// granted. W3 fans the prompt out to every helper session and takes the first
+	// answer, so simultaneous requests are the expected shape, not a hypothetical.
+	// Always acquired BEFORE mu; never held by anything else.
+	deferMu          sync.Mutex
 	state            RebootState
 	notifyTimers     []*time.Timer
 	osTimer          *time.Timer
@@ -83,15 +107,22 @@ type RebootManager struct {
 	// generation it was armed under and does nothing if it no longer matches.
 	generation uint64
 
+	// deferral is the budget the API sent with the current schedule, and
+	// deferralsUsed how much of it this campaign has spent. Both are reset by
+	// every Schedule: an absent policy must never mean "enabled".
+	deferral      DeferralPolicy
+	deferralsUsed int
+
 	// Injectable seams for deterministic tests, following the repo's nowFn
 	// convention (sessionbroker.Broker, watchdog.Clock). afterFunc in
 	// particular is what lets the notification ladder be asserted without
 	// waiting real minutes — the plan's shortest schedule is a minute long.
-	nowFn         func() time.Time
-	afterFunc     func(time.Duration, func()) *time.Timer
-	execOSReboot  func(grace time.Duration) error
-	abortOSReboot func() error
-	historyPath   func() string
+	nowFn          func() time.Time
+	afterFunc      func(time.Duration, func()) *time.Timer
+	execOSReboot   func(grace time.Duration) error
+	abortOSReboot  func() error
+	historyPath    func() string
+	deferralLedger func() string
 }
 
 // NewRebootManager creates a new RebootManager with circuit breaker protection.
@@ -108,6 +139,7 @@ func NewRebootManager(notifyFn NotifyFunc, maxRebootsPerDay int) *RebootManager 
 		execOSReboot:     execOSReboot,
 		abortOSReboot:    abortOSReboot,
 		historyPath:      rebootHistoryPath,
+		deferralLedger:   deferralLedgerPath,
 	}
 	rm.loadRebootHistory()
 	return rm
@@ -133,6 +165,14 @@ func (r *RebootManager) State() RebootState {
 // (always emitted, #3197) is what tells them, which is precisely why the lead
 // notification is unconditional rather than threshold-gated.
 func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason, source string) error {
+	return r.ScheduleWithOptions(delay, deadline, reason, source, RebootOptions{})
+}
+
+// ScheduleWithOptions is Schedule plus the #3207 deferral budget. Kept as a
+// separate entry point rather than a wider Schedule signature so that every
+// pre-existing caller — and every pre-existing test — keeps today's behaviour
+// with no edit at all.
+func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -167,6 +207,20 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 
 	plan := PlanReboot(delay)
 	now := r.nowFn()
+
+	// Reset the budget from the incoming policy on every schedule. A schedule
+	// that says nothing about deferral is not deferrable, whatever the previous
+	// one allowed.
+	r.deferral = opts.Deferral
+	r.deferralsUsed = 0
+	if opts.Deferral.Allowed {
+		// Resume a count from a previous process lifetime, but only for THIS
+		// campaign (same deadline). Best-effort: a missing ledger means zero,
+		// which costs at most one extra postponement and can never push past
+		// the deadline.
+		r.deferralsUsed = LoadDeferralLedger(r.ledgerPath(), deadline, now)
+	}
+
 	r.state = RebootState{
 		PendingReboot:        true,
 		RebootScheduled:      true,
@@ -175,6 +229,10 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 		Reason:               reason,
 		Source:               source,
 		NotificationsPlanned: len(plan.Notifications),
+		DeferralAllowed:      opts.Deferral.Allowed,
+		DeferralsUsed:        r.deferralsUsed,
+		MaxDeferrals:         opts.Deferral.MaxDeferrals,
+		DeferralMinutes:      opts.Deferral.DeferralMinutes,
 		// LastError intentionally omitted: a fresh schedule clears any previous
 		// failure, so the field describes only the most recent attempt.
 	}
@@ -200,9 +258,85 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 		"osInvokeAt", plan.OSInvokeAt.String(),
 		"osGrace", plan.OSGrace.String(),
 		"reason", reason,
-		"source", source)
+		"source", source,
+		"deferralAllowed", opts.Deferral.Allowed,
+		"deferralsUsed", r.deferralsUsed,
+		"maxDeferrals", opts.Deferral.MaxDeferrals)
 
 	return nil
+}
+
+// Defer postpones the scheduled reboot by the policy's deferral window, clamped
+// to the hard deadline. Returns the new delay, or an error whose message is
+// intended to be shown to the user.
+//
+// Refused once osInvoked is true: past OSInvokeAt the countdown lives in the OS
+// and abortOSReboot cannot be honoured on every platform (macOS BSD shutdown(8)
+// has no cancel flag), so granting a deferral there would report success while
+// the machine still went down — the same class of lie Cancel() documents.
+func (r *RebootManager) Defer() (time.Duration, error) {
+	// Whole-call serialisation; see deferMu. Held across the re-entrant
+	// ScheduleWithOptions call, which takes only mu.
+	r.deferMu.Lock()
+	defer r.deferMu.Unlock()
+
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("reboot manager is stopped")
+	}
+	if r.osInvoked {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("the restart countdown has already started and cannot be postponed")
+	}
+	if !r.state.RebootScheduled {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("no reboot scheduled")
+	}
+	outcome := ComputeDeferral(r.deferral, r.deferralsUsed, r.nowFn(), r.state.Deadline)
+	if !outcome.Granted {
+		r.mu.Unlock()
+		return 0, fmt.Errorf("%s", outcome.Reason)
+	}
+	deadline, reason, source := r.state.Deadline, r.state.Reason, r.state.Source
+	used := r.deferralsUsed + 1
+	policy := r.deferral
+	r.mu.Unlock()
+
+	// Re-Schedule under the same options; it cancels the in-flight timers,
+	// bumps the generation and emits a fresh lead notification quoting the new
+	// time — which is exactly how the user learns the countdown moved.
+	if err := r.ScheduleWithOptions(outcome.NewDelay, deadline, reason, source, RebootOptions{Deferral: policy}); err != nil {
+		return 0, err
+	}
+
+	// ScheduleWithOptions reset the count from the ledger, so the increment is
+	// re-applied here, after it. Ordering matters — do not fold this into the
+	// re-schedule; TestDeferRefusesPastTheBudget pins it.
+	r.mu.Lock()
+	r.deferralsUsed = used
+	r.state.DeferralsUsed = used
+	path := r.ledgerPath()
+	r.mu.Unlock()
+
+	if err := SaveDeferralLedger(path, deadline, used); err != nil {
+		// Best-effort: losing the ledger costs the user an extra postponement
+		// after an agent restart, it never lets them exceed the DEADLINE.
+		log.Warn("failed to persist reboot deferral ledger", "error", err)
+	}
+	log.Info("reboot postponed by user",
+		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals)
+	return outcome.NewDelay, nil
+}
+
+// ledgerPath resolves the deferral ledger location through the test seam,
+// falling back to the real data dir. Nil-safe because RebootManager is also
+// built as a struct literal in tests.
+func (r *RebootManager) ledgerPath() string {
+	if r.deferralLedger != nil {
+		return r.deferralLedger()
+	}
+	return deferralLedgerPath()
 }
 
 // Cancel cancels a scheduled reboot.
@@ -225,6 +359,15 @@ func (r *RebootManager) Cancel() error {
 	r.state.ScheduledAt = time.Time{}
 	r.state.Deadline = time.Time{}
 	r.state.NotificationsPlanned = 0
+	// A cancelled reboot has no budget left to spend, and no deadline to clamp
+	// one against. Clearing both the reported and the internal copy keeps the
+	// two from disagreeing if a prompt answer arrives after the cancellation.
+	r.deferral = DeferralPolicy{}
+	r.deferralsUsed = 0
+	r.state.DeferralAllowed = false
+	r.state.DeferralsUsed = 0
+	r.state.MaxDeferrals = 0
+	r.state.DeferralMinutes = 0
 	abort := r.abortOSReboot
 	osInvoked := r.osInvoked
 	r.osInvoked = false

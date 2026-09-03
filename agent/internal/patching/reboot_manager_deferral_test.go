@@ -1,0 +1,360 @@
+// Deferral behaviour at the manager level (issue #3207).
+//
+// Kept in its own file so reboot_manager_test.go — the #3197 invariant suite —
+// stays byte-for-byte unmodified: "with deferral disabled nothing changes" is
+// only a real claim if those tests never had to be adjusted.
+package patching
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeClock makes the deadline arithmetic exact instead of "within a few
+// microseconds of time.Now()".
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// newDeferralTestManager wraps newTestManager with the two extra seams deferral
+// needs: a temp-dir ledger path and a controllable clock.
+func newDeferralTestManager(t *testing.T, maxPerDay int) (*RebootManager, *fakeTimers, *[]notifyCall, *[]time.Duration, *fakeClock, string) {
+	t.Helper()
+	rm, timers, notifications, osCalls := newTestManager(t, maxPerDay)
+	dir := t.TempDir()
+	ledger := filepath.Join(dir, "reboot_deferrals.json")
+	clock := &fakeClock{t: time.Now().Truncate(time.Second)}
+	rm.nowFn = clock.now
+	rm.deferralLedger = func() string { return ledger }
+	return rm, timers, notifications, osCalls, clock, ledger
+}
+
+func allowDeferral(max, minutes int) RebootOptions {
+	return RebootOptions{Deferral: DeferralPolicy{Allowed: true, MaxDeferrals: max, DeferralMinutes: minutes}}
+}
+
+func TestScheduleKeepsDeferralOffByDefault(t *testing.T) {
+	rm, _, _, _, clock, ledger := newDeferralTestManager(t, 3)
+
+	if err := rm.Schedule(15*time.Minute, clock.now().Add(15*time.Minute), "Patch", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	st := rm.State()
+	if st.DeferralAllowed {
+		t.Fatal("plain Schedule must not enable deferral — old call sites keep today's behaviour")
+	}
+	if st.MaxDeferrals != 0 || st.DeferralMinutes != 0 || st.DeferralsUsed != 0 {
+		t.Errorf("deferral fields = %+v, want all zero", st)
+	}
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer must refuse when the policy did not enable it")
+	}
+	// Nothing may be written to disk for a schedule that cannot be deferred.
+	if got := LoadDeferralLedger(ledger, clock.now().Add(15*time.Minute), clock.now()); got != 0 {
+		t.Errorf("ledger read back %d, want 0 — deferral-off must not touch the ledger", got)
+	}
+}
+
+// The deferral fields must reach the console through get_reboot_status, which
+// marshals RebootState wholesale (rebootStateToMap) with no handler change.
+func TestRebootStateSerialisesTheDeferralBudget(t *testing.T) {
+	rm, _, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	data, err := json.Marshal(rm.State())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for key, want := range map[string]any{
+		"deferralAllowed": true,
+		"deferralsUsed":   float64(0),
+		"maxDeferrals":    float64(2),
+		"deferralMinutes": float64(60),
+	} {
+		if got[key] != want {
+			t.Errorf("%s = %v, want %v", key, got[key], want)
+		}
+	}
+}
+
+func TestDeferReschedulesAndReNotifies(t *testing.T) {
+	rm, timers, notifications, osCalls, clock, _ := newDeferralTestManager(t, 3)
+	deadline := clock.now().Add(3 * time.Hour)
+	if err := rm.ScheduleWithOptions(15*time.Minute, deadline, "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	before := len(*notifications)
+
+	newDelay, err := rm.Defer()
+	if err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	if newDelay != 60*time.Minute {
+		t.Errorf("newDelay = %v, want 60m", newDelay)
+	}
+	st := rm.State()
+	if st.DeferralsUsed != 1 {
+		t.Errorf("DeferralsUsed = %d, want 1", st.DeferralsUsed)
+	}
+	if !st.RebootScheduled {
+		t.Error("RebootScheduled = false after a deferral — the reboot must still be coming")
+	}
+	if !st.Deadline.Equal(deadline) {
+		t.Errorf("Deadline = %v, want it unchanged at %v — a deferral may not move the hard stop", st.Deadline, deadline)
+	}
+	if want := clock.now().Add(60 * time.Minute); !st.ScheduledAt.Equal(want) {
+		t.Errorf("ScheduledAt = %v, want %v", st.ScheduledAt, want)
+	}
+	// The re-schedule must emit its own lead notification (#3197 invariant:
+	// the user is told, at offset 0, every time the countdown changes).
+	timers.runAt(0)
+	if len(*notifications) <= before {
+		t.Error("deferral did not re-announce the new restart time")
+	}
+	if len(*osCalls) != 0 {
+		t.Fatal("deferral must not invoke the OS reboot")
+	}
+}
+
+func TestDeferRefusesPastTheBudget(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(1, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("first Defer: %v", err)
+	}
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("second Defer must be refused at MaxDeferrals=1")
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Errorf("DeferralsUsed = %d after a refused deferral, want 1", got)
+	}
+}
+
+// D5 / #3253: the deadline, not the counter, is the guarantee. A 60-minute
+// window with 20 minutes of headroom yields 20, and the next request is refused
+// because the clamp would leave less than MinRebootDelay.
+func TestDeferClampsToTheHardDeadline(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	deadline := clock.now().Add(20 * time.Minute)
+	if err := rm.ScheduleWithOptions(5*time.Minute, deadline, "Patch", "patch_job", allowDeferral(5, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+
+	newDelay, err := rm.Defer()
+	if err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	if newDelay != 20*time.Minute {
+		t.Fatalf("newDelay = %v, want 20m clamped to the deadline", newDelay)
+	}
+	if landing := rm.State().ScheduledAt; landing.After(deadline) {
+		t.Errorf("ScheduledAt %v is past the deadline %v", landing, deadline)
+	}
+
+	// Walk up to the deadline; the budget is nowhere near spent but there is no
+	// room left, so the counter must not be able to buy any.
+	clock.advance(20 * time.Minute)
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer at the deadline must be refused even with postponements remaining")
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Errorf("DeferralsUsed = %d, want 1 — a refused deferral must not spend budget", got)
+	}
+}
+
+func TestDeferDoesNotConsumeCircuitBreakerBudget(t *testing.T) {
+	// D6: rebootHistory is appended only inside runOSReboot. Deferring must
+	// leave the maxRebootsPerDay breaker completely untouched.
+	rm, timers, _, osCalls, clock, _ := newDeferralTestManager(t, 1)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	for i := 0; i < 3; i++ {
+		if _, err := rm.Defer(); err != nil {
+			t.Fatalf("Defer %d: %v", i, err)
+		}
+	}
+	if got := len(rm.rebootHistory); got != 0 {
+		t.Fatalf("rebootHistory has %d entries after three deferrals, want 0", got)
+	}
+	// Budget exhausted; let the final schedule run to completion.
+	plan := PlanReboot(60 * time.Minute)
+	timers.runAt(plan.OSInvokeAt)
+	if len(*osCalls) != 1 {
+		t.Fatalf("osCalls = %d, want 1 — three deferrals must not have burned the breaker", len(*osCalls))
+	}
+}
+
+func TestDeferIsRefusedOnceTheOSCountdownHasStarted(t *testing.T) {
+	// After OSInvokeAt the countdown lives in the OS, not this process. Granting
+	// a deferral there would report success while the machine still went down.
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(5*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	plan := PlanReboot(5 * time.Minute)
+	timers.runAt(plan.OSInvokeAt)
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer must be refused once the OS countdown is running")
+	}
+}
+
+func TestDeferIsRefusedWhenNothingIsScheduled(t *testing.T) {
+	rm, _, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer with no schedule must be refused")
+	}
+
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	if err := rm.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer after Cancel must be refused")
+	}
+
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("re-ScheduleWithOptions: %v", err)
+	}
+	rm.Stop()
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer after Stop must be refused")
+	}
+}
+
+// A later plain Schedule is a fresh administrator decision with no deferral
+// budget: the previous campaign's allowance must not survive it.
+func TestPlainRescheduleClearsTheDeferralBudget(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(3*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+
+	if err := rm.Schedule(30*time.Minute, clock.now().Add(3*time.Hour), "Second", "manual"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	st := rm.State()
+	if st.DeferralAllowed || st.MaxDeferrals != 0 || st.DeferralsUsed != 0 {
+		t.Fatalf("deferral state after a plain re-Schedule = %+v, want cleared", st)
+	}
+	if _, err := rm.Defer(); err == nil {
+		t.Fatal("Defer must be refused after a plain re-Schedule")
+	}
+}
+
+// The count has to survive an agent restart, or a user could reboot the service
+// and postpone forever. Same campaign (same deadline) resumes; a new deadline
+// is a new administrator decision and legitimately starts fresh.
+func TestScheduleResumesTheLedgerForTheSameCampaign(t *testing.T) {
+	rm, timers, _, _, clock, ledgerPath := newDeferralTestManager(t, 3)
+	deadline := clock.now().Add(4 * time.Hour)
+	if err := rm.ScheduleWithOptions(15*time.Minute, deadline, "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+	for i := 0; i < 2; i++ {
+		if _, err := rm.Defer(); err != nil {
+			t.Fatalf("Defer %d: %v", i, err)
+		}
+	}
+	if got := LoadDeferralLedger(ledgerPath, deadline, clock.now()); got != 2 {
+		t.Fatalf("ledger on disk = %d, want 2", got)
+	}
+
+	// A fresh manager over the same ledger: same campaign resumes the count.
+	restarted, _, _, _ := newTestManager(t, 3)
+	restarted.nowFn = clock.now
+	restarted.deferralLedger = func() string { return ledgerPath }
+	if err := restarted.ScheduleWithOptions(15*time.Minute, deadline, "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("restarted ScheduleWithOptions: %v", err)
+	}
+	if got := restarted.State().DeferralsUsed; got != 2 {
+		t.Fatalf("resumed DeferralsUsed = %d, want 2 — restarting the agent must not refill the budget", got)
+	}
+	if _, err := restarted.Defer(); err != nil {
+		t.Fatalf("third Defer: %v", err)
+	}
+	if _, err := restarted.Defer(); err == nil {
+		t.Fatal("fourth Defer must be refused — the resumed count exhausted the budget")
+	}
+
+	// A different deadline is a different campaign: fresh budget.
+	other, _, _, _ := newTestManager(t, 3)
+	other.nowFn = clock.now
+	other.deferralLedger = func() string { return ledgerPath }
+	if err := other.ScheduleWithOptions(15*time.Minute, deadline.Add(time.Hour), "Patch", "patch_job", allowDeferral(3, 60)); err != nil {
+		t.Fatalf("other ScheduleWithOptions: %v", err)
+	}
+	if got := other.State().DeferralsUsed; got != 0 {
+		t.Errorf("new-campaign DeferralsUsed = %d, want 0", got)
+	}
+}
+
+// W3 fans the prompt out to every helper session and takes the first answer, so
+// two sessions can answer at once. Concurrent grants must never exceed the
+// budget.
+func TestConcurrentDefersRespectTheBudget(t *testing.T) {
+	rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(6*time.Hour), "Patch", "patch_job", allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	timers.runAt(0)
+
+	const callers = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	granted := 0
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := rm.Defer(); err == nil {
+				mu.Lock()
+				granted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if granted != 2 {
+		t.Fatalf("%d concurrent Defer calls granted %d, want exactly 2 (MaxDeferrals)", callers, granted)
+	}
+	if got := rm.State().DeferralsUsed; got != 2 {
+		t.Errorf("DeferralsUsed = %d, want 2", got)
+	}
+}
