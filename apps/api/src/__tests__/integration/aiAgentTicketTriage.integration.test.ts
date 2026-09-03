@@ -452,6 +452,39 @@ describe('ticket-triage release pipeline — persistTicketTriage -> intents -> r
     expect(afterTicket.fieldProvenance).toMatchObject({ priority: 'user' });
   });
 
+  it('an AI confirming the value already on the ticket leaves field_provenance alone (#4466)', async () => {
+    const scenario = await seedTriageScenario(true);
+    // The ticket ALREADY sits at 'high' — exactly what `fixtureProposal`
+    // proposes — and carries no provenance entry for it, so the `<> 'user'`
+    // guard cannot help: this is the shape where a human set the value
+    // through a path that never stamped.
+    const ticket = await seedTicket(scenario, { priority: 'high' });
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+    const auth = agentAuthFor(scenario, run);
+
+    const persisted = await persistTicketTriage(
+      { id: run.id, orgId: run.orgId, agentId: run.agentId, ticketId: run.ticketId, policySnapshot: run.policySnapshot, maxActionsPerRun: 5 },
+      fixtureProposal({ draftReply: undefined }),
+      auth,
+    );
+
+    // `filterEligibleFields` screens on provenance and the confidence floor
+    // ONLY — it never compares the proposal against the ticket's current
+    // value. So the fields intent really is minted and really does reach
+    // `applyAiFieldUpdates`; the ownership question is settled by the CAS
+    // predicate in Postgres, which is the point of asserting it here.
+    expect(persisted.intentIds).toHaveLength(2);
+
+    for (const intentId of persisted.approvedIntentIds) {
+      await releaseApprovedIntent(intentId);
+    }
+
+    const afterTicket = await loadTicket(ticket.id);
+    expect(afterTicket.priority).toBe('high');
+    // Nothing changed, so the AI must not have taken ownership of the field.
+    expect(afterTicket.fieldProvenance).not.toHaveProperty('priority');
+  });
+
   it('a ticket closed after intent creation fails release with agent_scope_lost — the intent completes failed, not silently dropped', async () => {
     const scenario = await seedTriageScenario(true);
     const ticket = await seedTicket(scenario);
