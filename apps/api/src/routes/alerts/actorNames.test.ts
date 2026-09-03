@@ -223,4 +223,20 @@ describe('withAlertActorNames', () => {
     await expect(withAlertActorNames([])).resolves.toEqual([]);
     expect(selectMock).not.toHaveBeenCalled();
   });
+
+  // #4445 — the alerts route runs a second withAlertActorNames call on
+  // pseudo-rows built from live verdicts (`{ id: verdict.id, feedbackBy }`)
+  // so the verdict badge can show who already voted. Same generic mechanism
+  // as acknowledgedBy/resolvedBy/dismissedBy, just a different id field.
+  it('resolves feedbackBy to feedbackByName for a verdict pseudo-row', async () => {
+    mockUsersQuery([{ id: TECH_ID, name: 'Dana Tech' }]);
+
+    const [row] = await withAlertActorNames([
+      { id: 'verdict-1', feedbackBy: TECH_ID },
+    ]);
+
+    expect(row).toEqual(
+      expect.objectContaining({ feedbackBy: TECH_ID, feedbackByName: 'Dana Tech' })
+    );
+  });
 });

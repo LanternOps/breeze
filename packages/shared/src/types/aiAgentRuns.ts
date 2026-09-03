@@ -469,6 +469,25 @@ export interface AlertAiVerdictSummaryDto {
   rationale: string;
   patternKind: AiAlertVerdictPattern['kind'] | null;
   feedback: 'up' | 'down' | null;
+  /**
+   * User id that recorded `feedback` (the CAS-guarded write in
+   * `recordVerdictFeedback`), or null before anyone has voted. Mirrored
+   * verbatim from the row — always a raw id, never a display name. #4445.
+   */
+  feedbackBy: string | null;
+  /**
+   * Display name for `feedbackBy`, resolved the same way
+   * `acknowledgedByName`/`resolvedByName` are (`routes/alerts/actorNames.ts`,
+   * #3966) so the verdict badge can show WHO already voted instead of a raw
+   * uuid, and so a same-org tech gets a clear "taken by X" instead of a bare
+   * 409. Optional (not just nullable): only the alerts list/detail routes
+   * resolve it today — `projectAlertAiVerdictSummary` itself never sets this
+   * key, since it has no join to `users` available. Other callers (e.g. the
+   * correlation group detail route) omit the key entirely; that surface
+   * doesn't render the badge yet (#4187 P2-1 follow-up "group-detail
+   * badge"), so there is nothing to enrich. #4445.
+   */
+  feedbackByName?: string | null;
   suggestedIntentId: string | null;
   createdAt: string;
 }

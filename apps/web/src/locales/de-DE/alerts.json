@@ -536,6 +536,7 @@
     "feedbackThanks": "Danke für dein Feedback",
     "feedbackTaken": "Für diese Einschätzung wurde bereits Feedback abgegeben",
     "feedbackFailed": "Feedback konnte nicht gespeichert werden",
+    "feedbackBy": "Feedback von {{name}}",
     "hideNoise": "KI-Rauschen ausblenden",
     "suggestionPending": "KI hat eine Aktion vorgeschlagen — in Freigaben prüfen",
     "none": "Noch keine KI-Einschätzung"
