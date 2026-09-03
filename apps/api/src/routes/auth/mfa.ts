@@ -23,6 +23,7 @@ import {
   AuthIssuanceCapabilityError,
   issueUserSession,
   completeInitialMfaEnrollment,
+  replaceSessionOnMfaFactorWrite,
   issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
   authBrowserTransitionsEnforced,
@@ -34,7 +35,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
-import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
@@ -1221,20 +1222,79 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
     return c.json({ error: message, message }, 400);
   }
 
+  // SR2-19 keeps its teeth: rotating the recovery-code set advances mfa_epoch
+  // and revokes every refresh family, so a stale set can never stay usable from
+  // another live session. What it must NOT do is evict the ACTOR — this
+  // response body carries the one-time plaintext codes, and a caller signed out
+  // by its own request is redirected to /login before it can read them (#4480).
+  // So take the same road /mfa/enable already takes for the codes it shows at
+  // enrollment: one transaction bumps the epoch, revokes every family, mints a
+  // REPLACEMENT session bound to the post-bump epochs, and writes the new
+  // hashes. Every other session dies; this one is handed a token that lives.
   const recoveryCodes = generateRecoveryCodes();
-  // Rotating recovery codes advances mfa_epoch and signs the user out — per
-  // SR2-19 this is intended: the recovery-code set is part of the MFA config,
-  // and a stale set otherwise remains usable after rotation from a stolen
-  // session.
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-recovery-rotate', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await replaceSessionOnMfaFactorWrite({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        // Carry the caller's OWN assurance forward, never elevate it: rotating
+        // recovery codes proves a password, not a factor. Enrollment can hard-code
+        // `true` because it just installed the factor; this path cannot.
+        mfa: auth.token?.mfa === true,
+        // SR-001: this is a RE-MINT of an existing session, so the device
+        // binding comes from the previously-signed `mdid` claim, never from the
+        // forgeable request header — the same rule /auth/refresh follows. A
+        // bound mobile session must not be silently un-bound by omitting the
+        // header on a rotation call.
+        mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      // The `mfaEnabled` read above is advisory (it answers with a friendly
+      // 400); this is the real check, folded into the epoch bump's WHERE so a
+      // concurrent /mfa/disable cannot slip a rotation onto a now-unprotected
+      // account. Losing that race is a 409, not a silent write.
+      expectedMfaEnabled: true,
+      revokeReason: 'mfa-recovery-rotate',
+      recoveryCodes,
+      recoveryCodeHashes,
+      persistFactor: async (tx, hashes) => {
+        const rows = await tx
+          .update(users)
+          .set({
+            mfaRecoveryCodes: [...hashes],
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('Recovery-code rotation user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  await bindIssuedUserSession(result.issued);
+  installAuthorizedUserSessionCookies(c, result.issued);
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -1243,8 +1303,13 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { count: recoveryCodes.length, mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: { count: recoveryCodes.length, mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'Recovery codes generated successfully' });
+  return c.json({
+    success: true,
+    recoveryCodes: result.recoveryCodes,
+    message: 'Recovery codes generated successfully',
+    tokens: toPublicTokens(result.issued),
+  });
 });

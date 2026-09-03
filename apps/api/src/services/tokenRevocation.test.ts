@@ -253,6 +253,41 @@ describe('tokenRevocation', () => {
       );
     });
 
+    // #4480: a caller that mints a REPLACEMENT session and then runs this
+    // cleanup would otherwise revoke its own brand-new token whenever more
+    // than a second elapsed between mint and cleanup — `iat <= now - 1` reads
+    // as revoked at /auth/refresh. Clamping the cutoff below the issuance
+    // instant keeps the replacement alive while still cutting off every token
+    // that predates it.
+    it('clamps the cutoff below a caller-supplied issuance instant', async () => {
+      const { redis, mockMulti } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      const issuedAt = Math.floor(Date.now() / 1000) - 30;
+
+      await revokeAllUserTokens('user-1', { preserveTokensIssuedAtOrAfter: issuedAt });
+
+      expect(mockMulti.setex).toHaveBeenCalledWith(
+        'token:revoked_after:user-1',
+        expect.any(Number),
+        String(issuedAt - 1)
+      );
+    });
+
+    it('never widens the cutoff past the default when the issuance instant is in the future', async () => {
+      const { redis, mockMulti } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      const defaultCutoff = Math.floor(Date.now() / 1000) - 1;
+
+      await revokeAllUserTokens('user-1', {
+        preserveTokensIssuedAtOrAfter: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const cutoffCall = mockMulti.setex.mock.calls.find(
+        (call: unknown[]) => call[0] === 'token:revoked_after:user-1'
+      );
+      expect(Number(cutoffCall?.[2])).toBeLessThanOrEqual(defaultCutoff);
+    });
+
     it('sets both access and revoked_after keys via multi', async () => {
       const { redis, mockMulti } = createMockRedis();
       mockGetRedis.mockReturnValue(redis);

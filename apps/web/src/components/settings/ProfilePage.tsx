@@ -727,6 +727,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const handleGenerateRecoveryCodes = async (currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
@@ -745,6 +747,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const data = await response.json();
+      // #4480: rotating the codes rotates the SESSION too — the API advances
+      // mfa_epoch and revokes every refresh family, so the token this page is
+      // holding is already dead and the only live one is in this response.
+      // Adopt it before revealing the codes; the refresh/CSRF cookies came with
+      // the same response. Refusal (stale generation) is not an error: the codes
+      // are already minted and the old set is already gone, so they still have
+      // to be shown — the user would otherwise be left with no working set at all.
+      if (data.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
+      }
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
       return true;

@@ -133,6 +133,7 @@ interface AuthState {
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
+  commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -226,6 +227,31 @@ export const useAuthStore = create<AuthState>()(
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
       })),
+
+      /**
+       * Adopt a replacement session an authenticated endpoint handed back after
+       * rotating the user's own authority (#4480: POST /auth/mfa/recovery-codes
+       * bumps mfa_epoch and revokes every refresh family, then re-issues for the
+       * caller). Unlike commitMfaEnrollmentIfCurrent this asserts nothing about
+       * the user record — only the tokens move.
+       *
+       * Fenced on `sessionGeneration`: a logout or re-login that raced the
+       * request has already bumped it, and pushing a token into THAT session
+       * would resurrect an evicted one.
+       */
+      commitReissuedSessionIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return { tokens };
+        });
+        return committed;
+      },
 
       commitMfaEnrollmentIfCurrent: (generation, tokens) => {
         let committed = false;
