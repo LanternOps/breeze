@@ -336,6 +336,46 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
   });
 });
 
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../../migrations/', import.meta.url));
+
+/**
+ * Newest migration that (re)defines breeze_cascade_device_org_id(), resolved
+ * the same way autoMigrate applies files — filename `localeCompare` order,
+ * last definition wins — and sliced down to that function's body so an
+ * unrelated `UPDATE public.ai_agent_runs` elsewhere in the same file (e.g. a
+ * scripted backfill) cannot stand in for a statement the body dropped.
+ *
+ * Resolved dynamically rather than by hardcoded filename so a later migration
+ * replacing the function again cannot leave this contract silently asserting
+ * a superseded definition. `CREATE FUNCTION` is matched as well as
+ * `CREATE OR REPLACE FUNCTION`: a DROP + plain CREATE redefinition counts.
+ */
+const DEFINES_CASCADE_FN = /CREATE (OR REPLACE )?FUNCTION (public\.)?breeze_cascade_device_org_id/;
+
+let cachedCascadeFn: { name: string; body: string } | undefined;
+
+function newestCascadeFunctionBody(): { name: string; body: string } {
+  if (cachedCascadeFn) return cachedCascadeFn;
+  const definitions = readdirSync(MIGRATIONS_DIR)
+    .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+    .sort((a, b) => a.localeCompare(b))
+    .filter((name) => DEFINES_CASCADE_FN.test(readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8')));
+  const name = definitions.at(-1);
+  expect(name, 'no migration defines breeze_cascade_device_org_id()').toBeTruthy();
+
+  const src = readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8');
+  const body = src.match(
+    /CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?breeze_cascade_device_org_id[\s\S]*?\n\$\$;/,
+  );
+  expect(
+    body,
+    `${name} matched the function-definition pattern but its "AS $$ ... $$;" body could not be sliced out`,
+  ).toBeTruthy();
+
+  cachedCascadeFn = { name: name!, body: body![0] };
+  return cachedCascadeFn;
+}
+
 /**
  * ai_agent_runs run-lineage detach coverage (#3828 branch-review blocker 2).
  *
@@ -384,7 +424,6 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
 describe('ai_agent_runs run-lineage detach coverage', () => {
   const runsCfg = getTableConfig(aiAgentRuns);
   const denormTableSet = new Set<string>(getDeviceOrgDenormalizedTables());
-  const MIGRATIONS_DIR = fileURLToPath(new URL('../../../migrations/', import.meta.url));
 
   // Columns that reference the run's OWN identity, not a row that moves WITH
   // the device — must stay untouched by device-lineage detach.
@@ -470,44 +509,6 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
     }
   }
 
-  /**
-   * Newest migration that (re)defines breeze_cascade_device_org_id(), resolved
-   * the same way autoMigrate applies files — filename `localeCompare` order,
-   * last definition wins — and sliced down to that function's body so an
-   * unrelated `UPDATE public.ai_agent_runs` elsewhere in the same file (e.g. a
-   * scripted backfill) cannot stand in for a statement the body dropped.
-   *
-   * Resolved dynamically rather than by hardcoded filename so a later migration
-   * replacing the function again cannot leave this contract silently asserting
-   * a superseded definition. `CREATE FUNCTION` is matched as well as
-   * `CREATE OR REPLACE FUNCTION`: a DROP + plain CREATE redefinition counts.
-   */
-  const DEFINES_CASCADE_FN = /CREATE (OR REPLACE )?FUNCTION (public\.)?breeze_cascade_device_org_id/;
-
-  let cachedCascadeFn: { name: string; body: string } | undefined;
-
-  function newestCascadeFunctionBody(): { name: string; body: string } {
-    if (cachedCascadeFn) return cachedCascadeFn;
-    const definitions = readdirSync(MIGRATIONS_DIR)
-      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
-      .sort((a, b) => a.localeCompare(b))
-      .filter((name) => DEFINES_CASCADE_FN.test(readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8')));
-    const name = definitions.at(-1);
-    expect(name, 'no migration defines breeze_cascade_device_org_id()').toBeTruthy();
-
-    const src = readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8');
-    const body = src.match(
-      /CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?breeze_cascade_device_org_id[\s\S]*?\n\$\$;/,
-    );
-    expect(
-      body,
-      `${name} matched the function-definition pattern but its "AS $$ ... $$;" body could not be sliced out`,
-    ).toBeTruthy();
-
-    cachedCascadeFn = { name: name!, body: body![0] };
-    return cachedCascadeFn;
-  }
-
   const moveOrgSource = () =>
     readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
 
@@ -582,13 +583,21 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
  * left alone) — a source-text regex assertion on the WHERE clause, not a
  * schema-FK-derived set, since there is only the one column to check.
  *
- * Deliberately NOT mirrored into breeze_cascade_device_org_id() (the DB-side
- * trigger for direct-SQL/non-route callers) in this round — the controller
- * ruling scoped this fix to the moveOrg route only. A direct
- * `UPDATE devices SET org_id = ...` that bypasses the route would still leave
- * a stale scope_device_id; tracked as a known gap for a follow-up, the same
- * way the ai_agent_runs `ticket_id` gap above was carried as a documented
- * hole until #4215 closed it in both sites.
+ * MIRRORED INTO breeze_cascade_device_org_id() SINCE #4454. P2-2 review round 1
+ * scoped the original fix to the moveOrg route only, leaving the DB-side
+ * trigger — the path every direct-SQL / non-route caller takes, orgMerge's
+ * `devices` repoint included — able to move a device out from under a LIVE
+ * intent while that intent kept naming it. That is the same documented hole the
+ * ai_agent_runs `ticket_id` gap was carried as until #4215 closed it in both
+ * sites, and it is closed the same way here. Both sites are asserted below, so
+ * a future edit that fixes one and forgets the other goes red.
+ *
+ * The two cases below are STATIC source assertions and prove only that the
+ * statement is present and correctly gated. That the statement actually matches
+ * rows — through FORCE ROW LEVEL SECURITY on action_intents, past the
+ * `action_intents_block_content_update()` immutability trigger, and past
+ * `action_intents_scope_device_chk` — needs a real server and lives in
+ * `src/__tests__/integration/deviceMoveOrgIntentScopeTombstone.integration.test.ts`.
  */
 describe('action_intents.scope_device_id detach coverage', () => {
   it('moveOrg.ts tombstones scope_device_id for the moved device, scoped to live statuses', () => {
@@ -611,5 +620,47 @@ describe('action_intents.scope_device_id detach coverage', () => {
       .split(',')
       .map((s) => s.trim().replace(/^'|'$/g, ''));
     expect(statuses.sort()).toEqual(['approved', 'executing', 'pending_approval']);
+  });
+
+  it('breeze_cascade_device_org_id() mirrors the tombstone, scoped to the same live statuses (#4454)', () => {
+    const { name, body } = newestCascadeFunctionBody();
+
+    const match = body.match(
+      /UPDATE public\.action_intents\s+SET scope_device_id = NULL\s+WHERE scope_device_id = NEW\.id\s+AND status IN \(([^)]+)\)/,
+    );
+    expect(
+      match,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no "UPDATE public.action_intents SET scope_device_id = NULL WHERE scope_device_id = NEW.id AND status IN (...)" statement — a device org-move that bypasses the moveOrg route would leave a LIVE intent pointing at a device now in another tenant (#4454)`,
+    ).toBeTruthy();
+
+    // Same reasoning as the route assertion above: an unconditional detach
+    // would rewrite a COMPLETED intent's historical target.
+    const statuses = match![1]!
+      .split(',')
+      .map((s) => s.trim().replace(/^'|'$/g, ''));
+    expect(
+      statuses.sort(),
+      `${name}'s action_intents tombstone has drifted from moveOrg.ts's status gate`,
+    ).toEqual(['approved', 'executing', 'pending_approval']);
+  });
+
+  // A CONVENTION guard, not a behavioural one — worth being honest about.
+  // `action_intents` is not returned by breeze_device_child_orgid_tables() (its
+  // device pointer is `scope_device_id`, not `device_id`), so the generic loop
+  // cannot reach these rows and moving the statement after it would not change
+  // what the trigger does today. What this pins is that the trigger's internal
+  // order keeps mirroring moveOrg.ts's, which is the property that made the
+  // tickets requester detach — where placement IS load-bearing, because the
+  // re-stamp is the statement that trips its constraint — easy to get right.
+  it('places the tombstone BEFORE the generic device-child org re-stamp loop', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const tombstone = body.indexOf('UPDATE public.action_intents');
+    const loop = body.indexOf('breeze_device_child_orgid_tables()');
+    expect(tombstone, `${name}: no action_intents tombstone found`).toBeGreaterThan(-1);
+    expect(loop, `${name}: no device-child re-stamp loop found`).toBeGreaterThan(-1);
+    expect(
+      tombstone,
+      `${name}: the action_intents tombstone must run before the generic re-stamp loop, mirroring moveOrg.ts's internal order`,
+    ).toBeLessThan(loop);
   });
 });
