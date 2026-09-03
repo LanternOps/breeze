@@ -11,6 +11,7 @@ import {
   assertApprovalAssurance,
   assertDecisionConsistent,
   StepUpRequiredError,
+  L4_TRUSTED_PLATFORM_BOUND_BASES,
 } from './authenticatorAssurance';
 import type { AssuranceDecision } from './authenticatorAssurance';
 import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
@@ -1002,5 +1003,22 @@ describe('assertApprovalAssurance — mobile public_key_alg (#1374 W02)', () => 
       }),
     ).rejects.toThrow(/public_key_alg/);
     expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});
+
+// The cross-module half of the W02 fail-closed contract. Lives here rather than
+// in authenticatorAttestation.test.ts because importing this module pulls in the
+// db layer, which that pure-unit suite deliberately does not stand up.
+describe('verifyPlatformAttestation is fail-closed against the L4 trusted set (#1374 W02)', () => {
+  it('never yields a basis that may reach critical tier while no verifier is wired', async () => {
+    const { verifyPlatformAttestation } = await import('./authenticatorAttestation');
+    const transcript = Buffer.alloc(32, 1);
+    for (const attestation of [
+      { platform: 'ios' as const, attestationObject: 'x', keyId: 'k' },
+      { platform: 'android' as const, certificateChain: ['a', 'b'], playIntegrityToken: 'jwt' },
+    ]) {
+      const result = await verifyPlatformAttestation({ attestation, transcript, publicKeySpkiB64: 'spki' });
+      expect(L4_TRUSTED_PLATFORM_BOUND_BASES.has(result.basis)).toBe(false);
+    }
   });
 });

@@ -99,3 +99,88 @@ export const authenticatorPolicySchema = z.object({
 });
 
 export type AuthenticatorPolicyInput = z.infer<typeof authenticatorPolicySchema>;
+
+/**
+ * The platform attestation a phone presents at registration (#1374 W02).
+ *
+ * Structural validation only — this schema says "the client sent something
+ * shaped like an iOS/Android attestation", never "the attestation is valid".
+ * The cryptographic verification lives server-side in
+ * `services/authenticatorAttestation.ts` (dispatching to the App Attest
+ * verifier in W03 and the Key Attestation verifier in W04); until those land
+ * every attestation resolves `unattested` and the registered key cannot reach
+ * L4.
+ *
+ * `.strict()` on both branches: a field this server does not understand must be
+ * a 400, never something silently dropped on the floor.
+ */
+export const mobileAttestationSchema = z.discriminatedUnion('platform', [
+  z
+    .object({
+      platform: z.literal('ios'),
+      /** base64 CBOR attestation object from DCAppAttestService.attestKey. */
+      attestationObject: z.string().min(1).max(16384),
+      /** base64 App Attest keyId. */
+      keyId: z.string().min(1).max(256),
+    })
+    .strict(),
+  z
+    .object({
+      platform: z.literal('android'),
+      /** base64 DER certs, leaf first, from KeyStore.getCertificateChain. */
+      certificateChain: z.array(z.string().min(1).max(16384)).min(2).max(8),
+      /** Play Integrity token; optional for non-Play enterprise distribution. */
+      playIntegrityToken: z.string().min(1).max(16384).optional(),
+    })
+    .strict(),
+]);
+
+export type MobileAttestation = z.infer<typeof mobileAttestationSchema>;
+
+/**
+ * Mobile attested-registration verify body (#1374 W02) — step 2 of the
+ * challenge/verify protocol (`POST /authenticator/devices/mobile/challenge`
+ * then `POST /authenticator/devices/mobile/verify`).
+ *
+ * `.strict()` throughout: the whole point of this wave is that the client no
+ * longer gets to assert anything about platform-binding, so a stray
+ * `isPlatformBound` must be a 400, never a silently-dropped field.
+ *
+ * `publicKeyAlg` is NOT a free client choice about how to verify an existing
+ * key — it is part of the signed registration transcript and is stored on the
+ * new row, so a mismatch between the declared algorithm and the presented key
+ * makes the proof-of-possession fail rather than changing how the key is read.
+ */
+export const mobileAttestationVerifySchema = z
+  .object({
+    registerGrantId: z.string().min(1).max(128).optional(),
+    attemptId: z.string().min(1).max(64),
+    /** SPKI DER public key, base64. */
+    publicKey: z.string().min(1).max(8192),
+    publicKeyAlg: z.enum(['RS256', 'ES256']),
+    label: z.string().trim().min(1).max(255),
+    /**
+     * Registration proof-of-possession: a biometric-gated signature by the new
+     * approval key over `base64(registrationTranscript(...))`. Distinct from
+     * `last_used_at`, which keeps meaning "used for a real approval".
+     */
+    popSignature: z.string().min(1).max(4096),
+    attestation: mobileAttestationSchema,
+  })
+  .strict();
+
+export type MobileAttestationVerify = z.infer<typeof mobileAttestationVerifySchema>;
+
+/**
+ * Mobile attested-registration challenge body (#1374 W02) — step 1 of 2. The
+ * register grant is validated NON-consuming here and consumed at /verify, so a
+ * client that fails attestation does not burn its single-use grant.
+ */
+export const mobileAttestationChallengeSchema = z
+  .object({
+    registerGrantId: z.string().min(1).max(128).optional(),
+    platform: z.enum(['ios', 'android']),
+  })
+  .strict();
+
+export type MobileAttestationChallenge = z.infer<typeof mobileAttestationChallengeSchema>;
