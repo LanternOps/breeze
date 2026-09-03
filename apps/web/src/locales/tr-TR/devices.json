@@ -768,6 +768,8 @@
     "failedToDeleteGroup": "Grup silinemedi",
     "billedByContracts": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor: {{names}}. Önce bu sözleşme satırlarını kaldırın.",
     "billedByContractsCount": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor. Önce bu sözleşme satırlarını kaldırın.",
+    "quotedByQuotes": "Bu grup {{count}} açık teklifte fiyatlandırılıyor: {{names}}. Önce bu teklif satırlarını kaldırın.",
+    "quotedByQuotesCount": "Bu grup {{count}} açık teklifte fiyatlandırılıyor. Önce bu teklif satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",

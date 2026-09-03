@@ -768,6 +768,8 @@
     "failedToDeleteGroup": "Failed to delete group",
     "billedByContracts": "This group is billed by {{count}} contract(s): {{names}}. Remove those contract lines first.",
     "billedByContractsCount": "This group is billed by {{count}} contract(s). Remove those contract lines first.",
+    "quotedByQuotes": "This group is priced by {{count}} open quote(s): {{names}}. Remove those quote lines first.",
+    "quotedByQuotesCount": "This group is priced by {{count}} open quote(s). Remove those quote lines first.",
     "failedToRunScriptOnGroups": "Failed to run script on groups",
     "failedToApplyPolicyToGroups": "Failed to apply policy to groups",
     "failedToMoveDevice": "Failed to move device",

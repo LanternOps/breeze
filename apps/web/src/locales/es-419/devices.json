@@ -768,6 +768,8 @@
     "failedToDeleteGroup": "No se pudo eliminar el grupo",
     "billedByContracts": "Este grupo se factura mediante {{count}} contrato(s): {{names}}. Primero elimina esas líneas de contrato.",
     "billedByContractsCount": "Este grupo se factura mediante {{count}} contrato(s). Primero elimina esas líneas de contrato.",
+    "quotedByQuotes": "Este grupo tiene precio en {{count}} cotización(es) abierta(s): {{names}}. Elimina primero esas líneas de cotización.",
+    "quotedByQuotesCount": "Este grupo tiene precio en {{count}} cotización(es) abierta(s). Elimina primero esas líneas de cotización.",
     "failedToRunScriptOnGroups": "No se pudo ejecutar el script en grupos",
     "failedToApplyPolicyToGroups": "No se pudo aplicar la política a los grupos",
     "failedToMoveDevice": "No se pudo mover el dispositivo",

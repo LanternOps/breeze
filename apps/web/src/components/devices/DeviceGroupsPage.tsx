@@ -740,13 +740,26 @@ export default function DeviceGroupsPage() {
       if (!response.ok) {
         if (response.status === 409) {
           const body = await response.json().catch(() => null) as
-            { contractCount?: number; contracts?: Array<{ name: string }> } | null;
+            {
+              contractCount?: number;
+              contracts?: Array<{ name: string }>;
+              quoteCount?: number;
+              quotes?: Array<{ quoteNumber: string | null }>;
+            } | null;
+          const parts: string[] = [];
           if (body?.contractCount) {
             const names = body.contracts?.map((contract) => contract.name).join(", ");
-            throw new Error(names
+            parts.push(names
               ? t("deviceGroupsPage.billedByContracts", { count: body.contractCount, names })
               : t("deviceGroupsPage.billedByContractsCount", { count: body.contractCount }));
           }
+          if (body?.quoteCount) {
+            const numbers = body.quotes?.map((quote) => quote.quoteNumber).filter(Boolean).join(", ");
+            parts.push(numbers
+              ? t("deviceGroupsPage.quotedByQuotes", { count: body.quoteCount, names: numbers })
+              : t("deviceGroupsPage.quotedByQuotesCount", { count: body.quoteCount }));
+          }
+          if (parts.length > 0) throw new Error(parts.join(" "));
         }
         throw new Error(t("deviceGroupsPage.failedToDeleteGroup"));
       }

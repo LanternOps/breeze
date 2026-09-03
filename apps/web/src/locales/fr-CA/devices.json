@@ -768,6 +768,8 @@
     "failedToDeleteGroup": "Impossible de supprimer le groupe",
     "billedByContracts": "Ce groupe est facturé par {{count}} contrat(s) : {{names}}. Supprimez d’abord ces lignes de contrat.",
     "billedByContractsCount": "Ce groupe est facturé par {{count}} contrat(s). Supprimez d’abord ces lignes de contrat.",
+    "quotedByQuotes": "Ce groupe est tarifé par {{count}} soumission(s) ouverte(s) : {{names}}. Retirez d'abord ces lignes de soumission.",
+    "quotedByQuotesCount": "Ce groupe est tarifé par {{count}} soumission(s) ouverte(s). Retirez d'abord ces lignes de soumission.",
     "failedToRunScriptOnGroups": "Impossible d’exécuter un script sur les groupes",
     "failedToApplyPolicyToGroups": "Impossible d’appliquer la politique aux groupes",
     "failedToMoveDevice": "Impossible de déplacer l’appareil",
