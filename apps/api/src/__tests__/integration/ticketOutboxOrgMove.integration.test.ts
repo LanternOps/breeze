@@ -150,4 +150,44 @@ describe('ticket_outbox org re-stamp on move (#4743)', () => {
     `)) as unknown as Array<{ org_id: string }>;
     expect(row?.org_id).toBe(f.orgB.id);
   });
+
+  it('the device move-org rewrite leaves a sibling ticket_outbox row (different ticket) untouched', async () => {
+    const f = await seedSamePartnerOrgsWithDeviceTicket();
+    const rowId = await seedOutboxRow({ orgId: f.orgA.id, ticketId: f.ticketA.id });
+
+    // A second, device-less ticket in the SAME org as the moved device's
+    // ticket, with its own outbox row. Proves the tickets-join subquery is
+    // scoped to `device_id = <moved device>` and does not over-broadly
+    // rewrite every ticket_outbox row in the source org.
+    const adminDb = getTestDb() as any;
+    const unique = uniqueSuffix();
+    const [siblingTicket] = await adminDb
+      .insert(tickets)
+      .values({
+        orgId: f.orgA.id,
+        partnerId: f.partner.id,
+        ticketNumber: `TO-MOVE-SIBLING-${unique}`,
+        subject: 'ticket_outbox org re-stamp test — sibling, no device',
+        source: 'portal',
+      })
+      .returning();
+    const siblingRowId = await seedOutboxRow({ orgId: f.orgA.id, ticketId: siblingTicket!.id });
+
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        UPDATE ticket_outbox SET org_id = ${f.orgB.id}::uuid
+         WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${f.device.id}::uuid)
+      `)
+    );
+
+    const [movedRow] = (await getTestDb().execute(sql`
+      SELECT org_id FROM ticket_outbox WHERE id = ${rowId}
+    `)) as unknown as Array<{ org_id: string }>;
+    expect(movedRow?.org_id).toBe(f.orgB.id);
+
+    const [siblingRow] = (await getTestDb().execute(sql`
+      SELECT org_id FROM ticket_outbox WHERE id = ${siblingRowId}
+    `)) as unknown as Array<{ org_id: string }>;
+    expect(siblingRow?.org_id).toBe(f.orgA.id);
+  });
 });
