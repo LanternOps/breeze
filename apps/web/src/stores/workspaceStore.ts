@@ -20,6 +20,14 @@ export interface TabState {
   id: string;
   sessionId: string | null;
   title: string;
+  /**
+   * True once the user has explicitly renamed this tab (vs. the "New Chat"
+   * placeholder or a server auto-generated title). Gates two things: whether
+   * a `title_updated` SSE event from the backend's first-message auto-title
+   * is allowed to overwrite it, and whether the title is sent along when the
+   * session is first created so it survives past that auto-title step.
+   */
+  isTitleCustom: boolean;
   contextLabel: string | null;
   pageContext: AiPageContext | null;
   messages: AiMessage[];
@@ -42,6 +50,7 @@ function createEmptyTab(title?: string): TabState {
     id: crypto.randomUUID(),
     sessionId: null,
     title: title ?? 'New Chat',
+    isTitleCustom: false,
     contextLabel: null,
     pageContext: null,
     messages: [],
@@ -69,7 +78,14 @@ interface WorkspaceState {
   createTab: (title?: string, context?: AiPageContext) => void;
   closeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
-  renameTab: (tabId: string, title: string) => void;
+  /**
+   * Renames a tab. Updates local state immediately; if the tab already has a
+   * backing session, persists the rename via PATCH /ai/sessions/:id and rolls
+   * the local title back if that call fails. A tab with no session yet stays
+   * local-only — the title is sent along when the session is created (see
+   * sendMessage) so it isn't lost.
+   */
+  renameTab: (tabId: string, title: string) => Promise<void>;
 
   // Chat actions (tab-scoped)
   sendMessage: (tabId: string, content: string) => Promise<void>;
@@ -100,7 +116,7 @@ interface WorkspaceState {
 }
 
 type PersistedWorkspace = {
-  tabs: Array<{ id: string; sessionId: string | null; title: string; contextLabel: string | null; pageContext: AiPageContext | null }>;
+  tabs: Array<{ id: string; sessionId: string | null; title: string; isTitleCustom: boolean; contextLabel: string | null; pageContext: AiPageContext | null }>;
   activeTabId: string | null;
 };
 
@@ -169,8 +185,41 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           updateTab(tabId, { unreadCount: 0, hasApprovalPending: false });
         },
 
-        renameTab: (tabId: string, title: string) => {
-          updateTab(tabId, { title });
+        renameTab: async (tabId: string, title: string) => {
+          const trimmed = title.trim();
+          if (!trimmed) return;
+
+          const tab = getTab(tabId);
+          if (!tab) return;
+          if (trimmed === tab.title && tab.isTitleCustom) return;
+
+          const previousTitle = tab.title;
+          const previousIsTitleCustom = tab.isTitleCustom;
+          updateTab(tabId, { title: trimmed, isTitleCustom: true });
+
+          if (!tab.sessionId) return;
+
+          try {
+            const res = await fetchWithAuth(`/ai/sessions/${tab.sessionId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ title: trimmed }),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, {
+                title: previousTitle,
+                isTitleCustom: previousIsTitleCustom,
+                error: extractApiError(data, 'Failed to rename chat'),
+              });
+            }
+          } catch (err) {
+            console.error('[Workspace] Rename failed:', err);
+            updateTab(tabId, {
+              title: previousTitle,
+              isTitleCustom: previousIsTitleCustom,
+              error: 'Failed to rename chat',
+            });
+          }
         },
 
         sendMessage: async (tabId: string, content: string) => {
@@ -187,7 +236,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             try {
               const res = await fetchWithAuth('/ai/sessions', {
                 method: 'POST',
-                body: JSON.stringify({ pageContext: tab.pageContext ?? undefined }),
+                body: JSON.stringify({
+                  pageContext: tab.pageContext ?? undefined,
+                  // Carry a user-set title through to the new session so the
+                  // server's first-message auto-title (gated on `!title`)
+                  // never clobbers a rename made before the first message.
+                  title: tab.isTitleCustom ? tab.title : undefined,
+                }),
               });
               if (!res.ok) {
                 const data = await res.json().catch(() => null);
@@ -308,9 +363,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                       }
                     }
 
-                    // Update title from title_updated events
+                    // Update title from title_updated events — but never
+                    // stomp on a title the user explicitly set (guards a race
+                    // where the rename lands after the auto-title generation
+                    // already started server-side).
                     if (event.type === 'title_updated') {
-                      updateTab(tabId, { title: event.title });
+                      const currentTab = getTab(tabId);
+                      if (!currentTab?.isTitleCustom) {
+                        updateTab(tabId, { title: event.title });
+                      }
                     }
 
                     currentAssistantId = processStreamEvent(
@@ -601,6 +662,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           id: t.id,
           sessionId: t.sessionId,
           title: t.title,
+          isTitleCustom: t.isTitleCustom,
           contextLabel: t.contextLabel,
           pageContext: t.pageContext,
         })),
@@ -616,6 +678,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             ...createEmptyTab(t.title),
             id: t.id,
             sessionId: t.sessionId,
+            isTitleCustom: t.isTitleCustom ?? false,
             contextLabel: t.contextLabel,
             pageContext: t.pageContext,
           })),

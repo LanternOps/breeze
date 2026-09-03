@@ -49,6 +49,7 @@ function tab(over: Partial<TabState> = {}): TabState {
     id: 'tab-1',
     sessionId: 'session-1',
     title: 'Chat',
+    isTitleCustom: false,
     contextLabel: null,
     pageContext: null,
     messages: [],
@@ -137,6 +138,142 @@ describe('workspace store clearPendingApproval', () => {
     expect(tabById('tab-1').pendingApproval).not.toBeNull();
     expect(tabById('tab-1').hasApprovalPending).toBe(true);
     expect(tabById('tab-2').hasApprovalPending).toBe(true);
+  });
+});
+
+describe('workspace store renameTab', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageHarness.data.clear();
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: 'session-1', title: 'New Chat', isTitleCustom: false })],
+      activeTabId: 'tab-1',
+      _readers: new Map(),
+    });
+  });
+
+  const tabById = (id: string) => useWorkspaceStore.getState().tabs.find(t => t.id === id)!;
+
+  it('optimistically renames and persists via PATCH /ai/sessions/:id', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ success: true, title: 'Printer troubleshooting' }));
+
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Printer troubleshooting');
+
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Printer troubleshooting' }),
+    });
+    expect(tabById('tab-1').title).toBe('Printer troubleshooting');
+    expect(tabById('tab-1').isTitleCustom).toBe(true);
+  });
+
+  it('trims whitespace before persisting', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ success: true, title: 'Trimmed' }));
+
+    await useWorkspaceStore.getState().renameTab('tab-1', '  Trimmed  ');
+
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Trimmed' }),
+    });
+    expect(tabById('tab-1').title).toBe('Trimmed');
+  });
+
+  it('is a no-op for an empty/whitespace-only title', async () => {
+    await useWorkspaceStore.getState().renameTab('tab-1', '   ');
+
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(tabById('tab-1').title).toBe('New Chat');
+    expect(tabById('tab-1').isTitleCustom).toBe(false);
+  });
+
+  it('is a no-op for an unknown tab id', async () => {
+    await useWorkspaceStore.getState().renameTab('tab-missing', 'Whatever');
+
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the title and custom flag when the PATCH fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Session not found' }, false, 404));
+
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Will fail');
+
+    expect(tabById('tab-1').title).toBe('New Chat');
+    expect(tabById('tab-1').isTitleCustom).toBe(false);
+    expect(tabById('tab-1').error).toBe('Session not found');
+  });
+
+  it('rolls back on a network error', async () => {
+    fetchWithAuthMock.mockRejectedValueOnce(new Error('network down'));
+
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Will fail');
+
+    expect(tabById('tab-1').title).toBe('New Chat');
+    expect(tabById('tab-1').isTitleCustom).toBe(false);
+    expect(tabById('tab-1').error).toBe('Failed to rename chat');
+  });
+
+  it('updates local state without calling the API when the tab has no session yet', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: null, title: 'New Chat', isTitleCustom: false })],
+    });
+
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Pre-session rename');
+
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(tabById('tab-1').title).toBe('Pre-session rename');
+    expect(tabById('tab-1').isTitleCustom).toBe(true);
+  });
+});
+
+describe('workspace store sendMessage title handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageHarness.data.clear();
+    useWorkspaceStore.setState({ tabs: [], activeTabId: null, _readers: new Map() });
+  });
+
+  const makeStreamResponse = (): Response => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body } as unknown as Response;
+  };
+
+  it('sends the custom title when creating a session for a manually-renamed tab', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: null, title: 'My Renamed Chat', isTitleCustom: true })],
+      activeTabId: 'tab-1',
+    });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse({ id: 'session-1' }))
+      .mockResolvedValueOnce(makeStreamResponse());
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(1, '/ai/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ pageContext: undefined, title: 'My Renamed Chat' }),
+    });
+  });
+
+  it('omits the title when the tab still has its default (non-custom) title', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: null, title: 'New Chat', isTitleCustom: false })],
+      activeTabId: 'tab-1',
+    });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse({ id: 'session-1' }))
+      .mockResolvedValueOnce(makeStreamResponse());
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(1, '/ai/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ pageContext: undefined, title: undefined }),
+    });
   });
 });
 

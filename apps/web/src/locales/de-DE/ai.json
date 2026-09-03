@@ -424,7 +424,9 @@
     "limit": "Bis zu 5 gleichzeitige Unterhaltungen"
   },
   "workspaceTab": {
-    "approvalPending": "Genehmigung ausstehend"
+    "approvalPending": "Genehmigung ausstehend",
+    "renameLabel": "Chat umbenennen",
+    "renameHint": "Doppelklicken zum Umbenennen"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Neuer Tab (Cmd+Shift+N)",
