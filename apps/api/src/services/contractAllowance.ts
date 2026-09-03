@@ -93,6 +93,6 @@ export function overageValue(
   spec: Pick<AllowanceSpec, 'overageUnitPrice'>,
   currencyCode: string,
 ): string {
-  const bills = billsOverage(r) && spec.overageUnitPrice !== null;
+  const bills = billsOverage(r) && spec.overageUnitPrice != null;
   return multiplyToCurrency(bills ? r.overage : 0, bills ? spec.overageUnitPrice! : '0', currencyCode);
 }

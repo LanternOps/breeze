@@ -48,7 +48,8 @@ import {
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
-import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
+import { db } from '../db';
+import { computeContractEstimate, getContract, lockContractRow, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
@@ -296,6 +297,10 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
+            // The tool executes inside the request's ambient DB transaction.
+            // Hold the producer lock before re-reading both the line and its
+            // resolved quantity so an allowance edit cannot race materialization.
+            await lockContractRow(db, contractId);
             const { contract, lines } = await getContract(contractId, contractActor);
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });

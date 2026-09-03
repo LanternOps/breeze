@@ -541,8 +541,9 @@ export interface MaterializedContractLine {
 
 /**
  * The single invoice-writing path for a resolved contract line. The surrounding
- * transaction/savepoint makes the base + optional bill-mode sibling atomic even
- * when the caller is an interactive draft edit rather than the full generation run.
+ * ambient transaction makes the base + optional bill-mode sibling atomic: the
+ * assertInTransaction guard ensures every nested savepoint and write uses its
+ * shared reserved connection, including interactive draft edits.
  */
 export async function materializeContractLineOntoInvoice(
   actor: InvoiceActor,
@@ -1789,7 +1790,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
     // The ONE definition of the split, shared with resolveLineQty.
     const r = applyAllowance(Number(quantity), l, 'included_units');
-    if (r.included !== null) quantity = r.billed.toFixed(2);   // the allowance overrides the count
+    // The materializer owns the base quantity, including allowance formatting.
 
     const materialized = await materializeContractLineOntoInvoice(actor, {
       invoiceId: inv.id,
@@ -1883,6 +1884,10 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]! as DeviceSetContractLineSpec;
+    const issues = contractLineInvariantIssues(l, { mode: 'create' });
+    if (issues.length > 0) {
+      throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_STATE', { issues });
+    }
     assertSpecDeviceSetLine(l);
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).

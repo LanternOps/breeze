@@ -149,10 +149,12 @@ describe('ContractEditor — allowance block (#3205 W04)', () => {
   });
 
   it('omits unchanged allowance keys when only an allowed line description changes', async () => {
-    renderEdit([line({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' })]);
+    renderEdit([line({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' })]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     fireEvent.change(screen.getByTestId('line-edit-desc-0'), { target: { value: 'Renamed endpoints' } });
-    fireEvent.click(screen.getByTestId('line-edit-save-0'));
+    const save = screen.getByTestId('line-edit-save-0');
+    expect(save).not.toBeDisabled();
+    fireEvent.click(save);
     await waitFor(() => expect(api.updateContractLine).toHaveBeenCalled());
     expect((api.updateContractLine as any).mock.calls[0][2]).toEqual({ description: 'Renamed endpoints' });
   });
@@ -171,7 +173,7 @@ describe('ContractEditor — allowance block (#3205 W04)', () => {
   });
 
   it('removes an allowance by sending all three PATCH keys as null', async () => {
-    renderEdit([line({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' })]);
+    renderEdit([line({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' })]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     fireEvent.click(screen.getByTestId('line-edit-allowance-toggle-0'));
     fireEvent.click(screen.getByTestId('line-edit-save-0'));
@@ -182,7 +184,7 @@ describe('ContractEditor — allowance block (#3205 W04)', () => {
   });
 
   it('switches bill to flag while explicitly clearing the overage unit price', async () => {
-    renderEdit([line({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' })]);
+    renderEdit([line({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' })]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     fireEvent.click(screen.getByTestId('line-edit-overage-flag-0'));
     fireEvent.click(screen.getByTestId('line-edit-save-0'));
@@ -191,7 +193,7 @@ describe('ContractEditor — allowance block (#3205 W04)', () => {
   });
 
   it('disables Save and shows the USD hint for bill mode with an invalid price', async () => {
-    renderEdit([line({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' })]);
+    renderEdit([line({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' })]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
     fireEvent.change(screen.getByTestId('line-edit-overage-price-0'), { target: { value: '1.001' } });
     expect(screen.getByTestId('line-edit-overage-price-not-representable-0')).toHaveTextContent('USD');

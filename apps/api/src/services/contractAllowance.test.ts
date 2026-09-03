@@ -90,6 +90,10 @@ describe('overageValue — exact decimal money (#4607)', () => {
     expect(overageValue(over(0), { overageUnitPrice: null }, 'JPY')).toBe('0.00');
   });
 
+  it('is the currency-scaled zero when the overage rate is absent', () => {
+    expect(overageValue(over(2), { overageUnitPrice: undefined as never }, 'USD')).toBe('0.00');
+  });
+
   it('respects a zero-decimal currency', () => {
     expect(overageValue(over(1), { overageUnitPrice: '300.4' }, 'JPY')).toBe('300.00');
   });

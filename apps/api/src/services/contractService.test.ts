@@ -610,6 +610,17 @@ describe('contractService currency representability guard (W6-G3-1)', () => {
     expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(1);
   });
 
+  it('createContractWithLinesDetailed rejects an allowance on a flat line instead of stripping it', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    queueResult([{ id: 'line-1' }]);
+
+    await expect(svc.createContractWithLinesDetailed({
+      partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+      startDate: '2026-01-01', currencyCode: 'USD',
+      lines: [{ lineType: 'flat', description: 'Base fee', unitPrice: '10.00', taxable: false, includedQuantity: '25.00' }],
+    } as never)).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
+  });
+
   it('createContractWithLinesDetailed stamps deviceGroupName from the group row', async () => {
     const groupId = '33333333-3333-4333-8333-333333333333';
     queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);

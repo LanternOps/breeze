@@ -59,6 +59,12 @@ interface EditLineDraft {
   overageUnitPrice: string;
 }
 
+function integerQuantityForInput(value: string | null): string {
+  if (value === null) return '';
+  const quantity = Number(value);
+  return Number.isInteger(quantity) ? String(quantity) : value;
+}
+
 function draftFromLine(l: ContractLine): EditLineDraft {
   return {
     description: l.description,
@@ -70,7 +76,7 @@ function draftFromLine(l: ContractLine): EditLineDraft {
     deviceGroupId: l.deviceGroupId ?? '',
     catalogItemId: l.catalogItemId,
     allowanceOn: l.includedQuantity != null,
-    includedQuantity: l.includedQuantity ?? '',
+    includedQuantity: integerQuantityForInput(l.includedQuantity),
     overageMode: l.overageMode ?? 'bill',
     overageUnitPrice: l.overageUnitPrice ?? '',
   };
@@ -114,7 +120,7 @@ function buildLinePatch(l: ContractLine, d: EditLineDraft): UpdateContractLinePa
     patch.overageMode = null;
     patch.overageUnitPrice = null;
   } else if (d.allowanceOn) {
-    if (d.includedQuantity !== l.includedQuantity) patch.includedQuantity = d.includedQuantity;
+    if (d.includedQuantity !== integerQuantityForInput(l.includedQuantity)) patch.includedQuantity = d.includedQuantity;
     if (d.overageMode !== l.overageMode) patch.overageMode = d.overageMode;
     if (d.overageMode === 'flag') {
       if (l.overageUnitPrice !== null) patch.overageUnitPrice = null;

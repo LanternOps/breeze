@@ -25,6 +25,7 @@ vi.mock('./invoiceCheckout', () => ({
 }));
 
 vi.mock('./contractService', () => ({
+  lockContractRow: vi.fn().mockResolvedValue({ id: 'contract-1', currencyCode: 'USD' }),
   getContract: vi.fn().mockResolvedValue({ contract: { id: 'contract-1' }, lines: [], periods: [] }),
   computeContractEstimate: vi.fn().mockResolvedValue({ lines: [] }),
   materializeContractLineOntoInvoice: vi.fn().mockResolvedValue({
@@ -206,6 +207,33 @@ describe('manage_invoices', () => {
     });
     expect(invoiceService.addContractLine).not.toHaveBeenCalled();
     expect(JSON.parse(out)).toEqual({ line: { id: 'line-1' }, pricedFrom: 'contract_snapshot', overages: [] });
+  });
+
+  it('add_contract_line locks first and materializes the allowance line re-read under that lock', async () => {
+    const rereadLine = contractLineRow({
+      includedQuantity: '30.00', overageMode: 'bill', overageUnitPrice: '15.00',
+    });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({
+      contract: contractRow(), lines: [rereadLine], periods: [],
+    });
+    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+      currencyCode: 'USD', periodTotal: '390.00',
+      lines: [{ lineId: rereadLine.id, lineType: 'per_device', quantity: 30, value: '375.00', live: true, counted: 31, included: 30, overage: 1, overageMode: 'bill', overageValue: '15.00' }],
+      uncoveredDevices: null, overages: [],
+    });
+
+    await getTool().handler({
+      action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: rereadLine.id,
+    }, auth);
+
+    expect(contractService.lockContractRow).toHaveBeenCalledWith(expect.anything(), 'contract-1');
+    expect(vi.mocked(contractService.lockContractRow).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(contractService.getContract).mock.invocationCallOrder[0]!,
+    );
+    expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, expect.objectContaining({
+      line: expect.objectContaining({ includedQuantity: '30.00', overageUnitPrice: '15.00' }),
+      resolved: { counted: 31, billed: 30, included: 30, overage: 1, overageMode: 'bill' },
+    }));
   });
 
   it('add_contract_line materializes bill overage and reports its invoice line id', async () => {
