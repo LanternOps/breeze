@@ -1257,6 +1257,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4660 (extends #4470): a rejected `currentPassword` is 400 with a
+          // stable `code` (`invalid_credentials`), alongside the pre-existing
+          // 400s for a passwordless account and a too-weak new password. 401
+          // is reserved for a dead bearer.
           '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' }
         }

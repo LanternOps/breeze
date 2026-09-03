@@ -205,16 +205,58 @@ describe('POST /account-deletion-request', () => {
     );
   });
 
-  it('returns 401 when the password does not match', async () => {
+  // #4660 (follows #4470/#4651): the password is body data, not the credential
+  // that authenticates this request, so rejecting it is a 400 with a stable
+  // `code`. A 401 here was handed to `fetchWithAuth`'s refresh-and-replay path
+  // (apps/web/src/stores/auth.ts) and then `handleSessionExpired` — a typo on
+  // the delete-account form signed the user out instead of telling them the
+  // password was wrong. 401 stays reserved for a dead bearer.
+  it('returns 400 + code invalid_credentials when the password does not match (#4660)', async () => {
     verifyPasswordMock.mockResolvedValueOnce(false);
     const res = await postRequest({ password: 'wrong' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body).toEqual({ error: 'Invalid password' });
+    expect(body).toEqual({
+      error: 'Invalid password',
+      message: 'Invalid password',
+      code: 'invalid_credentials',
+    });
     expect(insertReturningMock).not.toHaveBeenCalled();
     expect(writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'user.account_deletion.requested', result: 'failure', reason: 'invalid_password' })
+    );
+  });
+
+  // Opacity control for the pair. This endpoint deliberately answers the
+  // "account has no password at all" branch with the SAME body as "wrong
+  // password", so a caller cannot use it to probe whether an account is
+  // SSO-only. Both branches must move to 400 together — a status that differed
+  // between them would reopen that oracle, which is exactly the failure mode
+  // #4018 closed elsewhere. This test fails if only one branch is migrated.
+  it('answers a passwordless account identically to a wrong password — no oracle (#4660)', async () => {
+    dbState.userRow = {
+      id: 'u-1',
+      email: 'user@example.test',
+      name: 'Sample User',
+      passwordHash: null,
+      partnerId: 'p-1',
+      orgId: 'o-1',
+    };
+    buildSelectChain();
+
+    const res = await postRequest({ password: 'anything' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Invalid password',
+      message: 'Invalid password',
+      code: 'invalid_credentials',
+    });
+    expect(verifyPasswordMock).not.toHaveBeenCalled();
+    expect(insertReturningMock).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'user.account_deletion.requested', result: 'denied', reason: 'no_password' })
     );
   });
 

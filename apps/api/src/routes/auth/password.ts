@@ -26,7 +26,9 @@ import {
   revokeCurrentRefreshTokenJti,
   resolveUserAuditOrgId,
   writeAuthAudit,
-  authResponseFloorPromise
+  authResponseFloorPromise,
+  rejectProof,
+  INVALID_CREDENTIALS_CODE
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
@@ -306,8 +308,16 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
 
   const validCurrentPassword = await verifyPassword(user.passwordHash, currentPassword);
   if (!validCurrentPassword) {
-    const message = 'Current password is incorrect';
-    return c.json({ error: message, message }, 401);
+    // #4660 (extends the #4470 contract): 400, not 401. `currentPassword`
+    // arrived in the request BODY — it is data this handler validates, not the
+    // credential that authenticates the request (that is the bearer, already
+    // checked by `authMiddleware` above). The web client's `fetchWithAuth`
+    // (apps/web/src/stores/auth.ts) funnels every 401 into refresh-and-replay
+    // and then `handleSessionExpired`, so answering 401 here signed the user
+    // out mid-flow for a single typo. The two neighbouring rejections — no
+    // password hash above, weak new password below — are already 400, so this
+    // also makes the endpoint's own statuses consistent.
+    return rejectProof(c, 'Current password is incorrect', INVALID_CREDENTIALS_CODE, 400);
   }
 
   const passwordCheck = isPasswordStrong(newPassword);
