@@ -1,5 +1,5 @@
 /**
- * Replays 2026-10-08-100300-detach-ticket-comment-runs-on-device-org-move.sql
+ * Replays 2026-10-08-100500-detach-ticket-comment-runs-on-device-org-move.sql
  * against a seeded ALREADY-STALE row -- the shape production data can already
  * have before this migration ever runs.
  *
@@ -42,7 +42,7 @@ import { sql } from 'drizzle-orm';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-10-08-100300-detach-ticket-comment-runs-on-device-org-move.sql',
+  '../../../migrations/2026-10-08-100500-detach-ticket-comment-runs-on-device-org-move.sql',
 );
 
 const SYSTEM_CTX: DbAccessContext = {
