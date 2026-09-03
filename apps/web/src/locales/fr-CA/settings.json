@@ -4029,7 +4029,8 @@
     },
     "columns": {
       "key": "Clé",
-      "deviceTypes": "Types d’appareils"
+      "deviceTypes": "Types d’appareils",
+      "scriptWrite": "Écriture par script"
     },
     "fieldTypes": {
       "text": {
@@ -4083,7 +4084,9 @@
       "patternPlaceholder": "par exemple, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Types d’appareils (optionnel)",
       "deviceTypesHelp": "Laisser vide pour s’afficher sur tous les types d’appareils",
-      "requiredField": "Champ requis"
+      "requiredField": "Champ requis",
+      "scriptWrite": "Autoriser les scripts à écrire dans ce champ",
+      "scriptWriteHelp": "Les scripts exécutés sur un appareil peuvent définir ce champ en affichant ::breeze:custom-fields:: {\"key\": \"value\"}. La valeur apparaît aussi dans la sortie enregistrée du script — n’y inscrivez jamais de secret."
     },
     "delete": {
       "title": "Supprimer le champ personnalisé",

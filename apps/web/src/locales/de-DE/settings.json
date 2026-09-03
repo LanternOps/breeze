@@ -3981,7 +3981,8 @@
     },
     "columns": {
       "key": "Schlüssel",
-      "deviceTypes": "Gerätetypen"
+      "deviceTypes": "Gerätetypen",
+      "scriptWrite": "Skript-Schreibzugriff"
     },
     "fieldTypes": {
       "text": {
@@ -4035,7 +4036,9 @@
       "patternPlaceholder": "z. B. ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Gerätetypen (optional)",
       "deviceTypesHelp": "Leer lassen, um es auf allen Gerätetypen anzuzeigen",
-      "requiredField": "Erforderliches Feld"
+      "requiredField": "Erforderliches Feld",
+      "scriptWrite": "Skripten erlauben, dieses Feld zu beschreiben",
+      "scriptWriteHelp": "Skripte, die auf einem Gerät ausgeführt werden, können dieses Feld setzen, indem sie ::breeze:custom-fields:: {\"key\": \"value\"} ausgeben. Der Wert erscheint auch in der gespeicherten Ausgabe des Skripts – schreiben Sie damit niemals ein Geheimnis."
     },
     "delete": {
       "title": "Benutzerdefiniertes Feld löschen",

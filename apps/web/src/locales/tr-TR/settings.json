@@ -4034,7 +4034,8 @@
     },
     "columns": {
       "key": "Anahtar",
-      "deviceTypes": "Cihaz Türleri"
+      "deviceTypes": "Cihaz Türleri",
+      "scriptWrite": "Betik yazma"
     },
     "fieldTypes": {
       "text": {
@@ -4088,7 +4089,9 @@
       "patternPlaceholder": "örneğin, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Cihaz Türleri (isteğe bağlı)",
       "deviceTypesHelp": "Tüm cihaz türlerinde gösterilmesi için boş bırakın",
-      "requiredField": "Gerekli alan"
+      "requiredField": "Gerekli alan",
+      "scriptWrite": "Betiklerin bu alana yazmasına izin ver",
+      "scriptWriteHelp": "Bir cihazda çalışan betikler, ::breeze:custom-fields:: {\"key\": \"value\"} yazdırarak bu alanı ayarlayabilir. Değer, betiğin kaydedilen çıktısında da görünür — bu şekilde asla bir gizli bilgi yazmayın."
     },
     "delete": {
       "title": "Özel Alanı Sil",
