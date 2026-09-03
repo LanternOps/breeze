@@ -813,6 +813,15 @@ func TestHandleScriptSecretShapedMarkerValueSurvivesSanitizer(t *testing.T) {
 	}
 }
 
+// TestExecuteViaUserHelperEmitsCustomFieldEnvelope exercises the MAIN-AGENT
+// side of the runAs:user path: the user-helper process (userhelper/client.go
+// executeScript) is the one that actually extracts markers from raw stdout —
+// see TestExecuteScriptExtractsCustomFieldsBeforeSanitizeOutput in
+// userhelper/client_test.go for that half. This test proves
+// executeViaUserHelper correctly forwards an already-built customFieldWrites
+// envelope from the IPC nested result onto tools.CommandResult, without
+// re-extracting from (by now already-sanitized) stdout — the mock below
+// simulates exactly the JSON shape the real helper now sends.
 func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 	serverConn, clientConn := createTestSocketPair(t)
 
@@ -829,10 +838,18 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 			return
 		}
 
+		// Marker already stripped from stdout and already extracted into
+		// customFieldWrites — this is what userhelper's executeScript now
+		// sends, having done the extraction itself before its own
+		// SanitizeOutput call.
 		resultPayload, _ := json.Marshal(map[string]any{
 			"exitCode": 0,
-			"stdout":   `scanning` + "\n" + `::breeze:custom-fields:: {"a":"1"}` + "\n" + `done`,
+			"stdout":   "scanning\ndone",
 			"stderr":   "",
+			"customFieldWrites": map[string]any{
+				"schemaVersion": 1,
+				"fields":        map[string]any{"a": "1"},
+			},
 		})
 		ipcResult := ipc.IPCCommandResult{
 			CommandID: env.ID,
@@ -870,7 +887,7 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 		t.Fatalf("expected completed, got %s (error: %s)", result.Status, result.Error)
 	}
 	if strings.Contains(result.Stdout, "::breeze:custom-fields::") {
-		t.Fatalf("marker line must be stripped from the runAs=user stdout too, got %q", result.Stdout)
+		t.Fatalf("marker line must not reappear in the runAs=user stdout, got %q", result.Stdout)
 	}
 	resultMap, ok := result.Result.(map[string]any)
 	if !ok {
@@ -883,5 +900,164 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 	fields, ok := writes["fields"].(map[string]any)
 	if !ok || fields["a"] != "1" {
 		t.Fatalf("fields = %#v", writes["fields"])
+	}
+}
+
+// TestExecuteViaUserHelperNoCustomFieldWritesLeavesResultNil confirms the
+// no-marker case: when the helper's IPC payload carries no customFieldWrites
+// key, Result stays nil rather than becoming an empty envelope.
+func TestExecuteViaUserHelperNoCustomFieldWritesLeavesResultNil(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "test-no-custom-fields", []string{"run_as_user"})
+
+	go func() {
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			t.Errorf("client recv: %v", err)
+			return
+		}
+
+		resultPayload, _ := json.Marshal(map[string]any{
+			"exitCode": 0,
+			"stdout":   "hello from breeze",
+			"stderr":   "",
+		})
+		ipcResult := ipc.IPCCommandResult{
+			CommandID: env.ID,
+			Status:    "completed",
+			Result:    resultPayload,
+		}
+		payload, _ := json.Marshal(ipcResult)
+		resp := &ipc.Envelope{
+			ID:      env.ID,
+			Type:    ipc.TypeCommandResult,
+			Payload: payload,
+		}
+		if err := clientIPC.Send(resp); err != nil {
+			t.Errorf("client send: %v", err)
+		}
+	}()
+
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(nil)
+	result := h.executeViaUserHelper(session, Command{
+		ID:   "cmd-user-no-custom-fields",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        "echo hi",
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	}, 10)
+
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s)", result.Status, result.Error)
+	}
+	if result.Result != nil {
+		t.Fatalf("expected nil Result when the helper sent no customFieldWrites, got %#v", result.Result)
+	}
+}
+
+// TestHandleScriptRedactsSecretEnvValueFromCustomFieldWrites is the
+// regression guard for the security finding in PR #4781's review: a script
+// with delivered secretEnv values echoing one into a customFieldWrites
+// marker must NOT leak it — device custom fields are visible to any org user
+// with device-read access, and ExtractCustomFields deliberately runs before
+// both SanitizeOutput (pattern-based) and BuildSecretRedactor (exact-value),
+// so without the explicit redactCustomFieldValues pass in handleScript this
+// value rides straight through unredacted.
+func TestHandleScriptRedactsSecretEnvValueFromCustomFieldWrites(t *testing.T) {
+	h := newTestHeartbeat(nil)
+	result := handleScript(h, Command{
+		ID:   "cmd-secret-redact",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        `echo "::breeze:custom-fields:: {\"note\":\"$BREEZE_VAR_API_TOKEN\"}"`,
+			"language":       "bash",
+			"timeoutSeconds": 10,
+			"secretEnv": map[string]any{
+				"api_token": "super-secret-delivered-value",
+			},
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s, stderr: %s)", result.Status, result.Error, result.Stderr)
+	}
+	resultMap, ok := result.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope: %#v", result.Result)
+	}
+	writes, ok := resultMap["customFieldWrites"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope: %#v", result.Result)
+	}
+	fields, ok := writes["fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing fields: %#v", writes)
+	}
+	note, _ := fields["note"].(string)
+	if strings.Contains(note, "super-secret-delivered-value") {
+		t.Fatalf("delivered secretEnv value leaked into customFieldWrites unredacted: %q", note)
+	}
+	if note != executor.SecretRedactionMarker {
+		t.Fatalf("fields[note] = %q, want the redaction marker %q", note, executor.SecretRedactionMarker)
+	}
+}
+
+// TestHandleScriptCustomFieldEnvelopeSurvivesNonZeroExit pins the intended
+// design (matches apps/api/src/services/commandResultHandlers.ts, which
+// deliberately applies a script's custom-field markers "outside the exit-code
+// branch": a script that discovers a fact and then exits non-zero has still
+// discovered it): a customFieldWrites envelope must still reach Result even
+// when the command carries a non-zero exit / failed status. A plain `exit 1`
+// leaves tools.CommandResult.Error empty (confirmed: the executor only
+// populates Error for execution failures, not a script's own exit code) —
+// the specific Error!=""-AND-Result!=nil combination is covered precisely by
+// TestToWSCommandResultResultWinsEvenWithErrorSet in result_mapping_test.go.
+func TestHandleScriptCustomFieldEnvelopeSurvivesNonZeroExit(t *testing.T) {
+	h := newTestHeartbeat(nil)
+	result := handleScript(h, Command{
+		ID:   "cmd-fail-with-marker",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        `echo '::breeze:custom-fields:: {"discovered":"yes"}'; exit 1`,
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status (exit 1), got %s", result.Status)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", result.ExitCode)
+	}
+	resultMap, ok := result.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected the customFieldWrites envelope to survive a failed exit, got Result=%#v", result.Result)
+	}
+	writes, ok := resultMap["customFieldWrites"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope: %#v", result.Result)
+	}
+	fields, ok := writes["fields"].(map[string]any)
+	if !ok || fields["discovered"] != "yes" {
+		t.Fatalf("fields = %#v", writes["fields"])
+	}
+
+	// And confirm this survives the WebSocket leg's toWSCommandResult too.
+	wsResult := toWSCommandResult("cmd-fail-with-marker-ws", result)
+	if wsResult.Result == nil {
+		t.Fatal("expected customFieldWrites to survive toWSCommandResult despite a failed status")
 	}
 }

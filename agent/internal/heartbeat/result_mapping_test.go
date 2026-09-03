@@ -148,3 +148,29 @@ func TestToWSCommandResultStillReparsesJSONStdoutWhenResultIsNil(t *testing.T) {
 		t.Fatal("expected the stdout reparse to still populate Result for discovery/backup/snmp handlers")
 	}
 }
+
+// TestToWSCommandResultResultWinsEvenWithErrorSet is the precise regression
+// guard for the PR #4781 review finding: an explicitly-set Result now wins
+// over the reparse UNCONDITIONALLY — including when Error is also set, a
+// combination that was structurally impossible before this PR (the old code
+// was a single if/else-if keyed on Error != ""). This is intentional and
+// matches the server: apps/api/src/services/commandResultHandlers.ts applies
+// a script's customFieldWrites "outside the exit-code branch" because "a
+// script that discovers a fact and then exits non-zero... has still
+// discovered it." Error must still reach the wire alongside Result — this
+// is additive, not a replacement of the error-reporting path.
+func TestToWSCommandResultResultWinsEvenWithErrorSet(t *testing.T) {
+	explicit := map[string]any{"customFieldWrites": map[string]any{"schemaVersion": 1, "fields": map[string]any{"a": "1"}}}
+	got := toWSCommandResult("cmd-fail-marker", tools.CommandResult{
+		Status: "failed",
+		Error:  "script exited non-zero",
+		Stdout: "not json either",
+		Result: explicit,
+	})
+	if got.Error != "script exited non-zero" {
+		t.Errorf("Error = %q, want it preserved alongside Result", got.Error)
+	}
+	if !reflect.DeepEqual(got.Result, explicit) {
+		t.Fatalf("Result = %#v, want %#v — an explicit Result must win even when Error is set", got.Result, explicit)
+	}
+}

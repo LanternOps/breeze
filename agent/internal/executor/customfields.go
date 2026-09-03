@@ -21,8 +21,16 @@ const (
 // deliberately before SanitizeOutput, which rewrites `token=`/`secret=`-shaped
 // substrings and would otherwise corrupt a marker beyond JSON.Unmarshal's
 // reach. Returns the merged map (later lines win) and stdout with the consumed
-// lines removed. Unparseable marker lines are LEFT IN stdout so the operator
-// can see what the script actually printed.
+// lines removed.
+//
+// All three caps (marker-line count, per-marker JSON size, distinct key
+// count) reject at LINE granularity and leave the rejected line in the
+// returned stdout, so a technician reading the persisted output can always
+// see which lines were not applied and why (a syntactically valid marker line
+// is never partially merged then silently discarded key-by-key — that would
+// leave no trace anywhere once the line itself is consumed). This also keeps
+// "later lines win" true without exception: a later line either fully applies
+// or is fully rejected, never partially applies past the key cap.
 func ExtractCustomFields(stdout string) (map[string]any, string) {
 	if !strings.Contains(stdout, CustomFieldMarker) {
 		return nil, stdout
@@ -52,16 +60,26 @@ func ExtractCustomFields(stdout string) (map[string]any, string) {
 			continue
 		}
 
+		// Reject the whole line, deterministically, if merging it would push
+		// the distinct-key count past the cap — rather than partially merging
+		// some of its keys in Go's randomized map-iteration order and dropping
+		// the rest with no trace.
+		newKeys := 0
+		for k := range parsed {
+			if _, exists := fields[k]; !exists {
+				newKeys++
+			}
+		}
+		if len(fields)+newKeys > maxCustomFieldKeys {
+			kept = append(kept, line)
+			continue
+		}
+
 		markerLines++
 		if fields == nil {
 			fields = make(map[string]any, len(parsed))
 		}
 		for k, v := range parsed {
-			if len(fields) >= maxCustomFieldKeys {
-				if _, exists := fields[k]; !exists {
-					continue
-				}
-			}
 			fields[k] = v
 		}
 		// consumed: not appended to kept
