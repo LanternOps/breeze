@@ -9,7 +9,7 @@ import { asList } from '@/lib/asList';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
 import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
-import type { ScriptAdmissionResult } from '@breeze/shared';
+import type { ScriptAdmissionResult, ExecutionStatus } from '@breeze/shared';
 
 export type TestDevice = {
   id: string;
@@ -18,7 +18,11 @@ export type TestDevice = {
   status: 'online' | 'offline' | 'maintenance';
 };
 
-type TestRunStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+// Reuses the shared execution-status union (not a private copy) so a widened
+// DB enum value is a compile error here too, not a silent missing switch case
+// (#3525 W01 — the same unguarded-status bug ExecutionHistory/ExecutionDetails
+// had, just not yet exercised here since the API doesn't emit 'cancelling' yet).
+type TestRunStatus = ExecutionStatus;
 
 type TestRunExecution = {
   id: string;
@@ -373,6 +377,7 @@ export default function ScriptTestRunner({
       case 'pending':
       case 'queued':
       case 'running':
+      case 'cancelling':
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-700">
             <Loader2 className="h-3 w-3 animate-spin" />

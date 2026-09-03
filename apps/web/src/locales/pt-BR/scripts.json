@@ -281,7 +281,8 @@
       "partial": "Parcial",
       "running": "Em execução",
       "pending": "Pendente",
-      "skipped": "Ignorado"
+      "skipped": "Ignorado",
+      "cancelled": "Cancelado"
     },
     "empty": "Nenhum histórico de execução disponível.",
     "triggeredBy": {
@@ -651,7 +652,10 @@
       "completed": "Script concluído com sucesso",
       "failed": "A execução do script falhou",
       "timeout": "A execução do script atingiu o tempo limite",
-      "pending": "O script está aguardando execução"
+      "pending": "O script está aguardando execução",
+      "queued": "O script está na fila para envio ao dispositivo",
+      "cancelling": "Interrupção solicitada — aguardando confirmação do dispositivo.",
+      "cancelled": "O script foi interrompido no dispositivo"
     },
     "fields": {
       "startedAt": "Iniciado em",
@@ -664,7 +668,14 @@
       "pending": "Pendente",
       "completed": "Concluído",
       "failed": "Falha",
-      "timeout": "Tempo limite"
+      "timeout": "Tempo limite",
+      "queued": "Na fila",
+      "cancelling": "Interrompendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
+      "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
+      "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
     }
   },
   "executionHistory": {
@@ -685,7 +696,14 @@
       "running": "Em execução...",
       "completed": "Concluído",
       "failed": "Falha",
-      "timeout": "Tempo limite"
+      "timeout": "Tempo limite",
+      "queued": "Na fila",
+      "cancelling": "Interrompendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
+      "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
+      "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -1320,7 +1338,8 @@
       "failed": "Falhou",
       "timeout": "Tempo esgotado",
       "queued": "Na fila",
-      "cancelled": "Cancelada"
+      "cancelled": "Cancelada",
+      "cancelling": "Interrompendo…"
     },
     "errors": {
       "execute": "Falha ao iniciar a execução de teste",

@@ -281,7 +281,8 @@
       "partial": "Partiel",
       "running": "En cours",
       "pending": "En attente",
-      "skipped": "Ignoré"
+      "skipped": "Ignoré",
+      "cancelled": "Annulée"
     },
     "empty": "Aucun historique d’exécution disponible.",
     "triggeredBy": {
@@ -651,7 +652,10 @@
       "completed": "Script terminé avec succès",
       "failed": "Échec de l’exécution du script",
       "timeout": "Délai d’exécution du script dépassé",
-      "pending": "Le script attend son exécution"
+      "pending": "Le script attend son exécution",
+      "queued": "Le script est en file d'attente pour être envoyé à l'appareil",
+      "cancelling": "Arrêt demandé — en attente de confirmation de l'appareil.",
+      "cancelled": "Le script a été arrêté sur l'appareil"
     },
     "fields": {
       "startedAt": "Démarré le",
@@ -664,7 +668,14 @@
       "pending": "En attente",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
     }
   },
   "executionHistory": {
@@ -685,7 +696,14 @@
       "running": "En cours…",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -1320,7 +1338,8 @@
       "failed": "Échouée",
       "timeout": "Délai expiré",
       "queued": "En file",
-      "cancelled": "Annulée"
+      "cancelled": "Annulée",
+      "cancelling": "Arrêt en cours…"
     },
     "errors": {
       "execute": "Impossible de démarrer l'exécution de test",
