@@ -3506,14 +3506,14 @@ describe('moveTicketOrg', () => {
     // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
     // statement, is visible here — executedTableNames() only counts
     // statements with a table identifier chunk and would not catch either.
-    // 1 SET CONSTRAINTS + 5 child-table rewrites (time_entries, ticket_parts,
-    // ticket_alert_links, ticket_outbox, ticket_attachments — same 5 tables
-    // as the 'moves ticket to a same-partner org' test below).
-    expect(texts).toHaveLength(6);
+    // 1 SET CONSTRAINTS + 6 child-table rewrites (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links
+    // — same 6 tables as the 'moves ticket to a same-partner org' test below).
+    expect(texts).toHaveLength(7);
     expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
   });
 
-  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 5 tables including ticket_attachments', async () => {
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 6 tables including ticket_email_links', async () => {
     // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
@@ -3541,12 +3541,13 @@ describe('moveTicketOrg', () => {
     // ticket_alert_links, ticket_outbox — #3828 wave-6-3 review fix: an
     // unpublished outbox row must move with the ticket or it keeps routing
     // to the source org's helpdesk agents after the move).
-    // W08 #3902 added ticket_attachments as the 5th and LAST entry.
+    // W08 #3902 added ticket_attachments as the 5th entry.
+    // #4643 added ticket_email_links as the 6th and LAST entry.
     // Counts the child-table rewrites specifically: since #4596 the
     // transaction also issues a leading SET CONSTRAINTS that names no table.
-    expect(executedTableNames()).toHaveLength(5);
+    expect(executedTableNames()).toHaveLength(6);
     expect(executedTableNames()).toEqual(
-      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'])
+      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'])
     );
 
     // System feed comment inserted with "Moved to <org name>"
@@ -3603,7 +3604,7 @@ describe('moveTicketOrg', () => {
     );
   });
 
-  it('re-stamps ticket_attachments.org_id LAST on ticket move (W08 #3902)', async () => {
+  it('re-stamps ticket_attachments.org_id before ticket_email_links on ticket move (W08 #3902, #4643)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
       .mockResolvedValueOnce([{ currencyCode: 'USD' }])
@@ -3620,10 +3621,13 @@ describe('moveTicketOrg', () => {
 
     const tables = executedTableNames();
     expect(tables).toContain('ticket_attachments');
-    // Appended last so the device-move path (routes/devices/moveOrg.ts) and
-    // this path touch the ticket-linked tables in the same relative order —
-    // see the lock-order comment at moveOrg.ts:~311.
-    expect(tables[tables.length - 1]).toBe('ticket_attachments');
+    expect(tables).toContain('ticket_email_links');
+    // ticket_email_links is appended last (after ticket_attachments) so the
+    // device-move path (routes/devices/moveOrg.ts) and this path touch the
+    // ticket-linked tables in the same relative order — see the lock-order
+    // comment at moveOrg.ts:~311.
+    expect(tables[tables.length - 1]).toBe('ticket_email_links');
+    expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
   });
 
 
@@ -3721,7 +3725,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(executedTableNames()).toHaveLength(5); // W08 #3902 added ticket_attachments; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -3760,7 +3764,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(executedTableNames()).toHaveLength(5); // W08 #3902 added ticket_attachments; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
