@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { SecurityOverviewDto } from '@breeze/shared';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { formatDateTime } from '@/lib/utils';
 import { SecurityOverview } from './SecurityOverview';
@@ -142,4 +142,55 @@ it('sets the trend against the right rule when there is history to draw', () => 
   expect(column?.textContent).toContain('Last 30 days');
   // The figure stays on the left of the band, never inside the trend column.
   expect(column?.querySelector('[data-testid="portal-security-score"]')).toBeNull();
+});
+
+it('keeps the score figure on the documented type ramp, not an arbitrary size', () => {
+  render(<SecurityOverview overview={overviewFixture()} />);
+
+  const figure = screen.getByTestId('portal-security-score');
+  expect(figure.className).toContain('text-3xl');
+  expect(figure.className).not.toMatch(/text-\[/);
+});
+
+it('reserves amber for a state the customer can act on — Fair is not one', () => {
+  render(<SecurityOverview overview={overviewFixture({ band: 'fair', score: 62 })} />);
+
+  const band = screen.getByTestId('portal-security-band');
+  expect(band.textContent).toContain('Fair');
+  expect(band.className).not.toContain('warning');
+  expect(band.className).toContain('text-muted-foreground');
+});
+
+it('offers the customer a next step beside the weaknesses, in the concierge voice', () => {
+  render(<SecurityOverview overview={overviewFixture()} />);
+
+  const step = screen.getByTestId('portal-security-vulnerabilities-next-step');
+  expect(step.textContent).toContain('Your IT team works through these in order of urgency.');
+  const ask = within(step).getByText('Ask about this');
+  expect(ask.getAttribute('href')).toBe('/tickets/new');
+  expect(ask.className).toContain('text-primary-on-tint');
+  // Body text, not a label or a heading.
+  expect(step.className).toContain('text-sm');
+  // The section lede must not repeat the same sentence back at the reader.
+  expect(
+    screen.getByTestId('portal-security-vulnerabilities').querySelectorAll(
+      '[data-testid="portal-security-vulnerabilities-next-step"]',
+    ),
+  ).toHaveLength(1);
+  const lede = screen.getByText(/Known problems in the software on your machines/);
+  expect(lede.textContent).not.toContain('order of urgency');
+});
+
+it.each(['fair', 'at_risk'] as const)('offers the same next step under a %s score band', (band) => {
+  render(<SecurityOverview overview={overviewFixture({ band, score: 41 })} />);
+
+  const step = screen.getByTestId('portal-security-score-next-step');
+  expect(step.textContent).toContain('Your IT team is working to bring this score up.');
+  expect(within(step).getByText('Ask about this').getAttribute('href')).toBe('/tickets/new');
+});
+
+it.each(['strong', 'good'] as const)('leaves a %s score band without a next step', (band) => {
+  render(<SecurityOverview overview={overviewFixture({ band, score: 91 })} />);
+
+  expect(screen.queryByTestId('portal-security-score-next-step')).toBeNull();
 });

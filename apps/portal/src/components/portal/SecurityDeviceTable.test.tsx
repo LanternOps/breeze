@@ -137,11 +137,50 @@ it('lets a long machine name wrap instead of overflowing the phone card', () => 
   expect(screen.getByTestId('portal-security-device-d-long').className).toContain('flex-wrap');
 });
 
-it('totals the ledger in its foot', () => {
+it('totals the ledger in its foot, counting the unknowns apart from the unprotected', () => {
   render(<SecurityDeviceTable timezone="America/Denver" devices={DEVICES} />);
 
-  expect(screen.getByTestId('security-ledger-foot').textContent).toBe('1 of 3 devices protected');
+  // d-3 has never reported: it is not evidence of an unprotected machine, so
+  // the foot names it separately instead of folding it into the shortfall.
+  expect(screen.getByTestId('security-ledger-foot').textContent).toBe(
+    '1 of 3 protected \u00b7 1 not yet known',
+  );
   expect(screen.queryByTestId('portal-security-devices-cap')).toBeNull();
+});
+
+it('refuses to call a silent fleet unprotected', () => {
+  const silent = DEVICES.map((device, index) => ({
+    ...device,
+    id: `u-${index}`,
+    protection: 'unknown' as const,
+  }));
+  render(<SecurityDeviceTable timezone="America/Denver" devices={silent} />);
+
+  expect(screen.getByTestId('security-ledger-foot').textContent).toBe(
+    'Protection not yet known for all 3 devices',
+  );
+});
+
+it('keeps the single-machine account in the singular when nothing is known yet', () => {
+  render(<SecurityDeviceTable
+    timezone="America/Denver"
+    devices={[{ ...DEVICES[2], id: 'only' }]}
+  />);
+
+  expect(screen.getByTestId('security-ledger-foot').textContent).toBe(
+    'Protection not yet known for your device',
+  );
+});
+
+it('states the plain shortfall when every machine has actually reported', () => {
+  render(<SecurityDeviceTable
+    timezone="America/Denver"
+    devices={[DEVICES[0], DEVICES[1]]}
+  />);
+
+  expect(screen.getByTestId('security-ledger-foot').textContent).toBe(
+    '1 of 2 devices protected',
+  );
 });
 
 it('says honestly when the ledger only shows the first page of the fleet', () => {

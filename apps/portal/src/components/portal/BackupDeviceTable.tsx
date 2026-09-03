@@ -19,19 +19,40 @@ function breachLabel(eventType: string): string {
   return BREACH_LABELS[eventType.trim().toLowerCase()] ?? humanizeStatus(eventType);
 }
 
+/**
+ * The phone card's column label. Inline and muted, "Last restore test" ran
+ * straight into "No restore test has run yet" as one undifferentiated grey
+ * sentence; the Label style on its own line makes each card read label / value
+ * the way the dashboard ledger does (apps/portal/DESIGN.md, Typography).
+ * Desktop keeps the real <th> and never shows these.
+ */
+const PHONE_LABEL =
+  'mb-0.5 block text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:hidden';
+
 export function BackupDeviceTable({
   devices,
   total,
+  timezone = 'UTC',
   error,
 }: {
   devices: BackupDeviceRow[];
   total?: number;
+  /**
+   * The org's own zone. This table renders on the server, so without it every
+   * stamp below is the droplet's clock wearing the customer's date. Defaults to
+   * UTC, which is what the API falls back to when an org has no zone set.
+   */
+  timezone?: string;
   error?: string | null;
 }) {
   if (error) {
     return (
       <div data-testid="portal-backup-device-error">
-        <ErrorNotice>{error}</ErrorNotice>
+        {/* The transport error is ours to read, not the customer's: they can
+            act on "ask your IT team", never on a connection string. */}
+        <ErrorNotice>
+          We couldn&apos;t load your backup devices just now. Your IT team can help.
+        </ErrorNotice>
       </div>
     );
   }
@@ -52,17 +73,9 @@ export function BackupDeviceTable({
 
   return (
     <div className="mt-10 overflow-x-auto">
-      <h2 className="mb-4 font-display text-xl font-semibold text-foreground">
+      <h2 className="mb-4 font-display text-lg font-semibold text-foreground">
         Device backup readiness
       </h2>
-      {total !== undefined && (
-        <p
-          className="mb-4 text-sm text-muted-foreground"
-          data-testid="portal-backup-device-count"
-        >
-          Showing {devices.length} of {total} devices
-        </p>
-      )}
       <table
         className="block w-full sm:table sm:min-w-[48rem]"
         data-testid="portal-backup-device-table"
@@ -100,14 +113,14 @@ export function BackupDeviceTable({
                 ) : (
                   <>
                     <td className={cn(CELL, 'order-2 text-sm text-foreground')}>
-                      <span className="sm:hidden">Last backup </span>
+                      <span className={PHONE_LABEL}>Last backup</span>
                       {device.lastRestorePointAt
-                        ? formatDateTime(device.lastRestorePointAt)
+                        ? formatDateTime(device.lastRestorePointAt, timezone, true)
                         : 'No backup has run yet'}
                       {device.lastRestorePointDegraded ? ' (degraded)' : ''}
                     </td>
                     <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
-                      <span className="sm:hidden">Last restore test </span>
+                      <span className={PHONE_LABEL}>Last restore test</span>
                       {device.lastTestRestore && restoreTest ? (
                         <span className="inline-flex flex-wrap items-baseline gap-x-2">
                           {/* The row's one mark: a raw "passed" carried no tone
@@ -115,7 +128,7 @@ export function BackupDeviceTable({
                           <StatusMark tone={restoreTest.tone}>{restoreTest.label}</StatusMark>
                           <span>
                             {device.lastTestRestore.completedAt
-                              ? formatDateTime(device.lastTestRestore.completedAt)
+                              ? formatDateTime(device.lastTestRestore.completedAt, timezone, true)
                               : 'Time not available'}
                           </span>
                         </span>
@@ -124,11 +137,11 @@ export function BackupDeviceTable({
                       )}
                     </td>
                     <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
-                      <span className="sm:hidden">Needs attention </span>
+                      <span className={PHONE_LABEL}>Needs attention</span>
                       {device.openBreaches.map(breachLabel).join(', ') || 'None'}
                     </td>
                     <td className={cn(CELL, 'order-5 text-sm text-foreground')}>
-                      <span className="sm:hidden">Recovery readiness </span>
+                      <span className={PHONE_LABEL}>Recovery readiness</span>
                       {device.readinessScore ?? 'Not available'}
                     </td>
                   </>
@@ -138,6 +151,16 @@ export function BackupDeviceTable({
           })}
         </tbody>
       </table>
+      {/* The register totals itself at the foot, the way Devices and Security
+          do — a count above the rows is a caption, not a ledger line. */}
+      {total !== undefined && (
+        <div
+          className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:min-w-[48rem]"
+          data-testid="portal-backup-device-count"
+        >
+          Showing {devices.length} of {total} devices
+        </div>
+      )}
     </div>
   );
 }

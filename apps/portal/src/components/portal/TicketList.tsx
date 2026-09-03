@@ -44,9 +44,21 @@ export function TicketSlaBadge({
   );
 }
 
+const LEDE = "Tell us what you need — we'll take it from there.";
+
 export function TicketList({ tickets, error, enableSupportUsage = false }: TicketListProps) {
   if (error) {
-    return <ErrorNotice>{error}</ErrorNotice>;
+    // The page keeps its title even when the list does not load, and the notice
+    // names the recovery instead of leaking the transport error ("Internal
+    // Server Error") the customer cannot act on.
+    return (
+      <div data-testid="portal-tickets-error">
+        <PageHeader title="Support" lede={LEDE} />
+        <ErrorNotice>
+          We couldn&apos;t load your requests just now. Your IT team can help.
+        </ErrorNotice>
+      </div>
+    );
   }
 
   const openCount = tickets.filter((t) => isTicketOpen(t.status)).length;
@@ -55,7 +67,7 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
     <div>
       {/* No page-level "New ticket" here: the header quick action is on every
           page, and two identical primary buttons on one screen read as noise. */}
-      <PageHeader title="Support" lede="Tell us what you need — we'll take it from there." />
+      <PageHeader title="Support" lede={LEDE} />
 
       {tickets.length === 0 ? (
         <EmptyState icon={<Ticket className="h-10 w-10" strokeWidth={1.5} />} title="No tickets">

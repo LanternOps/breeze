@@ -129,13 +129,25 @@ const isActive = (href: string) => {
                 {navItems.map((item) => (
                   <a
                     href={withBase(item.href)}
+                    aria-current={isActive(item.href) ? 'page' : undefined}
                     class:list={[
-                      'block rounded-md px-3 py-2 text-sm transition-colors',
+                      'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',
                       isActive(item.href)
-                        ? 'bg-accent font-semibold text-foreground'
+                        ? 'font-semibold text-foreground'
                         : 'font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground'
                     ]}
                   >
+                    {/* Same register mark the rail carries: the phone menu is
+                        the same navigation, so it marks "you are here" the same
+                        way — a filled accent wash is the pill this world
+                        refuses, and it carried no aria-current at all. */}
+                    <span
+                      aria-hidden="true"
+                      class:list={[
+                        'mr-3 h-4 w-0.5 rounded-full transition-colors duration-150',
+                        isActive(item.href) ? 'bg-primary' : 'bg-transparent group-hover:bg-border'
+                      ]}
+                    ></span>
                     {item.label}
                   </a>
                 ))}

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { SecurityOverviewDto, SecurityScoreBand } from '@breeze/shared';
 import { ShieldCheck } from 'lucide-react';
+import { withBase } from '@/lib/basePath';
 import { cn, formatDateTime } from '@/lib/utils';
 import { PageHeader, StatusMark, EmptyState, type MarkTone } from './ui';
 import { Sparkline } from './Sparkline';
@@ -18,7 +19,9 @@ const LEDE = "How well your machines are looked after, and what we're watching."
 const BAND: Record<SecurityScoreBand, { label: string; tone: MarkTone }> = {
   strong: { label: 'Strong', tone: 'success' },
   good: { label: 'Good', tone: 'success' },
-  fair: { label: 'Fair', tone: 'warning' },
+  // Amber is reserved for states the customer should act on; a Fair score is
+  // the firm's own workload, so it reads neutral (apps/portal/DESIGN.md).
+  fair: { label: 'Fair', tone: 'neutral' },
   at_risk: { label: 'Needs attention', tone: 'destructive' },
 };
 
@@ -65,6 +68,31 @@ function ThreatKey() {
   );
 }
 
+const NEXT_STEP_LINK =
+  'font-semibold text-primary-on-tint underline underline-offset-4 transition-colors duration-150 hover:text-foreground';
+
+/**
+ * A bad number with no next step beside it just worries the reader. One quiet
+ * line says who is already on it and offers the one thing the customer can do
+ * about it — ask. Body text, service-green link, no second call to action.
+ */
+function NextStep({
+  testId,
+  lead = 'Your IT team works through these in order of urgency.',
+}: {
+  testId: string;
+  lead?: string;
+}) {
+  return (
+    <p className="mt-3 max-w-[62ch] text-sm text-muted-foreground" data-testid={testId}>
+      {lead}{' '}
+      <a className={NEXT_STEP_LINK} href={withBase('/tickets/new')}>
+        Ask about this
+      </a>
+    </p>
+  );
+}
+
 export function SecurityOverview({
   overview,
   timezone,
@@ -91,6 +119,9 @@ export function SecurityOverview({
   }
 
   const band = overview.band ? BAND[overview.band] : null;
+  // Fair and At risk are the bands a customer reads as bad news; those are the
+  // ones that get told what happens next.
+  const bandNeedsWork = overview.band === 'fair' || overview.band === 'at_risk';
   // A single captured point draws no line — `Sparkline` emits a one-vertex
   // polyline and nothing is visible — so reserving the trend column for it
   // left the caption stranded mid-row on desktop and under ~80px of dead
@@ -118,7 +149,7 @@ export function SecurityOverview({
           {overview.score != null ? (
             <p className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span
-                className="font-display text-figures text-[2.5rem] font-semibold leading-none text-foreground"
+                className="font-display text-figures text-3xl font-semibold leading-none text-foreground"
                 data-testid="portal-security-score"
               >
                 {overview.score}
@@ -139,6 +170,12 @@ export function SecurityOverview({
           )}
           {trendNoted && !trendDrawable && (
             <p className="mt-1.5 text-xs text-muted-foreground">Last 30 days</p>
+          )}
+          {bandNeedsWork && (
+            <NextStep
+              testId="portal-security-score-next-step"
+              lead="Your IT team is working to bring this score up."
+            />
           )}
         </div>
         {trendDrawable && (
@@ -170,8 +207,7 @@ export function SecurityOverview({
           Weaknesses we're tracking
         </h2>
         <p className="mt-1 max-w-[62ch] text-sm text-muted-foreground">
-          Known problems in the software on your machines. Your IT team works through these in
-          order of urgency.
+          Known problems in the software on your machines.
         </p>
         <dl className="mt-4 divide-y divide-border/70 border-y border-border/70">
           {SEVERITIES.map((severity) => (
@@ -195,6 +231,7 @@ export function SecurityOverview({
             Last found {formatDateTime(overview.vulnerabilities.lastDetectedAt, timezone)}
           </p>
         )}
+        <NextStep testId="portal-security-vulnerabilities-next-step" />
       </section>
 
       <p

@@ -122,7 +122,7 @@ describe('ReportRunList', () => {
 
     await waitFor(() => {
       expect(status.textContent).toBe(
-        'Generating your security posture report…',
+        'Generating your security summary…',
       );
     });
 
@@ -131,6 +131,47 @@ describe('ReportRunList', () => {
     await waitFor(() => {
       expect(status.textContent).toBe('Your report is ready.');
     });
+  });
+
+  it('offers the two generate actions as peers, with no false primary', () => {
+    render(<ReportRunList initialRuns={[run]} timezone="UTC" />);
+
+    const posture = screen.getByTestId('portal-reports-generate-posture');
+    const executive = screen.getByTestId('portal-reports-generate-executive');
+    expect(posture.className).toBe(executive.className);
+    // BTN_PRIMARY's service-green fill is the tell.
+    expect(posture.className).not.toContain('bg-primary');
+  });
+
+  it('speaks of the machines rather than an "environment", and labels the summary plainly', () => {
+    render(<ReportRunList initialRuns={[run]} timezone="UTC" />);
+
+    const container = document.body.textContent ?? '';
+    expect(container).toContain('Generate and download a current summary of your machines.');
+    expect(container).not.toContain('environment');
+    expect(screen.getByTestId('portal-reports-generate-posture').textContent).toBe(
+      'Generate security summary',
+    );
+  });
+
+  it.each([
+    ['failed', 'Did not complete'],
+    ['running', 'Still generating'],
+  ] as const)('offers no download for a %s run', (status, copy) => {
+    render(
+      <ReportRunList
+        initialRuns={[{ ...run, status, completedAt: null }]}
+        timezone="UTC"
+      />,
+    );
+
+    expect(screen.queryByTestId('portal-report-run-pdf-run-1')).toBeNull();
+    expect(screen.queryByTestId('portal-report-run-csv-run-1')).toBeNull();
+    expect(screen.getByTestId('portal-report-run-download-run-1').textContent).toBe(copy);
+    // The outcome is stated once per row, not echoed in the Generated column.
+    const row = screen.getByTestId('portal-report-run-row-run-1');
+    expect(row.textContent?.split(copy)).toHaveLength(2);
+    expect(row.textContent).not.toContain('Generated');
   });
 
   it('tells the customer when to come back after a rate limit', async () => {

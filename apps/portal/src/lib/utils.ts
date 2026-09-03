@@ -30,7 +30,20 @@ export function formatDate(date: Date | string): string {
   });
 }
 
-export function formatDateTime(date: Date | string, timeZone?: string): string {
+/**
+ * A stamp for the register. `timeZone` is the org's own zone — omit it and a
+ * server-rendered page prints the SERVER's clock under the customer's date.
+ *
+ * `withZoneName` appends the short zone name ("MDT"), which is what makes a
+ * shifted hour readable rather than merely different. Callers that name the
+ * zone themselves (the dashboard's trailing "(America/Denver)") leave it off so
+ * the stamp does not stutter.
+ */
+export function formatDateTime(
+  date: Date | string,
+  timeZone?: string,
+  withZoneName = false
+): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toLocaleString('en-US', {
     year: 'numeric',
@@ -39,6 +52,7 @@ export function formatDateTime(date: Date | string, timeZone?: string): string {
     hour: '2-digit',
     minute: '2-digit',
     timeZone,
+    timeZoneName: withZoneName ? 'short' : undefined,
   });
 }
 

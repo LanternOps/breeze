@@ -113,9 +113,34 @@ describe('BackupOverview', () => {
     );
 
     rerender(<BackupOverview overview={{ ...configuredOverview, dataStatus: 'stale' }} hasBackupActivity />);
-    expect(screen.getByTestId('portal-backup-overview-status').textContent).toContain(
-      'Backup data may be out of date'
+    const stale = screen.getByTestId('portal-backup-overview-status');
+    expect(stale.textContent).toContain('Backup data may be out of date');
+    // Amber is reserved for what the customer can act on (apps/portal/DESIGN.md).
+    // Stale data is our problem, not theirs — it reads quiet.
+    expect(stale.innerHTML).not.toContain('text-warning-on-tint');
+    expect(stale.querySelector('.text-muted-foreground')).not.toBeNull();
+  });
+
+  it('stamps every time in the org’s own zone and names it', () => {
+    // Rendered on the server, a stamp with no zone is the server's clock wearing
+    // the customer's date. Denver is 6 hours behind the fixture's UTC instants.
+    render(
+      <BackupOverview
+        overview={configuredOverview}
+        timezone="America/Denver"
+        hasBackupActivity
+      />
     );
+
+    expect(screen.getByTestId('portal-backup-overview-as-of').textContent).toContain(
+      'Sep 2, 2026, 06:00 AM MDT'
+    );
+    expect(
+      screen.getByTestId('portal-backup-overview-last-verification').textContent
+    ).toContain('Sep 1, 2026, 03:30 AM MDT');
+    expect(
+      screen.getByTestId('portal-backup-overview-last-test-restore').textContent
+    ).toContain('Aug 30, 2026, 08:15 AM MDT');
   });
 
   it('keeps dead-end values out of the money face', () => {

@@ -103,12 +103,26 @@ export function SecurityDeviceTable({
 }) {
   const fleetTotal = total ?? devices.length;
   const protectedCount = devices.filter((d) => d.protection === 'protected').length;
-  const footLine =
-    protectedCount === devices.length
-      ? devices.length === 1
+  const unknownCount = devices.filter((d) => d.protection === 'unknown').length;
+  // A machine we have not heard from is not an unprotected machine. Folding the
+  // unknowns into the shortfall printed "0 of 2 devices protected" at a customer
+  // whose fleet was merely quiet — the same guard the dashboard tile carries.
+  const footLine = (() => {
+    if (unknownCount === devices.length) {
+      return devices.length === 1
+        ? 'Protection not yet known for your device'
+        : `Protection not yet known for all ${devices.length} devices`;
+    }
+    if (unknownCount > 0) {
+      return `${protectedCount} of ${devices.length} protected · ${unknownCount} not yet known`;
+    }
+    if (protectedCount === devices.length) {
+      return devices.length === 1
         ? 'Your device is protected'
-        : `All ${devices.length} devices protected`
-      : `${protectedCount} of ${devices.length} devices protected`;
+        : `All ${devices.length} devices protected`;
+    }
+    return `${protectedCount} of ${devices.length} devices protected`;
+  })();
   const capLine = `Showing the first ${devices.length} of ${fleetTotal} devices`;
 
   return (

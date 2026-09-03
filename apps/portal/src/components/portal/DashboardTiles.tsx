@@ -175,7 +175,9 @@ function AwaitingYou({ awaitingYou }: { awaitingYou: DashboardDto['awaitingYou']
       data-testid="portal-dashboard-tile-awaiting-you"
       className="border-y border-border/70 py-5"
     >
-      <p className="text-[0.9375rem] leading-relaxed text-foreground sm:text-base">{statement}</p>
+      {/* The one actionable line on the page sits one step above body size —
+          the documented ramp, not an arbitrary between-size. */}
+      <p className="text-base leading-relaxed text-foreground">{statement}</p>
       {status !== 'ok' && (
         <StatusMark tone="neutral" className="mt-2">
           {UNAVAILABLE[status]}
@@ -320,7 +322,7 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
 
       {/* The register dates itself at the foot, the way a ledger page does. */}
       <p className="text-figures border-t border-border/70 pt-4 text-xs text-muted-foreground">
-        {`Current as of ${formatDateTime(dashboard.asOf, dashboard.timezone)} (${dashboard.timezone}).`}
+        {`As of ${formatDateTime(dashboard.asOf, dashboard.timezone)} (${dashboard.timezone}).`}
       </p>
     </div>
   );

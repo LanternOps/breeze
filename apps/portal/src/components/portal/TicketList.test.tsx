@@ -143,3 +143,23 @@ describe('TicketList — the SLA line keeps the one-mark-per-row diet', () => {
     expect(sla.className).toContain('block');
   });
 });
+
+describe('TicketList — the failure state', () => {
+  it('never prints the raw API error at the customer', () => {
+    render(<TicketList tickets={[]} error="Internal Server Error" />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toBe(
+      "We couldn't load your requests just now. Your IT team can help.",
+    );
+    expect(document.body.textContent).not.toContain('Internal Server Error');
+  });
+
+  it('keeps the page title when the request list fails to load', () => {
+    render(<TicketList tickets={[]} error="Internal Server Error" />);
+
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading.textContent).toBe('Support');
+    expect(heading.className).toContain('font-display');
+  });
+});

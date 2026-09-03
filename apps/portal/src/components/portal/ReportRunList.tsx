@@ -7,7 +7,6 @@ import {
   ROW,
   CELL,
   TH,
-  BTN_PRIMARY,
   BTN_SECONDARY,
   EmptyState,
   ErrorNotice,
@@ -19,7 +18,7 @@ type ReportType = 'security_compliance_posture' | 'executive_summary';
 /** What the reader is told is happening, in their own language. The MSP-side
  *  report definition names are technical; these are not. */
 const GENERATING_COPY: Record<ReportType, string> = {
-  security_compliance_posture: 'Generating your security posture report…',
+  security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
 };
 
@@ -118,7 +117,7 @@ export function ReportRunList({
     <div>
       <PageHeader
         title="Reports"
-        lede="Generate and download a current summary of your environment."
+        lede="Generate and download a current summary of your machines."
       />
 
       <div className="mb-2 flex flex-wrap gap-3">
@@ -128,11 +127,11 @@ export function ReportRunList({
           disabled={busyType !== null}
           aria-busy={busyType === 'security_compliance_posture'}
           onClick={() => void generate('security_compliance_posture')}
-          className={BTN_PRIMARY}
+          className={BTN_SECONDARY}
         >
           {busyType === 'security_compliance_posture'
             ? 'Generating…'
-            : 'Generate security posture'}
+            : 'Generate security summary'}
         </button>
         <button
           type="button"
@@ -203,43 +202,53 @@ export function ReportRunList({
                         'order-2 text-xs text-muted-foreground sm:text-right sm:text-sm',
                       )}
                     >
-                      <span className="sm:hidden">Generated </span>
-                      {run.completedAt ? (
+                      {/* A run with no artifact says so once, in the Download
+                          cell; repeating the outcome here read as a stutter. */}
+                      {run.completedAt && (
                         <>
+                          <span className="sm:hidden">Generated </span>
                           <span className="text-figures">
                             {formatDateTime(run.completedAt, timezone)}
                           </span>{' '}
                           <span className="whitespace-nowrap">({timezone})</span>
                         </>
-                      ) : run.status === 'failed' ? (
-                        'Did not complete'
-                      ) : (
-                        'Still generating'
                       )}
                     </td>
                     <td className={cn(CELL, 'order-3 basis-full sm:basis-auto')}>
-                      <div className="mt-2 flex flex-wrap gap-2 sm:mt-0">
-                        <a
-                          data-testid={`portal-report-run-pdf-${run.id}`}
-                          href={portalApi.reportArtifactUrl(run.id, 'pdf')}
-                          download
-                          aria-label={`Download ${name} as PDF`}
-                          className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
+                      {run.status !== 'completed' ? (
+                        // Linking a download that 404s is worse than saying so:
+                        // the cell states the outcome in the same words the
+                        // Generated column uses.
+                        <span
+                          className="text-xs text-muted-foreground"
+                          data-testid={`portal-report-run-download-${run.id}`}
                         >
-                          <Download className="h-4 w-4" aria-hidden="true" />
-                          PDF
-                        </a>
-                        <a
-                          data-testid={`portal-report-run-csv-${run.id}`}
-                          href={portalApi.reportArtifactUrl(run.id, 'csv')}
-                          download
-                          aria-label={`Download ${name} as CSV`}
-                          className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
-                        >
-                          <Download className="h-4 w-4" aria-hidden="true" />
-                          CSV
-                        </a>
-                      </div>
+                          {run.status === 'failed' ? 'Did not complete' : 'Still generating'}
+                        </span>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-2 sm:mt-0">
+                          <a
+                            data-testid={`portal-report-run-pdf-${run.id}`}
+                            href={portalApi.reportArtifactUrl(run.id, 'pdf')}
+                            download
+                            aria-label={`Download ${name} as PDF`}
+                            className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
+                          >
+                            <Download className="h-4 w-4" aria-hidden="true" />
+                            PDF
+                          </a>
+                          <a
+                            data-testid={`portal-report-run-csv-${run.id}`}
+                            href={portalApi.reportArtifactUrl(run.id, 'csv')}
+                            download
+                            aria-label={`Download ${name} as CSV`}
+                            className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
+                          >
+                            <Download className="h-4 w-4" aria-hidden="true" />
+                            CSV
+                          </a>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

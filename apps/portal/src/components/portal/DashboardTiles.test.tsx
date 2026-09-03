@@ -223,12 +223,23 @@ describe('DashboardTiles', () => {
     expect(supportTile.textContent).toContain('Not yet available');
   });
 
-  it('shows the freshness timestamp in the organization timezone, not the timezone name alone', () => {
+  it('dates the page the way Security and Backups date theirs', () => {
     render(<DashboardTiles dashboard={dashboard} />);
-    const stamp = screen.getByText(/Current as of/);
+    const stamp = screen.getByText(/^As of /);
     expect(stamp.textContent).toContain('Sep 2, 2026');
     expect(stamp.textContent).toContain('America/Denver');
-    expect(stamp.textContent).not.toBe('Current as of America/Denver.');
+    expect(stamp.textContent).not.toBe('As of America/Denver.');
+    expect(document.body.textContent).not.toContain('Current as of');
+  });
+
+  it('keeps the awaiting-you statement on the documented type ramp', () => {
+    render(<DashboardTiles dashboard={dashboard} />);
+    const statement = screen
+      .getByTestId('portal-dashboard-tile-awaiting-you')
+      .querySelector('p');
+    expect(statement).not.toBeNull();
+    expect(statement?.className).not.toMatch(/text-\[/);
+    expect(statement?.className).toContain('text-base');
   });
 
   it('marks a not-configured tile with a status mark, not a grey sentence', () => {

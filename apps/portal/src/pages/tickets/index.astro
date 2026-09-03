@@ -4,6 +4,7 @@ import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import TicketList from '../../components/portal/TicketList';
 import { SupportUsagePanel } from '../../components/portal/SupportUsagePanel';
+import { PageHeader } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 import { decideTicketsPage } from '../../lib/ticketsPage';
@@ -37,15 +38,17 @@ const showSupportUsage =
 <PortalLayout title="Support">
   {
     ticketsDisabled ? (
-      <section
-        class="border-y border-border/70 py-8"
-        data-testid="portal-tickets-disabled-notice"
-      >
-        <h1 class="font-display text-2xl font-semibold text-foreground">Support</h1>
-        <p class="mt-2 text-sm text-muted-foreground">
-          Ticket submission is not enabled for your organization.
-        </p>
-      </section>
+      <div data-testid="portal-tickets-disabled-notice">
+        {/* The page opens the way every other page opens — the serif title from
+            PageHeader, not a hand-rolled h1 on its own scale. */}
+        <PageHeader title="Support" lede="Tell us what you need — we'll take it from there." />
+        <section class="border-y border-border/70 py-8">
+          <p class="text-sm text-muted-foreground">
+            Your IT team hasn't opened request submission in the portal. They're still a
+            message away — their contact details are on every page.
+          </p>
+        </section>
+      </div>
     ) : (
       <TicketList
         tickets={response.data ?? []}

@@ -43,9 +43,66 @@ describe('BackupDeviceTable', () => {
     expect(row.textContent).not.toContain('2026-09-02T10:00:00Z');
     expect(row.textContent).toContain('None');
     expect(row.textContent).toContain('92');
-    expect(screen.getByTestId('portal-backup-device-count').textContent).toContain(
-      'Showing 1 of 125 devices'
+  });
+
+  it('totals the ledger at its foot, in the register’s small caps', () => {
+    render(<BackupDeviceTable devices={[configuredDevice]} total={125} />);
+
+    const foot = screen.getByTestId('portal-backup-device-count');
+    expect(foot.textContent).toContain('Showing 1 of 125 devices');
+    // A ledger totals itself below the rows, like Devices and Security do.
+    const table = screen.getByTestId('portal-backup-device-table');
+    expect(table.compareDocumentPosition(foot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(foot.className).toContain('border-t');
+    expect(foot.className).toContain('uppercase');
+    expect(foot.className).toContain('tracking-[0.08em]');
+
+    // Section titles are the 1.125rem Title, not a second display size.
+    expect(
+      screen.getByRole('heading', { name: 'Device backup readiness' }).className
+    ).toContain('text-lg');
+  });
+
+  it('reads label over value on a phone card, not one muted run-on', () => {
+    render(<BackupDeviceTable devices={[configuredDevice]} />);
+
+    const labels = Array.from(
+      screen.getByTestId('portal-backup-device-d-1').querySelectorAll('.sm\\:hidden')
     );
+    expect(labels.map((el) => el.textContent)).toEqual([
+      'Last backup',
+      'Last restore test',
+      'Needs attention',
+      'Recovery readiness',
+    ]);
+    for (const label of labels) {
+      // The Label style: 12px semibold small-caps in quiet ink, on its own line
+      // above the value (apps/portal/DESIGN.md, Typography → Label).
+      expect(label.className).toContain('block');
+      expect(label.className).toContain('text-xs');
+      expect(label.className).toContain('font-semibold');
+      expect(label.className).toContain('uppercase');
+      expect(label.className).toContain('tracking-[0.08em]');
+      expect(label.className).toContain('text-muted-foreground');
+    }
+  });
+
+  it('stamps device times in the org’s own zone and names it', () => {
+    render(<BackupDeviceTable devices={[configuredDevice]} timezone="America/Denver" />);
+
+    const row = screen.getByTestId('portal-backup-device-d-1');
+    expect(row.textContent).toContain('Sep 2, 2026, 04:00 AM MDT');
+    expect(row.textContent).toContain('Sep 1, 2026, 02:00 AM MDT');
+  });
+
+  it('says what the customer should do instead of printing the backend error', () => {
+    render(<BackupDeviceTable devices={[]} error="ECONNREFUSED 10.0.0.4:5432" />);
+
+    const notice = screen.getByRole('alert');
+    expect(notice.textContent).toBe(
+      "We couldn't load your backup devices just now. Your IT team can help."
+    );
+    expect(notice.textContent).not.toContain('ECONNREFUSED');
   });
 
   it('maps the restore-test status to a tone and a plain word', () => {

@@ -33,6 +33,16 @@ function osLabel(osType: string | null): string {
   return OS_LABELS[osType.toLowerCase()] ?? osType;
 }
 
+/**
+ * The phone card's column label. Inline and muted, "Last online" ran straight
+ * into "5 minutes ago" as one undifferentiated grey sentence; the Label style
+ * on its own line makes each card read label / value the way the dashboard
+ * ledger does (apps/portal/DESIGN.md, Typography). Desktop keeps the real <th>
+ * and never shows these.
+ */
+const PHONE_LABEL =
+  'mb-0.5 block text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:hidden';
+
 const PROTECTION_LABELS: Record<Device['protection'], string> = {
   protected: 'Protected',
   unprotected: 'Not protected',
@@ -116,7 +126,13 @@ function moreFacts(device: Device): { label: string; text: string; title?: strin
 
 export function DeviceList({ devices, error }: DeviceListProps) {
   if (error) {
-    return <ErrorNotice>{error}</ErrorNotice>;
+    // The transport error is ours to read, not the customer's: they can act on
+    // "ask your IT team", never on a connection string.
+    return (
+      <ErrorNotice>
+        We couldn&apos;t load your devices just now. Your IT team can help.
+      </ErrorNotice>
+    );
   }
 
   // The register's foot: what a glancing reader wants is one health sentence.
@@ -186,7 +202,8 @@ export function DeviceList({ devices, error }: DeviceListProps) {
               {devices.map((device) => {
                 const mark = statusMark(device.status);
                 const lastOnline = whenLabel(device.lastSeenAt, 'Not known');
-                const trailing = 'basis-full text-xs text-muted-foreground sm:text-sm';
+                const trailing =
+                  'basis-full text-xs text-foreground sm:text-sm sm:text-muted-foreground';
                 return (
                   <tr
                     key={device.id}
@@ -230,7 +247,7 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                       </details>
                     </td>
                     <td className={cn(CELL, 'order-3', trailing)}>
-                      <span className="sm:hidden">Type </span>
+                      <span className={PHONE_LABEL}>Type</span>
                       {osLabel(device.osType)}
                     </td>
                     <td className={cn(CELL, 'order-2 shrink-0')}>
@@ -241,11 +258,11 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                       data-testid={`portal-device-${device.id}-last-online`}
                       title={lastOnline.title}
                     >
-                      <span className="sm:hidden">Last online </span>
+                      <span className={PHONE_LABEL}>Last online</span>
                       {lastOnline.text}
                     </td>
                     <td className={cn(CELL, 'order-5', trailing)}>
-                      <span className="sm:hidden">Protection </span>
+                      <span className={PHONE_LABEL}>Protection</span>
                       {PROTECTION_LABELS[device.protection]}
                     </td>
                   </tr>

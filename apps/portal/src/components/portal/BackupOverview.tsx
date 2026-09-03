@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { BackupOverviewDto } from '@breeze/shared';
-import { cn, formatDateTime } from '@/lib/utils';
+import { formatDateTime } from '@/lib/utils';
 import { PageHeader, StatusMark, type MarkTone } from './ui';
 
 /**
@@ -10,23 +10,19 @@ import { PageHeader, StatusMark, type MarkTone } from './ui';
  * (apps/portal/DESIGN.md, "data is never boxed").
  */
 
-const STATUS_COPY: Record<
-  BackupOverviewDto['dataStatus'],
-  { message: string; tone: MarkTone } | null
-> = {
+/**
+ * What the band says about the page's data. Every one of these is a condition
+ * of OUR data collection, not something the customer can act on, so none of
+ * them wears amber — that ink is reserved for what the reader can do something
+ * about (apps/portal/DESIGN.md, "Don't use amber for anything the customer
+ * cannot act on"). Staleness in particular was shouting a warning at a person
+ * with no way to refresh it.
+ */
+const STATUS_COPY: Record<BackupOverviewDto['dataStatus'], string | null> = {
   ok: null,
-  not_configured: {
-    message: 'Backups are not configured.',
-    tone: 'neutral',
-  },
-  no_data: {
-    message: 'No backup data is available yet.',
-    tone: 'neutral',
-  },
-  stale: {
-    message: 'Backup data may be out of date.',
-    tone: 'warning',
-  },
+  not_configured: 'Backups are not configured.',
+  no_data: 'No backup data is available yet.',
+  stale: 'Backup data may be out of date.',
 };
 
 const LABEL = 'text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground';
@@ -87,9 +83,16 @@ function LedgerRow({
 
 export function BackupOverview({
   overview,
+  timezone = 'UTC',
   hasBackupActivity = false,
 }: {
   overview: BackupOverviewDto;
+  /**
+   * The org's own zone. This page renders on the server, so without it every
+   * stamp below is the droplet's clock wearing the customer's date. Defaults to
+   * UTC, which is what the API falls back to when an org has no zone set.
+   */
+  timezone?: string;
   /** Whether the device ledger on this page holds a real restore point. */
   hasBackupActivity?: boolean;
 }) {
@@ -127,14 +130,7 @@ export function BackupOverview({
         >
           {/* A sentence is body copy. Set in the small-caps label style it read
               as 32 characters of shouting above the ledger. */}
-          <p
-            className={cn(
-              'text-sm',
-              status.tone === 'warning' ? 'text-warning-on-tint' : 'text-muted-foreground'
-            )}
-          >
-            {status.message}
-          </p>
+          <p className="text-sm text-muted-foreground">{status}</p>
         </div>
       )}
 
@@ -149,7 +145,7 @@ export function BackupOverview({
         <LedgerRow testId="portal-backup-overview-last-verification" label="Last verification">
           {overview.lastPassedVerification?.completedAt ? (
             <span className={WHEN}>
-              {formatDateTime(overview.lastPassedVerification.completedAt)}
+              {formatDateTime(overview.lastPassedVerification.completedAt, timezone, true)}
             </span>
           ) : (
             <span className={QUIET}>No verification has run yet.</span>
@@ -158,7 +154,7 @@ export function BackupOverview({
 
         <LedgerRow testId="portal-backup-overview-last-test-restore" label="Last restore test">
           {overview.lastTestRestoreAt ? (
-            <span className={WHEN}>{formatDateTime(overview.lastTestRestoreAt)}</span>
+            <span className={WHEN}>{formatDateTime(overview.lastTestRestoreAt, timezone, true)}</span>
           ) : (
             <span className={QUIET}>No restore test has run yet.</span>
           )}
@@ -195,7 +191,7 @@ export function BackupOverview({
         className="text-figures border-t border-border/70 pt-4 text-xs text-muted-foreground"
         data-testid="portal-backup-overview-as-of"
       >
-        As of {formatDateTime(overview.asOf)}
+        As of {formatDateTime(overview.asOf, timezone, true)}
       </p>
     </section>
   );

@@ -142,8 +142,41 @@ describe('DeviceList', () => {
     );
   });
 
-  it('renders an error notice instead of a ledger', () => {
-    render(<DeviceList devices={[]} error="Devices are unavailable." />);
-    expect(screen.getByRole('alert').textContent).toContain('Devices are unavailable.');
+  it('reads label over value on a phone card, not one muted run-on', () => {
+    render(<DeviceList devices={[laptop]} />);
+
+    const labels = Array.from(
+      screen.getByTestId('portal-device-d-1').querySelectorAll('.sm\\:hidden')
+    );
+    expect(labels.map((el) => el.textContent)).toEqual([
+      'Type',
+      'Last online',
+      'Protection',
+    ]);
+    for (const label of labels) {
+      // The Label style: 12px semibold small-caps in quiet ink, on its own line
+      // above the value (apps/portal/DESIGN.md, Typography → Label).
+      expect(label.className).toContain('block');
+      expect(label.className).toContain('text-xs');
+      expect(label.className).toContain('font-semibold');
+      expect(label.className).toContain('uppercase');
+      expect(label.className).toContain('tracking-[0.08em]');
+      expect(label.className).toContain('text-muted-foreground');
+    }
+  });
+
+  it('says what the customer should do instead of printing the backend error', () => {
+    render(<DeviceList devices={[]} error="ECONNREFUSED 10.0.0.4:5432" />);
+
+    const notice = screen.getByRole('alert');
+    expect(notice.textContent).toBe(
+      "We couldn't load your devices just now. Your IT team can help."
+    );
+    expect(notice.textContent).not.toContain('ECONNREFUSED');
+  });
+
+  it('titles its empty state one level under the page title', () => {
+    render(<DeviceList devices={[]} />);
+    expect(screen.getByRole('heading', { name: 'No devices' }).tagName).toBe('H2');
   });
 });
