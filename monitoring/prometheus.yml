@@ -48,6 +48,35 @@ scrape_configs:
         regex: '([^:]+)(:\d+)?'
         replacement: '${1}'
 
+  # Breeze Worker (optional — only present when the worker-split Compose
+  # profile is enabled: `docker compose --profile worker-split up -d worker`;
+  # see docs/deploy/worker-split.md). If the container isn't running, this
+  # target is simply down (same as the redis/postgres/node exporters below) —
+  # that's expected outside a split deployment.
+  #
+  # Unlike breeze-api, the worker publishes `/metrics` directly (no `/api`
+  # prefix, no request-route auth) via a slim raw-node:http server, and only
+  # the role-agnostic runtime series (event-loop lag, DB pool health) — not
+  # the HTTP/business/fleet series `breeze-api` exposes. Filter dashboards and
+  # alerts on `job="breeze-worker"` vs `job="breeze-api"` rather than
+  # assuming a single `breeze_*` source, or the two roles' series can be
+  # double-counted once both report (#4523).
+  - job_name: 'breeze-worker'
+    static_configs:
+      - targets: ['worker:3001']
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/metrics_scrape_token
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:\d+)?'
+        replacement: '${1}'
+
   # Redis Exporter (optional - requires redis_exporter container)
   - job_name: 'redis'
     static_configs:

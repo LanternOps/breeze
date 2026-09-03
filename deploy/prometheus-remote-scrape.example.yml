@@ -75,6 +75,40 @@ scrape_configs:
         regex: '([^:]+)(:\d+)?'
         replacement: '${1}'
 
+# ===========================================================================
+# (A2) WORKER TARGET (optional — only on droplets running the worker-split
+#      Compose profile, see docs/deploy/worker-split.md). Same Tailscale path,
+#      a DIFFERENT host port (the worker container also listens on 3001
+#      internally, so it needs its own published port to avoid colliding with
+#      api's :3001 bind on the same droplet).
+# ===========================================================================
+#   - job_name: 'breeze-worker-eu'
+#     metrics_path: /metrics
+#     scheme: http
+#     static_configs:
+#       - targets: ['<EU_TAILSCALE_IP>:3002']
+#         labels:
+#           region: 'eu'
+#           service: 'breeze-worker'
+#     authorization:
+#       type: Bearer
+#       credentials_file: /etc/prometheus/secrets/breeze_metrics_token_eu
+#     scrape_interval: 15s
+#     scrape_timeout: 10s
+#     relabel_configs:
+#       - source_labels: [__address__]
+#         target_label: instance
+#         regex: '([^:]+)(:\d+)?'
+#         replacement: '${1}'
+#   # ...and a matching breeze-worker-us job targeting <US_TAILSCALE_IP>:3002
+#
+# #4523: the worker publishes only the role-agnostic runtime series
+# (event-loop lag, DB pool health) on `/metrics` — not the api's
+# HTTP/business/fleet series on `/metrics/scrape`. Filter on
+# `job="breeze-worker"` vs `job="breeze-api"` rather than assuming a single
+# `breeze_*` source, or the two roles' series can be double-counted once both
+# report.
+
 # If EU and US share the same token you can point both jobs at a single
 # credentials_file. They currently each have their own 32-char token, so keep
 # two files unless you deliberately unify them.
@@ -95,6 +129,19 @@ scrape_configs:
 #   http://<DROPLET_TAILSCALE_IP>:3001/metrics/scrape | head
 # Lock down further with a tailnet ACL allowing only the Prometheus node ->
 # tag:breeze-api:3001.
+#
+# To also scrape the worker (if that droplet runs the worker-split profile),
+# bind-publish IT to a different host port on the same Tailscale IP:
+#
+#   worker:
+#     ports:
+#       - '<DROPLET_TAILSCALE_IP>:3002:3001'   # tailnet-only, distinct port
+#
+# Then: docker compose up -d worker
+# Verify: curl -H "Authorization: Bearer <token>" \
+#   http://<DROPLET_TAILSCALE_IP>:3002/metrics | head
+# Lock down further with a tailnet ACL allowing only the Prometheus node ->
+# tag:breeze-worker:3002 (or a shared tag covering both ports).
 
 # ===========================================================================
 # (B) PUBLIC-EDGE FALLBACK (if you do NOT put the droplets on Tailscale)
@@ -117,3 +164,11 @@ scrape_configs:
 #     scrape_interval: 15s
 #     scrape_timeout: 10s
 #   # ...and a matching breeze-api-us job targeting us.your-domain.example.com
+#
+# NOTE: this fallback does not extend to the worker target. The worker isn't
+# proxied through Caddy at all (docker/Caddyfile.prod has no route for it),
+# and its scrape gate deliberately ignores X-Forwarded-For — it authenticates
+# the DIRECT peer only, ignoring METRICS_SCRAPE_IP_ALLOWLIST forwarding rules
+# an edge proxy would rely on (see apps/api/src/services/metricsScrapeAuth.ts
+# and docs/deploy/worker-split.md). Use the Tailscale path (A2) for the
+# worker, or leave it unscraped.
