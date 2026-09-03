@@ -2680,10 +2680,11 @@ jobs:
       # pre-existing failure earlier in the WEB flow (AuthOverlay /
       # session-expired on the contracts tab) and never gets as far as its
       # portal step. Add it here once that is fixed.
-      # portal-visibility.spec.ts (#4562 W10) does not use `waitForHydration`,
-      # but this is the only job that stands up Caddy fronting the portal, so
-      # it is the only place the customer-facing portal is exercised at all.
-      # It depends on the portal rows in e2e-tests/seed-fixtures.sql.
+      # portal-visibility.spec.ts (#4562 W10) also waits for hydration (its
+      # login island), and this is the only job that stands up Caddy fronting
+      # the portal, so it is the only place the customer-facing portal is
+      # exercised at all. It depends on the portal rows in
+      # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
         run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
 

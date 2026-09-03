@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { waitForHydration } from './hydration';
 
 export class PortalVisibilityPage {
   constructor(private page: Page) {}
@@ -28,6 +29,10 @@ export class PortalVisibilityPage {
    */
   async login(email: string, password: string): Promise<void> {
     await this.page.goto('/portal/login');
+    // The login form is a `client:load` island: a fill that lands before React
+    // attaches is discarded by hydration and the submit never posts (seen as
+    // an empty form still on /login after the full navigation timeout).
+    await waitForHydration(this.page, 'portal-login-submit');
     await this.email().fill(email);
     await this.password().fill(password);
     await this.submit().click();
