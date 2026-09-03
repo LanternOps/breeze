@@ -90,6 +90,21 @@ describe('PatchList CVE chips', () => {
   });
 });
 
+describe('PatchList severity (#3758)', () => {
+  it('renders an Unrated badge with a will-not-auto-approve note for a null-severity patch', () => {
+    const patch = makePatch({
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+      title: 'KB5000001',
+      severity: 'unrated',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.getAllByText('Unrated').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/will not auto-approve/i).length).toBeGreaterThan(0);
+  });
+});
+
 describe('PatchList page-size selector', () => {
   it('defaults to 25 rows per page', () => {
     render(<PatchList patches={makePatches(40)} />);
