@@ -112,6 +112,17 @@ export const RESET_PASSWORD_RATE_LIMIT = {
   blockMs: 30 * 60 * 1000
 } as const;
 
+// #4797: throttles POST /profile/password's current-password guesses. Unlike
+// the anonymous login/reset limits above, this route is already
+// session-authed, so the key is the portal user id alone (see profile.ts) —
+// mirrors the 5-attempts/5-min bucket `requireCurrentPasswordStepUp` uses for
+// the equivalent /auth/* surface (apps/api/src/routes/auth/helpers.ts).
+export const PASSWORD_CHANGE_RATE_LIMIT = {
+  windowMs: 5 * 60 * 1000,
+  maxAttempts: 5,
+  blockMs: 15 * 60 * 1000
+} as const;
+
 // ============================================
 // Zod Schemas
 // ============================================
