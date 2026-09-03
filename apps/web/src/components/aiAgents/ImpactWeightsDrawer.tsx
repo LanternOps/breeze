@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Drawer } from '../shared/Drawer';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '@/lib/runAction';
+import { badgeClass } from './statusBadge';
 import { DEFAULT_IMPACT_WEIGHTS, IMPACT_WEIGHT_KEYS, IMPACT_WEIGHT_MAX_SECONDS } from '@breeze/shared';
 import type { ImpactWeightOverrides, ImpactWeights } from '@breeze/shared';
 
@@ -164,7 +165,7 @@ export default function ImpactWeightsDrawer({
             {overrides?.[key] !== undefined && (
               <span
                 data-testid={`ai-impact-weight-${key}-customized`}
-                className="ml-2 text-xs text-amber-600 dark:text-amber-400"
+                className={`ml-2 ${badgeClass('accent', { size: 'sm' })}`}
               >
                 {t('aiAgentsPage.impact.weightsDrawer.customized')}
               </span>

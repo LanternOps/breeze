@@ -216,6 +216,185 @@ describe('applyAiFieldUpdates — CAS predicate (P2-4, #4191)', () => {
       applyAiFieldUpdates(TICKET_ID, ORG_ID, { priority: { value: 'high', expectedCurrent: 'normal' } }, RUN_ID),
     ).rejects.toThrow(TicketServiceError);
   });
+
+  it('leaves an unproposed field out of the write entirely (only the proposed field is set)', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: {} }]);
+
+    await applyAiFieldUpdates(TICKET_ID, ORG_ID, { priority: { value: 'high', expectedCurrent: 'normal' } }, RUN_ID);
+
+    const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.categoryId).toBeUndefined();
+    expect(sqlOf(setArg.fieldProvenance).sql).not.toContain('categoryId');
+  });
+});
+
+/**
+ * #4466. The CAS predicate proves only that the field has not MOVED since the
+ * caller observed it — it says nothing about whether the AI is actually
+ * changing anything. So an AI that merely re-asserts the value already on the
+ * ticket used to satisfy the predicate and stamp `field_provenance` to
+ * 'ai_agent' anyway. On a field a human set through a path that left no
+ * provenance entry (the stamp COALESCEs to '' and sails past the `<> 'user'`
+ * guard), that silently transferred ownership of a human's value to the AI —
+ * exactly the guarantee the provenance guard exists to provide.
+ *
+ * The guard is a distinctness check against the PROPOSED value, folded into
+ * the same predicate that drives the field write, so the stamp and the write
+ * can never drift apart. Asserted on compiled SQL for the reason the suite
+ * header gives: a mock that echoes `.set()` back cannot tell a real predicate
+ * from a missing one.
+ */
+describe('applyAiFieldUpdates — a same-value confirmation must not take ownership (#4466)', () => {
+  /** The `field_provenance || CASE ... END` arm that stamps `field`. */
+  function provenanceArm(fragment: unknown, field: 'categoryId' | 'priority') {
+    const compiled = sqlOf(fragment);
+    // Each arm is its own `||` operand, and neither a jsonb literal nor
+    // `->>` contains `||`, so splitting on it isolates them cleanly.
+    const arm = compiled.sql.split('||').find((part) => part.includes(`'{"${field}":"ai_agent"}'`));
+    expect(arm, `no provenance arm for ${field} in: ${compiled.sql}`).toBeDefined();
+    return { arm: arm!, params: compiled.params };
+  }
+
+  /** The value a `$n` placeholder inside `arm` is bound to. */
+  function boundValue(arm: string, params: unknown[], pattern: RegExp) {
+    const match = pattern.exec(arm);
+    expect(match, `expected ${pattern} in: ${arm}`).not.toBeNull();
+    return params[Number(match![1]) - 1];
+  }
+
+  const NOT_DISTINCT = /"priority" is not distinct from \$(\d+)/i;
+  const DISTINCT = /"priority" is distinct from \$(\d+)/i;
+
+  it('does not stamp provenance when the proposed priority is the value already on the ticket', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    // The ticket already sits at 'high' with NO provenance entry for it — a
+    // human set it via a path that never stamped, so the `<> 'user'` guard
+    // alone cannot protect it. The AI re-proposes the same 'high'.
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: {} }]);
+
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      { priority: { value: 'high', expectedCurrent: 'high' } },
+      RUN_ID,
+    );
+
+    const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
+    // The CAS half and the human guard both survive...
+    expect(arm.toLowerCase()).toContain('is not distinct from');
+    expect(arm.toLowerCase()).toContain("<> 'user'");
+    // ...and both comparisons bind the SAME value, which makes the predicate
+    // `x IS NOT DISTINCT FROM 'high' AND x IS DISTINCT FROM 'high'`
+    // unsatisfiable: Postgres cannot reach the stamp on this call at all.
+    expect(boundValue(arm, params, NOT_DISTINCT)).toBe('high');
+    expect(boundValue(arm, params, DISTINCT)).toBe('high');
+
+    // ...and the caller still sees the field as being in the desired state —
+    // a confirmation is not a concurrent-change skip.
+    expect(result.priority).toEqual({ applied: true });
+  });
+
+  it('still stamps ai_agent when the proposed priority is a real change', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'urgent', fieldProvenance: { priority: 'ai_agent' } }]);
+
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      { priority: { value: 'urgent', expectedCurrent: 'normal' } },
+      RUN_ID,
+    );
+
+    const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
+    // The distinctness guard compares against the PROPOSED value, not the
+    // observed one — comparing against `expectedCurrent` would be the same
+    // tautology the CAS half already covers and would never block anything.
+    expect(boundValue(arm, params, NOT_DISTINCT)).toBe('normal');
+    expect(boundValue(arm, params, DISTINCT)).toBe('urgent');
+
+    expect(result.priority).toEqual({ applied: true });
+  });
+
+  it('gates the categoryId stamp on a real change too', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    queueSelect(ticketCategories, [{ id: CATEGORY_ID, partnerId: PARTNER_ID, responseSlaMinutes: null, resolutionSlaMinutes: null }]);
+    dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'normal', fieldProvenance: {} }]);
+
+    await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      { categoryId: { value: CATEGORY_ID, expectedCurrent: CATEGORY_ID } },
+      RUN_ID,
+    );
+
+    const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'categoryId');
+    expect(boundValue(arm, params, /"category_id" is not distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+    expect(boundValue(arm, params, /"category_id" is distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+  });
+
+  it('stamps only the field that really changed when one arm confirms and the other changes', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    queueSelect(ticketCategories, [{ id: CATEGORY_ID, partnerId: PARTNER_ID, responseSlaMinutes: null, resolutionSlaMinutes: null }]);
+    dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'urgent', fieldProvenance: { priority: 'ai_agent' } }]);
+
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      {
+        // categoryId is a no-op confirmation; priority is a real change.
+        categoryId: { value: CATEGORY_ID, expectedCurrent: CATEGORY_ID },
+        priority: { value: 'urgent', expectedCurrent: 'normal' },
+      },
+      RUN_ID,
+    );
+
+    // Both arms are concatenated into ONE fragment, so their `$n` placeholders
+    // are numbered across the whole statement — the case most likely to expose
+    // a param-index or arm-ordering mistake, and the reason each arm is
+    // resolved back to its bound value rather than matched as a bare string.
+    const provenance = (setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance;
+
+    const category = provenanceArm(provenance, 'categoryId');
+    expect(boundValue(category.arm, category.params, /"category_id" is not distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+    expect(boundValue(category.arm, category.params, /"category_id" is distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+
+    const priority = provenanceArm(provenance, 'priority');
+    expect(boundValue(priority.arm, priority.params, NOT_DISTINCT)).toBe('normal');
+    expect(boundValue(priority.arm, priority.params, DISTINCT)).toBe('urgent');
+
+    expect(result).toEqual({ categoryId: { applied: true }, priority: { applied: true } });
+  });
+
+  /**
+   * Two claims in one, because they are easy to conflate: the outcome is
+   * derived from the RETURNING row, so `applied: true` means "the field holds
+   * the proposed value" and never "this call wrote it" (that half holds with
+   * or without the fix) — while the predicate that would stamp the field is
+   * unsatisfiable twice over (that half is #4466 and fails on revert). This is
+   * the shape a future reader is most likely to misread as "the AI took the
+   * field", so both halves are pinned together.
+   */
+  it('reports applied:true — never a human_set skip — when a user-stamped field already holds the proposed value', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: { priority: 'user' } }]);
+
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      { priority: { value: 'high', expectedCurrent: 'high' } },
+      RUN_ID,
+    );
+
+    expect(result.priority).toEqual({ applied: true });
+    // ...and `applied: true` here is emphatically NOT the AI taking the field:
+    // the predicate that gates the stamp fails twice over — the human guard
+    // AND the same-value guard — so Postgres cannot reach it.
+    const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
+    expect(arm.toLowerCase()).toContain("<> 'user'");
+    expect(boundValue(arm, params, NOT_DISTINCT)).toBe('high');
+    expect(boundValue(arm, params, DISTINCT)).toBe('high');
+  });
 });
 
 describe('addAiTriageNote — AI-origin internal comment (P2-4, #4191)', () => {

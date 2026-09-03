@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -200,7 +200,7 @@ describe('AiAgentsPage', () => {
     // Not shown before the operator has selected act.
     expect(screen.queryByTestId('ai-agent-act-warning')).toBeNull();
 
-    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
 
     expect(await screen.findByTestId('ai-agent-act-warning')).toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-act-ack')).not.toBeChecked();
@@ -248,7 +248,7 @@ describe('AiAgentsPage', () => {
     await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
 
-    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
     fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
     fireEvent.click(screen.getByTestId('ai-agent-save'));
 
@@ -459,7 +459,7 @@ describe('AiAgentsPage', () => {
     // existing act-warning gating pattern.
     expect(screen.queryByTestId('ai-agent-supervised-key-manage_services:restart')).toBeNull();
 
-    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
 
     expect(await screen.findByTestId('ai-agent-supervised-key-manage_services:restart')).toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-supervised-key-manage_services:stop')).toBeInTheDocument();
@@ -503,7 +503,7 @@ describe('AiAgentsPage', () => {
 
     await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
-    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
     fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
     fireEvent.click(screen.getByTestId('ai-agent-save'));
 
@@ -524,7 +524,7 @@ describe('AiAgentsPage', () => {
 
     await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
-    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
 
     expect(await screen.findByTestId('ai-agent-policy-keys-failed')).toBeInTheDocument();
   });
@@ -547,6 +547,282 @@ describe('AiAgentsPage', () => {
         fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
       ).toBe(true),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4187 UI critique — the mode control, the first-run panel, and the drawer.
+// ---------------------------------------------------------------------------
+
+const ACT_AGENT = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+
+/** The three-key policy registry every act-mode test below shares. */
+const REGISTRY = [
+  { key: 'manage_services:restart', toolName: 'manage_services', action: 'restart', note: 'Restarts a service.' },
+  { key: 'manage_services:stop', toolName: 'manage_services', action: 'stop', note: 'Stops a service.' },
+  { key: 'security_scan:quarantine', toolName: 'security_scan', action: 'quarantine', note: 'Quarantines a threat.' },
+];
+
+function mockActEndpoints(agent: unknown = ACT_AGENT, registry: unknown[] = REGISTRY) {
+  fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: registry }));
+    if (url === '/ai/agents/a1' && init?.method === 'PATCH') return Promise.resolve(json({ data: agent }));
+    if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+    if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [agent] }));
+    if (url === '/roles') return Promise.resolve(json({ data: [] }));
+    return Promise.resolve(json({ data: [] }));
+  });
+}
+
+function lastPatchBody() {
+  const patch = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+  return JSON.parse((patch?.[1] as RequestInit).body as string) as Record<string, unknown>;
+}
+
+describe('AiAgentsPage mode radiogroup (#4187 UI critique)', () => {
+  it('renders mode as a three-option radiogroup whose selection reflects the stored mode', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    const group = await screen.findByTestId('ai-agent-mode');
+    expect(group).toHaveAttribute('role', 'radiogroup');
+    const radios = within(group).getAllByRole('radio');
+    expect(radios).toHaveLength(3);
+    // PARTNER_AGENT is stored as `shadow`.
+    expect(screen.getByTestId('ai-agent-mode-shadow')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('aria-checked', 'false');
+    // Roving tabindex: exactly one tab stop, on the selected option.
+    expect(radios.filter((radio) => radio.getAttribute('tabindex') === '0')).toHaveLength(1);
+  });
+
+  it('moves the selection with the arrow keys, wrapping at both ends', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    const group = await screen.findByTestId('ai-agent-mode');
+
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('aria-checked', 'true');
+
+    // Wraps forward from the last option back to the first.
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.keyDown(group, { key: 'ArrowLeft' });
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.keyDown(group, { key: 'Home' });
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  // Review fix (#4187 UI critique, P3): `onModeKeyDown` moves selection AND
+  // is documented as moving focus (the roving-tabindex pattern requires
+  // both), but nothing previously asserted the focus half — a regression
+  // that moved selection without calling `.focus()` would have passed every
+  // other test here.
+  it('moves DOM focus together with the selection on every arrow/Home/End key, wrapping at both ends', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    const group = await screen.findByTestId('ai-agent-mode');
+
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(screen.getByTestId('ai-agent-mode-act'));
+
+    // Wraps forward from the last option back to the first.
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(screen.getByTestId('ai-agent-mode-off'));
+
+    // Wraps backward from the first option to the last.
+    fireEvent.keyDown(group, { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(screen.getByTestId('ai-agent-mode-act'));
+
+    fireEvent.keyDown(group, { key: 'Home' });
+    expect(document.activeElement).toBe(screen.getByTestId('ai-agent-mode-off'));
+
+    fireEvent.keyDown(group, { key: 'End' });
+    expect(document.activeElement).toBe(screen.getByTestId('ai-agent-mode-act'));
+  });
+
+  // Review fix (#4187 UI critique, P3): a stale row can have its CHECKED
+  // option itself disabled — an agent saved while `act` was supported, whose
+  // partner later lost act eligibility, still stores `mode: 'act'`. The old
+  // `tabIndex={selected ? 0 : -1}` left every radio at -1 in that case,
+  // making the whole group unreachable by keyboard (Tab skips it entirely).
+  it('falls back the roving tab stop to the first ENABLED option when the checked option is itself disabled', async () => {
+    const staleActAgent = { ...PARTNER_AGENT, mode: 'act' as const, supportedModes: ['off', 'shadow'] as const };
+    mockEndpoints([staleActAgent]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    const group = await screen.findByTestId('ai-agent-mode');
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ai-agent-mode-act')).toBeDisabled();
+
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.filter((radio) => radio.getAttribute('tabindex') === '0')).toHaveLength(1);
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('never lands on the act option with the arrow keys when the API does not support it', async () => {
+    // `PARTNER_AGENT.supportedModes` is ['off','shadow'] — the disabled card
+    // has to be skipped by the keyboard too, not just unclickable.
+    mockEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    const group = await screen.findByTestId('ai-agent-mode');
+
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('aria-checked', 'true');
+    fireEvent.keyDown(group, { key: 'End' });
+    expect(screen.getByTestId('ai-agent-mode-shadow')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  // Review fix (#4187 UI critique, P2): the ORIGINAL Riley bug was that
+  // leaving act only HID the fieldset while Save still submitted keys the
+  // operator could no longer see. The FIRST fix over-corrected — it cleared
+  // `supervisedActionKeys` from the draft on the way out of act, so an
+  // act -> shadow -> act round trip silently lost a persisted grant list the
+  // operator never touched. The keys now stay in the draft the whole time;
+  // only the SAVE PAYLOAD omits them while the mode isn't act.
+  it('keeps supervisedActionKeys in the draft across an act -> shadow -> act round trip, and omits them from Save only while not in act', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
+    fireEvent.click(await screen.findByTestId('ai-agent-supervised-key-manage_services:restart'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    expect(screen.getByTestId('ai-agent-supervised-key-manage_services:restart')).toBeChecked();
+
+    fireEvent.click(screen.getByTestId('ai-agent-mode-shadow'));
+
+    // Announced: Save will not carry these keys while the mode stays shadow.
+    expect(await screen.findByTestId('ai-agent-act-keys-cleared')).toBeInTheDocument();
+    // The acknowledgement still resets — a genuine re-entry into act must ask
+    // again — but the KEY SELECTION itself is restored, not re-blanked.
+    fireEvent.click(screen.getByTestId('ai-agent-mode-act'));
+    expect(screen.getByTestId('ai-agent-act-ack')).not.toBeChecked();
+    expect(screen.getByTestId('ai-agent-supervised-key-manage_services:restart')).toBeChecked();
+    // Mounted unconditionally (see the dedicated test below) — back in act
+    // mode there is nothing to omit, so the text is empty rather than absent.
+    expect(screen.getByTestId('ai-agent-act-keys-cleared')).toHaveTextContent('');
+
+    // Saving from shadow omits the keys even though the draft still holds
+    // them — the draft is a form of "remembered while not in effect", never
+    // wire truth for a mode that cannot use them.
+    fireEvent.click(screen.getByTestId('ai-agent-mode-shadow'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+    );
+    const body = lastPatchBody();
+    expect(body.mode).toBe('shadow');
+    expect(body.actAssets).toEqual({ supervisedActionKeys: [] });
+  });
+
+  it('does not claim keys will be omitted when there were none to omit', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-mode-off'));
+
+    // Review fix (#4187 UI critique, P3): the status region is now mounted
+    // UNCONDITIONALLY (see the radiogroup test below) so a screen reader
+    // hears the FIRST announcement too — an aria-live region only announces
+    // changes to content that was already in the DOM when it changed. So
+    // "not shown" is now "present with no text", not "absent".
+    const status = screen.getByTestId('ai-agent-act-keys-cleared');
+    expect(status).toHaveTextContent('');
+  });
+
+  // Review fix (#4187 UI critique, P3): `role="status"` mounted only once
+  // there was something to say, so the FIRST thing it ever announced was
+  // never heard — an aria-live region has to already be in the accessibility
+  // tree before its content changes for assistive tech to pick up the
+  // change. The element must always be there; only its text toggles.
+  it('mounts the act-keys status region unconditionally, gating only its text', async () => {
+    mockActEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    // Present even before act mode has ever been touched.
+    const status = await screen.findByTestId('ai-agent-act-keys-cleared');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toHaveTextContent('');
+
+    fireEvent.click(await screen.findByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-supervised-key-manage_services:restart'));
+    fireEvent.click(screen.getByTestId('ai-agent-mode-shadow'));
+
+    expect(screen.getByTestId('ai-agent-act-keys-cleared')).toHaveTextContent(/.+/);
+  });
+
+  it('explains that `enabled` and the mode are two gates', async () => {
+    mockEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    expect(await screen.findByTestId('ai-agent-enabled-hint')).toBeInTheDocument();
+  });
+});
+
+describe('AiAgentsPage first run and drawer (#4187 UI critique)', () => {
+  it('replaces the bare "no agents" line with a first-run panel that opens the create form', async () => {
+    mockEndpoints([]);
+    render(<AiAgentsPage />);
+
+    const empty = await screen.findByTestId('ai-agents-empty');
+    // Every kind is named, so an operator learns what is on offer before
+    // being asked to pick one.
+    expect(within(empty).getByText('Alert triage')).toBeInTheDocument();
+    expect(within(empty).getByText('Patching')).toBeInTheDocument();
+    expect(within(empty).getByText('Help desk')).toBeInTheDocument();
+
+    fireEvent.click(within(empty).getByTestId('ai-agents-empty-create'));
+    expect(await screen.findByTestId('ai-agent-editor')).toBeInTheDocument();
+    // New agents start in the safe mode the panel names.
+    expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('opens the editor in a drawer and leaves the agent list on screen', async () => {
+    mockEndpoints([PARTNER_AGENT, ORG_AGENT]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    expect(screen.queryByTestId('ai-agent-editor-drawer')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    expect(await screen.findByTestId('ai-agent-editor-drawer')).toBeInTheDocument();
+    // The list is what the inline editor used to push below the fold.
+    expect(screen.getByTestId('ai-agents-list')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-row-a2')).toBeInTheDocument();
   });
 });
 

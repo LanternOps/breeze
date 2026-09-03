@@ -27,7 +27,7 @@ import {
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
+  actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -55,6 +55,7 @@ import {
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
 import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
+import { demoteSupervisedKey } from '../services/aiAgents/supervisedKeyDemote';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
 import { ActionIntentError, createActionIntent } from '../services/actionIntents/intentService';
 import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
@@ -557,6 +558,168 @@ aiAgentsRoutes.post(
       }
       throw err;
     }
+  },
+);
+
+/**
+ * Body of `POST /graduation/revoke`. Kept local to this route rather than
+ * added beside `promoteSupervisedKeyRequestSchema` in `@breeze/shared`: the
+ * promote body crosses the wire into an action intent's ARGUMENTS (the
+ * effect-digest resolver re-reads it), so it has to be canonical in a package
+ * both ends import. A revoke is a plain request body that never leaves this
+ * handler.
+ *
+ * `opKey` carries promote's colon-form restriction verbatim: a dot-form
+ * act-op key is outcome evidence and was never grantable, so it can never be
+ * revocable either — rejecting it at the schema is what keeps a typo from
+ * reading as "no such grant".
+ *
+ * `kind` is OPTIONAL and exists only to disambiguate. Policy-decidable keys
+ * are not kind-scoped (`POLICY_DECIDABLE_TIER3` is one flat registry), and
+ * `ai_agent_graduation` is unique on `(org_id, agent_id, op_key)` — so one
+ * org CAN hold the same key under two agents of different kinds. The panel
+ * always knows the kind it is rendering; a caller that omits it gets served
+ * only while the answer is unambiguous.
+ */
+const revokeSupervisedKeyRequestSchema = z.object({
+  orgId: z.string().guid(),
+  opKey: z.string().min(3).max(120).regex(/^[a-z0-9_]+:[a-z0-9_]+$/),
+  kind: z.enum(AI_AGENT_KINDS).optional(),
+  /** Operator-authored note. Recorded on the audit row, never on the agent policy. */
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
+/**
+ * How many graduation rows the precondition read pulls for one
+ * `(org_id, op_key)`. Only "one, or more than one" is ever asked — the extra
+ * rows exist so the ambiguity branch below can fire instead of the route
+ * silently revoking whichever holder Postgres returned first.
+ */
+const GRADUATION_REVOKE_CANDIDATE_LIMIT = 5;
+
+/**
+ * The operator-facing mirror of `POST /graduation/promote`: hand a promoted
+ * key back to the approval queue.
+ *
+ * NO FOUR-EYES, and that is the whole point of it being a route rather than
+ * a second `manage_ai_agents` action. Promote's four-eyes ceremony exists
+ * because granting unattended authority is irreversible-in-effect once an
+ * action runs; revoking strictly REDUCES privilege, so requiring a second
+ * human would mean an operator who has just watched an agent misbehave
+ * cannot stop it without finding a colleague. Same `scopes` and the same
+ * `requireAiWrite` capability as promote; no `requireMfa()`, matching what
+ * promote asks of its FIRST approver.
+ *
+ * NOT GATED ON `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`, deliberately, and
+ * for the exact reason promote IS: the flag going dark must stop new grants
+ * without stranding a live one on an agent an operator wants stopped.
+ * `supervisedKeyDemote.ts` is always-on for the same reason.
+ *
+ * TENANCY. The precondition read runs in the CALLER's own request context —
+ * `ai_agent_graduation` is Shape 1 (`breeze_has_org_access(org_id)`), so RLS
+ * is a real gate here and elevating would throw it away (the same reasoning
+ * `countEligibleGraduations` records). `auth.orgCondition` is stacked on top
+ * because partner scope means ACCESSIBLE orgs, not every org under the
+ * partner. Only the EXECUTOR elevates, and it does so itself: unlike
+ * promote's `createActionIntent` (a bare system wrapper, which is a no-op
+ * inside a request context — hence promote's `runOutsideDbContext`),
+ * `demoteSupervisedKey`'s own `inSystemDbContext` already exits the request
+ * context before establishing system visibility, so this handler must NOT
+ * wrap it.
+ *
+ * Refusals are all "nothing was revoked", never a false success:
+ *   404 `no_promoted_grant`  — no row, or none that ever reached `promoted`
+ *   409 `already_demoted`    — this key is already back in the queue
+ *   409 `ambiguous_op_key`   — two agents hold it; re-send with `kind`
+ *   409 `already_revoked`    — the key had already left the org row (a manual
+ *                              PATCH, or a partner-ceiling-only grant), so
+ *                              the executor wrote nothing and the stored
+ *                              state is stale-promoted. Reporting 200 here
+ *                              would claim a `demoted` row that does not
+ *                              exist.
+ */
+aiAgentsRoutes.post(
+  '/graduation/revoke',
+  scopes,
+  requireAiWrite,
+  zValidator('json', revokeSupervisedKeyRequestSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, opKey, kind, reason } = c.req.valid('json');
+
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Organization not accessible' }, 403);
+    }
+
+    const rows = await db
+      .select({ agentId: aiAgentGraduation.agentId, state: aiAgentGraduation.state })
+      .from(aiAgentGraduation)
+      .where(and(
+        auth.orgCondition(aiAgentGraduation.orgId),
+        eq(aiAgentGraduation.orgId, orgId),
+        eq(aiAgentGraduation.opKey, opKey),
+      ))
+      .limit(GRADUATION_REVOKE_CANDIDATE_LIMIT);
+
+    let candidates = rows;
+    if (kind !== undefined) {
+      // Server-side resolution, never a caller-supplied agent id — the same
+      // rule GET /graduation states: an org token carries a partnerId but
+      // cannot read the partner baseline row itself.
+      const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+      if (!resolved) {
+        return c.json({ error: 'No active agent policy for this organization/kind' }, 404);
+      }
+      candidates = rows.filter((row) => row.agentId === resolved.agentId);
+    }
+
+    const promoted = candidates.filter((row) => row.state === 'promoted');
+    if (promoted.length === 0) {
+      if (candidates.some((row) => row.state === 'demoted')) {
+        return c.json({ error: 'already_demoted' }, 409);
+      }
+      return c.json({ error: 'no_promoted_grant' }, 404);
+    }
+    if (promoted.length > 1) {
+      return c.json({
+        error: 'ambiguous_op_key',
+        message: 'More than one agent holds this key for the organization — re-send with `kind`',
+      }, 409);
+    }
+
+    const { agentId } = promoted[0]!;
+    const { revoked, orgAgentId } = await demoteSupervisedKey({
+      orgId,
+      agentId,
+      opKey,
+      reason: 'operator',
+      // No disqualifying evidence produced this — a human decided it. The
+      // accountable human is on the audit row below, which is also why the
+      // executor is left to write its own `ai.agent.supervised_key.revoked`
+      // row unchanged: that one records the AUTHORITY CHANGE (and is the same
+      // row the two automatic callers produce), this one records WHO.
+      runId: null,
+      watchId: null,
+      intentId: null,
+    });
+    if (!revoked) {
+      return c.json({ error: 'already_revoked', orgAgentId }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ai_agent.graduation.revoke',
+      resourceType: 'ai_agent',
+      resourceId: orgAgentId,
+      // The operator's own note is the one piece of free text on this row.
+      // It is a HUMAN's words, not a tool result, an alert message or any
+      // model-authored rationale — the class `supervisedKeyDemote.ts`'s leak
+      // rule excludes from operator-facing surfaces.
+      details: { agentId, orgAgentId, opKey, reason: reason ?? null },
+      result: 'success',
+    });
+
+    return c.json({ revoked: true, orgAgentId, state: 'demoted' as const });
   },
 );
 

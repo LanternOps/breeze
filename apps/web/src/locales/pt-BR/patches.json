@@ -243,7 +243,9 @@
       "critical": "Crítica",
       "important": "Importante",
       "moderate": "Moderada",
-      "low": "Baixa"
+      "low": "Baixa",
+      "unrated": "Sem classificação",
+      "unratedNote": "Não será aprovado automaticamente"
     },
     "approval": {
       "pending": "Pendente",

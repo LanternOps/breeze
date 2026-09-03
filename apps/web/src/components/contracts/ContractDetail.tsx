@@ -377,6 +377,9 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                     <tr key={l.id} className="border-t" data-testid={`contract-detail-line-${l.id}`}>
                       <td className="px-3 py-2">
                         {t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}
+                        {l.site
+                          ? <span className="block text-xs text-muted-foreground" data-testid={`contract-detail-line-site-${l.id}`}>{t('contracts.shared.lineScope.site', { name: l.site.name })}</span>
+                          : null}
                         {l.lineType === 'per_device_role' && l.deviceRoles
                           ? <span className="block text-xs text-muted-foreground">{l.deviceRoles.map(getDeviceRoleLabel).join(', ')}</span>
                           : null}
