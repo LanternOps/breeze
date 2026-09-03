@@ -346,6 +346,7 @@ describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widenin
   beforeEach(() => {
     vi.clearAllMocks();
     dbState.selectUsersResults.length = 0;
+    dbState.selectOrgsResults.length = 0;
   });
 
   const moveOrgIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
@@ -355,8 +356,9 @@ describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widenin
     ...overrides,
   } as Partial<ActionIntent>);
 
-  it('widens accessibleOrgIds to the recorded target org when the requester (partner, orgAccess: all) can reach it', async () => {
+  it('widens accessibleOrgIds to the recorded target org when the requester (partner, orgAccess: all) can reach it AND the target shares the intent\'s partner', async () => {
     dbState.selectUsersResults.push([activeUser]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]); // target org — SAME partner as intent.partnerId
     permState.getUserPermissions.mockResolvedValueOnce({
       permissions: [],
       partnerId: 'partner-1',
@@ -376,6 +378,47 @@ describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widenin
     // The AuthContext's own "home" org is unchanged — only accessibleOrgIds
     // widens, same as a live partner-scope request.
     expect(result!.orgId).toBe('org-1');
+  });
+
+  it('does NOT widen when orgAccess:all would pass but the recorded target org belongs to a DIFFERENT partner (independent tenancy check, not permsCanAccessOrg alone)', async () => {
+    // permsCanAccessOrg('all') returns true for ANY org id — it never checks
+    // tenancy. This is the regression case a permsCanAccessOrg-only bound
+    // would have missed: the requester's own partner grants blanket org
+    // access, but the RECORDED target belongs to someone else's partner.
+    dbState.selectUsersResults.push([activeUser]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-2' }]); // target org — DIFFERENT partner
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'all',
+    });
+
+    const result = await buildAuthContextForIntent(moveOrgIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.canAccessOrg('org-2')).toBe(false);
+  });
+
+  it('does NOT widen when intent.partnerId is null (defensive — a partner-scope intent should always carry one)', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    dbState.selectOrgsResults.push([{ partnerId: null }]); // target org's own partner (irrelevant — comparand is null)
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'all',
+    });
+
+    const result = await buildAuthContextForIntent(moveOrgIntent({ partnerId: null }));
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
   });
 
   it('does NOT widen when the requester (partner, orgAccess: selected) cannot reach the recorded target org — the tool gate refuses for the RIGHT reason', async () => {

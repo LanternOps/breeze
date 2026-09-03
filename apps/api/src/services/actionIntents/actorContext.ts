@@ -33,6 +33,16 @@ import type { TokenPayload } from '../jwt';
  * introduced: an approved release of the new tool/action succeeds
  * cross-org, no OTHER tool/action gets the widening, and an approver/agent
  * without access to the recorded target org is still refused.
+ *
+ * The widening below independently re-verifies the target org's CURRENT
+ * partner against the releasing identity's own partner before granting
+ * access — but that bounds WHO gets to widen, not what the tool is then
+ * allowed to do with it. A new entry's TOOL HANDLER must independently
+ * enforce its own tenancy boundary on the target (same-partner, or whatever
+ * the mutation's actual constraint is) before executing — `move_org`'s own
+ * `moveTicketOrg` (ticketService.ts) does this by re-fetching both orgs
+ * under a row lock and rejecting a cross-partner move — never assume the
+ * widening bound alone is a substitute for the tool's own check.
  */
 const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   manage_tickets: { move_org: 'targetOrgId' },
@@ -233,11 +243,32 @@ async function buildUserOwnedAuthContext(
     // existing `auth.canAccessOrg(targetOrgId)` gate 403s exactly as before
     // — now for the RIGHT reason (this approver really lacks target-org
     // access) instead of unconditionally.
+    //
+    // `permsCanAccessOrg` ALONE is not a tenancy check: for an `orgAccess:
+    // 'all'` partner requester it returns true for literally any org id, with
+    // no read of which partner that org actually belongs to (unlike the
+    // request-time equivalent, `computeAccessibleOrgIds` in middleware/auth.ts,
+    // which filters by `organizations.partnerId` before ever handing out
+    // `accessibleOrgIds`). So a second, independent check confirms the
+    // recorded target org's CURRENT partner matches `intent.partnerId` —
+    // mirroring the agent-owned path below, which does the same live lookup
+    // for exactly this reason. Without it, a future allowlist entry whose
+    // tool handler lacks its own same-partner guard (unlike
+    // `moveTicketOrg`'s independent check, which is what makes the CURRENT
+    // single entry safe even without this) would hand an `orgAccess: 'all'`
+    // requester a genuinely cross-partner `accessibleOrgIds` widening.
     const targetOrgId = resolveTenantMutationTargetOrgId(intent);
-    const accessibleOrgIds =
-      targetOrgId && targetOrgId !== intent.orgId && permsCanAccessOrg(perms, targetOrgId)
-        ? [intent.orgId, targetOrgId]
-        : [intent.orgId];
+    let accessibleOrgIds = [intent.orgId];
+    if (targetOrgId && targetOrgId !== intent.orgId && permsCanAccessOrg(perms, targetOrgId)) {
+      const [targetOrg] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, targetOrgId))
+        .limit(1);
+      if (targetOrg && intent.partnerId && targetOrg.partnerId === intent.partnerId) {
+        accessibleOrgIds = [intent.orgId, targetOrgId];
+      }
+    }
 
     const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
     const allowedSiteIds = perms.allowedSiteIds;

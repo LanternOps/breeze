@@ -35,10 +35,17 @@
  *       never `actor_invalid` and never a silent success.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+
+// Required for the agent-owned scenario below: checkAgentGuardrails
+// (aiGuardrails.ts) denies every agent proposal outright when this env flag
+// is off, same precedent as aiAgentTicketTriage.integration.test.ts.
+vi.hoisted(() => {
+  process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+});
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
@@ -46,8 +53,10 @@ import { actionIntents } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { partnerUsers } from '../../db/schema/users';
 import { tickets } from '../../db/schema/portal';
+import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAuthContextForIntent } from '../../services/actionIntents/actorContext';
+import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { PERMISSIONS } from '../../services/permissions';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
@@ -359,6 +368,242 @@ describe('#4650 move_org action-intent release: real-Postgres end-to-end coverag
       expect(auth).not.toBeNull();
       expect(auth!.accessibleOrgIds).toEqual([s.orgAId]);
       expect(auth!.canAccessOrg(s.orgBId)).toBe(false);
+    },
+  );
+
+  runDb(
+    "(d) orgAccess='all' does not widen into a target org under a DIFFERENT partner — independent tenancy check, not permsCanAccessOrg alone",
+    async () => {
+      // permsCanAccessOrg('all') returns true for ANY org id — it never
+      // checks tenancy. This proves the widening's SECOND, independent
+      // check (the recorded target org's live partnerId vs intent.partnerId)
+      // actually runs against real Postgres, not just the mocked unit test.
+      const s = await seedScenario('all');
+      const otherPartner = await createPartner();
+      const orgC = await createOrganization({ partnerId: otherPartner.id }); // different partner than s.partnerId
+
+      const now = new Date();
+      const [intentRow] = await withSystemDbAccessContext(() =>
+        db
+          .insert(actionIntents)
+          .values({
+            orgId: s.orgAId,
+            partnerId: s.partnerId,
+            requestedByUserId: s.requester.id,
+            source: 'chat',
+            originPrincipalKind: 'user_session',
+            actionName: TOOL_NAME,
+            arguments: { action: 'move_org', ticketId: s.ticketId, targetOrgId: orgC.id },
+            argumentDigest: 'digest-4650-cross-partner',
+            targetSummary: 'manage_tickets:move_org (cross-partner target, #4650 regression guard)',
+            impactSummary: 'Moves a ticket to another organization',
+            riskTier: 3,
+            idempotencyKey: `idem-4650-${randomUUID()}`,
+            correlationId: randomUUID(),
+            status: 'executing',
+            expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+          })
+          .returning(),
+      );
+
+      const auth = await buildAuthContextForIntent(intentRow as ActionIntent);
+
+      expect(auth).not.toBeNull();
+      expect(auth!.accessibleOrgIds).toEqual([s.orgAId]);
+      expect(auth!.canAccessOrg(orgC.id)).toBe(false);
+    },
+  );
+});
+
+/**
+ * Agent-owned release: the SAME allowlisted widening, but for a `move_org`
+ * intent originated by an `ai_agent` principal (`requestingAgentRunId` set)
+ * rather than a human requester — the pipeline `buildAgentOwnedAuthContext`
+ * rebuilds, not `buildUserOwnedAuthContext`. Separate `describe` because the
+ * fixtures (a real `ai_agents` + `ai_agent_runs` row) are shaped differently
+ * from the human-requester scenario above.
+ *
+ * `manage_tickets` mutates from a DEVICE-LESS run, so `checkAgentGuardrails`
+ * (aiGuardrails.ts) would deny it as unbound UNLESS the intent carries an
+ * explicit ticket scope (`scope: { ticketId }`, the P2-4 carve-out) — that is
+ * threaded through `createActionIntent`'s `input.scope` below.
+ */
+interface AgentScenario {
+  partnerId: string;
+  orgAId: string;
+  orgBId: string;
+  agentId: string;
+  runId: string;
+  approver: { id: string; email: string };
+  approverRoleId: string;
+  ticketId: string;
+}
+
+async function seedAgentScenario(): Promise<AgentScenario> {
+  const partner = await createPartner();
+  const orgA = await createOrganization({ partnerId: partner.id });
+  const orgB = await createOrganization({ partnerId: partner.id });
+
+  const approverRole = await createRole({ scope: 'organization', orgId: orgA.id });
+  await grantRolePermissions(approverRole.id, [PERMISSIONS.APPROVALS_DECIDE]);
+  const approver = await createUser({
+    partnerId: partner.id,
+    orgId: orgA.id,
+    email: `agent-approver-${randomUUID()}@moveOrg4650.test`,
+  });
+  await assignUserToOrganization(approver.id, orgA.id, approverRole.id);
+
+  const unique = uid();
+  const [ticket] = await getTestDb()
+    .insert(tickets)
+    .values({
+      orgId: orgA.id,
+      partnerId: partner.id,
+      ticketNumber: `MO4650AGT-${unique}`,
+      subject: `agent move_org release test ${unique}`,
+      source: 'manual',
+    })
+    .returning();
+
+  // PARTNER-scoped agent (orgId: null) — an org-scoped agent's home IS a
+  // single org and is never eligible for the widening (proven at the unit
+  // level); the release-pipeline gap this closes is specifically the
+  // partner-scoped, cross-org-eligible case.
+  const [agent] = await getTestDb()
+    .insert(aiAgents)
+    .values({
+      partnerId: partner.id,
+      orgId: null,
+      kind: 'helpdesk',
+      name: 'Test Ticket Agent',
+      enabled: true,
+      mode: 'shadow',
+      toolAllowlist: ['manage_tickets'],
+      protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+      limits: {},
+      triggers: {},
+      recipients: { userIds: [], roleIds: [] },
+      createdBy: approver.id,
+    })
+    .returning();
+
+  const policySnapshot = {
+    effective: {
+      enabled: true,
+      mode: 'shadow',
+      toolAllowlist: ['manage_tickets'],
+      protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+      limits: {},
+      triggers: {},
+    },
+  };
+
+  const [run] = await getTestDb()
+    .insert(aiAgentRuns)
+    .values({
+      agentId: agent!.id,
+      orgId: orgA.id,
+      deviceId: null,
+      ticketId: ticket!.id,
+      triggerKind: 'ticket',
+      dedupeKey: `agent-move-org-4650-${randomUUID()}`,
+      modeAtStart: 'shadow',
+      policySnapshot: policySnapshot as never,
+    })
+    .returning();
+
+  return {
+    partnerId: partner.id,
+    orgAId: orgA.id,
+    orgBId: orgB.id,
+    agentId: agent!.id,
+    runId: run!.id,
+    approver: { id: approver.id, email: approver.email },
+    approverRoleId: approverRole.id,
+    ticketId: ticket!.id,
+  };
+}
+
+async function createAgentMoveOrgIntent(
+  s: AgentScenario,
+  targetOrgId: string,
+): Promise<{ intentId: string; approvalRequestIds: string[] }> {
+  const auth = buildAgentAuthContext(
+    { id: s.agentId, orgId: null, partnerId: s.partnerId, name: 'Test Ticket Agent', kind: 'helpdesk' },
+    { id: s.runId, orgId: s.orgAId, deviceId: null },
+    { id: s.orgAId, partnerId: s.partnerId },
+  );
+  const snapshot = await createActionIntent(auth, {
+    toolName: TOOL_NAME,
+    input: { action: 'move_org', ticketId: s.ticketId, targetOrgId },
+    source: 'ai_agent',
+    scope: { ticketId: s.ticketId },
+  });
+  expect(snapshot.status).toBe('pending_approval');
+  return { intentId: snapshot.id, approvalRequestIds: snapshot.approvalRequestIds };
+}
+
+describe('#4650 move_org action-intent release (agent-owned): real-Postgres end-to-end coverage', () => {
+  runDb(
+    '(e) an approved agent-owned move_org intent widens accessibleOrgIds cross-org when rebuilt for release (partner-scoped agent, same-partner target)',
+    async () => {
+      // Drives the REAL creation + four-eyes approval pipeline (createActionIntent
+      // -> approvalRoutes decide), then calls the exact release-time function,
+      // buildAuthContextForIntent, against the resulting real, approved
+      // action_intents row (real aiAgents/aiAgentRuns/organizations reads, no
+      // mocks) — proving buildAgentOwnedAuthContext's widening end-to-end for a
+      // genuinely approved agent-owned intent.
+      //
+      // Deliberately stops at the rebuilt AuthContext rather than also calling
+      // `releaseApprovedIntent` through to tool execution: doing so surfaced a
+      // SEPARATE, pre-existing bug unrelated to accessibleOrgIds — `moveTicketOrg`'s
+      // "moved" system-comment insert (ticketService.ts) writes `actor.userId`
+      // (== `auth.user.id`, the agent's synthetic id for an ai_agent principal,
+      // per `agentRunIdFrom`'s doc comment in aiToolsTicketing.ts) into
+      // `ticket_comments.user_id`, which is not a real `users` row and violates
+      // that table's RLS/FK — every OTHER manage_tickets action routes an
+      // ai_agent principal through a dedicated AI-safe executor instead of the
+      // shared human-actor ticketService functions; `move_org` does not. This
+      // was unreachable before #4650 (accessibleOrgIds always 403'd first) and
+      // needs its own fix/design decision — tracked separately, not fixed here.
+      const s = await seedAgentScenario();
+      const { intentId } = await createAgentMoveOrgIntent(s, s.orgBId);
+
+      const approvalRowId = await soleApprovalRowFor(intentId);
+      const res = await approveViaRoute(s.approver, s.orgAId, s.partnerId, s.approverRoleId, approvalRowId);
+      expect(res.status).toBe(200);
+
+      const approvedIntent = await readIntent(intentId);
+      expect(approvedIntent.status).toBe('approved');
+
+      const auth = await buildAuthContextForIntent(approvedIntent as ActionIntent);
+
+      expect(auth).not.toBeNull();
+      expect(auth!.accessibleOrgIds).toEqual([s.orgAId, s.orgBId]);
+      expect(auth!.canAccessOrg(s.orgAId)).toBe(true);
+      expect(auth!.canAccessOrg(s.orgBId)).toBe(true);
+      expect(auth!.principal).toEqual({ kind: 'ai_agent', agentId: s.agentId, runId: s.runId });
+    },
+  );
+
+  runDb(
+    '(f) does NOT widen an approved agent-owned move_org intent whose recorded target belongs to a DIFFERENT partner than the agent',
+    async () => {
+      const s = await seedAgentScenario();
+      const otherPartner = await createPartner();
+      const orgC = await createOrganization({ partnerId: otherPartner.id });
+      const { intentId } = await createAgentMoveOrgIntent(s, orgC.id);
+
+      const approvalRowId = await soleApprovalRowFor(intentId);
+      const res = await approveViaRoute(s.approver, s.orgAId, s.partnerId, s.approverRoleId, approvalRowId);
+      expect(res.status).toBe(200);
+
+      const approvedIntent = await readIntent(intentId);
+      const auth = await buildAuthContextForIntent(approvedIntent as ActionIntent);
+
+      expect(auth).not.toBeNull();
+      expect(auth!.accessibleOrgIds).toEqual([s.orgAId]);
+      expect(auth!.canAccessOrg(orgC.id)).toBe(false);
     },
   );
 });
