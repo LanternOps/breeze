@@ -2072,6 +2072,16 @@ describe('org routes', () => {
         // COUNT as well as the rows — and on every page, not only the last one
         // where the append happens (the duplicate would otherwise sit on
         // whichever page the live query put it).
+        //
+        // Scope of this assertion: it proves the route WIRES the exclusion in,
+        // not that the predicate's boolean structure is right. `../db/schema`
+        // is mocked with plain sentinels here, so drizzle cannot render them as
+        // identifiers and compiles them as bound params — the shape collapses
+        // to `not ($1 = $2 or ($3 = $4 and $5 = $6))` regardless of which
+        // columns those params stand for. The STRUCTURE is pinned against real
+        // drizzle columns in services/archivedOrgReads.scope.test.ts
+        // ('archive-lifecycle predicate (#4166)'), which is the suite to fix if
+        // this predicate's logic ever needs re-asserting.
         const { sql: compiled, params } = new PgDialect().sqlToQuery(capturedWhere as SQL);
         expect(compiled).toContain('not (');
         expect(params).toEqual(
@@ -2083,6 +2093,43 @@ describe('org routes', () => {
             'archive',
           ]),
         );
+      });
+
+      // `conditions` is built by a ternary on `queryPartnerId`, so the
+      // partner-filtered arm needs its own case — the exclusion is easy to add
+      // to one branch and miss in the other.
+      it('applies the exclusion on the partnerId-filtered system-scope arm too', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request(
+          '/orgs/organizations?page=1&limit=10&includeArchived=true'
+          + '&partnerId=11111111-1111-4111-8111-111111111111'
+        );
+
+        expect(res.status).toBe(200);
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not (');
       });
 
       // Without the opt-in nothing changes: a platform admin still sees

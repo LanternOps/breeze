@@ -435,6 +435,22 @@ describe('OrganizationsPage — org mid-archive-drain (#4166)', () => {
     expect(screen.getByTestId('org-archived-badge')).toHaveTextContent('Archived');
   });
 
+  // The real-world view: an MSP mid-cleanup has settled archives AND a fresh
+  // one still draining, side by side in the same section. `archiveBadge` is a
+  // per-row pure function, so this is the case that proves it stays per-row.
+  it('labels a draining and a settled org differently in the same list', async () => {
+    mockApi({ archivedOrgs: [ARCHIVED_ORG, DRAINING_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    const rows = screen.getAllByTestId('org-archived-row');
+    expect(rows).toHaveLength(2);
+    const byName = (name: string) => rows.find((row) => row.textContent?.includes(name))!;
+    expect(within(byName('Gamma LLC')).getByTestId('org-archived-badge')).toHaveTextContent('Archived');
+    expect(within(byName('Epsilon Corp')).getByTestId('org-archived-badge')).toHaveTextContent('Archiving…');
+  });
+
   it('serves the draining org through the read-only pane, with Restore as the only action', async () => {
     mockApi({ archivedOrgs: [DRAINING_ORG] });
     render(<OrganizationsPage />);
