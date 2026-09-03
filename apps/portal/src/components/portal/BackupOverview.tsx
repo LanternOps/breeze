@@ -78,12 +78,16 @@ export function BackupOverview({ overview }: { overview: BackupOverviewDto }) {
           data-testid="portal-backup-overview-last-test-restore"
         >
           <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-            Last successful test restore
+            Last test restore
           </dt>
           <dd className="mt-2 text-sm font-medium text-foreground">
             {overview.lastTestRestoreAt
-              ? formatDateTime(overview.lastTestRestoreAt)
-              : 'No successful test restore is available'}
+              ? `${formatDateTime(overview.lastTestRestoreAt)}${
+                  overview.lastTestRestoreStatus
+                    ? ` — ${overview.lastTestRestoreStatus}`
+                    : ''
+                }`
+              : 'No test restore is available'}
           </dd>
         </div>
         <div
@@ -96,6 +100,13 @@ export function BackupOverview({ overview }: { overview: BackupOverviewDto }) {
           <dd className="mt-2 font-display text-2xl font-semibold text-foreground">
             {valueOrUnavailable(overview.meanReadinessScore)}
           </dd>
+          {overview.readinessScoredDevices !== null &&
+            overview.readinessTotalDevices !== null && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                mean over {overview.readinessScoredDevices} of{' '}
+                {overview.readinessTotalDevices} devices
+              </p>
+            )}
         </div>
         <div
           className="bg-card px-5 py-4"

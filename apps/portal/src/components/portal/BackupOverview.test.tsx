@@ -15,9 +15,12 @@ const configuredOverview: BackupOverviewDto = {
     verificationType: 'automated',
   },
   lastTestRestoreAt: '2026-08-30T14:15:00Z',
+  lastTestRestoreStatus: 'failed',
   openRpoBreaches: 2,
   openRtoBreaches: 1,
   meanReadinessScore: 76,
+  readinessScoredDevices: 3,
+  readinessTotalDevices: 4,
 };
 
 describe('BackupOverview', () => {
@@ -35,10 +38,16 @@ describe('BackupOverview', () => {
       'Aug 30, 2026'
     );
     expect(screen.getByTestId('portal-backup-overview-last-test-restore').textContent).toContain(
-      'Last successful test restore'
+      'Last test restore'
+    );
+    expect(screen.getByTestId('portal-backup-overview-last-test-restore').textContent).toContain(
+      'failed'
     );
     expect(screen.getByTestId('portal-backup-overview-as-of').textContent).toContain('Sep 2, 2026');
     expect(screen.getByTestId('portal-backup-overview-readiness').textContent).toContain('76');
+    expect(screen.getByTestId('portal-backup-overview-readiness').textContent).toContain(
+      'mean over 3 of 4 devices'
+    );
     expect(screen.getByTestId('portal-backup-overview-rpo-breaches').textContent).toContain('2');
     expect(screen.getByTestId('portal-backup-overview-rto-breaches').textContent).toContain('1');
   });
@@ -54,9 +63,12 @@ describe('BackupOverview', () => {
           total: null,
           lastPassedVerification: null,
           lastTestRestoreAt: null,
+          lastTestRestoreStatus: null,
           openRpoBreaches: null,
           openRtoBreaches: null,
           meanReadinessScore: null,
+          readinessScoredDevices: null,
+          readinessTotalDevices: null,
         }}
       />
     );

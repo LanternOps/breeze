@@ -6,6 +6,7 @@ import type { SQL } from 'drizzle-orm';
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
   wheres: [] as unknown[],
+  joins: [] as unknown[],
   orderBys: [] as unknown[],
   selections: [] as unknown[],
 }));
@@ -16,7 +17,8 @@ vi.mock('../../db', () => ({
       state.selections.push(selection);
       const chain: Record<string, unknown> = {};
       for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'offset']) {
-        chain[method] = vi.fn((arg: unknown) => {
+        chain[method] = vi.fn((arg: unknown, on?: unknown) => {
+          if ((method === 'innerJoin' || method === 'leftJoin') && on) state.joins.push(on);
           if (method === 'where') state.wheres.push(arg);
           if (method === 'orderBy') state.orderBys.push(arg);
           return chain;
@@ -37,6 +39,7 @@ describe('backupTile', () => {
   beforeEach(() => {
     state.rows.length = 0;
     state.wheres.length = 0;
+    state.joins.length = 0;
     state.orderBys.length = 0;
     state.selections.length = 0;
   });
@@ -65,6 +68,17 @@ describe('backupTile', () => {
       const query = new PgDialect().sqlToQuery(where as SQL);
       expect(query.params).toContain(ORG_ID);
     }
+
+    const verificationPredicate = state.wheres
+      .map((where) => new PgDialect().sqlToQuery(where as SQL))
+      .find(({ sql }) => sql.includes('"backup_verifications"."status"'));
+    expect(verificationPredicate?.params).toContain('passed');
+
+    const configJoin = state.joins
+      .map((join) => new PgDialect().sqlToQuery(join as SQL))
+      .find(({ sql }) => sql.includes('"backup_configs"."org_id"'));
+    expect(configJoin?.sql).toContain('"backup_configs"."org_id" = $');
+    expect(configJoin?.params).toContain(ORG_ID);
   });
 
   it('returns not_configured when no active config has device evidence', async () => {
@@ -88,6 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.rows.length = 0;
   state.wheres.length = 0;
+  state.joins.length = 0;
   state.orderBys.length = 0;
   state.selections.length = 0;
 });
@@ -97,9 +112,9 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
     [{ total: 3 }],
     [{ configured: 2 }],
     [{ completedAt: new Date('2026-09-02T09:00:00Z'), verificationType: 'integrity' }],
-    [{ completedAt: new Date('2026-09-01T09:00:00Z') }],
+    [{ completedAt: new Date('2026-09-01T09:00:00Z'), status: 'failed' }],
     [{ eventType: 'rpo_breach' }, { eventType: 'rto_breach' }, { eventType: 'missed_backup' }],
-    [{ readinessCount: 2, meanReadinessScore: 83 }],
+    [{ readinessCount: 2, totalDevices: 3, meanReadinessScore: 83 }],
   );
   await expect(backupOverview(ORG_ID, {
     timezone: 'America/Denver',
@@ -115,9 +130,12 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
       verificationType: 'integrity',
     },
     lastTestRestoreAt: '2026-09-01T09:00:00.000Z',
+    lastTestRestoreStatus: 'failed',
     openRpoBreaches: 2, // rpo_breach + missed_backup (RPO family)
     openRtoBreaches: 1,
     meanReadinessScore: 83,
+    readinessScoredDevices: 2,
+    readinessTotalDevices: 3,
   });
   for (const where of state.wheres) {
     expect(
@@ -128,7 +146,8 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
   const restorePredicate = state.wheres
     .map((where) => new PgDialect().sqlToQuery(where as SQL))
     .find(({ params }) => params.includes('test_restore'));
-  expect(restorePredicate?.params).toContain('passed');
+  expect(restorePredicate).toBeDefined();
+  expect(restorePredicate!.params).not.toContain('passed');
 
   const verificationOrderings = state.orderBys
     .map((orderBy) => new PgDialect().sqlToQuery(orderBy as SQL).sql)
@@ -142,6 +161,16 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
     readinessSelection?.meanReadinessScore as SQL,
   );
   expect(readinessAverage.sql).toContain('avg("recovery_readiness"."readiness_score")');
+  const readinessTotal = new PgDialect().sqlToQuery(
+    readinessSelection?.totalDevices as SQL,
+  );
+  expect(readinessTotal.sql).toContain('count("devices"."id")');
+
+  const readinessJoin = state.joins
+    .map((join) => new PgDialect().sqlToQuery(join as SQL))
+    .find(({ sql }) => sql.includes('"recovery_readiness"."org_id"'));
+  expect(readinessJoin?.sql).toContain('"recovery_readiness"."org_id" = $');
+  expect(readinessJoin?.params).toContain(ORG_ID);
 });
 
 it('returns every enrolled device, including not configured', async () => {
@@ -195,6 +224,12 @@ it('returns every enrolled device, including not configured', async () => {
   expect(compiled.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
   for (const query of compiled) expect(query.params).toContain(ORG_ID);
 
+  const readinessJoin = state.joins
+    .map((join) => new PgDialect().sqlToQuery(join as SQL))
+    .find(({ sql }) => sql.includes('"recovery_readiness"."org_id"'));
+  expect(readinessJoin?.sql).toContain('"recovery_readiness"."org_id" = $');
+  expect(readinessJoin?.params).toContain(ORG_ID);
+
   const deviceSelection = vi.mocked(db.select).mock.calls
     .map(([selection]) => selection as Record<string, unknown>)
     .find((selection) => 'configured' in selection);
@@ -232,22 +267,24 @@ it('reports ok when an out-of-range page is empty but the org has devices', asyn
   });
 });
 
-it('returns null breach counts when backups are not configured', async () => {
+it('retains real breach counts when backups are not configured', async () => {
   state.rows.push(
     [{ total: 3 }],
     [{ configured: 0 }],
     [],
     [],
-    [],
-    [{ readinessCount: 0 }],
+    [{ eventType: 'missed_backup' }, { eventType: 'rto_breach' }],
+    [{ readinessCount: 0, totalDevices: 3, meanReadinessScore: null }],
   );
   await expect(backupOverview(ORG_ID, {
     timezone: 'America/Denver',
     now: new Date('2026-09-02T12:00:00Z'),
   })).resolves.toMatchObject({
     dataStatus: 'not_configured',
-    openRpoBreaches: null,
-    openRtoBreaches: null,
+    openRpoBreaches: 1,
+    openRtoBreaches: 1,
     meanReadinessScore: null,
+    readinessScoredDevices: 0,
+    readinessTotalDevices: 3,
   });
 });

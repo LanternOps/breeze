@@ -77,9 +77,12 @@ it('uses the session org for overview', async () => {
     total: 0,
     lastPassedVerification: null,
     lastTestRestoreAt: null,
+    lastTestRestoreStatus: null,
     openRpoBreaches: 0,
     openRtoBreaches: 0,
     meanReadinessScore: null,
+    readinessScoredDevices: null,
+    readinessTotalDevices: null,
   });
   const response = await app().request('/backups/overview');
   expect(response.status).toBe(200);
@@ -92,6 +95,36 @@ it('uses the session org for overview', async () => {
   );
   expect(response.headers.get('cache-control')).toContain('max-age=30');
   expect(response.headers.get('etag')).toBeTruthy();
+});
+
+it('keeps the ETag stable across asOf changes and returns 304 for a match', async () => {
+  const baseOverview = {
+    dataStatus: 'ok',
+    protected: 2,
+    unprotected: 1,
+    total: 3,
+    lastPassedVerification: null,
+    lastTestRestoreAt: null,
+    lastTestRestoreStatus: null,
+    openRpoBreaches: 0,
+    openRtoBreaches: 0,
+    meanReadinessScore: null,
+    readinessScoredDevices: 0,
+    readinessTotalDevices: 3,
+  };
+  mocks.overview
+    .mockResolvedValueOnce({ ...baseOverview, asOf: '2026-09-02T12:00:00.000Z' })
+    .mockResolvedValueOnce({ ...baseOverview, asOf: '2026-09-02T12:00:01.000Z' });
+
+  const first = await app().request('/backups/overview');
+  const etag = first.headers.get('etag');
+  expect(etag).toBeTruthy();
+
+  const second = await app().request('/backups/overview', {
+    headers: { 'If-None-Match': etag! },
+  });
+  expect(second.status).toBe(304);
+  expect(second.headers.get('etag')).toBe(etag);
 });
 
 it('validates and forwards pagination', async () => {

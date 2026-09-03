@@ -79,12 +79,14 @@ export async function backupOverview(
   const [tile, restoreRows, breachRows, readinessRows] = await Promise.all([
     backupTile(orgId, args.now),
     db
-      .select({ completedAt: backupVerifications.completedAt })
+      .select({
+        completedAt: backupVerifications.completedAt,
+        status: backupVerifications.status,
+      })
       .from(backupVerifications)
       .where(and(
         eq(backupVerifications.orgId, orgId),
         eq(backupVerifications.verificationType, 'test_restore'),
-        eq(backupVerifications.status, 'passed'),
       ))
       .orderBy(sql`${backupVerifications.completedAt} desc nulls last`)
       .limit(1),
@@ -95,13 +97,22 @@ export async function backupOverview(
         eq(backupSlaEvents.orgId, orgId),
         isNull(backupSlaEvents.resolvedAt),
       )),
+    // Do not call getBackupHealthSummary here; it exits to a system DB context.
     db
       .select({
-        readinessCount: sql<number>`count(*)::int`,
+        readinessCount: sql<number>`count(${recoveryReadiness.readinessScore})::int`,
+        totalDevices: sql<number>`count(${devices.id})::int`,
         meanReadinessScore: sql<number | null>`avg(${recoveryReadiness.readinessScore})::float`,
       })
-      .from(recoveryReadiness)
-      .where(eq(recoveryReadiness.orgId, orgId)),
+      .from(devices)
+      .leftJoin(
+        recoveryReadiness,
+        and(
+          eq(recoveryReadiness.deviceId, devices.id),
+          eq(recoveryReadiness.orgId, orgId),
+        ),
+      )
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false))),
   ]);
 
   // Mirrors apps/api/src/jobs/backupSlaWorker.ts: 'missed_backup' is an RPO-family event.
@@ -111,6 +122,15 @@ export async function backupOverview(
     breachRows.filter((row) =>
       (family === 'rpo' ? RPO_EVENT_TYPES : RTO_EVENT_TYPES).has(row.eventType),
     ).length;
+  const openRpoBreaches = countBreach('rpo');
+  const openRtoBreaches = countBreach('rto');
+  const readiness = readinessRows[0];
+  const readinessScoredDevices = readiness
+    ? Number(readiness.readinessCount ?? 0)
+    : null;
+  const readinessTotalDevices = readiness
+    ? Number(readiness.totalDevices ?? 0)
+    : null;
 
   return {
     asOf: args.now.toISOString(),
@@ -126,13 +146,19 @@ export async function backupOverview(
         ? { completedAt: tile.completedAt, verificationType: tile.verificationType }
         : null,
     lastTestRestoreAt: restoreRows[0]?.completedAt?.toISOString() ?? null,
-    openRpoBreaches: tile.status === 'ok' ? countBreach('rpo') : null,
-    openRtoBreaches: tile.status === 'ok' ? countBreach('rto') : null,
+    lastTestRestoreStatus: restoreRows[0]?.status ?? null,
+    openRpoBreaches:
+      openRpoBreaches > 0 || tile.status === 'ok' ? openRpoBreaches : null,
+    openRtoBreaches:
+      openRtoBreaches > 0 || tile.status === 'ok' ? openRtoBreaches : null,
     meanReadinessScore:
-      Number(readinessRows[0]?.readinessCount ?? 0) > 0 &&
-      readinessRows[0]?.meanReadinessScore != null
-        ? Number(readinessRows[0]?.meanReadinessScore)
+      readinessScoredDevices != null &&
+      readinessScoredDevices > 0 &&
+      readiness?.meanReadinessScore != null
+        ? Number(readiness.meanReadinessScore)
         : null,
+    readinessScoredDevices,
+    readinessTotalDevices,
   };
 }
 
