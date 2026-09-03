@@ -1,5 +1,6 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
+import { captureException } from './sentry';
 import {
   escapeHtml,
   getSupportEmail,
@@ -419,11 +420,37 @@ export function getEmailService(): EmailService | null {
       emailServiceAvailable = false;
       const reason = err instanceof Error ? err.message : 'unknown error';
       console.warn(`Email service not configured: ${reason}`);
+      // A malformed VALUE is an incident: the verdict is cached for the life of
+      // the process, so every outbound email in the product stops until someone
+      // restarts with a corrected env. An UNSET var is the supported
+      // self-hosted-without-email state and stays log-only. See
+      // EmailConfigValueError.
+      if (err instanceof EmailConfigValueError) captureException(err);
       return null;
     }
   }
 
   return cachedService;
+}
+
+/**
+ * An email env var whose VALUE is malformed — as opposed to email simply not
+ * being configured, which is a supported self-hosted state.
+ *
+ * The distinction matters because `getEmailService` collapses every config
+ * failure into "email is not configured" + a `console.warn`, then caches that
+ * verdict for the life of the process. For an operator who never set email up
+ * that is correct and silent by design. For an operator who typed
+ * `SMTP_TIMEOUT_MS=30s` it means ALL outbound mail — password resets,
+ * verification, invites, quotes, invoices, alerts — stops until someone
+ * notices, with nothing but a log line to notice. Only this class is reported
+ * to Sentry (#3905 review): a typo is an incident, an unset var is not.
+ */
+class EmailConfigValueError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmailConfigValueError';
+  }
 }
 
 function getEnvString(name: string): string | undefined {
@@ -443,7 +470,7 @@ function parseEmailProviderSelection(): EmailProviderSelection {
     return raw;
   }
 
-  throw new Error(`EMAIL_PROVIDER must be one of: auto, resend, smtp, mailgun (received "${raw}")`);
+  throw new EmailConfigValueError(`EMAIL_PROVIDER must be one of: auto, resend, smtp, mailgun (received "${raw}")`);
 }
 
 function parseSmtpPort(): number {
@@ -454,7 +481,7 @@ function parseSmtpPort(): number {
 
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-    throw new Error(`SMTP_PORT must be an integer between 1 and 65535 (received "${raw}")`);
+    throw new EmailConfigValueError(`SMTP_PORT must be an integer between 1 and 65535 (received "${raw}")`);
   }
 
   return parsed;
@@ -482,7 +509,7 @@ function parseTransportTimeoutMs(name: string, defaultMs: number): number {
 
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isInteger(parsed) || String(parsed) !== raw || parsed < 1000 || parsed > 600_000) {
-    throw new Error(`${name} must be an integer between 1000 and 600000 milliseconds (received "${raw}")`);
+    throw new EmailConfigValueError(`${name} must be an integer between 1000 and 600000 milliseconds (received "${raw}")`);
   }
 
   return parsed;
@@ -512,7 +539,7 @@ function parseSmtpSecure(): boolean {
     return false;
   }
 
-  throw new Error(`SMTP_SECURE must be a boolean value (received "${raw}")`);
+  throw new EmailConfigValueError(`SMTP_SECURE must be a boolean value (received "${raw}")`);
 }
 
 function resolveResendConfig(resendApiKey: string | undefined, emailFrom: string | undefined): ResendProviderConfig {

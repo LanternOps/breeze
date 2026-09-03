@@ -469,14 +469,24 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'send': {
             const quoteId = String(input.quoteId);
             const result = await sendQuote(quoteId, actor);
-            // #3905 residual, deliberate: the AI-tool dispatcher wraps this
-            // whole call in ONE transaction (aiAgentSdkTools.ts) and offers no
-            // post-commit seam, so the deferred is invoked here, still inside
-            // it — behaviour identical to before the split, no regression. It
-            // must NOT be moved onto a separate connection: sendQuote's
-            // FOR UPDATE lock is still held by this transaction, so a second
-            // connection writing send_email_reason would block on it forever.
-            // Fixing this properly means giving executeTool a post-commit hook.
+            // #3905 residual, deliberate and TRACKED. The AI-tool dispatcher
+            // wraps the whole tool turn in ONE transaction (aiAgentSdkTools.ts:
+            // preToolUse → executeTool → postToolUse) and offers no post-commit
+            // seam, so the deferred is invoked here, still inside it. Behaviour
+            // is identical to before the deferred split — no regression — but
+            // this path does NOT get the fix the HTTP routes, bulk-send and the
+            // scheduled-send worker got: the quote's (and a revision's parent's)
+            // FOR UPDATE lock is still held across the render + mail call, and
+            // an AI agent can reach `quotes:send` autonomously under tier-2/3
+            // auto-exec. It is now BOUNDED rather than open-ended — the SMTP /
+            // Mailgun deadlines added in the same change cap the hold — which is
+            // why this is a follow-up and not a blocker.
+            //
+            // It must NOT be "fixed" locally by running the deferred on a second
+            // connection: this transaction still holds the quote's row lock, so
+            // that write would block on it (and deadlock-detect at best). The
+            // real fix is a post-commit hook on executeTool, which is a
+            // cross-tool contract change and belongs in its own PR.
             const delivery = await result.deliverEmail();
             if (result.superseded) {
               // No Hono context on the AI-tool path, so attribute the actor

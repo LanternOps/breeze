@@ -1,11 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { resendSendMock, createTransportMock, smtpSendMailMock, fetchMock } = vi.hoisted(() => ({
+const { resendSendMock, createTransportMock, smtpSendMailMock, fetchMock, captureExceptionMock } = vi.hoisted(() => ({
   resendSendMock: vi.fn(),
   createTransportMock: vi.fn(),
   smtpSendMailMock: vi.fn(),
-  fetchMock: vi.fn()
+  fetchMock: vi.fn(),
+  captureExceptionMock: vi.fn()
 }));
+
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock, captureMessage: vi.fn() }));
 
 vi.mock('resend', () => ({
   Resend: class MockResend {
@@ -445,6 +448,31 @@ describe('email transport deadlines (#3905)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('reports a MALFORMED email env value to Sentry, because it silently disables all outbound mail', async () => {
+    // getEmailService caches `unavailable` for the life of the process, so a
+    // typo here stops password resets, invites, quotes and alerts alike with
+    // nothing but a log line. A typo is an incident.
+    smtpEnv();
+    process.env.SMTP_TIMEOUT_MS = '30s';
+    const { getEmailService } = await import('./email');
+
+    expect(getEmailService()).toBeNull();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toMatchObject({
+      name: 'EmailConfigValueError',
+      message: expect.stringContaining('SMTP_TIMEOUT_MS'),
+    });
+  });
+
+  it('does NOT report merely-unconfigured email to Sentry — self-hosting without email is supported', async () => {
+    // No provider env at all. This must stay log-only, or every self-hosted
+    // install that does not use email floods the operator's Sentry.
+    const { getEmailService } = await import('./email');
+
+    expect(getEmailService()).toBeNull();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('surfaces a Mailgun timeout as a named, actionable error rather than a bare AbortError', async () => {
