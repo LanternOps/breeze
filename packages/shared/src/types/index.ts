@@ -380,7 +380,14 @@ export interface MtlsCertData {
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type ScriptRunAs = 'system' | 'user' | 'elevated';
-export type ExecutionStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+export const EXECUTION_STATUSES = [
+  'pending', 'queued', 'running', 'cancelling',
+  'completed', 'failed', 'timeout', 'cancelled',
+] as const;
+export type ExecutionStatus = typeof EXECUTION_STATUSES[number];
+
+export const CANCEL_STATES = ['requested', 'confirmed', 'unconfirmed', 'failed'] as const;
+export type CancelState = typeof CANCEL_STATES[number];
 // 'automation' is read-only provenance: only the automation runtime mints it
 // (#3162), never an API caller — the execute-script request schema deliberately
 // still accepts only the first four.
@@ -420,6 +427,10 @@ export interface ScriptExecution {
   stderr: string | null;
   errorMessage: string | null;
   createdAt: Date;
+  cancelRequestedAt?: string | null;
+  cancelState?: CancelState | null;
+  cancelledBy?: string | null;
+  cancelCommandId?: string | null;
 }
 
 // ============================================
@@ -428,7 +439,10 @@ export interface ScriptExecution {
 
 export type AutomationTriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
 export type AutomationOnFailure = 'stop' | 'continue' | 'notify';
-export type AutomationRunStatus = 'running' | 'completed' | 'failed' | 'partial';
+export const AUTOMATION_RUN_STATUSES = [
+  'running', 'completed', 'failed', 'partial', 'cancelled',
+] as const;
+export type AutomationRunStatus = typeof AUTOMATION_RUN_STATUSES[number];
 export type PolicyEnforcement = 'monitor' | 'warn' | 'enforce';
 export type ComplianceStatus = 'compliant' | 'non_compliant' | 'pending' | 'error';
 
