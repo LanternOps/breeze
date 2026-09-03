@@ -145,7 +145,13 @@ BEGIN
         'unrestricted',
         NULL,
         v_user_id,
-        repeat('0', 64),
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
         NOW(),
         'user',
         true
@@ -162,7 +168,13 @@ BEGIN
         'unrestricted',
         NULL,
         v_user_id,
-        repeat('0', 64),
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
         NOW(),
         'user',
         true
@@ -172,6 +184,13 @@ BEGIN
       name = EXCLUDED.name,
       config = EXCLUDED.config,
       format = EXCLUDED.format,
+      execution_scope_version = EXCLUDED.execution_scope_version,
+      execution_scope_kind = EXCLUDED.execution_scope_kind,
+      execution_scope_site_ids = EXCLUDED.execution_scope_site_ids,
+      execution_scope_user_id = EXCLUDED.execution_scope_user_id,
+      execution_scope_fingerprint = EXCLUDED.execution_scope_fingerprint,
+      execution_scope_captured_at = EXCLUDED.execution_scope_captured_at,
+      execution_scope_principal_kind = EXCLUDED.execution_scope_principal_kind,
       updated_at = NOW();
   END IF;
 

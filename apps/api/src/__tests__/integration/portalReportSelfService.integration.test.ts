@@ -89,6 +89,8 @@ describe('portal report self-service tenancy', () => {
       }),
     );
 
+    expect(generated.status).toBe('completed');
+
     const [stored] = await withSystemDbAccessContext(() =>
       db.select({
         requestedByKind: reportRuns.requestedByKind,
@@ -102,6 +104,12 @@ describe('portal report self-service tenancy', () => {
       requestedByUserId: null,
       requestedByPortalUserId: fixture.portalUser.id,
     });
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.orgA.id), () =>
+        renderRunPdf(generated.id, fixture.orgA.id, 'UTC'),
+      ),
+    ).resolves.toBeInstanceOf(Buffer);
 
     await expect(
       withDbAccessContext(orgContext(fixture.orgB.id), () =>
