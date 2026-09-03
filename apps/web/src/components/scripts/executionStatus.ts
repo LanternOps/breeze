@@ -36,17 +36,28 @@ export const executionDetailStatusConfig: Record<ExecutionStatus, DetailEntry> =
   cancelled: { label: 'status.cancelled', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Ban },
 };
 
+/** Terminal execution statuses — the only ones a cancel_state can meaningfully
+ * qualify. The API only ever sets cancel_state to 'requested' (or leaves it
+ * null) while an execution is still in flight, but that's a server-side
+ * invariant, not one this union enforces — so this guards it defensively
+ * instead of trusting the caller. */
+const TERMINAL_EXECUTION_STATUSES = new Set<ExecutionStatus>(['completed', 'failed', 'timeout', 'cancelled']);
+
 /**
  * The status alone is not the whole truth once a cancel was requested. See the
  * OD8-C state table in the plan: (completed, unconfirmed) is "your stop request
  * arrived too late", (cancelled, confirmed) is a proven stop, and a terminal
- * status with cancel_state 'failed' means the device could not kill it.
+ * status with cancel_state 'failed' means the device could not kill it. A
+ * non-terminal status (pending/queued/running/cancelling) always resolves to
+ * its own base label, regardless of cancel_state — there is no
+ * "${status}CancelTooLate" i18n key for those, only for the three non-cancelled
+ * terminal statuses (see the i18n step in the plan).
  */
 export function resolveExecutionStatusLabel(
   status: ExecutionStatus,
   cancelState: CancelState | null | undefined,
 ): string {
-  if (!cancelState || cancelState === 'requested') {
+  if (!cancelState || cancelState === 'requested' || !TERMINAL_EXECUTION_STATUSES.has(status)) {
     return executionRowStatusConfig[status].label;
   }
   if (status === 'cancelled') return 'status.cancelled';

@@ -1314,7 +1314,8 @@
       "failed": "Fallida",
       "timeout": "Tiempo agotado",
       "queued": "En cola",
-      "cancelled": "Cancelada"
+      "cancelled": "Cancelada",
+      "cancelling": "Deteniendo…"
     },
     "errors": {
       "execute": "No se pudo iniciar la ejecución de prueba",

@@ -1314,7 +1314,8 @@
       "failed": "Fehlgeschlagen",
       "timeout": "Zeitüberschreitung",
       "queued": "In Warteschlange",
-      "cancelled": "Abgebrochen"
+      "cancelled": "Abgebrochen",
+      "cancelling": "Wird gestoppt…"
     },
     "errors": {
       "execute": "Testlauf konnte nicht gestartet werden",

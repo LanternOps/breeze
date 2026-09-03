@@ -1313,7 +1313,8 @@
       "failed": "Başarısız",
       "timeout": "Zaman aşımına uğradı",
       "queued": "Kuyrukta",
-      "cancelled": "İptal edildi"
+      "cancelled": "İptal edildi",
+      "cancelling": "Durduruluyor…"
     },
     "errors": {
       "execute": "Test çalıştırması başlatılamadı",

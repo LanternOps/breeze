@@ -2724,16 +2724,17 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {
-            description: 'Cancellation accepted (idempotent when already cancelling or already cancelled)',
+            description: 'Execution cancelled',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Success' }
               }
             }
           },
+          '400': { $ref: '#/components/responses/BadRequest' },
           '403': { $ref: '#/components/responses/Forbidden' },
           '404': { $ref: '#/components/responses/NotFound' },
-          '409': { description: 'Execution is no longer cancellable' }
+          '409': { description: 'Execution transitioned out of a cancellable state before the update landed' }
         }
       }
     },

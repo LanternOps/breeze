@@ -35,6 +35,23 @@ describe('every execution status resolves in both status maps', () => {
       .toBe('status.completedCancelTooLate');
   });
 
+  it('a failed cancel attempt on a terminal, non-cancelled status reports cancelFailed', () => {
+    expect(resolveExecutionStatusLabel('completed', 'failed')).toBe('status.cancelFailed');
+  });
+
+  it('cancelled always wins over a failed cancel_state — the process did stop', () => {
+    expect(resolveExecutionStatusLabel('cancelled', 'failed')).toBe('status.cancelled');
+  });
+
+  it.each(['pending', 'queued', 'running', 'cancelling'] as const)(
+    'a non-terminal status %s ignores cancel_state and keeps its base label',
+    (status) => {
+      expect(resolveExecutionStatusLabel(status, 'confirmed')).toBe(executionRowStatusConfig[status].label);
+      expect(resolveExecutionStatusLabel(status, 'unconfirmed')).toBe(executionRowStatusConfig[status].label);
+      expect(resolveExecutionStatusLabel(status, 'failed')).toBe(executionRowStatusConfig[status].label);
+    },
+  );
+
   it.each(CANCEL_STATES)('every cancel state resolves a label against a terminal status: %s', (cancelState) => {
     expect(resolveExecutionStatusLabel('completed', cancelState)).toBeTruthy();
   });

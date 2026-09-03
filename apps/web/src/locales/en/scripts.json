@@ -1314,7 +1314,8 @@
       "failed": "Failed",
       "timeout": "Timed out",
       "queued": "Queued",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "cancelling": "Stopping…"
     },
     "errors": {
       "execute": "Failed to start the test run",
