@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Sparkles } from 'lucide-react';
@@ -217,7 +217,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // that helper's identity stays stable across ai-drafts refetches — see the
   // comment above openResolveForm for why that stability matters.
   const aiDraftsRef = useRef<TicketAiDraft[]>([]);
-  useEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
+  // Synced in a LAYOUT effect, not a passive one. openResolveForm reads this
+  // ref from a discrete event handler, and a passive effect is flushed in a
+  // later macrotask than the commit that painted the draft — so a status
+  // change fired in between (RTL's post-waitFor drain vs React's scheduler
+  // under CI load, or a fast user) saw the pre-fetch [] and opened the resolve
+  // form with an empty note. A layout effect runs inside the same commit, so
+  // there is no window in which the DOM shows the draft but the ref lacks it.
+  useLayoutEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
   // The resolution_note draft (if any) prefilled into the currently-open
   // resolve form; sent back as `aiDraftId` so the server consumes it in the
   // same transaction as the resolve CAS.
