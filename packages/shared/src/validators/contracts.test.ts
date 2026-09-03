@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema,
   updateContractLineSchema, contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
-  type PersistedContractLine,
+  type ContractLineShape, type PersistedContractLine,
 } from './contracts';
 
 describe('createContractSchema', () => {
@@ -445,6 +445,7 @@ describe('mergeContractLinePatch (#3205 W03)', () => {
     lineType: 'per_device', description: 'Managed device', unitPrice: '10.00', taxable: true,
     catalogItemId: null, manualQuantity: null, siteId: GUID_A, deviceRoles: null,
     deviceGroupId: null, deviceGroupName: null, sortOrder: 3,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null,
   };
 
   it('preserves every field an omitted key does not touch', () => {
@@ -501,5 +502,142 @@ describe('mergeContractLinePatch (#3205 W03)', () => {
     };
     const m = mergeContractLinePatch(group, updateContractLineSchema.parse({ deviceGroupId: GUID_B }) as never);
     expect(m).toMatchObject({ lineType: 'per_device_group', deviceGroupId: GUID_B, deviceGroupName: 'VIP' });
+  });
+});
+
+// #3205 W04 (#4607): included quantity + overage. The five rules live in
+// contractLineInvariantIssues and are IDENTICAL in both modes — an allowance is
+// equally legal on a new line and on a merged patch row, and a patch must never
+// be able to create a row add_line would reject.
+describe('allowance invariants (#3205 W04)', () => {
+  const ALLOWANCE_TYPES = ['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const;
+  // Minimum extra columns each type needs so ONLY the allowance rules can fire.
+  const shapeFor = (lineType: ContractLineShape['lineType']): ContractLineShape => ({
+    lineType,
+    ...(lineType === 'per_device_role' ? { deviceRoles: ['server'] } : {}),
+    ...(lineType === 'per_device_group' ? { deviceGroupId: '33333333-3333-4333-8333-333333333333', deviceGroupName: 'VIP' } : {}),
+    ...(lineType === 'manual' ? { manualQuantity: '2' } : {}),
+  });
+  const paths = (l: unknown, mode: 'create' | 'persisted') =>
+    contractLineInvariantIssues(l as never, { mode }).map((i) => i.path).sort();
+
+  const allowance = { includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' } as const;
+
+  it.each(['create', 'persisted'] as const)('accepts a bill allowance on all four counted types (%s mode)', (mode) => {
+    for (const lineType of ALLOWANCE_TYPES) {
+      expect(paths({ ...shapeFor(lineType), ...allowance }, mode)).toEqual([]);
+    }
+  });
+
+  it.each(['create', 'persisted'] as const)('accepts a flag allowance with no price (%s mode)', (mode) => {
+    expect(paths({ ...shapeFor('per_device'), includedQuantity: '25', overageMode: 'flag' }, mode)).toEqual([]);
+  });
+
+  it.each(['create', 'persisted'] as const)('rejects any allowance column on flat and manual (%s mode)', (mode) => {
+    for (const lineType of ['flat', 'manual'] as const) {
+      expect(paths({ ...shapeFor(lineType), includedQuantity: '25', overageMode: 'flag' }, mode)).toContain('includedQuantity');
+      expect(paths({ ...shapeFor(lineType), overageUnitPrice: '12.00' }, mode)).toContain('includedQuantity');
+    }
+  });
+
+  it.each(['create', 'persisted'] as const)('requires includedQuantity and overageMode together (%s mode)', (mode) => {
+    expect(paths({ ...shapeFor('per_device'), includedQuantity: '25' }, mode)).toContain('overageMode');
+    expect(paths({ ...shapeFor('per_device'), overageMode: 'flag' }, mode)).toContain('overageMode');
+  });
+
+  it.each(['create', 'persisted'] as const)('rejects a zero or fractional includedQuantity (%s mode)', (mode) => {
+    expect(paths({ ...shapeFor('per_seat'), includedQuantity: '0', overageMode: 'flag' }, mode)).toContain('includedQuantity');
+    expect(paths({ ...shapeFor('per_seat'), includedQuantity: '25.5', overageMode: 'flag' }, mode)).toContain('includedQuantity');
+    expect(paths({ ...shapeFor('per_seat'), includedQuantity: '25.00', overageMode: 'flag' }, mode)).toEqual([]);
+  });
+
+  it.each(['create', 'persisted'] as const)('ties overageUnitPrice to bill mode exactly (%s mode)', (mode) => {
+    expect(paths({ ...shapeFor('per_device'), includedQuantity: '25', overageMode: 'flag', overageUnitPrice: '12.00' }, mode)).toContain('overageUnitPrice');
+    expect(paths({ ...shapeFor('per_device'), includedQuantity: '25', overageMode: 'bill' }, mode)).toContain('overageUnitPrice');
+    expect(paths({ ...shapeFor('per_device'), includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '0.00' }, mode)).toEqual([]);
+  });
+
+  // The null-shaped read layer must reach the SAME verdicts as the
+  // undefined-shaped write layer — the parity W03's present() refactor exists
+  // to guarantee. An explicit null is "not applicable", never "set".
+  it('a null-shaped merged row reaches the same verdicts as an omitted-key one', () => {
+    const nulled = { ...shapeFor('per_device'), includedQuantity: null, overageMode: null, overageUnitPrice: null };
+    expect(paths(nulled, 'persisted')).toEqual([]);
+    expect(paths({ ...nulled, includedQuantity: '25' }, 'persisted')).toContain('overageMode');
+    expect(paths({ ...shapeFor('flat'), includedQuantity: null, overageMode: null, overageUnitPrice: null }, 'persisted')).toEqual([]);
+  });
+});
+
+describe('contractLineInputSchema — allowance fields (#3205 W04)', () => {
+  const base = { description: 'Endpoints', unitPrice: '10.00', taxable: true } as const;
+  const parse = (v: unknown) => contractLineInputSchema.safeParse(v);
+
+  it('accepts a bill allowance and a flag allowance', () => {
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00' }).success).toBe(true);
+    expect(parse({ ...base, lineType: 'per_seat', includedQuantity: '25', overageMode: 'flag' }).success).toBe(true);
+  });
+
+  it('rejects the five violations through the schema too', () => {
+    expect(parse({ ...base, lineType: 'flat', includedQuantity: '25', overageMode: 'flag' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', overageMode: 'bill', overageUnitPrice: '1.00' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '0', overageMode: 'flag' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25.5', overageMode: 'flag' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25', overageMode: 'flag', overageUnitPrice: '12.00' }).success).toBe(false);
+  });
+
+  it('rejects null and a negative price at the TYPE layer, before any invariant runs', () => {
+    // .optional(), never .nullable() — the add schema omits absent keys.
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: null, overageMode: null }).success).toBe(false);
+    // money's ^\d+(\.\d{1,2})?$ is non-negative by construction.
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '-1.00' }).success).toBe(false);
+    expect(parse({ ...base, lineType: 'per_device', includedQuantity: '25', overageMode: 'sometimes' }).success).toBe(false);
+  });
+});
+
+describe('updateContractLineSchema — allowance fields (#3205 W04)', () => {
+  const parse = (v: unknown) => updateContractLineSchema.safeParse(v);
+
+  it('accepts null for all three (removing an allowance is a legitimate edit)', () => {
+    const out = parse({ includedQuantity: null, overageMode: null, overageUnitPrice: null });
+    expect(out.success).toBe(true);
+    expect(Object.keys(out.data!).sort()).toEqual(['includedQuantity', 'overageMode', 'overageUnitPrice']);
+  });
+
+  it('preserves key ABSENCE, so an omitted field is unchanged (Zod 4.4.3 tri-state)', () => {
+    const out = parse({ includedQuantity: '25', overageMode: 'flag' });
+    expect(out.success).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(out.data!, 'overageUnitPrice')).toBe(false);
+  });
+
+  it('rejects a negative or non-money price and an unknown mode', () => {
+    expect(parse({ overageUnitPrice: '-1.00' }).success).toBe(false);
+    expect(parse({ overageMode: 'sometimes' }).success).toBe(false);
+  });
+});
+
+describe('mergeContractLinePatch carries the allowance columns (#3205 W04)', () => {
+  const current = {
+    lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null,
+    deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00',
+  } as never;
+
+  it('an omitted key preserves the current value', () => {
+    expect(mergeContractLinePatch(current, { description: 'x' } as never)).toMatchObject({
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00',
+    });
+  });
+
+  it('all three nulls remove the allowance and the merged row is valid', () => {
+    const merged = mergeContractLinePatch(current, { includedQuantity: null, overageMode: null, overageUnitPrice: null } as never);
+    expect(merged).toMatchObject({ includedQuantity: null, overageMode: null, overageUnitPrice: null });
+    expect(contractLineInvariantIssues(merged, { mode: 'persisted' })).toEqual([]);
+  });
+
+  it('clearing only includedQuantity leaves a row the persisted rules reject', () => {
+    const merged = mergeContractLinePatch(current, { includedQuantity: null } as never);
+    expect(contractLineInvariantIssues(merged, { mode: 'persisted' }).map((i) => i.path)).toContain('overageMode');
   });
 });
