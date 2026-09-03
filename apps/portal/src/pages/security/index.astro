@@ -1,0 +1,40 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { SecurityOverview } from '../../components/portal/SecurityOverview';
+import { SecurityDeviceTable } from '../../components/portal/SecurityDeviceTable';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+
+const config = buildServerApiConfig(Astro.request);
+const [overview, devices] = await Promise.all([
+  portalApi.getSecurityOverview(30, config),
+  portalApi.getSecurityDevices({ page: 1, limit: 100 }, config),
+]);
+if (overview.statusCode === 401 || devices.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+---
+
+<PortalLayout title="Security">
+  {
+    overview.data
+      ? <SecurityOverview overview={overview.data} />
+      : <p data-testid="portal-security-error">{overview.error}</p>
+  }
+  {
+    devices.data
+      ? <>
+          <SecurityDeviceTable
+            devices={devices.data.data}
+            timezone={devices.data.timezone}
+          />
+          {devices.data.pagination.total > devices.data.data.length && (
+            <p data-testid="portal-security-devices-cap">
+              Showing the first {devices.data.data.length} of {devices.data.pagination.total} devices. Additional devices are not shown.
+            </p>
+          )}
+        </>
+      : <p data-testid="portal-security-devices-error">{devices.error}</p>
+  }
+</PortalLayout>

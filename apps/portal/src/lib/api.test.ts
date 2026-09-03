@@ -185,3 +185,45 @@ describe('ApiRequestConfig.timeoutMs', () => {
     expect(result.error).toBe('Network error');
   });
 });
+
+describe('portal security client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the overview and paginated device paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        asOf: '2026-09-02T12:00:00.000Z',
+        dataStatus: 'no_data',
+        score: null,
+        band: null,
+        scoreHistory: [],
+        threatEvents: { label: 'endpoint threat events', weeks: [] },
+        vulnerabilities: {
+          openBySeverity: {
+            critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
+          },
+          kevCount: 0,
+          lastDetectedAt: null,
+        },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'no_data',
+        asOf: '2026-09-02T12:00:00.000Z',
+        data: [],
+        pagination: { page: 2, limit: 25, total: 0 },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getSecurityOverview(30);
+    await portalApi.getSecurityDevices({ page: 2, limit: 25 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/security/overview?days=30',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/portal/security/devices?page=2&limit=25',
+    );
+  });
+});
