@@ -131,6 +131,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // ---- reference data ------------------------------------------------------
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
+  const [deviceGroupsList, setDeviceGroupsList] = useState<Array<{ id: string; name: string; type: 'static' | 'dynamic' }>>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
   // ---- add-line form -------------------------------------------------------
@@ -141,6 +142,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineRoles, setLineRoles] = useState<Exclude<DeviceRole, 'unknown'>[]>([]);
+  const [lineGroupId, setLineGroupId] = useState('');
   // Linked catalog item (optional). A catalog line is priced by the SERVER in
   // the contract's currency (#3775 — price book, no conversion): the editor
   // shows that price read-only and never sends unitPrice/taxable for it.
@@ -305,6 +307,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     void loadCatalog();
   }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
+  useEffect(() => {
+    const forOrg = orgId;
+    if (!forOrg) { setDeviceGroupsList([]); return; }
+    fetchWithAuth(`/device-groups?orgId=${forOrg}&limit=200`).then(async (res) => {
+      if (!res.ok) return;
+      const body = await res.json();
+      const items = Array.isArray(body.data) ? body.data : [];
+      setDeviceGroupsList(items.map((g: { id: string; name: string; type: 'static' | 'dynamic' }) => ({ id: g.id, name: g.name, type: g.type })));
+    }).catch(() => { /* the select stays empty; Add stays disabled for this type */ });
+  }, [orgId]);
   useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
   // Effective cadence in months: the custom text input when "Custom…" is chosen,
@@ -334,8 +346,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
   // Resolved live quantity per line (per_device/per_device_role/per_seat) from the estimate.
   const estByLine = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e.quantity);
+    const m = new Map<string, ContractEstimate['lines'][number]>();
+    for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e);
     return m;
   }, [liveEstimate]);
 
@@ -394,6 +406,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
   // #3205: per_device_role requires at least one role picked before Add is allowed.
   const roleLineMissingRoles = lineType === 'per_device_role' && lineRoles.length === 0;
+  const groupLineMissingGroup = lineType === 'per_device_group' && !lineGroupId;
   const effectiveLinePrice = lineCatalogItem ? (catalogPrice?.unitPrice ?? '0') : linePrice;
 
   const newLineEstimate = useMemo(() => {
@@ -568,7 +581,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles) return;
+    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup) return;
     setBusy(true);
     try {
       await runAction({
@@ -583,6 +596,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           manualQuantity: lineType === 'manual' ? lineQty : undefined,
           siteId: SITE_SCOPED_TYPES.has(lineType) && lineSiteId ? lineSiteId : undefined,
           deviceRoles: lineType === 'per_device_role' ? lineRoles : undefined,
+          deviceGroupId: lineType === 'per_device_group' ? lineGroupId : undefined,
           catalogItemId: lineCatalogItem?.id,
           taxable: lineCatalogItem ? undefined : lineTaxable,
         }),
@@ -595,6 +609,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
       setLineRoles([]);
+      setLineGroupId('');
       setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
     } catch (err) {
@@ -602,7 +617,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, refresh, t]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -919,13 +934,22 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                             {l.lineType === 'per_device_role' && l.deviceRoles
                               ? <span className="block text-xs text-muted-foreground" data-testid={`line-roles-${idx}`}>{l.deviceRoles.map(getDeviceRoleLabel).join(', ')}</span>
                               : null}
+                            {l.lineType === 'per_device_group'
+                              ? <span className="block text-xs text-muted-foreground" data-testid={`line-group-${idx}`}>
+                                  {l.deviceGroup
+                                    ? `${l.deviceGroup.name}${l.deviceGroup.type === 'dynamic' ? ` · ${t('contracts.shared.dynamicGroup')}` : ''}`
+                                    : t('contracts.shared.deletedGroup', { name: l.deviceGroupName ?? '' })}
+                                </span>
+                              : null}
                           </td>
                           <td className="px-3 py-2">{l.description}</td>
                           <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, contract?.currencyCode)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">
+                          <td className="px-3 py-2 text-right tabular-nums" data-testid={`line-qty-${idx}`}>
                             {AUTO_QTY_TYPES.has(l.lineType)
                               ? (estByLine.has(l.id)
-                                  ? estByLine.get(l.id)
+                                  ? (estByLine.get(l.id)?.unresolved === 'group_deleted'
+                                      ? t('contracts.shared.values.groupDeleted')
+                                      : estByLine.get(l.id)?.quantity)
                                   : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
                               : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                           </td>
@@ -992,7 +1016,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {t('contracts.contractEditor.addLine.lineType')}
                     <select
                       value={lineType}
-                      onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); setLineRoles([]); }}
+                      onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); setLineRoles([]); setLineGroupId(''); }}
                       data-testid="contract-line-type"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
@@ -1092,6 +1116,24 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       )}
                     </fieldset>
                   )}
+                  {lineType === 'per_device_group' && (
+                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      {t('contracts.contractEditor.addLine.deviceGroup')}
+                      <select
+                        value={lineGroupId} onChange={(e) => setLineGroupId(e.target.value)}
+                        data-testid="contract-line-group"
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="">{t('contracts.contractEditor.addLine.selectGroup')}</option>
+                        {deviceGroupsList.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name}{g.type === 'dynamic' ? ` (${t('contracts.shared.dynamicGroup')})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {!lineGroupId && <span className="text-amber-600 dark:text-amber-500">{t('contracts.contractEditor.addLine.deviceGroupRequired')}</span>}
+                    </label>
+                  )}
                   {SITE_SCOPED_TYPES.has(lineType) && (
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                       {t('contracts.contractEditor.addLine.siteOptional')}
@@ -1149,7 +1191,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles}
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >

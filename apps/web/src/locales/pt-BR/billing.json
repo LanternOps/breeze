@@ -22,9 +22,12 @@
         "flat": "Taxa fixa",
         "perDevice": "Por dispositivo",
         "perDeviceRole": "Por função do dispositivo",
+        "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por assento",
         "manual": "Quantidade manual"
       },
+      "dynamicGroup": "dinâmico",
+      "deletedGroup": "{{name}} (grupo excluído)",
       "coverage": {
         "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
@@ -36,7 +39,8 @@
         "cancel": "Cancelar"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "grupo excluído"
       }
     },
     "contractDetail": {
@@ -196,6 +200,9 @@
         "lineType": "Tipo de linha",
         "deviceRoles": "Funções do dispositivo (um dispositivo é cobrado quando sua função é uma destas)",
         "deviceRolesRequired": "Escolha pelo menos uma função.",
+        "deviceGroup": "Grupo de dispositivos (cobra seus membros; grupos dinâmicos são avaliados no faturamento)",
+        "selectGroup": "Selecione um grupo",
+        "deviceGroupRequired": "Escolha um grupo.",
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",

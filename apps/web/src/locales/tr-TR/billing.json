@@ -22,9 +22,12 @@
         "flat": "Sabit ücret",
         "perDevice": "Cihaz başına",
         "perDeviceRole": "Cihaz rolüne göre",
+        "perDeviceGroup": "Cihaz grubu başına",
         "perSeat": "Koltuk başına",
         "manual": "Manuel miktar"
       },
+      "dynamicGroup": "dinamik",
+      "deletedGroup": "{{name}} (silinmiş grup)",
       "coverage": {
         "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor."
@@ -36,7 +39,8 @@
         "cancel": "İptal"
       },
       "values": {
-        "auto": "otomatik"
+        "auto": "otomatik",
+        "groupDeleted": "grup silindi"
       }
     },
     "contractDetail": {
@@ -196,6 +200,9 @@
         "lineType": "Hat türü",
         "deviceRoles": "Cihaz rolleri (rolü bunlardan biri olan cihazlar faturalandırılır)",
         "deviceRolesRequired": "En az bir rol seçin.",
+        "deviceGroup": "Cihaz grubu (üyeleri faturalandırılır; dinamik gruplar faturalama sırasında değerlendirilir)",
+        "selectGroup": "Bir grup seçin",
+        "deviceGroupRequired": "Bir grup seçin.",
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",

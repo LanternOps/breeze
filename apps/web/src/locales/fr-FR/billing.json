@@ -22,9 +22,12 @@
         "flat": "Forfait",
         "perDevice": "Par appareil",
         "perDeviceRole": "Par rôle d'appareil",
+        "perDeviceGroup": "Par groupe d'appareils",
         "perSeat": "Par utilisateur",
         "manual": "Quantité manuelle"
       },
+      "dynamicGroup": "dynamique",
+      "deletedGroup": "{{name}} (groupe supprimé)",
       "coverage": {
         "uncovered": "{{count}} appareil(s) de cette organisation ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "allCovered": "Chaque appareil de cette organisation est facturé par une ligne de ce contrat."
@@ -36,7 +39,8 @@
         "cancel": "Annuler"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "groupe supprimé"
       }
     },
     "contractDetail": {
@@ -196,6 +200,9 @@
         "lineType": "Type de ligne",
         "deviceRoles": "Rôles d'appareil (un appareil est facturé lorsque son rôle est l'un de ceux-ci)",
         "deviceRolesRequired": "Sélectionnez au moins un rôle.",
+        "deviceGroup": "Groupe d'appareils (facture ses membres; les groupes dynamiques sont évalués à la facturation)",
+        "selectGroup": "Sélectionner un groupe",
+        "deviceGroupRequired": "Choisissez un groupe.",
         "descriptionPlaceholder": "ex. Gestion des postes de travail",
         "unitPrice": "Prix unitaire",
         "quantity": "Quantité",
