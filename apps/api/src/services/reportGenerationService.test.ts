@@ -11,6 +11,8 @@ vi.mock('../db', () => ({
 import { db } from '../db';
 import type { ReportExecutionAuthority } from './siteScope';
 import {
+  assertReportExecutionPreflight,
+  generateDeviceInventoryReport,
   generateReport,
   StoredArtifactOnlyReportError,
   type ReportType,
@@ -163,6 +165,25 @@ describe('generateReport mandatory execution authority', () => {
       .rejects.toThrow(/portal|authority|report type/i);
     expect(db.select).not.toHaveBeenCalled();
   });
+
+  it('rejects portal-user authority at a non-canonical generator entry point', async () => {
+    await expect(
+      generateDeviceInventoryReport(ORG_ID, {}, portalAuthority()),
+    ).rejects.toThrow(/portal|authority|report type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each(['executive_summary', 'security_compliance_posture'] as const)(
+    'allows portal-user authority through the shared preflight for %s',
+    (type) => {
+      expect(() => assertReportExecutionPreflight(
+        ORG_ID,
+        {},
+        portalAuthority(),
+        type,
+      )).not.toThrow();
+    },
+  );
 
   it.each(REPORT_TYPES)(
     '%s binds the exact restricted site scope and never Site B',

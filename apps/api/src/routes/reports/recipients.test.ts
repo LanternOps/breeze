@@ -15,6 +15,12 @@ const state = vi.hoisted(() => ({
   createContact: vi.fn(),
   contactCreateAuditEvent: vi.fn(),
   writeContactAudit: vi.fn(),
+  permissionCalls: [] as Array<{ resource: string; action: string }>,
+  scopeCalls: [] as string[][],
+  mfaCalls: 0,
+  denyPermission: false,
+  lockedReportConfig: {} as Record<string, unknown>,
+  lockCalls: [] as string[],
 }));
 
 function selectChain(result: unknown[]) {
@@ -26,7 +32,11 @@ function selectChain(result: unknown[]) {
     state.whereConditions.push(condition);
     return chain;
   });
-  chain.limit = vi.fn(() => Promise.resolve(result));
+  chain.limit = vi.fn(() => chain);
+  chain.for = vi.fn((lock: string) => {
+    state.lockCalls.push(lock);
+    return Promise.resolve(result);
+  });
   chain.then = (resolve: (value: unknown) => unknown) =>
     Promise.resolve(result).then(resolve);
   return chain;
@@ -34,7 +44,12 @@ function selectChain(result: unknown[]) {
 
 function database() {
   return {
-    select: vi.fn(() => selectChain(state.results.shift() ?? [])),
+    select: vi.fn((projection?: Record<string, unknown>) => {
+      if (projection?.config === 'reports.config') {
+        return selectChain([{ config: state.lockedReportConfig }]);
+      }
+      return selectChain(state.results.shift() ?? []);
+    }),
     insert: vi.fn((table) => ({
       values: vi.fn((value) => {
         state.inserted.push({ table, value });
@@ -97,6 +112,7 @@ vi.mock('../../db/schema', () => ({
   reports: {
     id: 'reports.id',
     orgId: 'reports.orgId',
+    config: 'reports.config',
   },
 }));
 
@@ -122,9 +138,19 @@ vi.mock('../../middleware/auth', () => ({
     }
     await next();
   },
-  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requirePermission: (resource: string, action: string) =>
+    async (c: any, next: () => Promise<void>) => {
+      state.permissionCalls.push({ resource, action });
+      if (state.denyPermission) return c.json({ error: 'Forbidden' }, 403);
+      await next();
+    },
+  requireScope: (...scopes: string[]) =>
+    async (_c: unknown, next: () => Promise<void>) => {
+      state.scopeCalls.push(scopes);
+      await next();
+    },
   requireMfa: () => async (c: any, next: () => Promise<void>) => {
+    state.mfaCalls += 1;
     if (c.req.header('x-test-mfa') !== 'satisfied') {
       return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
     }
@@ -175,6 +201,14 @@ describe('report recipient routes', () => {
     state.deleted.length = 0;
     state.updated.length = 0;
     state.whereConditions.length = 0;
+    state.permissionCalls.length = 0;
+    state.scopeCalls.length = 0;
+    state.mfaCalls = 0;
+    state.denyPermission = false;
+    state.lockedReportConfig = {
+      emailRecipients: ['alex@example.test', 'keep@example.test'],
+    };
+    state.lockCalls.length = 0;
     const tx = database();
     rootDb.current = {
       ...database(),
@@ -309,6 +343,38 @@ describe('report recipient routes', () => {
     expect(hasEquality(state.updated[0]?.condition, 'reports.orgId', ORG_ID)).toBe(true);
   });
 
+  it('preserves the config from the report row locked inside the conversion transaction', async () => {
+    state.lockedReportConfig = {
+      emailRecipients: ['alex@example.test', 'keep@example.test'],
+      filters: { siteIds: ['site-after-concurrent-edit'] },
+      dateRange: { preset: 'last_90_days' },
+    };
+    state.results.push([{
+      id: CONTACT_ID,
+      name: 'Existing Alex',
+      email: 'alex@example.test',
+    }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'alex@example.test' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(state.updated[0]?.value).toMatchObject({
+      config: {
+        emailRecipients: ['keep@example.test'],
+        filters: { siteIds: ['site-after-concurrent-edit'] },
+        dateRange: { preset: 'last_90_days' },
+      },
+    });
+    expect(state.whereConditions.some((condition) =>
+      hasEquality(condition, 'reports.id', REPORT_ID)
+      && hasEquality(condition, 'reports.orgId', ORG_ID))).toBe(true);
+    expect(state.lockCalls).toEqual(['update']);
+  });
+
   it('audits the contact created while converting a legacy recipient', async () => {
     state.results.push([]);
 
@@ -402,5 +468,46 @@ describe('report recipient routes', () => {
     expect(invalidContact.status).toBe(400);
     expect(invalidEmail.status).toBe(400);
     expect(state.getReport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['GET', `/${REPORT_ID}/recipients`, 'read', false],
+    ['POST', `/${REPORT_ID}/recipients`, 'write', false],
+    ['DELETE', `/${REPORT_ID}/recipients/${CONTACT_ID}`, 'write', false],
+    ['POST', `/${REPORT_ID}/recipients/convert`, 'write', true],
+  ] as const)(
+    '%s %s requires the expected report permission and organization-capable scope',
+    async (method, path, action, requiresMfa) => {
+      if (method === 'POST' && path.endsWith('/recipients')) {
+        state.results.push([{ id: CONTACT_ID }]);
+      }
+      const response = await app().request(path, {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          ...(requiresMfa ? { 'x-test-mfa': 'satisfied' } : {}),
+        },
+        body: method === 'POST'
+          ? JSON.stringify(path.endsWith('/convert')
+              ? { email: 'alex@example.test' }
+              : { contactId: CONTACT_ID })
+          : undefined,
+      });
+
+      expect(response.status).toBeLessThan(400);
+      expect(state.permissionCalls).toContainEqual({ resource: 'reports', action });
+      expect(state.scopeCalls).toContainEqual(['organization', 'partner', 'system']);
+      expect(state.mfaCalls).toBe(requiresMfa ? 1 : 0);
+    },
+  );
+
+  it('returns 403 before the report handler when report permission is denied', async () => {
+    state.denyPermission = true;
+
+    const response = await app().request(`/${REPORT_ID}/recipients`);
+
+    expect(response.status).toBe(403);
+    expect(state.getReport).not.toHaveBeenCalled();
+    expect(rootDb.current.select).not.toHaveBeenCalled();
   });
 });

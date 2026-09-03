@@ -529,7 +529,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     expect(result.success).not.toBe(true);
   });
 
-  it('records AI-initiated saved report runs with system requester provenance', async () => {
+  it('records AI-tool saved report runs with the acting user requester provenance', async () => {
     reportScopeMocks.intersectSiteScopes.mockReturnValue({
       version: 1,
       kind: 'unrestricted',
@@ -559,8 +559,8 @@ describe('SR5-06 generate_report — run scope gating', () => {
 
     expect(result.success).toBe(true);
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      requestedByKind: 'system',
-      requestedByUserId: null,
+      requestedByKind: 'user',
+      requestedByUserId: 'u1',
       requestedByPortalUserId: null,
     }));
   });

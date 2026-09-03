@@ -664,6 +664,8 @@ function unrestrictedDefinitionPredicate(
       isNull(columns.executionScopeSiteIds),
       isNotNull(columns.executionScopeFingerprint),
       isNotNull(columns.executionScopeCapturedAt),
+      sql`${columns.executionScopePrincipalKind} IS DISTINCT FROM 'system'`,
+      sql`${columns.executionScopePrincipalKind} IS DISTINCT FROM 'portal_user'`,
     ),
     and(
       isNull(columns.executionScopeVersion),

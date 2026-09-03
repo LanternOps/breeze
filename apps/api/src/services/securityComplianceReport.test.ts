@@ -5,7 +5,6 @@ const vulnerabilityMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
-vi.mock('./reportGenerationService', () => ({}));
 vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
 
 import { db } from '../db';

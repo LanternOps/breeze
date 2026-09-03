@@ -2221,8 +2221,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const [run] = await db.insert(reportRuns).values({
             reportId,
             status: 'pending',
-            requestedByKind: 'system',
-            requestedByUserId: null,
+            requestedByKind: 'user',
+            requestedByUserId: auth.user.id,
             requestedByPortalUserId: null,
             ...persistedSiteScopeValues(executionAuthority),
           }).returning();

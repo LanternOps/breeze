@@ -150,6 +150,16 @@ recipientsRoutes.post(
     const email = input.email.trim().toLowerCase();
 
     const result = await db.transaction(async (tx) => {
+      const [lockedReport] = await tx.select({ config: reports.config })
+        .from(reports)
+        .where(and(
+          eq(reports.id, report.id),
+          eq(reports.orgId, report.orgId),
+        ))
+        .limit(1)
+        .for('update');
+      if (!lockedReport) return null;
+
       let [contact] = await tx.select({
         id: contacts.id,
         name: contacts.name,
@@ -181,7 +191,7 @@ recipientsRoutes.post(
         contactId: contact!.id,
       }).onConflictDoNothing();
 
-      const reportConfig = report.config as Record<string, unknown>;
+      const reportConfig = lockedReport.config as Record<string, unknown>;
       const rawEmailRecipients = reportConfig.emailRecipients;
       const legacy = Array.isArray(rawEmailRecipients)
         ? rawEmailRecipients.filter(
@@ -204,6 +214,8 @@ recipientsRoutes.post(
 
       return { contact: contact!, createdContact };
     });
+
+    if (!result) return c.json({ error: 'Report not found' }, 404);
 
     if (result.createdContact) {
       const createEvent = contactCreateAuditEvent(result.createdContact);

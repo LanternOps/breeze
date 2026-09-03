@@ -3,8 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { reportRuns } from '../db/schema';
-import { unrestrictedReportRunScopeSqlPredicate } from './siteScope';
+import { reportRuns, reports } from '../db/schema';
+import {
+  unrestrictedReportDefinitionScopeSqlPredicate,
+  unrestrictedReportRunScopeSqlPredicate,
+} from './siteScope';
 
 /**
  * P2-3 (#4190) — the site-scope projection contract.
@@ -151,4 +154,24 @@ it('keeps a complete portal-authored run visible to an unrestricted reader', () 
         + `"report_runs"\\."execution_scope_principal_kind" = \\$${portalUserParameter}`,
     ),
   );
+});
+
+it('excludes system and portal-user principals from the legacy-unscoped definition arm', () => {
+  const query = new PgDialect().sqlToQuery(
+    unrestrictedReportDefinitionScopeSqlPredicate(reports),
+  );
+  const legacyParameter = query.params.indexOf('legacy_unscoped') + 1;
+
+  expect(legacyParameter).toBeGreaterThan(0);
+  const legacyArm = query.sql.slice(
+    query.sql.indexOf(`"reports"."execution_scope_kind" = $${legacyParameter}`),
+  );
+  expect(legacyArm).toMatch(
+    /"reports"\."execution_scope_principal_kind" is distinct from 'system'/i,
+  );
+  expect(legacyArm).toMatch(
+    /"reports"\."execution_scope_principal_kind" is distinct from 'portal_user'/i,
+  );
+  expect(query.params).toContain('system');
+  expect(query.params).toContain('portal_user');
 });
