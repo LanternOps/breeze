@@ -470,6 +470,73 @@ describe('updateRings routes', () => {
       expect(updateFields.autoApprove).toMatchObject({ autoApproveUnrated: true });
     });
 
+    it('accepts autoApproveUnrated on a category rule override and persists it in category_rules', async () => {
+      const categoryRules = [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], autoApproveUnrated: true }
+      ];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+          })
+        })
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeRing({ categoryRules })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ categoryRules })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.categoryRules[0].autoApproveUnrated).toBe(true);
+
+      const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect((updateFields.categoryRules as Array<Record<string, unknown>>)[0]).toMatchObject({
+        autoApproveUnrated: true
+      });
+    });
+
+    it('PATCH with an old-shape autoApprove preserves a stored autoApproveUnrated: true (merge, not replace)', async () => {
+      // Mirrors the thirdPartyApps preservation test above: a pre-W02 client
+      // replaying {enabled, severities, deferralDays} must not silently reset
+      // a ring's unrated-patch opt-in it doesn't know about.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: RING_ID,
+              partnerId: PARTNER_ID,
+              autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true }
+            }])
+          })
+        })
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeRing()])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ autoApprove: { enabled: true, severities: ['important'], deferralDays: 5 } })
+      });
+
+      expect(res.status).toBe(200);
+      const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(updateFields.autoApprove).toMatchObject({ autoApproveUnrated: true });
+    });
+
     it('PATCH with an old-shape autoApprove preserves the stored third-party opt-in (merge, not replace)', async () => {
       // A pre-2026-08 client replays {enabled, severities, deferralDays} — the
       // absent third-party fields must carry the stored row's values instead
