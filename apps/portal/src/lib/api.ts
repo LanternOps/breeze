@@ -763,15 +763,6 @@ export const portalApi = {
     return mapPaginatedData(response);
   },
 
-  getSupportUsage: (
-    month?: string,
-    config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<SupportUsageDto>> =>
-    apiGet<SupportUsageDto>(
-      `/portal/tickets/usage${buildQueryString({ month })}`,
-      config
-    ),
-
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
@@ -1124,5 +1115,17 @@ export const portalApi = {
       { sessionId },
       { redirectOnUnauthorized: false }
     );
-  }
+  },
+
+  // ---------------------------------------------------------------------------
+  // W08 — support usage
+  // ---------------------------------------------------------------------------
+  getSupportUsage: (
+    month?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SupportUsageDto>> =>
+    apiGet<SupportUsageDto>(
+      `/portal/tickets/usage${buildQueryString({ month })}`,
+      config
+    )
 };

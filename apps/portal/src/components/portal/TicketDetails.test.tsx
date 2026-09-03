@@ -55,6 +55,26 @@ describe('TicketDetails — statuses', () => {
   });
 });
 
+describe('TicketDetails — SLA status', () => {
+  it.each([
+    ['breached', 'SLA breached'],
+    ['on_track', 'SLA on track'],
+    ['not_configured', 'No SLA configured'],
+  ] as const)('renders %s with honest copy', (status, copy) => {
+    render(<TicketDetails ticket={ticket({
+      sla: {
+        firstResponseMinutes: null,
+        resolutionMinutes: null,
+        responseTargetMinutes: null,
+        resolutionTargetMinutes: null,
+        status,
+      },
+    })} />);
+
+    expect(screen.getByTestId('portal-ticket-sla-badge').textContent).toContain(copy);
+  });
+});
+
 describe('TicketDetails — reply composer', () => {
   it('renders replies oldest-first even though the API returns newest-first', () => {
     render(<TicketDetails ticket={ticket()} />);

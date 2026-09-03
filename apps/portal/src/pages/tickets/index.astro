@@ -6,6 +6,7 @@ import TicketList from '../../components/portal/TicketList';
 import { SupportUsagePanel } from '../../components/portal/SupportUsagePanel';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
+import { decideTicketsPage } from '../../lib/ticketsPage';
 
 const config = buildServerApiConfig(Astro.request);
 const [response, usageResponse] = await Promise.all([
@@ -18,22 +19,34 @@ if (response.statusCode === 401 || usageResponse.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
 }
 
-// #2345 — the enable_tickets gate 403s with code PORTAL_TICKETS_DISABLED;
-// bounce to the portal home instead of rendering a dead page. Other 403s
-// (e.g. "Account is not active") keep the previous behavior: fall through and
-// render the page with the API error inline.
-if (response.statusCode === 403 && response.code === 'PORTAL_TICKETS_DISABLED') {
+const { ticketsDisabled, usageStrictlyDisabled, redirectToDevices } =
+  decideTicketsPage(response, usageResponse);
+
+if (redirectToDevices) {
   return Astro.redirect(withBase('/devices'));
 }
-const usageStrictlyDisabled = usageResponse.statusCode === 403;
 ---
 
 <PortalLayout title="Support">
-  <TicketList
-    tickets={response.data ?? []}
-    error={response.error}
-    enableSupportUsage={usageResponse.data !== undefined}
-  />
+  {
+    ticketsDisabled ? (
+      <section
+        class="border-y border-border/70 py-8"
+        data-testid="portal-tickets-disabled-notice"
+      >
+        <h1 class="font-display text-2xl font-semibold text-foreground">Support</h1>
+        <p class="mt-2 text-sm text-muted-foreground">
+          Ticket submission is not enabled for your organization.
+        </p>
+      </section>
+    ) : (
+      <TicketList
+        tickets={response.data ?? []}
+        error={response.error}
+        enableSupportUsage={usageResponse.data !== undefined}
+      />
+    )
+  }
   {
     !usageStrictlyDisabled &&
       <SupportUsagePanel

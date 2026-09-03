@@ -22,6 +22,16 @@ const SLA_LABELS = {
   not_configured: 'No SLA configured',
 } as const;
 
+export function TicketSlaBadge({
+  sla,
+  testId,
+}: {
+  sla: TicketSummary['sla'];
+  testId: string;
+}) {
+  return <span data-testid={testId}>{SLA_LABELS[sla.status]}</span>;
+}
+
 export function TicketList({ tickets, error, enableSupportUsage = false }: TicketListProps) {
   if (error) {
     return <ErrorNotice>{error}</ErrorNotice>;
@@ -67,7 +77,6 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {tickets.map((ticket) => {
                 const tone = ticketStatusTone(ticket.status);
-                const label = ticket.sla ? SLA_LABELS[ticket.sla.status] : null;
                 return (
                   <tr key={ticket.id} className={ROW}>
                     {/* order-* reorders the card: subject and status share the
@@ -86,10 +95,11 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
                       <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
-                      {enableSupportUsage && label && (
-                        <span data-testid={`portal-ticket-sla-${ticket.id}`}>
-                          {label}
-                        </span>
+                      {enableSupportUsage && ticket.sla && (
+                        <TicketSlaBadge
+                          sla={ticket.sla}
+                          testId={`portal-ticket-sla-${ticket.id}`}
+                        />
                       )}
                     </td>
                     <td className={cn(CELL, 'order-3')}>

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { buildPortalApiUrl, portalApi } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
@@ -84,6 +85,16 @@ it('GETs support usage with an optional month', async () => {
   expect(String(fetchMock.mock.calls[0][0])).toContain(
     '/portal/tickets/usage?month=2026-09',
   );
+});
+
+it('keeps the W08 support usage API in its trailing delimited block', () => {
+  const source = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
+  const marker = source.lastIndexOf('// W08 — support usage');
+  const supportUsage = source.lastIndexOf('getSupportUsage:');
+  const previousApiMember = source.lastIndexOf('settlePublicReturn:');
+
+  expect(marker).toBeGreaterThan(previousApiMember);
+  expect(supportUsage).toBeGreaterThan(marker);
 });
 
 
