@@ -1227,6 +1227,8 @@
       "installOsPatches": "Aplicar parches OS pendientes ({{count}})",
       "installThirdPartyPatches": "Aplicar parches de terceros ({{count}})",
       "lastScan": "Último escaneo: {{label}}",
+      "managePatches": "Administrar parches",
+      "managedByPolicy": "Administrado por la política:",
       "pendingApprovalCount": "({{count}} pendiente de aprobación)",
       "polling": "Consultando...",
       "refreshPatchData": "Actualizar datos del parche",

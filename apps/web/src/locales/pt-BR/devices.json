@@ -1227,6 +1227,8 @@
       "installOsPatches": "Instalar patches pendentes do OS ({{count}})",
       "installThirdPartyPatches": "Instalar patches de terceiros ({{count}})",
       "lastScan": "Última verificação: {{label}}",
+      "managePatches": "Gerenciar patches",
+      "managedByPolicy": "Gerenciado pela política:",
       "pendingApprovalCount": "({{count}} aguardando aprovação)",
       "polling": "Consultando...",
       "refreshPatchData": "Atualizar dados dos patches",

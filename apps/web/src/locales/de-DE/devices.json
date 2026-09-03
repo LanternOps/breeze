@@ -1227,6 +1227,8 @@
       "installOsPatches": "Ausstehende Betriebssystem-Patches installieren ({{count}})",
       "installThirdPartyPatches": "Installieren Sie Patches von Drittanbietern ({{count}})",
       "lastScan": "Letzter Scan: {{label}}",
+      "managePatches": "Patches verwalten",
+      "managedByPolicy": "Verwaltet durch Richtlinie:",
       "pendingApprovalCount": "({{count}} bis zur Genehmigung)",
       "polling": "Abfrage läuft...",
       "refreshPatchData": "Patchdaten aktualisieren",
