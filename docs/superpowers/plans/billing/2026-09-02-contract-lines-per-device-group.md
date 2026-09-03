@@ -14,7 +14,7 @@ tracking_issue: LanternOps/breeze#3205
 
 **Spec:** `docs/superpowers/specs/billing/2026-09-02-contract-lines-per-device-group-design.md`
 
-**Wave:** #3205 W02 (sub-issue #4584). Branch from `main` after PR #4585 (wave 1) merges: `feature/3205-device-groups/wave-4584`.
+**Wave:** #3205 W02 (wave sub-issue #4648; feature request #4584). Branch from `main` after PR #4585 (wave 1) merges: `feature/3205-device-groups/wave-4648`.
 
 ## Global Constraints
 
@@ -2191,9 +2191,10 @@ Expected: all green. Then the manual checks from the spec's Testing section (psq
 - [ ] **Step 2: Tear down the test stack, push, open the PR**
 
 ```bash
-git push -u origin feature/3205-device-groups/wave-4584
+git push -u origin feature/3205-device-groups/wave-4648
 gh pr create --repo LanternOps/breeze --base main --title "feat(billing): contract lines billed by device group (#3205 W02)" --body "$(cat <<'EOF'
-Closes #4584
+Closes #4648
+Refs #4584
 Refs #3205
 
 Spec: `docs/superpowers/specs/billing/2026-09-02-contract-lines-per-device-group-design.md`
