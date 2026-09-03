@@ -587,7 +587,7 @@
         "types": { "per_device": "Per device", "per_device_role": "Per device role", "per_device_group": "Per device group", "per_seat": "Per seat" },
         "rolesLabel": "Device roles", "groupLabel": "Device group", "siteLabel": "Site (optional)", "allSites": "All sites",
         "quantityAuto": "Quantity is counted automatically", "autoSummary": "Auto quantity · {{count}} {{set}} · estimated",
-        "driftChip": "count changed: {{stored}} → {{live}}", "refresh": "Refresh counts", "estimateError": "Couldn’t check the live device count.",
+        "driftChip": "count changed: {{stored}} → {{live}}", "refresh": "Refresh counts", "estimateError": "Couldn’t check the live device count.", "pickerError": "Couldn’t load device groups or sites. Refresh and try again.",
         "groupDeleted": "Device group “{{name}}” was deleted — pick another", "siteDeleted": "Site “{{name}}” was deleted — pick another",
         "typeLocked": "A device set cannot be changed after the line is created — remove the line and add it again.",
         "includedLabel": "Included quantity", "overageModeLabel": "Above the allowance", "overageBill": "Bill each extra unit", "overageFlag": "Report for review", "overagePriceLabel": "Overage price",

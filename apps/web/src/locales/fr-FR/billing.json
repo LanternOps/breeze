@@ -587,7 +587,7 @@
         "types": { "per_device": "Par appareil", "per_device_role": "Par rôle d'appareil", "per_device_group": "Par groupe d'appareils", "per_seat": "Par poste" },
         "rolesLabel": "Rôles d'appareil", "groupLabel": "Groupe d'appareils", "siteLabel": "Site (facultatif)", "allSites": "Tous les sites",
         "quantityAuto": "La quantité est comptée automatiquement", "autoSummary": "Quantité auto · {{count}} {{set}} · estimée",
-        "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.",
+        "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.", "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
         "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre", "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
         "typeLocked": "Un ensemble d'appareils ne peut pas être modifié après la création de la ligne — supprimez la ligne et ajoutez-la à nouveau.",
         "includedLabel": "Quantité incluse", "overageModeLabel": "Au-delà du forfait", "overageBill": "Facturer chaque unité supplémentaire", "overageFlag": "Signaler pour révision", "overagePriceLabel": "Prix des unités supplémentaires",

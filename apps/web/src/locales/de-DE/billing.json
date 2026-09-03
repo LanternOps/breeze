@@ -587,7 +587,7 @@
         "types": { "per_device": "Pro Gerät", "per_device_role": "Pro Geräterolle", "per_device_group": "Pro Gerätegruppe", "per_seat": "Pro Benutzerplatz" },
         "rolesLabel": "Geräterollen", "groupLabel": "Gerätegruppe", "siteLabel": "Standort (optional)", "allSites": "Alle Standorte",
         "quantityAuto": "Menge wird automatisch gezählt", "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
-        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.",
+        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.", "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
         "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
         "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
         "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",

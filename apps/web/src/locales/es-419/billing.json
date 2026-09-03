@@ -587,7 +587,7 @@
         "types": { "per_device": "Por dispositivo", "per_device_role": "Por rol de dispositivo", "per_device_group": "Por grupo de dispositivos", "per_seat": "Por licencia" },
         "rolesLabel": "Roles de dispositivo", "groupLabel": "Grupo de dispositivos", "siteLabel": "Sitio (opcional)", "allSites": "Todos los sitios",
         "quantityAuto": "La cantidad se cuenta automáticamente", "autoSummary": "Cantidad automática · {{count}} {{set}} · estimada",
-        "driftChip": "el conteo cambió: {{stored}} → {{live}}", "refresh": "Actualizar conteos", "estimateError": "No se pudo comprobar el conteo actual de dispositivos.",
+        "driftChip": "el conteo cambió: {{stored}} → {{live}}", "refresh": "Actualizar conteos", "estimateError": "No se pudo comprobar el conteo actual de dispositivos.", "pickerError": "No se pudieron cargar los grupos de dispositivos ni los sitios. Actualiza la página e inténtalo de nuevo.",
         "groupDeleted": "El grupo de dispositivos “{{name}}” fue eliminado: elige otro", "siteDeleted": "El sitio “{{name}}” fue eliminado: elige otro",
         "typeLocked": "Un conjunto de dispositivos no se puede cambiar después de crear la línea: elimina la línea y agrégala de nuevo.",
         "includedLabel": "Cantidad incluida", "overageModeLabel": "Por encima del límite incluido", "overageBill": "Facturar cada unidad adicional", "overageFlag": "Informar para revisión", "overagePriceLabel": "Precio por excedente",

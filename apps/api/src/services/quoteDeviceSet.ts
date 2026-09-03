@@ -11,7 +11,7 @@
  * the accept-adjacent paths). Never writes a membership row.
  */
 import { and, eq } from 'drizzle-orm';
-import type { QuoteDeviceSetType } from '@breeze/shared';
+import { isQuoteLineSiteDeleted, type QuoteDeviceSetType } from '@breeze/shared';
 import { countContractSeats } from './contractQuantities';
 import { buildOrgDeviceSnapshot } from './contractSnapshot';
 import { quantityFor } from './contractCoverage';
@@ -68,7 +68,7 @@ export async function countQuoteDeviceSetLines(
     if (l.contractLineType === 'per_device_group' && l.deviceGroupId === null && l.deviceGroupName !== null) {
       return FAILED(l.id, 'GROUP_DELETED');
     }
-    if (l.siteId === null && l.siteName !== null) return FAILED(l.id, 'SITE_DELETED');
+    if (isQuoteLineSiteDeleted(l)) return FAILED(l.id, 'SITE_DELETED');
     if (l.deviceGroupId && (groupErrors.has(l.deviceGroupId) || !snapshot.groups.has(l.deviceGroupId))) {
       return FAILED(l.id, groupErrors.has(l.deviceGroupId) ? 'GROUP_EVALUATION_FAILED' : 'GROUP_DELETED');
     }

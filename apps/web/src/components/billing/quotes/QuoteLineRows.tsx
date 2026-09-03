@@ -351,7 +351,7 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
         {(drifted || estimateFailed) && editable && <button type="button" onClick={() => void refreshCounts()} className="font-medium text-primary hover:underline" data-testid={`quote-line-device-set-refresh-${line.id}`}>{t('quotes.editor.deviceSet.refresh')}</button>}
       </div>
       {estimateFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-estimate-error-${line.id}`}>{t('quotes.editor.deviceSet.estimateError')}</p>}
-      {pickerLoadFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-picker-error-${line.id}`}>Couldn’t load device groups or sites.</p>}
+      {pickerLoadFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-picker-error-${line.id}`}>{t('quotes.editor.deviceSet.pickerError')}</p>}
       {line.descriptorUnresolved && line.contractLineType === 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.groupDeleted', { name: line.deviceGroupName ?? '' })}</p>}
       {line.descriptorUnresolved && line.contractLineType !== 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.siteDeleted', { name: line.siteName ?? '' })}</p>}
       <p>{t('quotes.editor.deviceSet.typeLocked')}</p>
