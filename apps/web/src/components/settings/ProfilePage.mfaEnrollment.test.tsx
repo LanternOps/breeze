@@ -7,11 +7,19 @@ import { fetchWithAuth } from '../../stores/auth';
 /**
  * #4413 — a wrong TOTP during enrollment must NOT fail silently.
  *
- * `POST /auth/mfa/enable` answers 401 `Invalid MFA code` for a mistyped code.
- * The panel used to collapse straight back to the status card and drop the
+ * `POST /auth/mfa/enable` answers `Invalid MFA code` for a mistyped code. The
+ * panel used to collapse straight back to the status card and drop the
  * QR/secret, so a user who fat-fingered one digit was left with a dead
  * authenticator entry, no error, and no way to retry that same secret.
+ *
+ * #4470 changed that rejection's STATUS from 401 to 400 + a stable
+ * `code: 'mfa_code_invalid'`, so it can no longer be mistaken for bearer
+ * expiry by fetchWithAuth. These specs pin the new status end to end and
+ * assert the `skipUnauthorizedRetry` stopgap is gone with it.
  */
+
+/** The API's #4470 rejected-proof body. */
+const rejectedProof = (error: string, code = 'mfa_code_invalid') => ({ error, message: error, code });
 
 vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: vi.fn(),
@@ -79,7 +87,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
         return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
       }
       if (String(url) === '/auth/mfa/enable') {
-        return makeJsonResponse({ error: 'Invalid MFA code' }, false, 401);
+        return makeJsonResponse(rejectedProof('Invalid MFA code'), false, 400);
       }
       return undefined as unknown as Response;
     });
@@ -92,7 +100,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     fillCode();
     fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
 
-    // The 401 must be VISIBLE, not swallowed.
+    // The rejection must be VISIBLE, not swallowed.
     expect(await screen.findByText(/Invalid MFA code/i)).toBeTruthy();
 
     // ...and the panel must NOT have collapsed back to the status card: the
@@ -119,7 +127,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       );
       expect(enableCalls.length).toBe(2);
       // The password collected at the gate must survive the first rejection,
-      // otherwise the retry 401s for a completely different reason.
+      // otherwise the retry is refused for a completely different reason.
       expect(JSON.parse(String(enableCalls[1][1]?.body)))
         .toEqual({ code: '654321', currentPassword: 'hunter2-pw' });
     });
@@ -131,7 +139,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     expect(setupCalls.length).toBe(1);
   });
 
-  it('does not let fetchWithAuth mistake the wrong-code 401 for an expired session', async () => {
+  it('#4470: the wrong-code rejection is a 400 the client renders, with no 401 opt-out flag left', async () => {
     render(<ProfilePage initialUser={BASE_USER} />);
 
     await openEnrollmentPanel();
@@ -139,16 +147,18 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
     await screen.findByText(/Invalid MFA code/i);
 
-    // A 401 meaning "you typed the wrong digits" must never be handed to the
-    // refresh-and-replay path: that either replays a single-use code or (when
-    // the refresh does not restore) logs the user out mid-enrollment.
+    // "You typed the wrong digits" can no longer reach fetchWithAuth's
+    // refresh-and-replay path, because it is no longer a 401 at all. The
+    // #4413 `skipUnauthorizedRetry` stopgap therefore has to be GONE — a
+    // leftover flag would silently suppress a REAL bearer expiry on the
+    // forced-enrollment page, whose only token comes from that refresh.
     const enableCall = fetchWithAuthMock.mock.calls.find(
       ([url]) => String(url) === '/auth/mfa/enable'
     );
     expect(enableCall).toBeDefined();
     expect(
       (enableCall![1] as { skipUnauthorizedRetry?: boolean } | undefined)?.skipUnauthorizedRetry
-    ).toBe(true);
+    ).toBeUndefined();
   });
 
   it('shows the retry hint on rejection, and clears it on the next enrollment', async () => {
@@ -170,11 +180,11 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     expect(screen.queryByTestId('mfa-code-rejected-hint')).toBeNull();
   });
 
-  it('keeps the rejected 401 off the refresh-and-replay path for disable and recovery codes', async () => {
+  it('#4470: disable and recovery-codes also drop the opt-out flag and render the 400', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/disable') {
-        return makeJsonResponse({ error: 'Invalid MFA code' }, false, 401);
+        return makeJsonResponse(rejectedProof('Invalid MFA code'), false, 400);
       }
       if (String(url) === '/auth/mfa/recovery-codes') {
         return makeJsonResponse({ recoveryCodes: ['NEW-0001'] });
@@ -198,7 +208,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       expect(call).toBeDefined();
       expect(
         (call![1] as { skipUnauthorizedRetry?: boolean } | undefined)?.skipUnauthorizedRetry
-      ).toBe(true);
+      ).toBeUndefined();
     });
     expect(await screen.findByText('NEW-0001')).toBeTruthy();
 
@@ -220,7 +230,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       expect(call).toBeDefined();
       expect(
         (call![1] as { skipUnauthorizedRetry?: boolean } | undefined)?.skipUnauthorizedRetry
-      ).toBe(true);
+      ).toBeUndefined();
     });
     expect(await screen.findByText(/Invalid MFA code/i)).toBeTruthy();
   });
