@@ -82,17 +82,29 @@ export default function AiKillSwitch() {
     const nextKilled = !row.killed;
     setSubmitting(true);
     try {
-      await runAction({
+      const result = await runAction<{ killed: boolean; epoch: number }>({
         request: () => fetchWithAuth('/admin/ai-kill-state', {
           method: 'POST',
           body: JSON.stringify({ killed: nextKilled, reason: reason.trim() }),
         }),
+        // The route responds `{ data: { killed, epoch } }` (routes/admin/aiKillState.ts) —
+        // unwrap here so `result` itself is the flat snapshot.
+        parseSuccess: (data) => (data as { data: { killed: boolean; epoch: number } }).data,
         successMessage: nextKilled
           ? t('admin.aiKillSwitch.notice.killed')
           : t('admin.aiKillSwitch.notice.restored'),
         errorFallback: t('admin.aiKillSwitch.errors.flip'),
         friendly: mfaFriendly,
       });
+      // Apply the POST's own authoritative killed/epoch immediately — do NOT
+      // wait on the fetchState() refetch below to reflect the new state. The
+      // refetch's own try/catch never rethrows (it only sets `error`), so if
+      // it fails right after this succeeds, the badge would otherwise still
+      // show the PRE-flip state underneath the just-shown success toast — an
+      // operator can't tell from the screen whether AI activity actually
+      // stopped. Only provenance (updatedBy/updatedAt/reason) may lag until
+      // the refetch below succeeds.
+      setRow((prev) => (prev ? { ...prev, killed: result.killed, epoch: result.epoch } : prev));
       closeConfirm();
       await fetchState();
     } catch (err) {

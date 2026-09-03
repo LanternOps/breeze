@@ -115,6 +115,39 @@ describe('AiKillSwitch', () => {
     expect(body).toEqual({ killed: true, reason: 'incident 123' });
   });
 
+  it('reflects the flip immediately even when the confirmatory refetch fails', async () => {
+    // Regression for a stale/contradictory badge under a "success" toast: the
+    // POST succeeds (server truth: killed=true) but the follow-up GET used to
+    // refresh provenance 500s. The badge must show the POST's own killed/epoch
+    // rather than silently keeping the pre-flip state on screen.
+    let getCalls = 0;
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      const method = options?.method ?? 'GET';
+      if (method === 'GET' && url === '/admin/ai-kill-state') {
+        getCalls += 1;
+        if (getCalls === 1) return Promise.resolve(jsonRes({ data: activeRow }));
+        return Promise.resolve(jsonRes({ error: 'boom' }, 500));
+      }
+      if (method === 'POST' && url === '/admin/ai-kill-state') {
+        return Promise.resolve(jsonRes({ data: { killed: true, epoch: 5 } }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+
+    render(<AiKillSwitch />);
+    await screen.findByTestId('ai-kill-switch-toggle');
+
+    fireEvent.click(screen.getByTestId('ai-kill-switch-toggle'));
+    fireEvent.change(await screen.findByTestId('ai-kill-switch-confirm-reason'), {
+      target: { value: 'incident 123' },
+    });
+    fireEvent.click(screen.getByTestId('ai-kill-switch-confirm-submit'));
+
+    // The badge reflects the POST's own truth even though the refetch 500s.
+    await waitFor(() => expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/killed/i));
+    expect(screen.getByTestId('ai-kill-switch-epoch').textContent).toContain('5');
+  });
+
   it('shows a friendly message when MFA is required', async () => {
     mockApi(activeRow, {
       'POST /admin/ai-kill-state': () => jsonRes({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403),
