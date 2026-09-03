@@ -9,7 +9,8 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "write-google-services": "node scripts/write-google-services.mjs"
   },
   "dependencies": {
     "@expo/dom-webview": "~57.0.1",
