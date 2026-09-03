@@ -2187,6 +2187,28 @@ export async function moveTicketOrg(
   let updated: typeof tickets.$inferSelect | undefined;
   let guard: MoveCurrencyGuardDetails | null = null;
   await db.transaction(async (tx) => {
+    // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
+    // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
+    // INITIALLY IMMEDIATE — i.e. checked at the end of EACH statement unless
+    // deferred here. The `tx.update(tickets)` below changes `tickets.org_id`
+    // while both children still point at the OLD org, so without this the
+    // ticket UPDATE 23503s the instant it completes.
+    //
+    // The children are rewritten a few statements later (the
+    // TICKET_ORG_DENORMALIZED_TABLES loop), so deferring to COMMIT is exactly
+    // right: at commit time every (ticket_id, org_id) pair resolves again.
+    //
+    // BY NAME, never `ALL`: `tickets_requester_contact_org_fk`,
+    // `ticket_drafts_ticket_org_fk` and `action_intents_scope_ticket_org_fk`
+    // are deliberately left IMMEDIATE here — the pre-UPDATE tombstone/delete
+    // statements below exist precisely so those fail fast and loudly if a new
+    // referencing row type is ever added without its own cleanup.
+    //
+    // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
+    // so it does not participate in the lock order this transaction documents.
+    await tx.execute(
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`
+    );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // tickets → time_entries → ticket_parts. The org lock is the FIRST statement
@@ -2211,8 +2233,10 @@ export async function moveTicketOrg(
     // `tx.update(tickets)` UPDATE just below — not after, despite every
     // other cleanup here (the child-table org_id rewrites) following it.
     // Both composite FKs below are DEFERRABLE INITIALLY IMMEDIATE (checked
-    // at the end of EACH statement, not deferred to COMMIT — no
-    // `SET CONSTRAINTS ... DEFERRED` is issued in this transaction), and
+    // at the end of EACH statement, not deferred to COMMIT — the
+    // `SET CONSTRAINTS ... DEFERRED` at the top of this transaction names ONLY
+    // `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk` (#4596 W2),
+    // so the two below remain immediate and this ordering stays load-bearing), and
     // both reference `tickets(id, org_id)` — org_id is part of the key the
     // ticket UPDATE below changes. Running the ticket UPDATE first (as a
     // first attempt at this fix did) fails immediately with 23503 the
@@ -2265,8 +2289,10 @@ export async function moveTicketOrg(
     // `requesterContactId: null` (#3258 W03 final review C1) is part of THIS
     // statement, not a follow-up: `tickets_requester_contact_org_fk` is the
     // composite (requester_contact_id, org_id) -> contacts(id, org_id), and it
-    // is DEFERRABLE INITIALLY IMMEDIATE with no `SET CONSTRAINTS ... DEFERRED`
-    // in this transaction — so it is checked the instant this UPDATE finishes.
+    // is DEFERRABLE INITIALLY IMMEDIATE and is NOT among the two constraints
+    // deferred at the top of this transaction (#4596 W2 names only the
+    // time_entries/ticket_parts ones) — so it is checked the instant this
+    // UPDATE finishes.
     // A contact-linked ticket moved to another org would 23503 here, and
     // permanently: contacts are org-pinned and the requester does NOT move with
     // the ticket. Detaching is the same ruling as `deviceId: null` beside it —
