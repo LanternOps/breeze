@@ -35,10 +35,43 @@ import { captureException } from './sentry';
  */
 export const STALLED_STOP_PENDING_ESCALATION_MS = 10 * 60 * 1000;
 
+/**
+ * Upper bound on how long a "we already reported this one" marker survives
+ * (review follow-up on #3945).
+ *
+ * The natural clear point -- `drivePersistedIntent` observing the intent
+ * resolve off `stop_pending` -- does NOT reliably fire: per
+ * jobs/desktopSessionFinalizationWorker.ts, the BullMQ finalization worker
+ * resolves most stop_pending intents directly, on a retry cadence much
+ * faster than this scanner's 30s sweep. Once that happens the session goes
+ * terminal and drops out of scanDesktopSessionOrphans's query entirely, so
+ * `recover()` is never called for that finalizationId again and the "resolved"
+ * branch here never runs. Relying solely on that branch would make this map
+ * grow for the lifetime of the process. Pruning by age on every observation
+ * bounds it independent of whether that branch ever fires: a still-genuinely-
+ * stalled episode simply re-populates its own entry on the next scan, so
+ * pruning can never suppress a real escalation.
+ */
+const REPORTED_STALLED_PRUNE_AGE_MS = 24 * 60 * 60 * 1000;
+
 export class StalledStopPendingFinalizationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'StalledStopPendingFinalizationError';
+  }
+}
+
+/**
+ * A persisted finalization intent could not be parsed/canonicalized back into
+ * shape (#3945). Named per the BREEZE-1J convention (see
+ * jobs/desktopSessionFinalizationWorker.ts) so this is triageable in Sentry
+ * by exception type alone -- `scrubEvent` deletes `message` from every
+ * outbound event.
+ */
+export class PersistedFinalizationIntentParseError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PersistedFinalizationIntentParseError';
   }
 }
 
@@ -100,27 +133,39 @@ export function createDesktopSessionOrphanRecoveryService(
 ) {
   const firstAbsentObservation = new Map<string, number>();
 
-  // Escalation state for the stalled-stop_pending check (#3945), keyed by
-  // finalizationId rather than sessionId so a fresh finalization attempt on
-  // the same session starts its own episode. Cleared as soon as the intent
-  // resolves off `stop_pending`, which both ends the episode and bounds the
-  // set to ids that are currently stalled -- same shape as
-  // `reportedWedgedJobIds` in jobs/patchJobExecutor.ts.
-  const stopPendingSince = new Map<string, number>();
-  const reportedStalledFinalizations = new Set<string>();
+  // "Already reported" markers for the stalled-stop_pending check (#3945),
+  // keyed by finalizationId (finalizationId -> when we reported, deps.now()
+  // ms) rather than sessionId so a fresh finalization attempt on the same
+  // session starts its own episode. Pruned by age on every observation (see
+  // REPORTED_STALLED_PRUNE_AGE_MS) rather than relied upon to be cleared
+  // exactly on resolution, since the resolution path frequently bypasses this
+  // service entirely (see that constant's doc comment).
+  const reportedStalledFinalizations = new Map<string, number>();
+
+  function pruneReportedStalledFinalizations(now: number): void {
+    for (const [key, reportedAt] of reportedStalledFinalizations) {
+      if (now - reportedAt > REPORTED_STALLED_PRUNE_AGE_MS) {
+        reportedStalledFinalizations.delete(key);
+      }
+    }
+  }
 
   function noteStopPendingObservation(input: DesktopSessionFinalizationInput): void {
     const key = input.finalizationId;
     const now = deps.now();
-    const since = stopPendingSince.get(key);
-    if (since === undefined) {
-      stopPendingSince.set(key, now);
-      return;
-    }
-    const ageMs = now - since;
+    pruneReportedStalledFinalizations(now);
+
+    // Age is derived from the persisted intent's own `endedAt` -- set once
+    // when the intent was first created and read back unchanged from Redis
+    // on every scan -- rather than from when THIS process first observed it.
+    // A local first-observation clock resets on every deploy/restart, which
+    // would silently restart the escalation window and could delay it
+    // indefinitely across repeated restarts for exactly the long-lived stall
+    // this check exists to catch (review follow-up on #3945).
+    const ageMs = now - new Date(input.endedAt).getTime();
     if (ageMs < STALLED_STOP_PENDING_ESCALATION_MS) return;
     if (reportedStalledFinalizations.has(key)) return;
-    reportedStalledFinalizations.add(key);
+    reportedStalledFinalizations.set(key, now);
     const message =
       '[desktopSessionOrphanRecovery] finalization intent stuck in stop_pending '
       + `past the ${STALLED_STOP_PENDING_ESCALATION_MS}ms escalation window; `
@@ -136,7 +181,6 @@ export function createDesktopSessionOrphanRecoveryService(
   }
 
   function clearStopPendingEscalation(finalizationId: string): void {
-    stopPendingSince.delete(finalizationId);
     reportedStalledFinalizations.delete(finalizationId);
   }
 
@@ -242,7 +286,10 @@ export function createDesktopSessionOrphanRecoveryService(
               error: error instanceof Error ? error.message : String(error),
             },
           );
-          captureException(error instanceof Error ? error : new Error(String(error)));
+          captureException(new PersistedFinalizationIntentParseError(
+            '[desktopSessionOrphanRecovery] failed to parse/canonicalize the persisted finalization intent',
+            { cause: error },
+          ));
           return 'retained';
         }
       }

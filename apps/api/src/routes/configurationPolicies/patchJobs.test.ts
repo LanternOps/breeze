@@ -22,7 +22,7 @@ const {
     needsRepair: rows.filter((row) => row.effectiveStatus === 'needs_repair').length,
     invalidReference: rows.filter((row) => row.effectiveStatus === 'invalid_reference').length,
   })),
-  enqueuePatchJobMock: vi.fn(async () => undefined),
+  enqueuePatchJobMock: vi.fn(async (_jobId?: string, _delayMs?: number) => undefined),
   captureExceptionMock: vi.fn(),
 }));
 
@@ -362,6 +362,7 @@ describe('configurationPolicies patchJob routes', () => {
       // response must not claim success (#3945: a fire-and-forget
       // `.catch(console.error)` previously returned 201/success:true here
       // with zero visibility that the job would never execute).
+      expect(res.status).toBe(201);
       const json = await res.json();
       expect(json.success).toBe(false);
       expect(json.enqueueFailures).toEqual([
@@ -587,6 +588,79 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.totalDevices).toBe(2);
       // One patch_jobs row per device org (job insert grouped by org).
       expect(insertValuesMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports only the failing org while still creating jobs for every org in a partner-wide request (#3945)', async () => {
+      const orgA = ORG_ID;
+      const orgB = '99999999-9999-4999-8999-999999999999';
+      const device2 = '66666666-6666-4666-8666-666666666666';
+      getConfigPolicyMock.mockResolvedValue({
+        id: POLICY_ID,
+        status: 'active',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        name: 'Partner-wide',
+      });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({ orgId: null }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: orgA, hostname: 'host-a' },
+              { id: device2, orgId: orgB, hostname: 'host-b' },
+            ]),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: orgA, partnerId: PARTNER_ID },
+              { id: orgB, partnerId: PARTNER_ID },
+            ]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      const insertValuesMock = vi.fn()
+        .mockReturnValueOnce({ returning: vi.fn().mockResolvedValue([{ id: 'job-a' }]) })
+        .mockReturnValueOnce({ returning: vi.fn().mockResolvedValue([{ id: 'job-b' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
+
+      // Only org B's enqueue is wedged -- org A must still succeed and be
+      // reported as such, not swept up into a blanket failure.
+      enqueuePatchJobMock.mockImplementation(async (jobId?: string) => {
+        if (jobId === 'job-b') throw new Error('queue wedged');
+      });
+
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [orgA, orgB],
+          canAccessOrg: (orgId: string) => orgId === orgA || orgId === orgB,
+        }));
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
+      });
+
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.jobs).toEqual(expect.arrayContaining([
+        expect.objectContaining({ jobId: 'job-a', orgId: orgA }),
+        expect.objectContaining({ jobId: 'job-b', orgId: orgB }),
+      ]));
+      expect(json.enqueueFailures).toEqual([
+        { jobId: 'job-b', orgId: orgB, error: 'queue wedged' },
+      ]);
     });
 
     it('denies a partner-wide patch job for a device whose org belongs to another partner', async () => {
