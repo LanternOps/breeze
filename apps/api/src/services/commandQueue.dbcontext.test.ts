@@ -136,6 +136,7 @@ vi.mock('./backupMetrics', () => ({
 }));
 
 import { executeCommand, executeCommandWithSystemPrecheck } from './commandQueue';
+import { TrustDeniedError } from './partnerTrust.commands';
 
 const ONLINE_DEVICE = {
   id: 'device-1',
@@ -198,6 +199,57 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
 
     expect(result).toEqual({ status: 'failed', error: 'Device not found' });
     expect(ctxState.events).toEqual(['ctx:enter', 'select:devices@depth1', 'ctx:exit']);
+    expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('joins an ambient system context instead of opening a SECOND one', async () => {
+    // A nested withSystemDbAccessContext would check out a second pooled
+    // connection while the caller's is still held — strictly worse than the
+    // bug being fixed. The precheck must run in the context that is already
+    // open, adding no ctx:enter of its own.
+    ctxState.ambient = { scope: 'system' };
+    ctxState.depth = 1;
+
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+
+    expect(result.status).toBe('completed');
+    // No leading ctx:enter — the precheck read is the very first event.
+    expect(ctxState.events[0]).toBe('select:devices@depth1');
+    // Exactly one ctx:enter in the whole call, and it belongs to the dispatch
+    // phase's insert, not to the precheck.
+    expect(ctxState.events.filter((e) => e === 'ctx:enter')).toHaveLength(1);
+    expect(ctxState.events).toContain('insert:device_commands@depth2');
+  });
+
+  it('surfaces a trust denial as a terminal result and dispatches nothing', async () => {
+    partnerTrustMocks.assertDeviceExecuteAllowed.mockRejectedValueOnce(
+      new TrustDeniedError('TRUST_PROBATION', 'probation_default_deny', 'device-1', 'list_services'),
+    );
+
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+
+    expect(result).toEqual({
+      status: 'failed',
+      error: 'TRUST_PROBATION',
+      trust: { capability: 'device_execute', reason: 'probation_default_deny' },
+    });
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'select:devices@depth1',
+      'trustCheck@depth1',
+      'ctx:exit',
+    ]);
+    expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-trust precheck error rather than reporting a failed command', async () => {
+    partnerTrustMocks.assertDeviceExecuteAllowed.mockRejectedValueOnce(new Error('trust store unreachable'));
+
+    await expect(
+      executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 }),
+    ).rejects.toThrow('trust store unreachable');
+    // The context must still have closed on the throw path.
+    expect(ctxState.depth).toBe(0);
     expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
   });
 
