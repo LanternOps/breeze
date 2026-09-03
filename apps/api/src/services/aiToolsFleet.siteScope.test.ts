@@ -615,3 +615,92 @@ describe('SR5-20 manage_patches — compliance site scoping', () => {
     expect(JSON.parse(r).snapshot.id).toBe('snap1');
   });
 });
+
+// ============================================================================
+// manage_maintenance_windows — site-axis read scoping (#3654)
+//
+// `maintenanceWindowWhere` filters on the org/partner axis only, so before this
+// the tool disclosed every maintenance window in the org to a site-restricted
+// caller — the same enumeration step the HTTP exploit in #3654 starts from.
+// (The tool's create/update/delete actions are disabled upstream, so only the
+// read surface is reachable here.)
+// ============================================================================
+describe('manage_maintenance_windows — site-axis read scoping (#3654)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const winA = {
+    id: 'w-a', name: 'Site A night', orgId: 'org-1', targetType: 'site',
+    siteIds: ['site-A'], groupIds: null, deviceIds: null,
+    startTime: null, endTime: null, recurrence: 'once', status: 'scheduled',
+    suppressAlerts: true, suppressPatching: true,
+  };
+  const winForbidden = { ...winA, id: 'w-b', name: 'Site FORBIDDEN night', siteIds: ['site-FORBIDDEN'] };
+  const winAll = { ...winA, id: 'w-all', name: 'Org wide', targetType: 'all', siteIds: null };
+
+  function mockList(rows: unknown[]) {
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }),
+    });
+  }
+
+  it('hides a window targeting only a forbidden site from list', async () => {
+    mockList([winA, winForbidden, winAll]);
+
+    const raw = await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(['site-A']));
+    const body = JSON.parse(raw as string);
+
+    // The `all` window really does suppress the caller's own fleet, so it stays
+    // visible; the forbidden-site one must not.
+    expect(body.windows.map((w: { id: string }) => w.id)).toEqual(['w-a', 'w-all']);
+    expect(body.showing).toBe(2);
+    expect(raw).not.toContain('site-FORBIDDEN');
+  });
+
+  it('does not leak the site-axis columns it filters on', async () => {
+    mockList([winA]);
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(['site-A'])) as string);
+
+    expect(body.windows[0]).not.toHaveProperty('siteIds');
+    expect(body.windows[0]).not.toHaveProperty('groupIds');
+    expect(body.windows[0]).not.toHaveProperty('deviceIds');
+    expect(body.windows[0]).not.toHaveProperty('orgId');
+    expect(body.windows[0].id).toBe('w-a');
+  });
+
+  it('leaves an unrestricted caller seeing every window (no regression)', async () => {
+    mockList([winA, winForbidden, winAll]);
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(undefined)) as string);
+
+    expect(body.windows.map((w: { id: string }) => w.id)).toEqual(['w-a', 'w-b', 'w-all']);
+  });
+
+  it('refuses to fetch a forbidden-site window by id', async () => {
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([winForbidden]) }) }),
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-b' }, makeAuth(['site-A'])
+    ) as string;
+
+    expect(JSON.parse(raw).error).toBe('Maintenance window not found or access denied');
+    // The occurrence read must never happen — it would disclose the window too.
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fetches an in-scope window by id', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([winA]) }) }) };
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) };
+    });
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-a' }, makeAuth(['site-A'])
+    ) as string);
+
+    expect(body.window.id).toBe('w-a');
+  });
+});

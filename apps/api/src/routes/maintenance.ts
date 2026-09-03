@@ -98,8 +98,10 @@ function canAccessWindow(
 async function enforceWindowSiteScope(c: Context, target: MaintenanceWindowTarget) {
   const perms = c.get('permissions') as UserPermissions | undefined;
   const result = await checkMaintenanceTargetsWithinSiteScope(target, perms);
-  if (result.ok || !result.reason) return null;
-  return c.json({ error: MAINTENANCE_SITE_SCOPE_MESSAGES[result.reason] }, 403);
+  if (result.ok) return null;
+  // Fail closed on a denial that somehow carries no reason: only `ok` may open
+  // the gate, never the absence of an explanation for closing it.
+  return c.json({ error: MAINTENANCE_SITE_SCOPE_MESSAGES[result.reason ?? 'out_of_scope'] }, 403);
 }
 
 function requestPermissions(c: Context): UserPermissions | undefined {

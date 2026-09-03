@@ -72,6 +72,7 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
+import { filterWindowsToSiteScope } from './maintenanceSiteScope';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { assertReportExecutionPreflight } from './reportGenerationService';
@@ -1387,6 +1388,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      // NOTE (#3654): the create/update/delete blocks further down are dead —
+      // this guard and the `action` enum both exclude them. If they are ever
+      // re-enabled they MUST route through
+      // `checkMaintenanceTargetsWithinSiteScope` (services/maintenanceSiteScope),
+      // exactly as routes/maintenance.ts does: `maintenanceWindowWhere` below is
+      // org/partner only and does not defend the site axis.
       if (action === 'create' || action === 'update' || action === 'delete') {
         return JSON.stringify({
           error: `Action "${action}" is disabled. Maintenance windows must be managed through configuration policies. Use manage_policy_feature_link with featureType "maintenance" to configure maintenance windows on a policy.`,
@@ -1409,12 +1416,22 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           status: maintenanceWindows.status,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(maintenanceWindows.startTime))
           .limit(limit);
 
-        return JSON.stringify({ windows: rows, showing: rows.length });
+        // `maintenanceWindowWhere` is org/partner only; narrow to the caller's
+        // sites the same way GET /maintenance/windows does (#3654).
+        const visibleRows = await filterWindowsToSiteScope(rows, { allowedSiteIds: auth.allowedSiteIds });
+        const windows = visibleRows.map(({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest);
+
+        return JSON.stringify({ windows, showing: windows.length });
       }
 
       if (action === 'get') {
@@ -1425,6 +1442,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [win] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!win) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
+
+        // Site axis (#3654): a window reaching none of the caller's sites is not
+        // theirs to read, and its occurrences would disclose it too.
+        const [visibleWin] = await filterWindowsToSiteScope([win], { allowedSiteIds: auth.allowedSiteIds });
+        if (!visibleWin) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
         const occurrences = await db.select()
           .from(maintenanceOccurrences)
@@ -1453,6 +1475,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetType: maintenanceWindows.targetType,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(and(...conditions));
 
@@ -1473,10 +1500,25 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetType: maintenanceWindows.targetType,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(and(...scheduledConditions));
 
-        return JSON.stringify({ activeWindows: [...active, ...scheduled], count: active.length + scheduled.length });
+        // `maintenanceWindowWhere` is org/partner only; narrow to the caller's
+        // sites (#3654) before reporting what is suppressing their fleet.
+        const visibleActive = await filterWindowsToSiteScope(
+          [...active, ...scheduled],
+          { allowedSiteIds: auth.allowedSiteIds },
+        );
+        const activeWindows = visibleActive.map(
+          ({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest,
+        );
+
+        return JSON.stringify({ activeWindows, count: activeWindows.length });
       }
 
       if (action === 'create') {
