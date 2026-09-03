@@ -587,7 +587,7 @@ function evaluatePatchApproval(
         if (!rule.autoApproveUnrated) {
           return null;
         }
-      } else if (!severityAllowlist.includes(patch.severity)) {
+      } else if (!severityAllowlist.includes(patch.severity as string)) {
         return null;
       }
     }
@@ -638,7 +638,7 @@ function evaluatePatchApproval(
       if (!ringAutoApprove.autoApproveUnrated) {
         return null;
       }
-    } else if (!ringAutoApprove.severities.includes(patch.severity)) {
+    } else if (!ringAutoApprove.severities.includes(patch.severity as string)) {
       return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
