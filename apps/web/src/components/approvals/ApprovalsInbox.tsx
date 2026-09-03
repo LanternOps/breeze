@@ -719,6 +719,14 @@ export default function ApprovalsInbox() {
         setGroupError(group.identity, 'batchNotHomogeneous');
         return;
       }
+      // Defense-in-depth only: the client-side APPROVAL_BATCH_MAX check above
+      // refuses an oversized group before this call is ever made, so the
+      // server only answers `batch_too_large` on a stale bundle or a group
+      // that grew between render and submit.
+      if (outcome.outcome === 'batch_too_large') {
+        setGroupError(group.identity, 'batchTooLarge');
+        return;
+      }
 
       const decided = new Set<string>();
       const failures: Record<string, DecisionErrorKind> = {};
