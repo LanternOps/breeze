@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Download, RefreshCw, Settings2, TrendingUp } from 'lucide-react';
+import {
+  ChevronRight,
+  Download,
+  MoreHorizontal,
+  RefreshCw,
+  Settings2,
+  TrendingUp,
+} from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -20,6 +28,7 @@ import { useHashState } from '@/lib/useHashState';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { exportReport } from '../reports/reportExport';
+import { EmptyState } from '../shared/EmptyState';
 import ImpactWeightsDrawer from './ImpactWeightsDrawer';
 import {
   AI_AGENT_IMPACT_BY_ORG_LIMIT,
@@ -32,6 +41,7 @@ import {
 import type {
   AiAgentImpactBucketDto,
   AiAgentImpactCounterKey,
+  AiAgentImpactCounters,
   AiAgentImpactDto,
   AiAgentImpactWindow,
   ImpactWeights,
@@ -40,6 +50,39 @@ import type {
 const DEFAULT_WINDOW: AiAgentImpactWindow = 30;
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 120_000;
+
+// Fallback counters for the (momentary, pre-load) window where the weights
+// drawer's props are wired before `dto` has ever resolved — the drawer only
+// actually OPENS once the Edit-weights button exists, which itself requires
+// `dto`, but the prop must still be a real, typed value at every render.
+const ZERO_IMPACT_COUNTERS: AiAgentImpactCounters = Object.fromEntries(
+  AI_AGENT_IMPACT_COUNTER_KEYS.map((key) => [key, 0]),
+) as AiAgentImpactCounters;
+
+/**
+ * Scoped light/dark chart-fill custom properties for the outcomes bar chart.
+ * No global `--chart-*` categorical palette exists yet in globals.css (only
+ * `--chart-neutral`, for the unrelated "inactive segment" meter convention),
+ * so these are defined here rather than invented as a new global contract.
+ * Hues are chosen distinctly from the app's status semantics (destructive
+ * ~4deg, warning ~36deg, success ~152deg, info ~205deg, primary ~225deg) —
+ * "noise flagged" in particular must never land on amber/warning, since
+ * amber means warning everywhere else in the product.
+ */
+const AI_IMPACT_CHART_FILL_CSS = `
+  .ai-impact-chart-fills {
+    --ai-impact-chart-noise: 265 55% 50%;
+    --ai-impact-chart-judged: 300 48% 46%;
+    --ai-impact-chart-tickets: 330 55% 48%;
+    --ai-impact-chart-fixes: 92 40% 34%;
+  }
+  .dark .ai-impact-chart-fills {
+    --ai-impact-chart-noise: 265 65% 72%;
+    --ai-impact-chart-judged: 300 60% 70%;
+    --ai-impact-chart-tickets: 330 65% 72%;
+    --ai-impact-chart-fixes: 92 45% 58%;
+  }
+`;
 
 /** Leading `#` already stripped by useHashState, so this is SSR-safe. */
 export function windowFromHash(hash: string): AiAgentImpactWindow | undefined {
@@ -150,6 +193,25 @@ function counterMetricLabel(t: (key: string) => string, key: AiAgentImpactCounte
 }
 
 /**
+ * `estTimeSavedValue` needs BOTH a display string and a `count` for
+ * i18next's `_one`/`_other` plural family ("1 hour" vs "1.5 hours") — passing
+ * only the formatted string left "1 hours" hard-coded regardless of value.
+ * Used by all four call sites of this key (the main tile, the by-org table,
+ * the PDF export, and — separately, in ImpactWeightsDrawer.tsx — the live
+ * re-pricing preview).
+ */
+function estTimeSavedLabel(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  seconds: number,
+): string {
+  const hours = seconds / 3600;
+  return t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
+    hours: formatNumber(hours, { maximumFractionDigits: 1 }),
+    count: hours,
+  });
+}
+
+/**
  * Uniform `{ metric, value }` rows for the PDF export — MANDATORY shape, not
  * a style choice: `renderGenericReport` derives its columns solely from
  * `Object.keys(rows[0])`, so a heterogeneous "summary header row" would
@@ -174,9 +236,7 @@ export function buildImpactPdfRows(
 
   rows.push({
     metric: t('aiAgentsPage.impact.pdf.metrics.estTimeSaved'),
-    value: t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-      hours: formatNumber(dto.totals.estSecondsSaved / 3600, { maximumFractionDigits: 1 }),
-    }),
+    value: estTimeSavedLabel(t, dto.totals.estSecondsSaved),
   });
   rows.push({
     metric: t('aiAgentsPage.impact.pdf.metrics.llmSpend'),
@@ -198,7 +258,15 @@ export function buildImpactPdfRows(
   for (const key of IMPACT_WEIGHT_KEYS) {
     rows.push({
       metric: t('aiAgentsPage.impact.pdf.weightRowLabel', { label: weightLabel(t, key) }),
-      value: String(dto.weights.effective[key]),
+      // Minutes — the one unit the editor, the disclosure, and this PDF all
+      // now speak; the wire value stays seconds (`dto.weights.effective`).
+      // maximumFractionDigits: 2, matching the editor's own round-trip
+      // precision (`secondsToMinutes` rounds to a hundredth of a minute) —
+      // at 1 digit this PDF silently disagreed with what the drawer showed
+      // and what was actually saved (e.g. 90s = 1.5min rendered "1.5" fine,
+      // but a value like 95s = 1.5833...min rounded to "1.6" here while the
+      // drawer's own round-trip kept 1.58).
+      value: formatNumber(dto.weights.effective[key] / 60, { maximumFractionDigits: 2 }),
     });
   }
 
@@ -209,19 +277,27 @@ function Tile({
   testId,
   label,
   value,
-  title,
+  caption,
+  disclosure,
   href,
 }: {
   testId: string;
   label: string;
   value: string;
-  title?: string;
+  /** Visible one-line explainer, replacing a `title=`-only tooltip. */
+  caption?: string;
+  /** Extra accessible content rendered below the caption (e.g. a weights disclosure). */
+  disclosure?: ReactNode;
   href?: string;
 }) {
   const body = (
     <>
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="min-h-[2rem] text-xs font-medium uppercase leading-tight tracking-wide text-muted-foreground">
+        {label}
+      </p>
       <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+      {caption && <p className="mt-1 text-xs text-muted-foreground">{caption}</p>}
+      {disclosure}
     </>
   );
   if (href) {
@@ -229,15 +305,15 @@ function Tile({
       <a
         data-testid={testId}
         href={href}
-        title={title}
-        className="block rounded-lg border bg-card p-4 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex items-start justify-between gap-2 rounded-lg border bg-card p-4 transition-colors hover:bg-accent hover:ring-1 hover:ring-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {body}
+        <div className="min-w-0 flex-1">{body}</div>
+        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
       </a>
     );
   }
   return (
-    <div data-testid={testId} title={title} className="rounded-lg border bg-card p-4">
+    <div data-testid={testId} className="rounded-lg border bg-card p-4">
       {body}
     </div>
   );
@@ -275,6 +351,18 @@ export default function ImpactPage() {
   // freshness stamp captured BEFORE the POST, so the poll can tell a finished
   // rebuild from the pre-existing rollup.
   const [poll, setPoll] = useState<{ startedAt: number; rebuiltAt: string | null } | null>(null);
+
+  // Kept in sync with `dto` (effect below) so `handleRefresh` can read the
+  // FRESHEST known rebuiltAt right after the trigger POST resolves, instead
+  // of a snapshot closed over BEFORE the await. A pre-await read risks being
+  // stale — if `dto` updates from some other cause while our POST is still
+  // in flight, that update predates OUR rebuild, so using it as the baseline
+  // would let the very first poll tick see it as an "advance" and falsely
+  // announce that OUR rebuild finished.
+  const dtoRebuiltAtRef = useRef<string | null>(null);
+  useEffect(() => {
+    dtoRebuiltAtRef.current = dto?.rebuiltAt ?? null;
+  }, [dto]);
 
   const requestImpact = useCallback(async (): Promise<AiAgentImpactDto> => {
     const response = await fetchWithAuth(`/api/ai/agents/impact?window=${windowDays}`);
@@ -347,7 +435,6 @@ export default function ImpactPage() {
   }, [poll, requestImpact, t]);
 
   const handleRefresh = useCallback(async () => {
-    const baselineRebuiltAt = dto?.rebuiltAt ?? null;
     try {
       await runAction({
         request: () => fetchWithAuth('/api/ai/agents/impact/rebuild', { method: 'POST' }),
@@ -378,8 +465,20 @@ export default function ImpactPage() {
       }
       return;
     }
-    setPoll({ startedAt: Date.now(), rebuiltAt: baselineRebuiltAt });
-  }, [dto?.rebuiltAt, t]);
+    // Baseline captured AFTER the trigger resolved — see dtoRebuiltAtRef's
+    // comment above.
+    setPoll({ startedAt: Date.now(), rebuiltAt: dtoRebuiltAtRef.current });
+  }, [t]);
+
+  // The mobile overflow `<details>` menu (~line 578) has no native
+  // "close on selection" behavior — left alone it stays open, floating over
+  // whatever the selected action changed underneath it. `open = false`
+  // (rather than removeAttribute, which is equivalent but less explicit)
+  // closes it exactly like clicking the summary again would.
+  const overflowMenuRef = useRef<HTMLDetailsElement>(null);
+  const closeOverflowMenu = useCallback(() => {
+    if (overflowMenuRef.current) overflowMenuRef.current.open = false;
+  }, []);
 
   const [weightsDrawerOpen, setWeightsDrawerOpen] = useState(false);
 
@@ -408,21 +507,37 @@ export default function ImpactPage() {
   }, [dto, t]);
 
   const weights: ImpactWeights = dto?.weights.effective ?? DEFAULT_IMPACT_WEIGHTS;
-  const weightsTooltip = useMemo(
-    () =>
-      [
-        t('aiAgentsPage.impact.weightsTooltipTitle'),
-        ...IMPACT_WEIGHT_KEYS.map((key) =>
-          t('aiAgentsPage.impact.weightsTooltipLine', {
-            label: weightLabel(t, key),
-            minutes: formatNumber(weights[key] / 60, { maximumFractionDigits: 1 }),
-          }),
-        ),
-      ].join('\n'),
-    [t, weights],
-  );
 
   const chartRows = useMemo(() => buildImpactChartRows(dto?.series ?? []), [dto?.series]);
+  // Gates the tile groups AND the page-level EmptyState: true whenever the
+  // DTO carries evidence of ANY activity in the window, across every counter
+  // (not just the four the bar chart stacks) plus the two derived/measured
+  // numbers beside it. A drafts-only or narrative-only agent must not hide
+  // non-zero Drafts sent / Estimated time saved / LLM spend behind "no
+  // impact yet" just because none of its outcomes happen to be chart series.
+  const hasAnyOutcome = useMemo(() => {
+    if (!dto) return false;
+    const totals = dto.totals;
+    return (
+      AI_AGENT_IMPACT_COUNTER_KEYS.some((key) => totals[key] > 0) ||
+      totals.estSecondsSaved > 0 ||
+      totals.llmCents > 0
+    );
+  }, [dto]);
+  // A 30-day window always returns 30 buckets, even when every counter in
+  // every bucket is zero — `chartRows.length` is never 0 in practice, so it
+  // cannot gate the chart's own empty message. This sums the four DISJOINT
+  // series fields actually drawn on the chart (real field names, not the raw
+  // DTO totals) — narrower than `hasAnyOutcome` above, which also covers
+  // counters the chart never draws (drafts, narratives, suppressions, ...).
+  // Gates ONLY the chart panel, never the tile groups or the page EmptyState.
+  const hasChartOutcome = useMemo(
+    () =>
+      chartRows.some(
+        (r) => r.noiseFlagged + r.alertsJudgedNet + r.ticketsTriaged + r.fixesExecuted > 0,
+      ),
+    [chartRows],
+  );
 
   return (
     <div className="space-y-6" data-testid="ai-impact-page">
@@ -467,37 +582,86 @@ export default function ImpactPage() {
             data-testid="ai-impact-refresh"
             onClick={() => void handleRefresh()}
             disabled={poll !== null}
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={poll ? t('aiAgentsPage.impact.refreshing') : t('aiAgentsPage.impact.refresh')}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${poll ? 'animate-spin' : ''}`} />
-            {poll ? t('aiAgentsPage.impact.refreshing') : t('aiAgentsPage.impact.refresh')}
           </button>
 
-          {dto && (
-            <button
-              type="button"
-              data-testid="ai-impact-export-pdf"
-              onClick={() => void handleExportPdf()}
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-            >
-              <Download className="h-4 w-4" />
-              {t('aiAgentsPage.impact.exportPdf')}
-            </button>
-          )}
+          {/* Two secondary buttons at md+, collapsed into a single overflow
+              menu below md so the header never wraps to 2-3 rows. */}
+          <div className="hidden items-center gap-2 md:flex">
+            {/* Nothing to export on a window with zero outcomes — Edit weights
+                stays available even then, since there's still a methodology
+                to configure ahead of the first outcome. */}
+            {dto && hasAnyOutcome && (
+              <button
+                type="button"
+                data-testid="ai-impact-export-pdf"
+                onClick={() => void handleExportPdf()}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+              >
+                <Download className="h-4 w-4" />
+                {t('aiAgentsPage.impact.exportPdf')}
+              </button>
+            )}
 
-          {/* The server 403s a caller without canManagePartnerWidePolicies —
-              hiding the button for that case is a UX convenience, not the
-              real gate. */}
-          {dto?.canEditWeights && (
-            <button
-              type="button"
-              data-testid="ai-impact-edit-weights"
-              onClick={() => setWeightsDrawerOpen(true)}
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-            >
-              <Settings2 className="h-4 w-4" />
-              {t('aiAgentsPage.impact.editWeights')}
-            </button>
+            {/* The server 403s a caller without canManagePartnerWidePolicies —
+                hiding the button for that case is a UX convenience, not the
+                real gate. */}
+            {dto?.canEditWeights && (
+              <button
+                type="button"
+                data-testid="ai-impact-edit-weights"
+                onClick={() => setWeightsDrawerOpen(true)}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+              >
+                <Settings2 className="h-4 w-4" />
+                {t('aiAgentsPage.impact.editWeights')}
+              </button>
+            )}
+          </div>
+
+          {dto && (hasAnyOutcome || dto.canEditWeights) && (
+            <details ref={overflowMenuRef} className="relative md:hidden">
+              <summary
+                data-testid="ai-impact-overflow-menu"
+                aria-label={t('aiAgentsPage.impact.moreActions')}
+                className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border hover:bg-muted [&::-webkit-details-marker]:hidden"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </summary>
+              <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border bg-popover p-1 shadow-md">
+                {hasAnyOutcome && (
+                  <button
+                    type="button"
+                    data-testid="ai-impact-export-pdf-overflow"
+                    onClick={() => {
+                      closeOverflowMenu();
+                      void handleExportPdf();
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    <Download className="h-4 w-4" />
+                    {t('aiAgentsPage.impact.exportPdf')}
+                  </button>
+                )}
+                {dto.canEditWeights && (
+                  <button
+                    type="button"
+                    data-testid="ai-impact-edit-weights-overflow"
+                    onClick={() => {
+                      closeOverflowMenu();
+                      setWeightsDrawerOpen(true);
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    <Settings2 className="h-4 w-4" />
+                    {t('aiAgentsPage.impact.editWeights')}
+                  </button>
+                )}
+              </div>
+            </details>
           )}
         </div>
       </div>
@@ -506,95 +670,136 @@ export default function ImpactPage() {
         open={weightsDrawerOpen}
         effective={weights}
         overrides={dto?.weights.overrides ?? null}
+        counters={dto?.totals ?? ZERO_IMPACT_COUNTERS}
         onClose={() => setWeightsDrawerOpen(false)}
         onSaved={handleWeightsSaved}
       />
 
-      {loading && (
-        <p className="text-sm text-muted-foreground" data-testid="ai-impact-loading">
-          {t('aiAgentsPage.impact.loading')}
-        </p>
-      )}
+      {/* aria-live so a screen reader announces the loading -> loaded/error
+          transition, same as RunsListPage's async status region. */}
+      <div aria-live="polite">
+        {loading && (
+          <p className="text-sm text-muted-foreground" data-testid="ai-impact-loading">
+            {t('aiAgentsPage.impact.loading')}
+          </p>
+        )}
 
-      {!loading && error && (
-        <div
-          data-testid="ai-impact-error"
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center"
-        >
-          <p className="text-sm text-destructive">{error}</p>
-          <button
-            type="button"
-            data-testid="ai-impact-retry"
-            onClick={() => setReloadToken((token) => token + 1)}
-            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        {!loading && error && (
+          <div
+            data-testid="ai-impact-error"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center"
           >
-            {t('aiAgentsPage.impact.retry')}
-          </button>
-        </div>
-      )}
+            <p className="text-sm text-destructive">{error}</p>
+            <button
+              type="button"
+              data-testid="ai-impact-retry"
+              onClick={() => setReloadToken((token) => token + 1)}
+              className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              {t('aiAgentsPage.impact.retry')}
+            </button>
+          </div>
+        )}
+      </div>
 
       {!loading && !error && dto && (
         <>
-          <div
-            className={`grid grid-cols-2 gap-3 lg:grid-cols-4 ${
-              dto.promoteEligibleCount === null ? 'xl:grid-cols-7' : 'xl:grid-cols-8'
-            }`}
-          >
-            <Tile
-              testId="ai-impact-tile-alerts-judged"
-              label={t('aiAgentsPage.impact.tiles.alertsJudged')}
-              value={formatNumber(dto.totals.alertsJudged)}
-            />
-            <Tile
-              testId="ai-impact-tile-noise-flagged"
-              label={t('aiAgentsPage.impact.tiles.noiseFlagged')}
-              value={formatNumber(dto.totals.noiseFlagged)}
-            />
-            <Tile
-              testId="ai-impact-tile-tickets-triaged"
-              label={t('aiAgentsPage.impact.tiles.ticketsTriaged')}
-              value={formatNumber(dto.totals.ticketsTriaged)}
-            />
-            <Tile
-              testId="ai-impact-tile-drafts-sent"
-              label={t('aiAgentsPage.impact.tiles.draftsSent')}
-              value={formatNumber(dto.totals.draftsSent)}
-            />
-            <Tile
-              testId="ai-impact-tile-fixes-executed"
-              label={t('aiAgentsPage.impact.tiles.fixesExecuted')}
-              value={formatNumber(dto.totals.fixesExecuted)}
-            />
-            {/* The estimate and the one actually-measured number on this page
-                sit side by side, deliberately — see the plan's honest-labelling
-                rule. */}
-            <Tile
-              testId="ai-impact-tile-est-seconds-saved"
-              label={t('aiAgentsPage.impact.tiles.estTimeSaved')}
-              value={t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-                hours: formatNumber(dto.totals.estSecondsSaved / 3600, {
-                  maximumFractionDigits: 1,
-                }),
-              })}
-              title={weightsTooltip}
-            />
-            <Tile
-              testId="ai-impact-tile-llm-cents"
-              label={t('aiAgentsPage.impact.tiles.llmSpend')}
-              value={formatCurrency(dto.totals.llmCents / 100)}
-            />
-            {/* P2-6b: a nudge, not a list — the graduation panel re-derives state per
-                read, so the exact rows live there and this only ever links to them. */}
-            {dto.promoteEligibleCount !== null && (
-              <Tile
-                testId="ai-impact-tile-promote-eligible"
-                label={t('aiAgentsPage.impact.tiles.promoteEligible')}
-                value={formatNumber(dto.promoteEligibleCount)}
-                title={t('aiAgentsPage.impact.tiles.promoteEligibleHint')}
-                href="/settings/ai-agents"
-              />
-            )}
-          </div>
+          {hasAnyOutcome && (
+            <div className="space-y-4">
+              <div>
+                <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+                  {t('aiAgentsPage.impact.tileGroups.judged')}
+                </h2>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Tile
+                    testId="ai-impact-tile-alerts-judged"
+                    label={t('aiAgentsPage.impact.tiles.alertsJudged')}
+                    value={formatNumber(dto.totals.alertsJudged)}
+                  />
+                  <Tile
+                    testId="ai-impact-tile-noise-flagged"
+                    label={t('aiAgentsPage.impact.tiles.noiseFlagged')}
+                    value={formatNumber(dto.totals.noiseFlagged)}
+                  />
+                  <Tile
+                    testId="ai-impact-tile-tickets-triaged"
+                    label={t('aiAgentsPage.impact.tiles.ticketsTriaged')}
+                    value={formatNumber(dto.totals.ticketsTriaged)}
+                  />
+                  <Tile
+                    testId="ai-impact-tile-drafts-sent"
+                    label={t('aiAgentsPage.impact.tiles.draftsSent')}
+                    value={formatNumber(dto.totals.draftsSent)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+                  {t('aiAgentsPage.impact.tileGroups.executed')}
+                </h2>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Tile
+                    testId="ai-impact-tile-fixes-executed"
+                    label={t('aiAgentsPage.impact.tiles.fixesExecuted')}
+                    value={formatNumber(dto.totals.fixesExecuted)}
+                  />
+                  {/* The estimate and the one actually-measured number on this page
+                      sit side by side, deliberately — see the plan's honest-labelling
+                      rule. */}
+                  <Tile
+                    testId="ai-impact-tile-est-seconds-saved"
+                    label={t('aiAgentsPage.impact.tiles.estTimeSaved')}
+                    value={estTimeSavedLabel(t, dto.totals.estSecondsSaved)}
+                    caption={t('aiAgentsPage.impact.tiles.estTimeSavedCaption')}
+                    disclosure={
+                      <details
+                        data-testid="ai-impact-est-seconds-saved-disclosure"
+                        className="mt-1 text-xs text-muted-foreground"
+                      >
+                        <summary className="cursor-pointer select-none hover:text-foreground">
+                          {t('aiAgentsPage.impact.tiles.howEstimatedToggle')}
+                        </summary>
+                        <p className="mt-1">{t('aiAgentsPage.impact.weightsTooltipTitle')}</p>
+                        <ul className="mt-1 space-y-0.5">
+                          {IMPACT_WEIGHT_KEYS.map((key) => (
+                            <li key={key}>
+                              {t('aiAgentsPage.impact.weightsTooltipLine', {
+                                label: weightLabel(t, key),
+                                // maximumFractionDigits: 2 — see the PDF row
+                                // builder's comment; this disclosure must
+                                // agree with the editor's own round-trip
+                                // precision, not silently disagree at 1 digit.
+                                minutes: formatNumber(weights[key] / 60, {
+                                  maximumFractionDigits: 2,
+                                }),
+                              })}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    }
+                  />
+                  <Tile
+                    testId="ai-impact-tile-llm-cents"
+                    label={t('aiAgentsPage.impact.tiles.llmSpend')}
+                    value={formatCurrency(dto.totals.llmCents / 100)}
+                  />
+                  {/* P2-6b: a nudge, not a list — the graduation panel re-derives state per
+                      read, so the exact rows live there and this only ever links to them. */}
+                  {dto.promoteEligibleCount !== null && (
+                    <Tile
+                      testId="ai-impact-tile-promote-eligible"
+                      label={t('aiAgentsPage.impact.tiles.promoteEligible')}
+                      value={formatNumber(dto.promoteEligibleCount)}
+                      caption={t('aiAgentsPage.impact.tiles.promoteEligibleCaption')}
+                      href="/settings/ai-agents"
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
             <p data-testid="ai-impact-freshness">
@@ -619,50 +824,88 @@ export default function ImpactPage() {
             )}
           </div>
 
-          <div className="rounded-lg border p-4">
-            <h2 className="mb-3 text-sm font-semibold">{t('aiAgentsPage.impact.chart.title')}</h2>
-            {chartRows.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="ai-impact-chart-empty">
-                {t('aiAgentsPage.impact.chart.empty')}
-              </p>
-            ) : (
-              <div className="h-72" data-testid="ai-impact-chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartRows}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar
-                      stackId="outcomes"
-                      dataKey="noiseFlagged"
-                      name={t('aiAgentsPage.impact.chart.noiseFlagged')}
-                      fill="#f59e0b"
-                    />
-                    <Bar
-                      stackId="outcomes"
-                      dataKey="alertsJudgedNet"
-                      name={t('aiAgentsPage.impact.chart.alertsJudgedNet')}
-                      fill="#3b82f6"
-                    />
-                    <Bar
-                      stackId="outcomes"
-                      dataKey="ticketsTriaged"
-                      name={t('aiAgentsPage.impact.chart.ticketsTriaged')}
-                      fill="#14b8a6"
-                    />
-                    <Bar
-                      stackId="outcomes"
-                      dataKey="fixesExecuted"
-                      name={t('aiAgentsPage.impact.chart.fixesExecuted')}
-                      fill="#8b5cf6"
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
+          {hasAnyOutcome ? (
+            hasChartOutcome ? (
+              <div className="rounded-lg border p-4">
+                <h2 className="mb-3 text-sm font-semibold">{t('aiAgentsPage.impact.chart.title')}</h2>
+                <div className="ai-impact-chart-fills h-72" data-testid="ai-impact-chart">
+                  <style>{AI_IMPACT_CHART_FILL_CSS}</style>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartRows}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis
+                        dataKey="day"
+                        tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+                        allowDecimals={false}
+                      />
+                      <Tooltip wrapperClassName="chart-tooltip" />
+                      <Legend wrapperStyle={{ color: 'hsl(var(--muted-foreground))' }} />
+                      {/* Categorical hues chosen to be distinct from status semantics
+                          (danger/warning/success/info) — "noise flagged" in particular
+                          must never be amber, since amber means warning everywhere else
+                          in the product. */}
+                      <Bar
+                        stackId="outcomes"
+                        dataKey="noiseFlagged"
+                        name={t('aiAgentsPage.impact.chart.noiseFlagged')}
+                        fill="hsl(var(--ai-impact-chart-noise))"
+                      />
+                      <Bar
+                        stackId="outcomes"
+                        dataKey="alertsJudgedNet"
+                        name={t('aiAgentsPage.impact.chart.alertsJudgedNet')}
+                        fill="hsl(var(--ai-impact-chart-judged))"
+                      />
+                      <Bar
+                        stackId="outcomes"
+                        dataKey="ticketsTriaged"
+                        name={t('aiAgentsPage.impact.chart.ticketsTriaged')}
+                        fill="hsl(var(--ai-impact-chart-tickets))"
+                      />
+                      <Bar
+                        stackId="outcomes"
+                        dataKey="fixesExecuted"
+                        name={t('aiAgentsPage.impact.chart.fixesExecuted')}
+                        fill="hsl(var(--ai-impact-chart-fixes))"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
-            )}
-          </div>
+            ) : (
+              // hasAnyOutcome but NOT hasChartOutcome: e.g. a drafts-only or
+              // narrative-only agent — real activity, just none of the four
+              // series the bar chart stacks. A lighter inline message, not
+              // the page EmptyState (the tile groups above already show the
+              // real numbers, so this is not an empty page).
+              <div
+                className="rounded-lg border p-4 text-center text-sm text-muted-foreground"
+                data-testid="ai-impact-chart-empty"
+              >
+                {t('aiAgentsPage.impact.chart.empty')}
+              </div>
+            )
+          ) : (
+            <EmptyState
+              testId="ai-impact-empty"
+              icon={<TrendingUp className="h-7 w-7" />}
+              title={t('aiAgentsPage.impact.emptyState.title')}
+              description={t('aiAgentsPage.impact.emptyState.description')}
+              headingLevel={2}
+              action={
+                <a
+                  href="/settings/ai-agents"
+                  data-testid="ai-impact-empty-action"
+                  className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  {t('aiAgentsPage.impact.emptyState.action')}
+                </a>
+              }
+            />
+          )}
 
           {dto.byOrg.length > 0 && (
             <div className="overflow-hidden rounded-lg border" data-testid="ai-impact-by-org">
@@ -709,11 +952,7 @@ export default function ImpactPage() {
                           {formatNumber(row.fixesExecuted)}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
-                          {t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-                            hours: formatNumber(row.estSecondsSaved / 3600, {
-                              maximumFractionDigits: 1,
-                            }),
-                          })}
+                          {estTimeSavedLabel(t, row.estSecondsSaved)}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
                           {formatCurrency(row.llmCents / 100)}

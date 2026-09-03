@@ -7,6 +7,14 @@ const { sendPasswordResetMock, createTicketMock } = vi.hoisted(() => ({
   createTicketMock: vi.fn()
 }));
 
+const { supportUsageForOrgMock } = vi.hoisted(() => ({
+  supportUsageForOrgMock: vi.fn(),
+}));
+
+vi.mock('../services/portal/supportUsage', () => ({
+  supportUsageForOrg: supportUsageForOrgMock,
+}));
+
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'nanoid-token')
 }));
@@ -92,7 +100,10 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
   backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devicePatches: {},
   deviceWarranty: {},
   devices: {},
@@ -104,6 +115,8 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   portalBranding: {},
   portalUsers: {},
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   s1Agents: {},
   securityStatus: {},
   ticketComments: {},
@@ -1274,7 +1287,7 @@ describe('portal routes', () => {
   // pattern as the PORTAL_TICKETS_DISABLED "real mount" test above): one
   // unauthenticated 401 per new prefix, and one authenticated-but-flag-false
   // 403 per prefix proving the gate runs AFTER auth. dashboard/security/
-  // backups/reports/tickets/usage have no handlers yet (later waves), so a
+  // backups/reports have no handlers yet (later waves), so a
   // passing gate would fall through to Hono's 404 — the 403 case alone still
   // proves auth-then-gate ordering.
   describe('W03 strict visibility gates (real mount)', () => {
@@ -1312,5 +1325,39 @@ describe('portal routes', () => {
         expect(await res.json()).toMatchObject({ code });
       }
     );
+
+    it('returns 200 through the real mount when enableSupportUsage is true even though enableTickets is false', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // loginUser()'s own select
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // portalAuthMiddleware hydration
+        .mockReturnValueOnce(
+          mockSelectLimit([{ enableSupportUsage: true, enableTickets: false }]) as any
+        ); // strict gate row — enableTickets false proves independence from the ticketing gate
+
+      supportUsageForOrgMock.mockResolvedValue({
+        asOf: '2026-09-02T12:00:00.000Z',
+        month: '2026-09',
+        timezone: 'UTC',
+        dataStatus: 'no_data',
+        totals: {
+          billed: { minutes: 0, hours: 0 },
+          toBeBilled: { minutes: 0, hours: 0 },
+          coveredByContract: { minutes: 0, hours: 0 },
+          pendingReview: { minutes: 0, hours: 0 },
+        },
+        tickets: [],
+      });
+
+      const token = await loginUser();
+
+      const res = await app.request('/portal/tickets/usage?month=2026-09', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      expect(res.status).toBe(200);
+      expect(supportUsageForOrgMock).toHaveBeenCalledWith(
+        expect.objectContaining({ month: '2026-09' })
+      );
+    });
   });
 });

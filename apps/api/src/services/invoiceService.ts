@@ -18,6 +18,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -622,6 +623,15 @@ export interface InvoiceAccountingSync {
   lastSyncedAt: string | null;
   lastError: string | null;
   remoteDocNumber: string | null;
+  /**
+   * True when this mapping row carries the `markInvoiceDeletedRemotely`
+   * marker (#4544) — the reconcile worker saw QuickBooks delete/void an
+   * invoice Breeze previously pushed. Computed here, server-side, from the
+   * one place that knows the exact sentinel `lastError` string
+   * (`INVOICE_REMOTE_DELETED_ERROR`), so the web layer never has to
+   * string-match `lastError` to decide whether re-pushing is safe.
+   */
+  remoteDeleted: boolean;
 }
 
 /**
@@ -664,6 +674,7 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
     remoteDocNumber: row.remoteDocNumber,
+    remoteDeleted: row.lastError === INVOICE_REMOTE_DELETED_ERROR,
   };
 }
 
@@ -692,6 +703,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 }
 
 export type CustomerInvoiceLine = {
+  ticketNumber: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -730,6 +742,7 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 >;
 
 type CustomerInvoiceLineSource = {
+  ticketNumber?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -741,6 +754,7 @@ type CustomerInvoiceLineSource = {
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
+    ticketNumber: line.ticketNumber ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -785,13 +799,21 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
+    ticketNumber: tickets.ticketNumber,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
-  }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
+  }).from(invoiceLines).leftJoin(tickets, and(
+    eq(tickets.id, invoiceLines.ticketId),
+    eq(tickets.orgId, inv.orgId),
+  )).where(and(
+    eq(invoiceLines.invoiceId, invoiceId),
+    eq(invoiceLines.orgId, inv.orgId),
+    eq(invoiceLines.customerVisible, true),
+  )).orderBy(invoiceLines.sortOrder);
   const lines = rows.map(toCustomerInvoiceLine);
   // partnerId rides OUTSIDE the serialized header: the portal route needs it
   // for the partner-name branding lookup, but CustomerInvoiceHeader is the

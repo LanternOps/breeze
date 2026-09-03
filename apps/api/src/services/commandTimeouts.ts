@@ -106,6 +106,14 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.AGENT_ROLLBACK_V1,
+  // #3525: deliberately NOT SHORT_TIMEOUT_TYPES. The generic reaper clocks
+  // `pending` rows from createdAt (jobs/staleCommandReaper.ts), so a 5-minute
+  // tier would expire a cancel that a merely-offline device never received —
+  // while the cancellation clock, which starts at DELIVERY, has not started.
+  // Two hours strictly exceeds the longest possible script lifetime
+  // (MaxTimeout 3600s + SCRIPT_GRACE_BUFFER_MS = 65 min), so a cancel never
+  // outlives the script it is chasing.
+  CommandTypes.SCRIPT_CANCEL,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,

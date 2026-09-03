@@ -99,6 +99,13 @@ export const CommandTypes = {
 
   // Script execution
   SCRIPT: 'script',
+  // #3525. WIRE CONTRACT: payload.executionId carries the ORIGINAL script
+  // command's `device_commands.id` — the agent keys its running-process map on
+  // cmd.ID (agent/internal/heartbeat/handlers_script.go), NOT on
+  // script_executions.id. The execution row's own id travels as the additive
+  // `scriptExecutionId` field, which deployed agents ignore. Getting this
+  // backwards makes cancellation a fleet-wide silent no-op.
+  SCRIPT_CANCEL: 'script_cancel',
 
   // Software management
   SOFTWARE_INSTALL: 'software_install',
@@ -410,6 +417,11 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_TRASH_PURGE,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
+  // #3525: stopping someone else's running script on a customer endpoint is an
+  // operator action with a real blast radius — audit the dispatch, same as the
+  // run it interrupts. Note this covers the queueCommand/executeCommand insert
+  // sites only; insertQueuedCommandInTransaction has no audit block at all.
+  CommandTypes.SCRIPT_CANCEL,
   CommandTypes.PATCH_SCAN,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,

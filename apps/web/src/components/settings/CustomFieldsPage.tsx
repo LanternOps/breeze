@@ -50,6 +50,7 @@ export default function CustomFieldsPage() {
   const [formFieldKey, setFormFieldKey] = useState('');
   const [formType, setFormType] = useState<CustomFieldType>('text');
   const [formRequired, setFormRequired] = useState(false);
+  const [formScriptWrite, setFormScriptWrite] = useState(false);
   const [formDefaultValue, setFormDefaultValue] = useState<unknown>(null);
   const [formDeviceTypes, setFormDeviceTypes] = useState<string[]>([]);
   const [formOptions, setFormOptions] = useState<CustomFieldOptions>({});
@@ -120,6 +121,7 @@ export default function CustomFieldsPage() {
     setFormFieldKey('');
     setFormType('text');
     setFormRequired(false);
+    setFormScriptWrite(false);
     setFormDefaultValue(null);
     setFormDeviceTypes([]);
     setFormOptions({});
@@ -140,6 +142,7 @@ export default function CustomFieldsPage() {
     setFormFieldKey(field.fieldKey);
     setFormType(field.type as CustomFieldType);
     setFormRequired(field.required);
+    setFormScriptWrite(field.scriptWrite);
     setFormDefaultValue(field.defaultValue);
     setFormDeviceTypes(field.deviceTypes ?? []);
     setFormOptions((field.options as CustomFieldOptions) ?? {});
@@ -298,6 +301,7 @@ export default function CustomFieldsPage() {
         fieldKey: trimmedKey,
         type: formType,
         required: formRequired,
+        scriptWrite: formScriptWrite,
         defaultValue: formDefaultValue,
         deviceTypes: formDeviceTypes.length > 0 ? formDeviceTypes : null,
         options: Object.keys(options).length > 0 ? options : null,
@@ -371,6 +375,7 @@ export default function CustomFieldsPage() {
         </div>
         <button
           type="button"
+          data-testid="custom-field-add"
           onClick={handleOpenCreate}
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
@@ -439,6 +444,7 @@ export default function CustomFieldsPage() {
                 <th className="px-4 py-3">{t('customFieldsPage.columns.key')}</th>
                 <th className="px-4 py-3">{t('common:labels.type')}</th>
                 <th className="px-4 py-3">{t('common:labels.required')}</th>
+                <th className="px-4 py-3">{t('customFieldsPage.columns.scriptWrite')}</th>
                 <th className="px-4 py-3">{t('customFieldsPage.columns.deviceTypes')}</th>
                 <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
@@ -479,6 +485,15 @@ export default function CustomFieldsPage() {
                     >
                       {field.required ? t('common:labels.required') : t('common:labels.optional')}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {field.scriptWrite ? (
+                      <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                        {t('customFieldsPage.columns.scriptWrite')}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {field.deviceTypes && field.deviceTypes.length > 0 ? (
@@ -548,6 +563,7 @@ export default function CustomFieldsPage() {
                   <label className="text-sm font-medium">{t('customFieldsPage.form.displayName')}</label>
                   <input
                     type="text"
+                    data-testid="custom-field-name"
                     value={formName}
                     onChange={(e) => handleNameChange(e.target.value)}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -564,6 +580,7 @@ export default function CustomFieldsPage() {
                   </label>
                   <input
                     type="text"
+                    data-testid="custom-field-key"
                     value={formFieldKey}
                     onChange={(e) => setFormFieldKey(e.target.value)}
                     disabled={modalMode === 'edit'}
@@ -788,6 +805,25 @@ export default function CustomFieldsPage() {
                 </label>
               </div>
 
+              <div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="scriptWrite"
+                    data-testid="custom-field-script-write"
+                    checked={formScriptWrite}
+                    onChange={(e) => setFormScriptWrite(e.target.checked)}
+                    className="h-4 w-4 rounded border-muted"
+                  />
+                  <label htmlFor="scriptWrite" className="text-sm font-medium">
+                    {t('customFieldsPage.form.scriptWrite')}
+                  </label>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('customFieldsPage.form.scriptWriteHelp')}
+                </p>
+              </div>
+
               {formError && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {formError}
@@ -804,6 +840,7 @@ export default function CustomFieldsPage() {
                 </button>
                 <button
                   type="submit"
+                  data-testid="custom-field-submit"
                   disabled={submitting}
                   className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                 >

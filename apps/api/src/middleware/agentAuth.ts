@@ -948,12 +948,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       // across the configuration-policy chain, plus the pre-existing catalog /
       // cis_baselines / tenant_variables branches.
       //
-      // This lets an agent SEE its own MSP's partner-wide config directly,
-      // which is what removes the need for the nested system-context escapes
-      // on agent paths (`withPartnerWideVisibility`) in Wave 3. Because every
-      // consuming policy is FOR SELECT, it grants no write targeting: a
-      // foreign partner's rows stay invisible, and UPDATE/DELETE still see
-      // only the org-owned rows they saw before.
+      // This lets an agent SEE its own MSP's partner-wide config directly. Wave
+      // 3 then deleted the nested system-context escapes on the agent paths
+      // that used to compensate, so this field is now LOAD-BEARING: drop it and
+      // partner-wide event-log / monitoring / PAM / patch-source / CIS config
+      // silently stops reaching agents, with no error. Because every consuming
+      // policy is FOR SELECT, it grants no write targeting: a foreign partner's
+      // rows stay invisible, and UPDATE/DELETE still see only the org-owned
+      // rows they saw before.
       currentPartnerId: device.partnerId
     },
     async () => {

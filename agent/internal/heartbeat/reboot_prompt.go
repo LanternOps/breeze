@@ -59,3 +59,63 @@ func rebootPromptFunc(request notifyDecisionRequester) patching.PromptFunc {
 		return res.ActionClicked, res.Delivered
 	}
 }
+
+// chainedRebootPrompt tries the desktop helper first and the daemon-drawn
+// dialog second (issue #3207, wave 4).
+//
+// Two delivery vehicles exist because only one of them works on any given
+// platform. Windows and macOS ship a desktop helper and the broker talks to it.
+// Linux ships none — release.yml builds the helper for darwin only — so on
+// Linux the broker has no notify-scoped session, RequestNotificationDecision
+// returns "delivered: false" immediately, and every interactive rung was
+// silently swallowed. The second link is patching.DesktopPrompt, which draws
+// the dialog from the daemon as the signed-in user; it is a no-op off Linux.
+//
+// The order matters and only one direction is safe. The helper is asked first
+// because where it exists it IS the user's session, and falling through to it
+// second would mean drawing two dialogs on the same screen.
+//
+// shown=false, not the clicked label, is what advances the chain: it is the
+// only value that means "nothing reached a person". A helper that answered
+// shown=true with an empty label is a user who looked and did nothing, and
+// asking again would put a second dialog in front of someone who has already
+// decided not to decide.
+//
+// Note on the timeout budget: today the fallthrough costs nothing, because a
+// broker with no notify session refuses instantly rather than waiting out the
+// window. If a Linux helper ever ships, a helper that times out would be
+// followed by a full second window here — at which point this should take the
+// remaining time rather than the whole of it.
+func chainedRebootPrompt(helper, local patching.PromptFunc) patching.PromptFunc {
+	return func(title, body, urgency string, actions []string, timeout time.Duration) (string, bool) {
+		if helper != nil {
+			if clicked, shown := helper(title, body, urgency, actions, timeout); shown {
+				return clicked, shown
+			}
+		}
+		if local != nil {
+			return local(title, body, urgency, actions, timeout)
+		}
+		return "", false
+	}
+}
+
+// chainedRebootNotify is the same chain for the plain, buttonless warning.
+//
+// broadcast is always called, so Windows and macOS behaviour is byte-identical
+// to before this wave. The daemon-drawn notification is added only when no
+// helper session took the broadcast — otherwise a future Linux helper would put
+// the same warning on screen twice.
+func chainedRebootNotify(broadcast, local patching.NotifyFunc, helperPresent func() bool) patching.NotifyFunc {
+	return func(title, body, urgency string) {
+		if broadcast != nil {
+			broadcast(title, body, urgency)
+		}
+		if helperPresent != nil && helperPresent() {
+			return
+		}
+		if local != nil {
+			local(title, body, urgency)
+		}
+	}
+}

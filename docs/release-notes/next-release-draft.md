@@ -77,6 +77,35 @@ delete once done:
   switch + router + firewall). `unknown` is never billable. Contract estimates and
   generated invoices now report how many devices no line bills, by role.
 - New contract line type **Per device group** bills the members of a device group. Dynamic groups are evaluated live at estimate and invoice time; a group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
+
+### Contract line editing (W03)
+
+**Behaviour**
+
+- Contract lines are now **editable in place** on draft and active contracts
+  (`PATCH /api/v1/contracts/:id/lines/:lineId`, and the AI `manage_contracts`
+  action `update_line`). The line keeps its id, so an already-generated draft
+  invoice stays linked to it — deleting and re-adding a line used to wedge that
+  invoice with `SOURCE_NOT_FOUND` on issue. The **line type** cannot be changed;
+  remove the line and add a new one.
+- All three line mutations now write audit events: `contract.line.added`,
+  `contract.line.updated`, `contract.line.removed` (resource type `contract`,
+  resource id the contract). The payload carries the line id, the line type, the
+  names of the changed columns and, for a price change, the old and new unit
+  price — no descriptions, site names or group names.
+
+**Self-Hosting / Upgrade Notes** — four deliberate behaviour changes, no migration:
+
+- Generated invoice lines now use deterministic `(sortOrder, createdAt, id)` ordering; lines tied on `sortOrder` may appear in a different order.
+- `DELETE /api/v1/contracts/:id/lines/:lineId` now returns **404
+  `LINE_NOT_FOUND`** for a line that does not exist (previously a silent 200),
+  and its success body is `{"data":{"ok":true}}` (previously `{}`).
+- `unitPrice`, `manualQuantity` (max 10 digits before the decimal point) and
+  `sortOrder` (max 2147483647) bounds now apply on line **create** as well as
+  update. Input that previously reached Postgres and returned a 500 is now a 400.
+- A stale or foreign `catalogItemId` when **adding** a line is now
+  `400 CATALOG_ITEM_NOT_FOUND` instead of a 500.
+
 ## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
 
 Only fold this in once the whole chain above is merged. It is one feature in
@@ -138,6 +167,26 @@ auto-suspended.
   fraudulent capture to date arrived via Link); two new internal endpoints
   `GET /internal/partners/:id/settled-card-charge` and
   `…/fraudulent-refund-match`; one new idempotent index on `billing_events`.
+
+## Device billing coverage and coverage-notice deep links (#3205 W06)
+
+**Self-Hosting / Upgrade Notes**
+
+- No migration, no schema change, no new env var, no feature flag.
+- New route `GET /api/v1/devices/:id/billing`, gated on **partner or system**
+  scope plus **both** `devices:read` and `contracts:read`. API keys cannot reach
+  it: there is no `contracts:read` API-key scope.
+
+**Behaviour worth naming so it is not read as a bug**
+
+- The device Overview **Billing** card needs Contracts read access and a
+  partner-scoped login; organization-scoped users do not see it, matching every
+  other contracts screen.
+- The card counts **active** contracts only, so a device covered by a *draft*
+  contract still reads "no active contract line bills this device" until the
+  contract is activated.
+- A deep link from a contract's coverage warning carries its organization, so a
+  pasted link switches the recipient's org scope to the contract's org.
 
 **Hosted rollout TODO (one-off, delete once done)**
 

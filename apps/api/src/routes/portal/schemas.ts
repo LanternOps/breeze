@@ -140,6 +140,13 @@ export const listSchema = z.object({
   limit: z.string().optional()
 });
 
+export const supportUsageQuerySchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+    .optional(),
+});
+
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 
 // Phase 2 (ticket intake forms): subject/description become optional when a

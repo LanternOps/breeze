@@ -261,8 +261,13 @@ type CommandResult struct {
 	Stderr   string `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
 	// Result carries structured output for the HTTP command-result transport.
-	// Most handlers leave it nil; WebSocket conversion independently reparses
-	// JSON stdout to avoid duplicating large generic results on that wire.
+	// Most handlers leave it nil, in which case WebSocket conversion
+	// (toWSCommandResult, agent/internal/heartbeat/heartbeat.go) independently
+	// reparses JSON stdout to avoid duplicating large generic results on that
+	// wire. A handler that DOES set Result explicitly (e.g. the script
+	// handler's #2698 customFieldWrites envelope) wins over that reparse on
+	// the WebSocket leg too — set it only for structured output the transport
+	// must carry verbatim, not as a general-purpose duplicate of Stdout.
 	Result     any   `json:"result,omitempty"`
 	DurationMs int64 `json:"durationMs,omitempty"`
 	// RFC3339Nano timestamp captured by the agent at the moment the command's

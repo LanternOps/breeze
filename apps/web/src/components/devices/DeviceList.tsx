@@ -176,6 +176,25 @@ export type Device = {
    */
   pendingReboot?: boolean;
   /**
+   * Scheduled end-user restart, denormalized from the agent heartbeat
+   * (#3207 W5, `devices.reboot_scheduled_at` and friends).
+   *
+   * Distinct from `pendingReboot` above: that is the OS saying a restart is
+   * required at some point; these say one is BOOKED for a specific instant and
+   * how much of the deferral budget the end user has spent on it.
+   *
+   * Absent on responses from older API versions, and null on every device that
+   * has no restart scheduled — including devices running an agent that
+   * predates reboot-status reporting. `rebootMaxDeferrals` is the one field
+   * where 0 and null differ meaningfully: 0 means this restart cannot be
+   * postponed, null means the agent never told us.
+   */
+  rebootScheduledAt?: string | null;
+  rebootDeadline?: string | null;
+  rebootSource?: string | null;
+  rebootDeferralsUsed?: number | null;
+  rebootMaxDeferrals?: number | null;
+  /**
    * Set when this row was created by a hostname-collision enrollment and may
    * be replacing an earlier device record (#2764,
    * `devices.possible_replacement_of_device_id`). Null/absent on every
@@ -298,6 +317,12 @@ type DeviceListProps = {
   // grid views filter against the same complete, uncapped id set.
   serverFilterIds?: Set<string> | null;
   serverFilterLoading?: boolean;
+  // True when the last /filters/preview resolution failed (403 on a pinned
+  // orgId the caller can't access, 500, network error, …). `serverFilterIds`
+  // is an EMPTY set in this case (never null — see useAdvancedFilterIds), so
+  // the table already renders zero rows; this only drives the inline error
+  // message that explains why (#4732).
+  serverFilterError?: boolean;
   // When false (default), decommissioned devices are hidden — matching the old
   // default view (status='all' implicitly excluded them). DevicesPage sets this
   // true only when the active filter group explicitly targets the
@@ -546,6 +571,7 @@ export default function DeviceList({
   onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
+  serverFilterError = false,
   networkDevicesEnabled = false,
   listFilters,
 }: DeviceListProps) {
@@ -1861,14 +1887,25 @@ export default function DeviceList({
             {filteredDevices.length} {t("deviceList.of")}{" "}
             {devices.length - hiddenDecommissionedCount}{" "}
             {t("deviceList.devices")}{" "}
-            {serverFilterIds !== null && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            {serverFilterError ? (
+              <span
+                className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
+                data-testid="device-filter-error"
+                role="alert"
+              >
                 <Filter className="h-3 w-3" />
-                {t("deviceList.advancedFilterActive")}{" "}
-                {serverFilterLoading && (
-                  <span className="ml-1 animate-pulse">...</span>
-                )}
+                {t("deviceList.advancedFilterFailed")}
               </span>
+            ) : (
+              serverFilterIds !== null && (
+                <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  <Filter className="h-3 w-3" />
+                  {t("deviceList.advancedFilterActive")}{" "}
+                  {serverFilterLoading && (
+                    <span className="ml-1 animate-pulse">...</span>
+                  )}
+                </span>
+              )
             )}
             {onShowDecommissioned && hiddenDecommissionedCount > 0 && (
               <span className="ml-2">

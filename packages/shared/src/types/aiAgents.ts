@@ -506,6 +506,18 @@ export interface AiAgentDto {
   disabledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The agent's most recent run, as the LIST route projects it (`loadLastRuns`
+   * in apps/api/src/routes/aiAgents.ts batches one query for the whole page).
+   *
+   * Optional because only the list route computes them; `null` — which that
+   * route always sends, computed or not — means "this agent has never run in
+   * an org this caller can see". The settings page used to declare its own
+   * `AgentListItem = AiAgentDto & {...}` for exactly these two fields, which
+   * made the DTO a description of the wire shape that the wire did not match.
+   */
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
 }
 
 /**
