@@ -227,6 +227,34 @@ describe('archive-lifecycle predicate (#4166)', () => {
     }
   });
 
+  // The re-assert above is what makes the serving read authoritative, so pin
+  // what happens when it actually drops something. A row that stopped
+  // qualifying between the two transactions (Restore aborted the drain; the
+  // purge sweeper claimed an archived org) must be OMITTED rather than served
+  // with a stale `archived: true` — a live org rendered read-only is a lie the
+  // UI cannot detect, whereas a short list self-corrects on the next poll.
+  //
+  // `truncated` stays a fact about DISCOVERY ("more than `limit` matched the
+  // predicate"), which the serving re-filter does not change and must not be
+  // recomputed from the served rows.
+  it('omits a row that stopped qualifying between discovery and serving', async () => {
+    discoveryRows.push({ id: ORG_IN }, { id: ORG_OUT });
+    // Serving re-filter keeps only ORG_IN; ORG_OUT flipped state in between.
+    servedRows.push([{ id: ORG_IN, name: 'Acme' }]);
+    servedRows.push([]); // device counts
+
+    const result = await listArchivedOrgs({
+      scope: { kind: 'partner', partnerId: PARTNER_ID },
+      limit: 2,
+    });
+
+    expect(result.orgs.map((org) => org.id)).toEqual([ORG_IN]);
+    expect(result.truncated).toBe(false);
+    // The narrowing came from the serving predicate, not from a narrower id
+    // grant: the READ ONLY context was still opened for BOTH discovered ids.
+    expect(archivedIds.last).toEqual([ORG_IN, ORG_OUT]);
+  });
+
   // Row-level twin used by the detail route's system-scope branch. Kept here,
   // beside the compiled-SQL pin, so the two cannot drift unnoticed.
   it.each([
