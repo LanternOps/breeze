@@ -8,6 +8,8 @@ const {
   loadPolicyLocalPatchConfigMock,
   listPatchInventoryMock,
   summarizePatchInventoryMock,
+  enqueuePatchJobMock,
+  captureExceptionMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   checkDeviceMaintenanceWindowMock: vi.fn(),
@@ -20,6 +22,8 @@ const {
     needsRepair: rows.filter((row) => row.effectiveStatus === 'needs_repair').length,
     invalidReference: rows.filter((row) => row.effectiveStatus === 'invalid_reference').length,
   })),
+  enqueuePatchJobMock: vi.fn(async () => undefined),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', () => ({
@@ -42,7 +46,11 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 vi.mock('../../jobs/patchJobExecutor', () => ({
-  enqueuePatchJob: vi.fn(async () => undefined),
+  enqueuePatchJob: enqueuePatchJobMock,
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: captureExceptionMock,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -308,6 +316,58 @@ describe('configurationPolicies patchJob routes', () => {
         apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
       });
       expect(writeRouteAudit).toHaveBeenCalled();
+      expect(json.enqueueFailures).toEqual([]);
+    });
+
+    it('surfaces the failure instead of reporting success when enqueue fails (#3945)', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({
+        settings: {
+          sources: ['third_party'],
+          autoApprove: true,
+          autoApproveSeverities: ['critical'],
+          autoApproveDeferralDays: 5,
+          apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+          scheduleFrequency: 'daily',
+          scheduleTime: '02:00',
+          scheduleDayOfWeek: 'sun',
+          scheduleDayOfMonth: 1,
+          rebootPolicy: 'if_required',
+        },
+      }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, hostname: 'host-1' }]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValuesMock,
+      } as any);
+
+      enqueuePatchJobMock.mockRejectedValueOnce(new Error('queue wedged'));
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID] }),
+      });
+      // The DB row was created but nothing was actually queued to run — the
+      // response must not claim success (#3945: a fire-and-forget
+      // `.catch(console.error)` previously returned 201/success:true here
+      // with zero visibility that the job would never execute).
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.enqueueFailures).toEqual([
+        { jobId: 'job-1', orgId: ORG_ID, error: 'queue wedged' },
+      ]);
+      expect(captureExceptionMock).toHaveBeenCalled();
     });
 
     it('returns 404 when no accessible devices found', async () => {
