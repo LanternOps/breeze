@@ -220,6 +220,20 @@ jobs:
       - name: Run site-scope coverage contract test
         run: pnpm --filter=@breeze/api test:site-scope-coverage
 
+      # #4522 — invoiceService.issue.integration.test.ts and
+      # invoicePdf.integration.test.ts were reported as unmatched by any
+      # include list in vitest.integration.config.ts (they run in the
+      # blocking `integration-test` job today, but nothing asserted that
+      # the config's include/exclude lists stay in sync with the files
+      # that actually exist on disk — a newly-added *.integration.test.ts
+      # file could silently fall out of coverage forever). This contract
+      # test is pure static analysis (reads the integration config's own
+      # include/exclude arrays, walks `src/**/*.integration.test.ts` from
+      # disk, no DB/Redis), so it runs here in the fast, blocking job
+      # rather than `integration-test`.
+      - name: Run integration-suite coverage contract test
+        run: pnpm --filter=@breeze/api test:integration-suite-coverage
+
       # RLS session-context contract test (vitest.config.rls.ts). Gates the
       # APPLICATION half of the tenant-isolation contract: that
       # withDbAccessContext stamps exactly the `breeze.*` GUCs the RLS helpers

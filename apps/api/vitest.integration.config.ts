@@ -312,6 +312,13 @@ export default defineConfig({
       // the RLS scaffolding work. Tracked as a follow-up issue; the
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
+      // integration-suite-coverage.integration.test.ts (#4522) is pure
+      // static analysis — it reads this very file's include/exclude
+      // arrays and walks `src/**/*.integration.test.ts` from disk. It
+      // MUST NOT be hooked to setup.ts (real postgres pool + TRUNCATE);
+      // see vitest.config.integration-suite-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file
