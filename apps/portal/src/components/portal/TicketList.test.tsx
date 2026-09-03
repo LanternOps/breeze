@@ -37,6 +37,12 @@ describe('TicketList — every API status renders (SSR must never throw)', () =>
     expect(screen.getByText('Printer offline')).toBeTruthy();
   });
 
+  it('renders a row when an older API response has no SLA payload', () => {
+    render(<TicketList tickets={[ticket({ sla: undefined })]} />);
+    expect(screen.getByText('Printer offline')).toBeTruthy();
+    expect(screen.queryByTestId('portal-ticket-sla-t1')).toBeNull();
+  });
+
   it('labels new and open as Open for the customer, and pending as needing their reply', () => {
     render(
       <TicketList
@@ -79,7 +85,7 @@ it.each([
   ['met', 'SLA met'],
   ['not_configured', 'No SLA configured'],
 ] as const)('renders %s SLA status', (status, copy) => {
-  render(<TicketList tickets={[ticket({
+  render(<TicketList enableSupportUsage tickets={[ticket({
     id: status,
     sla: {
       firstResponseMinutes: null,
@@ -90,4 +96,9 @@ it.each([
     },
   })]} />);
   expect(screen.getByTestId(`portal-ticket-sla-${status}`).textContent).toContain(copy);
+});
+
+it('hides SLA status unless support usage is enabled', () => {
+  render(<TicketList tickets={[ticket()]} />);
+  expect(screen.queryByTestId('portal-ticket-sla-t1')).toBeNull();
 });

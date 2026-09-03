@@ -10,6 +10,7 @@ import { isTicketOpen, ticketStatusLabel, ticketStatusTone } from './ticketMarks
 interface TicketListProps {
   tickets: TicketSummary[];
   error?: string | null;
+  enableSupportUsage?: boolean;
 }
 
 const SLA_LABELS = {
@@ -21,7 +22,7 @@ const SLA_LABELS = {
   not_configured: 'No SLA configured',
 } as const;
 
-export function TicketList({ tickets, error }: TicketListProps) {
+export function TicketList({ tickets, error, enableSupportUsage = false }: TicketListProps) {
   if (error) {
     return <ErrorNotice>{error}</ErrorNotice>;
   }
@@ -66,6 +67,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {tickets.map((ticket) => {
                 const tone = ticketStatusTone(ticket.status);
+                const label = ticket.sla ? SLA_LABELS[ticket.sla.status] : null;
                 return (
                   <tr key={ticket.id} className={ROW}>
                     {/* order-* reorders the card: subject and status share the
@@ -84,9 +86,11 @@ export function TicketList({ tickets, error }: TicketListProps) {
                       <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
-                      <span data-testid={`portal-ticket-sla-${ticket.id}`}>
-                        {SLA_LABELS[ticket.sla.status]}
-                      </span>
+                      {enableSupportUsage && label && (
+                        <span data-testid={`portal-ticket-sla-${ticket.id}`}>
+                          {label}
+                        </span>
+                      )}
                     </td>
                     <td className={cn(CELL, 'order-3')}>
                       {/* Priority is context, not state: plain text so the row

@@ -42,12 +42,21 @@ export function ticketSla(row: TicketSlaRow, now: Date): SlaDto {
   const configured =
     targets.responseMinutes !== null ||
     targets.resolutionMinutes !== null;
+  const measuredTargetBreached =
+    (firstResponseMinutes !== null &&
+      targets.responseMinutes !== null &&
+      firstResponseMinutes > targets.responseMinutes) ||
+    (resolutionMinutes !== null &&
+      targets.resolutionMinutes !== null &&
+      resolutionMinutes > targets.resolutionMinutes);
   let status: SlaDto['status'];
 
   // Match the MSP list's SQL twins in routes/tickets/tickets.ts:61-85.
-  // A stamped breach wins; elapsed time alone never invents one.
+  // A stamped breach wins. Completed measurements can also prove a breach;
+  // current elapsed time alone only drives the at-risk state below.
   if (row.slaBreachedAt) status = 'breached';
   else if (!configured) status = 'not_configured';
+  else if (measuredTargetBreached) status = 'breached';
   else if (
     row.status === 'resolved' ||
     row.status === 'closed' ||

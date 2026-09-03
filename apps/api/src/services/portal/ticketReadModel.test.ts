@@ -50,3 +50,25 @@ it('reports measured minutes and subtracts accumulated resolution pause', () => 
     status: 'met',
   });
 });
+
+it('reports a resolved ticket as breached when resolution exceeds its target', () => {
+  expect(ticketSla(slaRow({
+    status: 'resolved',
+    resolvedAt: new Date('2026-09-02T06:40:00Z'),
+  }), NOW)).toMatchObject({
+    resolutionMinutes: 400,
+    resolutionTargetMinutes: 240,
+    status: 'breached',
+  });
+});
+
+it('reports a first-response-only ticket as breached when response exceeds its target', () => {
+  expect(ticketSla(slaRow({
+    firstResponseAt: new Date('2026-09-02T09:00:00Z'),
+    resolutionSlaMinutes: null,
+  }), NOW)).toMatchObject({
+    firstResponseMinutes: 540,
+    responseTargetMinutes: 100,
+    status: 'breached',
+  });
+});

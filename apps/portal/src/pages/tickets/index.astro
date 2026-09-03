@@ -29,7 +29,11 @@ const usageStrictlyDisabled = usageResponse.statusCode === 403;
 ---
 
 <PortalLayout title="Support">
-  <TicketList tickets={response.data ?? []} error={response.error} />
+  <TicketList
+    tickets={response.data ?? []}
+    error={response.error}
+    enableSupportUsage={usageResponse.data !== undefined}
+  />
   {
     !usageStrictlyDisabled &&
       <SupportUsagePanel
