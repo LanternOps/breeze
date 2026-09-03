@@ -1,6 +1,6 @@
 -- #3205 wave 7 / #4656: per-invoice billing evidence + per-period outcomes.
 -- Shape-1 org tenancy on both tables (auto-discovered by rls-coverage — do NOT
--- add either to an allowlist there). Requires 2026-10-08-100300 (FK targets).
+-- add either to an allowlist there). Requires 2026-10-08-101100-billing-evidence-fk-targets.sql.
 
 DO $$ BEGIN
   CREATE TYPE invoice_line_device_counted_as AS ENUM ('included', 'overage', 'flagged');

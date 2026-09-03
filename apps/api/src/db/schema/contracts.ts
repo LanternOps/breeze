@@ -112,7 +112,7 @@ export const contractBillingPeriods = pgTable('contract_billing_periods', {
   uniqueIndex('contract_billing_periods_contract_period_uq').on(t.contractId, t.periodStart),
   index('contract_billing_periods_org_idx').on(t.orgId),
   // Composite-FK target for cbp_outcomes_period_org_fk (#3205 W07). Built
-  // CONCURRENTLY by migration 2026-10-08-100300.
+  // CONCURRENTLY by migration 2026-10-08-101100-billing-evidence-fk-targets.sql.
   uniqueIndex('contract_billing_periods_id_org_uq').on(t.id, t.orgId),
 ]);
 
@@ -125,7 +125,7 @@ export const contractBillingPeriods = pgTable('contract_billing_periods', {
  * snapshot_device_total = 0 means "no snapshot was evaluated" (a flat-only
  * contract), not "the org owns zero devices".
  *
- * SQL-ONLY constraints (migration 2026-10-08-100400):
+ * SQL-ONLY constraints (migration 2026-10-08-101200-billing-evidence.sql):
  *   - (contract_billing_period_id, org_id) -> contract_billing_periods(id, org_id) ON DELETE CASCADE DEFERRABLE
  *   - (contract_id, org_id)                -> contracts(id, org_id)                ON DELETE CASCADE DEFERRABLE
  *   - (invoice_id, org_id)                 -> invoices(id, org_id)                 ON DELETE SET NULL (invoice_id) DEFERRABLE

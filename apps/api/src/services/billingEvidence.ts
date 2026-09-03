@@ -90,8 +90,9 @@ export async function listInvoiceLineDevices(
     .where(and(
       eq(invoiceLineDevices.invoiceLineId, lineId),
       cursor
-        // COLLATE "C" = byte order = the UTF-16 code-unit order orderDevicesForEvidence
-        // used at generation, so pages replay the exact order that decided billing.
+        // COLLATE "C" (UTF-8 byte order) matches the UTF-16 code-unit order
+        // orderDevicesForEvidence uses for BMP hostnames; non-BMP characters may
+        // differ. The UUID tie-breaker makes the keyset total.
         ? sql`(${invoiceLineDevices.hostname} COLLATE "C", ${invoiceLineDevices.id}) > (${cursor.hostname} COLLATE "C", ${cursor.id}::uuid)`
         : undefined,
     ))

@@ -313,7 +313,7 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
       // A table whose org attribution deliberately stays with its source
       // record must retain its site snapshot too; invoice_line_devices is the
       // only such table that currently carries site_id.
-      if (INTENTIONALLY_NO_ORG_ID.has(name)) continue;
+      if (name === 'invoice_line_devices') continue;
 
       const cols = getColumns(table);
       const hasDeviceId = cols.some((c) => c.name === 'device_id');

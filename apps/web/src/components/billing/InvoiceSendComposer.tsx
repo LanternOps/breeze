@@ -30,6 +30,8 @@ interface Props {
   /** Drives the billing-contact prefill and the "fix it here" deep link. */
   orgId: string;
   invoiceNumber: string | null;
+  /** Lifecycle gate for the draft-only appendix override. */
+  isDraft?: boolean;
   title: string;
   /** One-line summary above the envelope fields (who / how much). */
   intro: string;
@@ -60,7 +62,7 @@ interface Props {
  */
 export default function InvoiceSendComposer({
   open, onClose, sending, onSend, orgId, invoiceNumber, title, intro, confirmLabel, sendingLabel,
-  partnerDeviceAppendix = false, confirmTestId = 'invoice-send-confirm',
+  isDraft = invoiceNumber === null, partnerDeviceAppendix = false, confirmTestId = 'invoice-send-confirm',
 }: Props) {
   const { t } = useTranslation('billing');
   const [to, setTo] = useState('');
@@ -151,9 +153,9 @@ export default function InvoiceSendComposer({
     const note = message.trim();
     if (note) opts.message = note;
     if (!includePdf) opts.includePdf = false;
-    if (includeDeviceAppendix !== partnerDeviceAppendix) opts.includeDeviceAppendix = includeDeviceAppendix;
+    if (isDraft && includeDeviceAppendix !== partnerDeviceAppendix) opts.includeDeviceAppendix = includeDeviceAppendix;
     onSend(opts);
-  }, [sending, valid, toParsed, toError, ccParsed, subject, message, includePdf, includeDeviceAppendix, partnerDeviceAppendix, onSend]);
+  }, [sending, valid, toParsed, toError, ccParsed, subject, message, includePdf, isDraft, includeDeviceAppendix, partnerDeviceAppendix, onSend]);
 
   return (
     <Dialog
@@ -295,7 +297,7 @@ export default function InvoiceSendComposer({
         />
         {t('invoiceActions.composer.includePdfLabel')}
       </label>
-      {invoiceNumber === null && (
+      {isDraft && (
         <label className="mt-3 flex items-center gap-2 text-sm text-foreground">
           <input
             type="checkbox"

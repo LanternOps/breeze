@@ -4,7 +4,7 @@
  * breeze_cascade_device_org_id() restamps org_id on every table
  * breeze_device_child_orgid_tables() returns, DURING the devices UPDATE and
  * before any route code runs. That function discovers tables dynamically, so
- * without migration 2026-10-08-100200 invoice_line_devices is auto-enrolled and
+ * without migration 2026-10-08-101300-device-move-exclude-billing-evidence.sql invoice_line_devices is auto-enrolled and
  * the initially-immediate composite FKs raise 23503, failing every cross-org
  * move of a billed device. A red here IS that failure.
  */

@@ -278,7 +278,7 @@ moveOrgRoutes.post(
         // which normally matches nothing because breeze_cascade_device_org_id()
         // has already run, this one is LOAD-BEARING: invoice_line_devices is
         // excluded from breeze_device_child_orgid_tables()
-        // (2026-10-08-100200-…), so the trigger leaves the row entirely alone
+        // (2026-10-08-101300-device-move-exclude-billing-evidence.sql), so the trigger leaves the row entirely alone
         // and nothing else severs the now-cross-tenant device pointer. The row
         // keeps its hostname and device_role, so the past invoice stays legible.
         await tx.execute(

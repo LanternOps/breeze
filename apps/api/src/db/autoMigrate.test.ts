@@ -479,7 +479,7 @@ describe('migration filename conventions', () => {
       .filter((f) => /^\d{4}-.*\.sql$/.test(f))
       .sort((a, b) => a.localeCompare(b));
     const a = files.findIndex((f) => f.endsWith('-billing-evidence-fk-targets.sql'));
-    const b = files.findIndex((f) => f.endsWith('-billing-evidence.sql'));
+    const b = files.findIndex((f) => f.endsWith('-101200-billing-evidence.sql'));
     const c = files.findIndex((f) => f.endsWith('-device-move-exclude-billing-evidence.sql'));
     expect(a).toBeGreaterThan(-1);
     expect(b).toBeGreaterThan(a);

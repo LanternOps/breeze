@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, integer, boolean, numeric, jsonb, timestamp,
+  pgTable, uuid, text, varchar, integer, smallint, boolean, numeric, jsonb, timestamp,
   char, date, pgEnum, index, uniqueIndex, primaryKey, type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -72,7 +72,7 @@ export const invoices = pgTable('invoices', {
   // #3205 W07: 1 = billing evidence written at generation. NULL = pre-W07 or
   // never generated from a contract. Invoice-level `recorded` flag — never
   // derived from an evidence row count.
-  evidenceVersion: integer('evidence_version'),
+  evidenceVersion: smallint('evidence_version'),
   termsAndConditions: text('terms_and_conditions'),
   sentAt: timestamp('sent_at'),
   firstViewedAt: timestamp('first_viewed_at'),
@@ -149,7 +149,7 @@ export const invoiceLines = pgTable('invoice_lines', {
   index('invoice_lines_org_idx').on(t.orgId),
   index('invoice_lines_source_idx').on(t.sourceType, t.sourceId),
   // Composite-FK target for invoice_line_devices_line_org_fk (#3205 W07).
-  // Built CONCURRENTLY by migration 2026-10-08-100300; declared here as an
+  // Built CONCURRENTLY by migration 2026-10-08-101100-billing-evidence-fk-targets.sql; declared here as an
   // ordinary uniqueIndex because db:check-drift compares definitions, not how
   // they were built.
   uniqueIndex('invoice_lines_id_org_uq').on(t.id, t.orgId),
@@ -164,7 +164,7 @@ export const invoiceLines = pgTable('invoice_lines', {
  * transaction, AFTER the period claim; never mutated afterwards except by the
  * device-delete / move-org detaches and the org-merge repoint.
  *
- * SQL-ONLY constraints (declared in migration 2026-10-08-100400, deliberately
+ * SQL-ONLY constraints (declared in migration 2026-10-08-101200-billing-evidence.sql, deliberately
  * not mirrored here — same treatment as W01's site FK and W02's group FK):
  *   - (invoice_line_id, org_id) -> invoice_lines(id, org_id) ON DELETE CASCADE DEFERRABLE
  *   - (invoice_id, org_id)      -> invoices(id, org_id)      ON DELETE CASCADE DEFERRABLE

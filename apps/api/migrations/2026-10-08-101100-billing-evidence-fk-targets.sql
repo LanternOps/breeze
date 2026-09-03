@@ -9,7 +9,7 @@
 -- build leaves an INVALID index behind that an operator must DROP INDEX before
 -- the next deploy, and re-applying this file must otherwise be a no-op.
 --
--- Migration 2026-10-08-100400 REFERENCES both indexes and will simply fail to
+-- Migration 2026-10-08-101200-billing-evidence.sql REFERENCES both indexes and will simply fail to
 -- apply until this file has succeeded. That separation is deliberate.
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS invoice_lines_id_org_uq
   ON invoice_lines (id, org_id);

@@ -117,7 +117,8 @@ describe('InvoiceActions — issue flows', () => {
 
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
     const appendix = await screen.findByTestId('invoice-send-include-device-appendix') as HTMLInputElement;
-    expect(appendix.checked).toBe(true);
+    // The default arrives from the async /orgs/partners/me fetch — wait for it.
+    await waitFor(() => expect(appendix.checked).toBe(true));
     await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('ap@acme.test'));
     fireEvent.click(appendix);
     fireEvent.click(screen.getByTestId('invoice-issue-send-confirm'));
@@ -179,6 +180,19 @@ describe('InvoiceActions — issue flows', () => {
     expect(screen.queryByTestId('invoice-issue-send')).not.toBeInTheDocument();
     // PDF stays reachable on an issued invoice.
     expect(screen.getByTestId('invoice-download-pdf')).toBeInTheDocument();
+  });
+
+  it('does not expose the draft appendix control for a sent invoice without a number', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/orgs/organizations/org-1') return json({ billingContact: { email: 'ap@acme.test' } });
+      return json({ data: {} });
+    });
+    render(<InvoiceActions detail={detail([visibleLine], { status: 'sent', invoiceNumber: null })} variant="header" />);
+
+    fireEvent.click(screen.getByTestId('invoice-resend'));
+
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('ap@acme.test'));
+    expect(screen.queryByTestId('invoice-send-include-device-appendix')).not.toBeInTheDocument();
   });
 });
 

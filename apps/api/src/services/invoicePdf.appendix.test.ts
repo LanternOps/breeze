@@ -102,4 +102,13 @@ describe('renderInvoicePdfBuffer device appendix (#3205 W07)', () => {
     expect(await text({ lines: [{ lineId: 'l1', description: 'Endpoints', devices: many }], omitted: 37 }))
       .toContain('37 more devices');
   }, 30_000);
+
+  it('reports the number of rows actually printed for a partially capped line', async () => {
+    const out = (await text({
+      lines: [{ lineId: 'l1', description: 'Servers', devices: [dev('srv-printed')] }],
+      omitted: 37,
+    })).replace(/\x97/g, '—');
+    expect(out).toContain('Servers — 1');
+    expect(out).not.toContain('Servers — 38');
+  });
 });
