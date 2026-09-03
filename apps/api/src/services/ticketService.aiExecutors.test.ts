@@ -216,6 +216,17 @@ describe('applyAiFieldUpdates — CAS predicate (P2-4, #4191)', () => {
       applyAiFieldUpdates(TICKET_ID, ORG_ID, { priority: { value: 'high', expectedCurrent: 'normal' } }, RUN_ID),
     ).rejects.toThrow(TicketServiceError);
   });
+
+  it('leaves an unproposed field out of the write entirely (only the proposed field is set)', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: {} }]);
+
+    await applyAiFieldUpdates(TICKET_ID, ORG_ID, { priority: { value: 'high', expectedCurrent: 'normal' } }, RUN_ID);
+
+    const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.categoryId).toBeUndefined();
+    expect(sqlOf(setArg.fieldProvenance).sql).not.toContain('categoryId');
+  });
 });
 
 /**
@@ -322,15 +333,67 @@ describe('applyAiFieldUpdates — a same-value confirmation must not take owners
     expect(boundValue(arm, params, /"category_id" is distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
   });
 
-  it('leaves an untouched field out of the write entirely (only the proposed field is set)', async () => {
+  it('stamps only the field that really changed when one arm confirms and the other changes', async () => {
     queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
-    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: {} }]);
+    queueSelect(ticketCategories, [{ id: CATEGORY_ID, partnerId: PARTNER_ID, responseSlaMinutes: null, resolutionSlaMinutes: null }]);
+    dbState.updateReturningQueue.push([{ categoryId: CATEGORY_ID, priority: 'urgent', fieldProvenance: { priority: 'ai_agent' } }]);
 
-    await applyAiFieldUpdates(TICKET_ID, ORG_ID, { priority: { value: 'high', expectedCurrent: 'high' } }, RUN_ID);
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      {
+        // categoryId is a no-op confirmation; priority is a real change.
+        categoryId: { value: CATEGORY_ID, expectedCurrent: CATEGORY_ID },
+        priority: { value: 'urgent', expectedCurrent: 'normal' },
+      },
+      RUN_ID,
+    );
 
-    const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
-    expect(setArg.categoryId).toBeUndefined();
-    expect(sqlOf(setArg.fieldProvenance).sql).not.toContain('categoryId');
+    // Both arms are concatenated into ONE fragment, so their `$n` placeholders
+    // are numbered across the whole statement — the case most likely to expose
+    // a param-index or arm-ordering mistake, and the reason each arm is
+    // resolved back to its bound value rather than matched as a bare string.
+    const provenance = (setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance;
+
+    const category = provenanceArm(provenance, 'categoryId');
+    expect(boundValue(category.arm, category.params, /"category_id" is not distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+    expect(boundValue(category.arm, category.params, /"category_id" is distinct from \$(\d+)/i)).toBe(CATEGORY_ID);
+
+    const priority = provenanceArm(provenance, 'priority');
+    expect(boundValue(priority.arm, priority.params, NOT_DISTINCT)).toBe('normal');
+    expect(boundValue(priority.arm, priority.params, DISTINCT)).toBe('urgent');
+
+    expect(result).toEqual({ categoryId: { applied: true }, priority: { applied: true } });
+  });
+
+  /**
+   * Two claims in one, because they are easy to conflate: the outcome is
+   * derived from the RETURNING row, so `applied: true` means "the field holds
+   * the proposed value" and never "this call wrote it" (that half holds with
+   * or without the fix) — while the predicate that would stamp the field is
+   * unsatisfiable twice over (that half is #4466 and fails on revert). This is
+   * the shape a future reader is most likely to misread as "the AI took the
+   * field", so both halves are pinned together.
+   */
+  it('reports applied:true — never a human_set skip — when a user-stamped field already holds the proposed value', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: { priority: 'user' } }]);
+
+    const result = await applyAiFieldUpdates(
+      TICKET_ID,
+      ORG_ID,
+      { priority: { value: 'high', expectedCurrent: 'high' } },
+      RUN_ID,
+    );
+
+    expect(result.priority).toEqual({ applied: true });
+    // ...and `applied: true` here is emphatically NOT the AI taking the field:
+    // the predicate that gates the stamp fails twice over — the human guard
+    // AND the same-value guard — so Postgres cannot reach it.
+    const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
+    expect(arm.toLowerCase()).toContain("<> 'user'");
+    expect(boundValue(arm, params, NOT_DISTINCT)).toBe('high');
+    expect(boundValue(arm, params, DISTINCT)).toBe('high');
   });
 });
 

@@ -44,6 +44,7 @@ import {
   actionIntents,
   aiAgentRuns,
   aiAgents,
+  ticketCategories,
   ticketComments,
   ticketDrafts,
   tickets,
@@ -55,6 +56,7 @@ import { handleTicketCreatedEvent } from '../../services/aiAgents/ticketHelpdesk
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { persistTicketTriage } from '../../services/aiAgents/ticketTriageFindings';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import { applyAiFieldUpdates } from '../../services/ticketService';
 import type { BreezeEvent } from '../../services/eventBus';
 
 // publishEvent writes to a Redis stream — spy on it so admission/release
@@ -514,5 +516,89 @@ describe('ticket-triage release pipeline — persistTicketTriage -> intents -> r
       .from(ticketComments)
       .where(and(eq(ticketComments.ticketId, ticket.id), eq(ticketComments.originPrincipalKind, 'ai_agent')));
     expect(noteRows).toHaveLength(0);
+  });
+});
+
+/**
+ * #4466, at the level the triage pipeline cannot reach: `fixtureProposal`
+ * only ever proposes `priority`, so the `categoryId` arm of the CAS predicate
+ * — which carries a DIFFERENT cast (`::uuid` vs `::ticket_priority`) — has no
+ * live-Postgres coverage through that route, and neither does the case where
+ * both arms are concatenated into one statement. `PgDialect().sqlToQuery()`
+ * compiles happily against a schema it never consults, so only real Postgres
+ * settles whether these casts and the merged `field_provenance` write actually
+ * behave.
+ */
+describe('applyAiFieldUpdates — real-change guard against live Postgres (#4466)', () => {
+  it('stamps only the field that really changed when one arm confirms and the other changes', async () => {
+    const scenario = await seedTriageScenario(true);
+    const adminDb = getTestDb() as any;
+    const [category] = await adminDb.insert(ticketCategories).values({
+      partnerId: scenario.partner.id,
+      name: `Printers ${randomUUID().slice(0, 8)}`,
+    }).returning();
+
+    // Both fields already hold a value; the AI re-asserts the category
+    // verbatim while genuinely raising the priority.
+    const ticket = await seedTicket(scenario, { categoryId: category.id, priority: 'normal' });
+
+    const result = await withSystemDbAccessContext(() =>
+      applyAiFieldUpdates(
+        ticket.id,
+        scenario.org.id,
+        {
+          categoryId: { value: category.id, expectedCurrent: category.id },
+          priority: { value: 'urgent', expectedCurrent: 'normal' },
+        },
+        randomUUID(),
+      ),
+    );
+
+    // Both report applied — the outcome is read off the RETURNING row, so it
+    // says the field HOLDS the proposed value, not that this call wrote it.
+    expect(result).toEqual({ categoryId: { applied: true }, priority: { applied: true } });
+
+    const afterTicket = await loadTicket(ticket.id);
+    expect(afterTicket.categoryId).toBe(category.id);
+    expect(afterTicket.priority).toBe('urgent');
+    // Provenance is where ownership actually lands: the real change is stamped,
+    // the confirmation is not — and the two arms merged without clobbering.
+    expect(afterTicket.fieldProvenance).toEqual({ priority: 'ai_agent' });
+  });
+
+  it('leaves a human-stamped category alone even when the AI proposes a genuinely different one', async () => {
+    const scenario = await seedTriageScenario(true);
+    const adminDb = getTestDb() as any;
+    const [current] = await adminDb.insert(ticketCategories).values({
+      partnerId: scenario.partner.id,
+      name: `Chosen by a human ${randomUUID().slice(0, 8)}`,
+    }).returning();
+    const [proposed] = await adminDb.insert(ticketCategories).values({
+      partnerId: scenario.partner.id,
+      name: `Proposed by the AI ${randomUUID().slice(0, 8)}`,
+    }).returning();
+
+    const ticket = await seedTicket(scenario, {
+      categoryId: current.id,
+      fieldProvenance: { categoryId: 'user' },
+    });
+
+    const result = await withSystemDbAccessContext(() =>
+      applyAiFieldUpdates(
+        ticket.id,
+        scenario.org.id,
+        { categoryId: { value: proposed.id, expectedCurrent: current.id } },
+        randomUUID(),
+      ),
+    );
+
+    // A real change blocked by the human stamp is the one shape that DOES
+    // surface as a skip — proof the third conjunct did not swallow the
+    // pre-existing 'user' guard.
+    expect(result.categoryId).toEqual({ applied: false, skipped: 'human_set' });
+
+    const afterTicket = await loadTicket(ticket.id);
+    expect(afterTicket.categoryId).toBe(current.id);
+    expect(afterTicket.fieldProvenance).toEqual({ categoryId: 'user' });
   });
 });

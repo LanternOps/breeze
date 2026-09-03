@@ -1581,9 +1581,8 @@ export type AiFieldUpdateOutcome =
  * observed it. One UPDATE, per-field `CASE WHEN <value unchanged since
  * expectedCurrent> AND <no human stamp on this field> AND <new value actually
  * differs> THEN <new value> ELSE <current value> END` — the CAS predicate is
- * evaluated by Postgres against
- * the row under the UPDATE's own row lock, so this is atomic without a
- * separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
+ * evaluated by Postgres against the row under the UPDATE's own row lock, so
+ * this is atomic without a separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
  * 'ai_agent' with the SAME predicate, so a skipped field's provenance is left
  * exactly as it was (see `updateTicketFields`'s "AI writes never overwrite a
  * 'user' stamp" contract this implements).
@@ -1600,6 +1599,14 @@ export type AiFieldUpdateOutcome =
  * a no-op by construction, since writing a column the value it already holds
  * changes nothing. This mirrors the human path, where `updateTicketFields`
  * likewise stamps only the fields its own diff found changed.
+ *
+ * Read `applied: true` as "the field HOLDS the proposed value now", NOT as
+ * "this call wrote it" — the outcome is derived from the RETURNING row, which
+ * cannot distinguish a write from a field that already agreed. So a same-value
+ * confirmation reports `applied: true` having written and stamped nothing, and
+ * so does one against a field already stamped 'user' that happens to hold the
+ * proposed value. Anything asking "did the AI take ownership of this field?"
+ * must read `field_provenance`, never this flag.
  *
  * `categoryId`'s value is validated against `ticket_categories` for the
  * ticket's PARTNER before the UPDATE runs — a cross-partner categoryId must
