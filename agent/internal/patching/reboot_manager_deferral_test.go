@@ -358,3 +358,44 @@ func TestConcurrentDefersRespectTheBudget(t *testing.T) {
 		t.Errorf("DeferralsUsed = %d, want 2", got)
 	}
 }
+
+// A postponement must never resurrect a reboot an operator has cancelled.
+// Cancel and Defer race whenever a technician cancels from the console while
+// the signed-in user is answering the prompt, and Defer re-schedules — so if
+// Defer's checks and its re-schedule are not one atomic step, the cancelled
+// reboot comes back with a fresh countdown.
+//
+// The invariant is decidable regardless of which goroutine wins: Cancel here
+// always has something to cancel, so it always succeeds, and a successful
+// Cancel must leave nothing scheduled. Either Defer finished first (and Cancel
+// then cancelled the deferred schedule) or Cancel finished first (and Defer
+// must refuse).
+func TestDeferNeverResurrectsACancelledReboot(t *testing.T) {
+	for i := 0; i < 300; i++ {
+		rm, timers, _, _, clock, _ := newDeferralTestManager(t, 3)
+		if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(6*time.Hour), "Patch", "patch_job", allowDeferral(5, 60)); err != nil {
+			t.Fatalf("iteration %d: ScheduleWithOptions: %v", i, err)
+		}
+		timers.runAt(0)
+
+		var wg sync.WaitGroup
+		var cancelErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cancelErr = rm.Cancel()
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = rm.Defer()
+		}()
+		wg.Wait()
+
+		if cancelErr != nil {
+			t.Fatalf("iteration %d: Cancel: %v", i, cancelErr)
+		}
+		if st := rm.State(); st.RebootScheduled {
+			t.Fatalf("iteration %d: a cancelled reboot was resurrected by a concurrent Defer: %+v", i, st)
+		}
+	}
+}
