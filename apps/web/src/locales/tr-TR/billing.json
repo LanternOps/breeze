@@ -1155,6 +1155,29 @@
         "untitled": "daha yeni bir sürüm"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Teklif para birimini değiştir",
+        "description": "Bu taslak teklif {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Teklifin satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun teklifin para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Teklif para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Teklif para birimi değiştirilemedi."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
       "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
@@ -1575,6 +1598,29 @@
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Fatura para birimini değiştir",
+        "description": "Bu taslak fatura {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Faturanın satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun faturanın para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Fatura para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Fatura para birimi değiştirilemedi."
+      }
+    },
     "deposit": {
       "duePrefix": "Depozito",
       "dueSuffix": "ödenmesi gereken — {{total}} tutarından {{paid}} ödendi.",

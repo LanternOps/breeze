@@ -1155,6 +1155,29 @@
         "untitled": "une version plus récente"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Changer de devise"
+      },
+      "dialog": {
+        "title": "Changer la devise du devis",
+        "description": "Ce devis brouillon est facturé en {{currency}}.",
+        "currencyLabel": "Nouvelle devise",
+        "modeLegend": "Ce qu’il advient des lignes du devis",
+        "modeClear": "Supprimer toutes les lignes",
+        "modeClearHint": "Les lignes sont supprimées. Obligatoire dès qu’une ligne est manuelle ou un lot.",
+        "modeReprice": "Retarifer les lignes du catalogue",
+        "modeRepriceHint": "Chaque ligne du catalogue est résolue depuis la grille tarifaire de la nouvelle devise. Possible uniquement si toutes les lignes proviennent du catalogue.",
+        "confirm": "Je comprends que cette opération change la devise du devis.",
+        "submit": "Changer de devise"
+      },
+      "toast": {
+        "changed": "Devise du devis changée pour {{currency}}."
+      },
+      "errors": {
+        "change": "Impossible de changer la devise du devis."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Devise du prix du flux inconnue — saisissez un prix en {{currency}}",
       "feedPriceIn": "Le prix du flux est en {{feedCurrency}} — saisissez un prix en {{currency}}",
@@ -1575,6 +1598,29 @@
     "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Changer de devise"
+      },
+      "dialog": {
+        "title": "Changer la devise de la facture",
+        "description": "Cette facture brouillon est facturée en {{currency}}.",
+        "currencyLabel": "Nouvelle devise",
+        "modeLegend": "Ce qu’il advient des lignes de la facture",
+        "modeClear": "Supprimer toutes les lignes",
+        "modeClearHint": "Les lignes sont supprimées. Obligatoire dès qu’une ligne est manuelle ou un lot.",
+        "modeReprice": "Retarifer les lignes du catalogue",
+        "modeRepriceHint": "Chaque ligne du catalogue est résolue depuis la grille tarifaire de la nouvelle devise. Possible uniquement si toutes les lignes proviennent du catalogue.",
+        "confirm": "Je comprends que cette opération change la devise de la facture.",
+        "submit": "Changer de devise"
+      },
+      "toast": {
+        "changed": "Devise de la facture changée pour {{currency}}."
+      },
+      "errors": {
+        "change": "Impossible de changer la devise de la facture."
+      }
+    },
     "deposit": {
       "duePrefix": "Acompte de",
       "dueSuffix": "dû — {{paid}} sur {{total}} payé.",
