@@ -273,6 +273,18 @@ moveOrgRoutes.post(
               WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // #3205 W07: billing evidence stays in the INVOICE's org — the invoice
+        // and its lines do not move. UNLIKE the ai_agent_runs statement above,
+        // which normally matches nothing because breeze_cascade_device_org_id()
+        // has already run, this one is LOAD-BEARING: invoice_line_devices is
+        // excluded from breeze_device_child_orgid_tables()
+        // (2026-10-08-101300-device-move-exclude-billing-evidence.sql), so the trigger leaves the row entirely alone
+        // and nothing else severs the now-cross-tenant device pointer. The row
+        // keeps its hostname and device_role, so the past invoice stays legible.
+        await tx.execute(
+          sql`UPDATE invoice_line_devices SET device_id = NULL WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // ticket_id is the fifth device-lineage FK and needs its OWN statement
         // (#4215): `tickets` is in getDeviceOrgDenormalizedTables(), so a
         // ticket bound to this device is re-stamped to the target org by the

@@ -122,7 +122,7 @@ describe('billableDeviceById (#3205 W06)', () => {
     const rows = await withSystemDbAccessContext(() => snapshotContractDevices(f.orgId));
     const billable = rows[0]!;
     await expect(withSystemDbAccessContext(() => billableDeviceById(billable.id, f.orgId)))
-      .resolves.toEqual({ id: billable.id, role: billable.role, siteId: billable.siteId });
+      .resolves.toEqual({ id: billable.id, hostname: billable.hostname, role: billable.role, siteId: billable.siteId });
 
     const [decommissioned] = await withSystemDbAccessContext(() => db
       .select({ id: devices.id }).from(devices)
