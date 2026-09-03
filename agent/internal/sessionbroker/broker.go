@@ -844,6 +844,26 @@ func (b *Broker) armHandshakeDeadline(rawConn net.Conn) bool {
 // so beginConnectionPublication returns false afterwards. Nothing cancelled here
 // can later become a live session and inherit a dead deadline, and a connection
 // that already published clears the handshake deadline itself.
+//
+// The listener's own Close() is bounded by ctx rather than awaited outright.
+// Closing a listener is normally instant, but go-winio v0.6.2's named-pipe
+// listener can deadlock its own Close(): Close blocks on doneCh, which
+// listenerRoutine only closes once a makeConnectedServerPipe call returns
+// ErrPipeListenerClosed, and that function's close branch rewrites only nil and
+// ErrFileClosed into that sentinel. A connect that was already failing on its
+// own errno when Close() cancelled it — ERROR_NO_DATA from a client that dialled
+// and hung up, which is exactly what TestNamedPipeListenAndAccept does — leaks
+// that errno through, listenerRoutine leaves `closed` false and returns to its
+// select, and the single closeCh token Close() sends is already spent. Nothing
+// ever closes doneCh. That wedged the whole `Test Agent (Windows)` job for its
+// full ten-minute budget on 2026-09-03, and on a real device it would hang agent
+// shutdown (so a service restart escalates to a kill) rather than a test.
+//
+// Abandoning the close is safe in a way that abandoning the drain is not:
+// acceptStopped is already set, so nothing can be admitted regardless of whether
+// the handle ever closes. The cost is one leaked goroutine and one leaked handle
+// for the remaining life of the process, which is strictly better than never
+// returning.
 func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	b.acceptMu.Lock()
 	b.acceptStopped = true
@@ -855,9 +875,11 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 		}
 	}
 	b.acceptMu.Unlock()
-	if listener != nil {
-		_ = listener.Close()
-	}
+
+	// Started before the drain wait rather than after it, so a well-behaved
+	// listener still closes concurrently with the handlers finishing.
+	listenerClosed := closeListenerAsync(listener)
+
 	done := make(chan struct{})
 	go func() {
 		b.preAuthHandlers.Wait()
@@ -865,10 +887,37 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+
+	select {
+	case <-listenerClosed:
+		return nil
+	case <-ctx.Done():
+		log.Error("listener Close() did not return within the shutdown budget; abandoning it",
+			"socket", b.socketPath,
+			"consequence", "one goroutine and one socket/pipe handle leak for the life of this process; nothing new is admitted")
+		return fmt.Errorf("%w: %s", ErrListenerCloseStalled, b.socketPath)
+	}
+}
+
+// closeListenerAsync closes listener on its own goroutine and returns a channel
+// that is closed once Close() returns. A nil listener yields an already-closed
+// channel, so callers need no special case for the losing side of two concurrent
+// StopAcceptingAndWait calls (Broker.Close races listenOn's own Close on every
+// shutdown; whichever loses finds b.listener already nil).
+func closeListenerAsync(listener net.Listener) <-chan struct{} {
+	closed := make(chan struct{})
+	if listener == nil {
+		close(closed)
+		return closed
+	}
+	go func() {
+		defer close(closed)
+		_ = listener.Close()
+	}()
+	return closed
 }
 
 // SessionForUser returns the first active session for the given username.
