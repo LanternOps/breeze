@@ -205,32 +205,70 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
     expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
   });
 
-  it('joins an ambient system context instead of opening a SECOND one', async () => {
-    // A nested withSystemDbAccessContext would check out a second pooled
-    // connection while the caller's is still held — strictly worse than the
-    // bug being fixed. The precheck must run in the context that is already
-    // open, adding no ctx:enter of its own.
-    ctxState.ambient = { scope: 'system' };
-    ctxState.depth = 1;
+  // A nested withSystemDbAccessContext would check out a second pooled
+  // connection while the caller's is still held, and escaping a tenant-scoped
+  // caller to open a system one would run the precheck with FULL cross-tenant
+  // visibility. Every ambient scope must therefore be JOINED, not nested.
+  it.each(['system', 'organization', 'partner'])(
+    'joins an ambient %s context instead of opening a SECOND one',
+    async (scope) => {
+      ctxState.ambient = { scope };
+      ctxState.depth = 1;
 
-    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+      const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
 
-    expect(result.status).toBe('completed');
-    // No leading ctx:enter — the precheck read is the very first event.
-    expect(ctxState.events[0]).toBe('select:devices@depth1');
-    // Exactly one ctx:enter in the whole call, and it belongs to the dispatch
-    // phase's insert, not to the precheck.
-    expect(ctxState.events.filter((e) => e === 'ctx:enter')).toHaveLength(1);
-    expect(ctxState.events).toContain('insert:device_commands@depth2');
-    // The precondition is broken here and cannot be recovered from, so it must
-    // be REPORTED rather than silently tolerated — see the guard's comment.
-    expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
-    expect(sentryMocks.captureMessage.mock.calls[0]![0]).toContain(
-      "called from inside a 'system' DB access context",
-    );
-    expect(sentryMocks.captureMessage.mock.calls[0]![1]).toMatchObject({
-      eventCode: 'db_operation_inside_held_context',
-    });
+      expect(result.status).toBe('completed');
+      // No leading ctx:enter — the precheck read is the very first event, so it
+      // ran in the context that was already open.
+      expect(ctxState.events[0]).toBe('select:devices@depth1');
+      // Exactly one ctx:enter in the whole call, and it belongs to the dispatch
+      // phase's insert (depth 2 = the ambient context plus its own), not to the
+      // precheck. A second connection for the precheck would make this 2.
+      expect(ctxState.events.filter((e) => e === 'ctx:enter')).toHaveLength(1);
+      expect(ctxState.events).toContain('insert:device_commands@depth2');
+      // The precondition is broken here and cannot be recovered from, so it
+      // must be REPORTED rather than silently tolerated.
+      expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
+      expect(sentryMocks.captureMessage.mock.calls[0]![0]).toContain(
+        'called from inside an existing DB access context',
+      );
+      // `scope` is in sentry.ts's ALLOWED_TAG_NAMES, so it survives the
+      // scrubber — the varying detail must ride a tag, not the message, which
+      // is the Sentry grouping key.
+      expect(sentryMocks.captureMessage.mock.calls[0]![1]).toEqual({
+        eventCode: 'db_operation_inside_held_context',
+        tags: { scope },
+      });
+    },
+  );
+
+  it('throttles the Sentry capture per scope but never the console warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // The throttle map is module state that outlives `vi.clearAllMocks()`, and
+    // the cases above already captured for every scope. Jump the clock past the
+    // window so this test starts from a known-unthrottled state, then FREEZE it
+    // so the three calls below are unambiguously inside one window.
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 60 * 60 * 1000);
+    try {
+      ctxState.ambient = { scope: 'organization' };
+      ctxState.depth = 1;
+
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+
+      // The same eventCode has burned thousands of events/day off the org
+      // quota when emitted per call — see the throttle's comment.
+      expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
+      // The log line carries the deviceId/type a Sentry tag cannot, so it is
+      // the attribution channel and must fire every time.
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls[2]![1]).toMatchObject({ deviceId: 'device-1', scope: 'organization' });
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('surfaces a trust denial as a terminal result and dispatches nothing', async () => {

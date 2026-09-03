@@ -1351,6 +1351,47 @@ export async function executeCommand(
 }
 
 /**
+ * At most one Sentry event per scope per window for the held-context guard
+ * below. The same `db_operation_inside_held_context` code is deduped by call
+ * site in `db/index.ts` for exactly this reason: a hot path emitting it per
+ * call has previously burned thousands of events/day off the org quota, and
+ * the Nth event from a scope you have already seen tells you nothing the first
+ * did not. Bounded by construction — there are three scopes.
+ *
+ * The console line is deliberately NOT throttled: it carries the deviceId and
+ * command type that attribute the violation to a caller, neither of which can
+ * ride a Sentry tag (`commandType` is not in `ALLOWED_TAG_NAMES` and would be
+ * scrubbed; a device id never belongs in one). Logs have no quota. So the
+ * Sentry event is the alert and the log line is the attribution — the same
+ * division of labour `reportContextlessWrite` uses.
+ */
+const HELD_CONTEXT_DISPATCH_CAPTURE_THROTTLE_MS = 15 * 60 * 1000;
+const heldContextDispatchLastCapture = new Map<string, number>();
+
+function reportHeldContextDispatch(
+  scope: string,
+  deviceId: string,
+  type: CommandType | string,
+): void {
+  // Invariant text: it is the Sentry grouping key, so the varying part rides
+  // the allowlisted `scope` tag rather than the message.
+  const message = '[commandQueue] executeCommandWithSystemPrecheck was called from inside an '
+    + "existing DB access context. The caller's pooled connection stays pinned "
+    + 'idle-in-transaction for the whole device round-trip (#1105/#4150) — call it at depth 0, '
+    + 'or use executeCommand if the caller genuinely wants its own context to gate the precheck.';
+  console.warn(message, { deviceId, type, scope });
+
+  const now = Date.now();
+  const last = heldContextDispatchLastCapture.get(scope);
+  if (last !== undefined && now - last < HELD_CONTEXT_DISPATCH_CAPTURE_THROTTLE_MS) return;
+  heldContextDispatchLastCapture.set(scope, now);
+  captureMessage(message, {
+    eventCode: 'db_operation_inside_held_context',
+    tags: { scope },
+  });
+}
+
+/**
  * `executeCommand` for callers that hold NO DB access context of their own —
  * BullMQ workers, schedulers, and the AI-agent run loop (which deliberately
  * runs contextless; see jobs/aiAgentRunner.ts).
@@ -1383,31 +1424,26 @@ export async function executeCommandWithSystemPrecheck(
 ): Promise<CommandResult> {
   const ambient = getCurrentDbAccessContext();
   if (ambient) {
-    // The precondition is broken, and this function CANNOT recover from it:
-    // `runOutsideDbContext` exits the AsyncLocalStorage but cannot release a
-    // transaction somebody further up the stack opened, so the caller's pooled
-    // connection stays pinned for the whole round-trip below no matter what we
-    // do here. Report it instead of throwing — this runs inside the AI run
-    // loop's postToolUse hook, where a throw downgrades a real verification to
-    // `inconclusive`, and a slow dispatch beats a lost one. The db-layer
-    // `db_context_held_too_long` tripwire fires on the same hold but attributes
-    // it to whoever OPENED the context; this line names the dispatch that made
-    // it long, which is the half that is actionable.
-    const message = '[commandQueue] executeCommandWithSystemPrecheck was called from inside a '
-      + `'${ambient.scope}' DB access context. The caller's pooled connection stays pinned `
-      + 'idle-in-transaction for the whole device round-trip (#1105/#4150) — call it at depth 0, '
-      + 'or use executeCommand if the caller genuinely wants its own context to gate the precheck.';
-    console.warn(message, { deviceId, type, scope: ambient.scope });
-    captureMessage(message, {
-      eventCode: 'db_operation_inside_held_context',
-      tags: { commandType: String(type) },
-    });
+    reportHeldContextDispatch(ambient.scope, deviceId, type);
   }
 
-  // Joins an ambient system context rather than opening a second one: a nested
-  // withSystemDbAccessContext would check out a SECOND pooled connection while
-  // the first is still held, which is strictly worse than the bug being fixed.
-  const precheck = ambient?.scope === 'system'
+  // ANY ambient context is joined, never nested inside. Two reasons, and the
+  // second is why this is not just `scope === 'system'`:
+  //
+  //  - A nested `withSystemDbAccessContext` checks out a SECOND pooled
+  //    connection while the caller's is still held for the whole round-trip —
+  //    strictly worse than the bug this entry point exists to fix.
+  //  - Escaping a caller's 'organization'/'partner' context to open a system
+  //    one would run the precheck's `devices` read and trust check with FULL
+  //    cross-tenant visibility, i.e. more permissively than the caller's own
+  //    scope allows. Joining instead degrades toward "Device not found" — the
+  //    fail-CLOSED direction, and the repo's standing contract that too little
+  //    context denies rather than bypasses.
+  //
+  // Reaching here with an ambient context is a caller bug either way; the
+  // guard above says so out loud. It must not also widen what the caller can
+  // reach while it is being wrong.
+  const precheck = ambient
     ? await precheckCommandExecution(deviceId, type, options)
     : await runOutsideDbContextSafe(() =>
       withSystemDbAccessContext(
