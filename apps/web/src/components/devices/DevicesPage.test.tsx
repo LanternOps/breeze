@@ -432,6 +432,89 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
   });
 });
 
+// #4732: a failed /filters/preview (403 on a pinned orgId the caller can't
+// access, 500, network error) must never render as a silently unfiltered
+// list. useAdvancedFilterIds fails CLOSED (empty id set, `error: true`);
+// these tests prove DevicesPage actually surfaces that in BOTH views, since
+// only DeviceList (list view) gets an inline pill from its own suite —
+// DevicesPage owns the toast (which is the ONLY signal in grid view) and the
+// grid view's own persistent banner.
+describe('DevicesPage — advanced filter preview failure surfaces in both views (#4732)', () => {
+  function failPreview(status: number) {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return { ok: false, status, json: async () => ({ error: 'failed' }) } as unknown as Response;
+      }
+      return jsonResponse({ data: [] });
+    });
+  }
+
+  it('list view: resolves to an empty (not null) id set and toasts the failure on a 403', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(403);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    // Empty Set -> `[...set].sort().join(',')` is '' — distinguishable from
+    // the "no filter" case (also '') only by the toast below firing, which
+    // is exactly why `error` exists as a separate signal from `ids`.
+    await waitFor(() => {
+      expect(list.getAttribute('data-filter-ids')).toBe('');
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('Advanced filter failed to load'),
+        }),
+      );
+    });
+  });
+
+  it('grid view: renders zero cards and a persistent error banner (not just the transient toast) on a 500', async () => {
+    failPreview(500);
+
+    render(<DevicesPage />);
+
+    const gridButton = await screen.findByLabelText('Grid view');
+    fireEvent.click(gridButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-filter-error-grid')).toBeTruthy();
+    });
+    expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+  });
+
+  it('does not spam the toast on an unrelated re-render while the same failing filter stays active', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(500);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    const failureToasts = () =>
+      vi.mocked(showToast).mock.calls.filter(([toast]) =>
+        typeof toast.message === 'string' && toast.message.includes('Advanced filter failed to load'),
+      ).length;
+
+    await waitFor(() => expect(failureToasts()).toBe(1));
+
+    // Toggle view mode twice (grid, then back to list) — a state change and
+    // re-render on the page that does NOT touch `advancedFilter`. The error
+    // toast fires once on the false->true transition only; it must not fire
+    // again just because the page re-rendered for an unrelated reason.
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByLabelText('List view'));
+    await screen.findByTestId('device-list');
+
+    expect(failureToasts()).toBe(1);
+  });
+});
+
 // The network arm is behind ENABLE_NETWORK_DEVICES_IN_LIST and OFF by default.
 describe('DevicesPage — network arm disabled by default (#1322 flag)', () => {
   it('does not fetch network devices when the flag is off', async () => {

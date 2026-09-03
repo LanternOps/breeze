@@ -31,6 +31,16 @@
   "deciding": "Invio in corso…",
   "expiresIn": "Scade tra {{minutes}} min",
   "expiresSoon": "Scade tra meno di un minuto",
+  "expired": "Scaduta",
+  "unknownOrganization": "Organizzazione sconosciuta",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} approvato per {{org}}",
+  "pagination": {
+    "showing": "Visualizzazione di {{shown}} su {{total}}",
+    "showingCount": "Visualizzazione di {{shown}}",
+    "loadMore": "Carica altro",
+    "loadMoreError": "Impossibile caricare altro. Riprova."
+  },
   "errors": {
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",

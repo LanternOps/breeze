@@ -298,6 +298,26 @@
     "resolve": "Résoudre",
     "promote": "Promotion"
   },
+  "deviceBillingCard": {
+    "title": "Facturation",
+    "uncovered": "Aucune ligne de contrat active ne facture cet appareil.",
+    "viewContracts": "Voir les contrats",
+    "notBillable": {
+      "decommissioned": "Non facturé — cet appareil est mis hors service",
+      "ephemeral": "Non facturé — cet appareil est un appareil de session de support éphémère",
+      "not_billable": "Non facturé — cet appareil n'est pas facturable actuellement"
+    },
+    "error": {
+      "generic": "Impossible de charger la couverture de facturation.",
+      "groupEvaluation": "Un groupe d'appareils d'un contrat actif n'a pas pu être évalué ({{group}}). La couverture est inconnue."
+    },
+    "matchedBy": {
+      "org": "Toute l'organisation",
+      "site": "Ce site",
+      "role": "Rôle : {{role}}",
+      "group": "Groupe : {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Collecte des métriques de démarrage déclenchée. Les données apparaîtront après le prochain démarrage ou le prochain cycle de collecte.",
     "failedToTriggerCollection": "Impossible de déclencher la collecte",
@@ -1073,6 +1093,7 @@
     "of": "de",
     "devices": "Dispositifs",
     "advancedFilterActive": "Filtre actif avancé",
+    "advancedFilterFailed": "Échec du chargement du filtre — aucun appareil affiché",
     "filterByDeviceClass": "Filtrer par classe de dispositif",
     "filterByVpn": "Filtrer par VPN",
     "allVpn": "Tous VPN",
@@ -1775,6 +1796,7 @@
     "title": "Dispositifs",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
+      "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",

@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (deleted group)",
       "coverage": {
         "uncovered": "{{count}} device(s) on this organization are not billed by any line on this contract: {{breakdown}}",
-        "allCovered": "Every device on this organization is billed by a line on this contract."
+        "allCovered": "Every device on this organization is billed by a line on this contract.",
+        "uncoveredLead": "{{count}} device(s) on this organization are not billed by any line on this contract:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "allowance": {
         "includedOf": "{{counted}} of {{included}} included",
@@ -1197,6 +1199,29 @@
         "untitled": "a newer version"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change quote currency",
+        "description": "This draft quote is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the quote's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the quote's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Quote currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the quote currency."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Feed price currency unknown — enter a {{currency}} price",
       "feedPriceIn": "Feed price is {{feedCurrency}} — enter a {{currency}} price",
@@ -1617,6 +1642,29 @@
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change invoice currency",
+        "description": "This draft invoice is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the invoice's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the invoice's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Invoice currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the invoice currency."
+      }
+    },
     "deposit": {
       "duePrefix": "Deposit of",
       "dueSuffix": "due — {{paid}} of {{total}} paid.",
@@ -1739,7 +1787,9 @@
       "lastSynced": "Last synced {{when}}",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
-      "pushFailed": "Failed to push the invoice to QuickBooks."
+      "pushFailed": "Failed to push the invoice to QuickBooks.",
+      "voidedHint": "This invoice is voided — there is nothing to push to QuickBooks.",
+      "remoteDeletedHint": "This invoice was deleted in QuickBooks. Pushing again would create a duplicate — resolve it in QuickBooks first."
     }
   },
   "invoiceDocument": {

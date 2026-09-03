@@ -1443,7 +1443,25 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
       lastSyncedAt: '2026-09-01T12:00:00.000Z',
       lastError: null,
       remoteDocNumber: '1042',
+      remoteDeleted: false,
     });
+  });
+
+  // #4544: markInvoiceDeletedRemotely (accountingPaymentPull.ts) writes this
+  // exact lastError; getInvoiceAccountingSync must surface it as a typed
+  // boolean rather than making the web layer string-match lastError.
+  it('surfaces remoteDeleted: true when the mapping carries the remote-deleted marker', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([{
+      syncStatus: 'error',
+      lastSyncedAt: null,
+      lastError: 'Deleted in QuickBooks',
+      remoteDocNumber: null,
+    }]);
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toMatchObject({ syncStatus: 'error', remoteDeleted: true });
   });
 
   it('is null when the mapping read returns no row (never connected, or RLS hides a partner-axis table from an org-scoped read) — fail closed, no special-casing', async () => {

@@ -20,7 +20,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 25,
     'ai.json': 1,
     'alerts.json': 43,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 52,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
@@ -46,7 +48,7 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 58, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR
+    'billing.json': 59, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -54,7 +56,7 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 101,
+    'common.json': 102, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -101,7 +103,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 21,
     'ai.json': 4,
     'alerts.json': 39,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 30,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
@@ -124,7 +128,7 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 44,
+    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -136,7 +140,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is the same word in Spanish.
     // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
     // in Spanish.
-    'common.json': 87,
+    'common.json': 88, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -183,7 +187,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 58,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 59,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
@@ -210,7 +216,7 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 57,
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -222,7 +228,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 105,
+    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -278,7 +284,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 59,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 60,
     // Contract-template format strings, French cognates, and locale-invariant
@@ -299,7 +307,7 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 57,
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -311,7 +319,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 107,
+    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -367,7 +375,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 31,
     'ai.json': 5,
     'alerts.json': 46,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 15,
     'backup.json': 63,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
@@ -389,7 +399,7 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 43,
+    'billing.json': 44, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -402,7 +412,7 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
-    'common.json': 105,
+    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
@@ -447,7 +457,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 38,
     'ai.json': 12,
     'alerts.json': 57,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 21,
     'backup.json': 45,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
@@ -463,7 +475,7 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 36,
+    'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -473,7 +485,7 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
-    'common.json': 106,
+    'common.json': 107, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
@@ -512,7 +524,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 19,
     'ai.json': 1,
     'alerts.json': 25,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 25,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
@@ -529,8 +543,8 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 21,
-    'common.json': 48,
+    'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'common.json': 49, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 77,
     'discovery.json': 9,
     'integrations.json': 22,

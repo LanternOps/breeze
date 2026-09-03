@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (grupo excluído)",
       "coverage": {
         "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
-        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
+        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato.",
+        "uncoveredLead": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "allowance": {
         "includedOf": "{{counted}} de {{included}} incluídos",
@@ -1197,6 +1199,29 @@
         "untitled": "uma versão mais recente"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda da cotação",
+        "description": "Esta cotação em rascunho está precificada em {{currency}}.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas da cotação",
+        "modeClear": "Remover todas as linhas",
+        "modeClearHint": "As linhas são excluídas. Obrigatório quando alguma linha é manual ou um pacote.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "confirm": "Entendo que isto altera a moeda da cotação.",
+        "submit": "Alterar moeda"
+      },
+      "toast": {
+        "changed": "Moeda da cotação alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda da cotação."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Moeda do preço do feed desconhecida — informe um preço em {{currency}}",
       "feedPriceIn": "O preço do feed está em {{feedCurrency}} — informe um preço em {{currency}}",
@@ -1617,6 +1642,29 @@
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Alterar moeda"
+      },
+      "dialog": {
+        "title": "Alterar a moeda da fatura",
+        "description": "Esta fatura em rascunho está precificada em {{currency}}.",
+        "currencyLabel": "Nova moeda",
+        "modeLegend": "O que acontece com as linhas da fatura",
+        "modeClear": "Remover todas as linhas",
+        "modeClearHint": "As linhas são excluídas. Obrigatório quando alguma linha é manual ou um pacote.",
+        "modeReprice": "Reprecificar as linhas de catálogo",
+        "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "confirm": "Entendo que isto altera a moeda da fatura.",
+        "submit": "Alterar moeda"
+      },
+      "toast": {
+        "changed": "Moeda da fatura alterada para {{currency}}."
+      },
+      "errors": {
+        "change": "Não foi possível alterar a moeda da fatura."
+      }
+    },
     "deposit": {
       "duePrefix": "Entrada de",
       "dueSuffix": "devida — {{paid}} de {{total}} pagos.",
@@ -1739,7 +1787,9 @@
       "lastSynced": "Última sincronização em {{when}}",
       "push": "Enviar ao QuickBooks",
       "pushed": "Fatura enviada ao QuickBooks.",
-      "pushFailed": "Falha ao enviar a fatura ao QuickBooks."
+      "pushFailed": "Falha ao enviar a fatura ao QuickBooks.",
+      "voidedHint": "Esta fatura está anulada — não há nada para enviar ao QuickBooks.",
+      "remoteDeletedHint": "Esta fatura foi excluída no QuickBooks. Enviá-la novamente criaria uma duplicata — resolva isso no QuickBooks primeiro."
     }
   },
   "invoiceDocument": {

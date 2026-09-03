@@ -352,6 +352,32 @@ describe('DeviceList — advanced filter via serverFilterIds prop (uncapped id s
     expect(screen.getByText('host-bb')).toBeTruthy();
     expect(screen.queryByText(/Advanced filter active/i)).toBeNull();
   });
+
+  // #4732: a 403 on a pinned orgId the caller can't access (or any other
+  // preview failure) must render as an explicit error + zero rows, never as
+  // a silently unfiltered list. useAdvancedFilterIds fails CLOSED — an EMPTY
+  // set, not null — so DeviceList's ordinary `serverFilterIds` filtering
+  // already hides every device; `serverFilterError` only drives the message
+  // that explains why the list is empty instead of leaving that unexplained.
+  it('shows an inline error and zero rows when the filter preview failed (serverFilterError)', () => {
+    const a: Device = { ...baseDevice, id: 'bbbbbbb1-0000-0000-0000-000000000000', hostname: 'host-cc' };
+    const b: Device = { ...baseDevice, id: 'bbbbbbb2-0000-0000-0000-000000000000', hostname: 'host-dd' };
+
+    render(
+      <DeviceList
+        devices={[a, b]}
+        serverFilterIds={new Set()}
+        serverFilterError={true}
+      />
+    );
+
+    expect(screen.queryByText('host-cc')).toBeNull();
+    expect(screen.queryByText('host-dd')).toBeNull();
+    expect(screen.getByTestId('device-filter-error')).toBeTruthy();
+    expect(screen.getByText('0 of 2 devices')).toBeTruthy();
+    // The success pill must not also render alongside the error pill.
+    expect(screen.queryByText(/^Advanced filter active$/)).toBeNull();
+  });
 });
 
 describe('DeviceList — sortable columns (every column sorts on header click)', () => {

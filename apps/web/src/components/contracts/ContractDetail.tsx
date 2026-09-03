@@ -354,7 +354,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.estimatedPerPeriod')}</dt>
                 <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
                   {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
-                  <DeviceCoverageNotice uncovered={estimate?.uncoveredDevices} />
+                  <DeviceCoverageNotice uncovered={estimate?.uncoveredDevices} orgId={contract.orgId} />
                   <OverageNotice overages={estimate?.overages} />
                   {estimateFailed && (
                     <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
