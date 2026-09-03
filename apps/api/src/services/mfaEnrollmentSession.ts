@@ -45,7 +45,7 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
 export type CompleteInitialMfaEnrollmentInput<T> =
   Omit<ReplaceSessionOnMfaFactorWriteInput<T>, 'expectedMfaEnabled'>;
 
-export interface CompletedInitialMfaEnrollment<T> {
+export interface MfaFactorSessionReplacement<T> {
   value: T;
   recoveryCodes: string[];
   issued: AuthorizedUserSession;
@@ -74,7 +74,7 @@ export interface CompletedInitialMfaEnrollment<T> {
  */
 export async function replaceSessionOnMfaFactorWrite<T>(
   input: ReplaceSessionOnMfaFactorWriteInput<T>,
-): Promise<CompletedInitialMfaEnrollment<T>> {
+): Promise<MfaFactorSessionReplacement<T>> {
   if (input.identity.userId !== input.userId) {
     throw new Error('Factor-write identity does not match the target user');
   }
@@ -147,7 +147,7 @@ export async function replaceSessionOnMfaFactorWrite<T>(
  */
 export async function completeInitialMfaEnrollment<T>(
   input: CompleteInitialMfaEnrollmentInput<T>,
-): Promise<CompletedInitialMfaEnrollment<T>> {
+): Promise<MfaFactorSessionReplacement<T>> {
   if (input.identity.mfa !== true) {
     throw new Error('Replacement enrollment identity must be MFA-assured');
   }

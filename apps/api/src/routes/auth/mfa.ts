@@ -72,6 +72,7 @@ import {
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
+import { captureException } from '../../services/sentry';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 
@@ -1293,23 +1294,57 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
     if (!response) throw error;
     return response;
   }
-  await bindIssuedUserSession(result.issued);
-  installAuthorizedUserSessionCookies(c, result.issued);
+  // POST-COMMIT from here. The new codes are already the account's only valid
+  // set and the old ones are gone, so the plaintext in `result.recoveryCodes` is
+  // the sole copy the user will ever be offered. Nothing below may cost them
+  // that — losing it is exactly the failure #4480 exists to end, and unlike a
+  // degraded session (log in again) it is unrecoverable. Each best-effort step
+  // is therefore reported and stepped over rather than allowed to 500 the
+  // response out from under the codes.
+  let sessionInstalled = true;
+  try {
+    await bindIssuedUserSession(result.issued);
+    installAuthorizedUserSessionCookies(c, result.issued);
+  } catch (error) {
+    sessionInstalled = false;
+    captureException(error, c, { rotation: 'mfa_recovery_codes' });
+    console.error('[auth] recovery codes rotated but the replacement session could not be installed', {
+      userId: auth.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
-  const orgId = await resolveUserAuditOrgId(auth.user.id);
-  writeAuthAudit(c, {
-    orgId: orgId ?? undefined,
-    action: 'auth.mfa.recovery_codes.rotate',
-    result: 'success',
-    userId: auth.user.id,
-    email: auth.user.email,
-    details: { count: recoveryCodes.length, mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
-  });
+  try {
+    const orgId = await resolveUserAuditOrgId(auth.user.id);
+    writeAuthAudit(c, {
+      orgId: orgId ?? undefined,
+      action: 'auth.mfa.recovery_codes.rotate',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: {
+        count: recoveryCodes.length,
+        mfaEpoch: result.mfaEpoch,
+        teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
+        sessionInstalled,
+      }
+    });
+  } catch (error) {
+    captureException(error, c, { rotation: 'mfa_recovery_codes' });
+    console.error('[auth] recovery-code rotation audit could not be written', {
+      userId: auth.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   return c.json({
     success: true,
     recoveryCodes: result.recoveryCodes,
     message: 'Recovery codes generated successfully',
-    tokens: toPublicTokens(result.issued),
+    // Withheld when the install above failed: the refresh JTI was never bound,
+    // so handing the client an access token would only buy it a few minutes
+    // before an unrecoverable refresh. Better it re-authenticates knowingly,
+    // with the codes already in hand.
+    ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
   });
 });

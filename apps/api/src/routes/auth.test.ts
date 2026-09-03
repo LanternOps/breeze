@@ -386,6 +386,7 @@ import {
   AuthIssuanceConflictError,
   completeInitialMfaEnrollment,
   replaceSessionOnMfaFactorWrite,
+  bindIssuedUserSession,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
@@ -3712,12 +3713,46 @@ describe('auth routes', () => {
       expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
 
       expect(replaceSessionOnMfaFactorWrite).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0]).toMatchObject({
+      const rotateInput = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+      expect(rotateInput).toMatchObject({
         userId: 'user-123',
         expectedMfaEnabled: true,
         revokeReason: 'mfa-recovery-rotate',
         recoveryCodes: newRecoveryCodes,
       });
+      // What lands in the row must be the HASHES, never the plaintext the
+      // response hands back — one per code, none of them a code.
+      expect(rotateInput.recoveryCodeHashes).toHaveLength(newRecoveryCodes.length);
+      for (const hash of rotateInput.recoveryCodeHashes) {
+        expect(newRecoveryCodes).not.toContain(hash);
+      }
+    });
+
+    // Post-commit: the codes are already the account's only valid set, so a
+    // failure installing the replacement session must not 500 the response and
+    // take the only copy of them with it.
+    it('POST /auth/mfa/recovery-codes still returns the codes when the session install fails', async () => {
+      const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
+      vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+      vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.recoveryCodes).toEqual(newRecoveryCodes);
+      // The refresh JTI was never bound, so the access token would die at its
+      // first refresh — withhold it rather than sell the caller a few minutes.
+      expect(body.tokens).toBeUndefined();
     });
 
     // SR-001: the replacement session must inherit the caller's SIGNED device

@@ -9,6 +9,7 @@ import { authBindingRoutes } from '../../routes/auth/binding';
 import { beginAuthIssuance } from '../../services/authBrowserTransition';
 import { completeInitialMfaEnrollment, replaceSessionOnMfaFactorWrite } from '../../services/mfaEnrollmentSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
+import { isUserTokenRevoked } from '../../services/tokenRevocation';
 import type { UserSessionIdentity } from '../../services/userSession';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -108,6 +109,15 @@ function completeTotpEnrollment(
       return secret;
     },
   }));
+}
+
+/** Unverified `iat` read — these tests own the token they just minted. */
+function tokenIssuedAt(jwt: string): number {
+  const [, payload] = jwt.split('.');
+  if (!payload) throw new Error('not a JWT');
+  const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { iat?: number };
+  if (typeof claims.iat !== 'number') throw new Error('token carries no iat');
+  return claims.iat;
 }
 
 describe('completeInitialMfaEnrollment — real-PG atomicity', () => {
@@ -289,6 +299,24 @@ describe('replaceSessionOnMfaFactorWrite — recovery-code rotation (#4480)', ()
     expect(families.find((family) => family.familyId === otherDeviceFamilyId)?.revokedAt).toBeInstanceOf(Date);
     expect(families.find((family) => family.familyId === enrolled.issued.familyId)?.revokedAt).toBeInstanceOf(Date);
     expect(families.find((family) => family.familyId === value.oldFamilyId)?.revokedAt).toBeInstanceOf(Date);
+
+    // The OTHER half of the eviction is the Redis cutoff `runPostCommitCleanup`
+    // writes, and /auth/refresh rejects any refresh token with
+    // `iat <= revokedAfter`. Proven here against the real Redis this suite runs:
+    // the cutoff is armed, and the replacement token clears it.
+    //
+    // Scope note — this does NOT discriminate the `preserveTokensIssuedAtOrAfter`
+    // clamp on its own. On a fast run the mint and the cleanup land in the same
+    // second, so the plain `now - 1` default already sits below the replacement's
+    // `iat`; the clamp only decides the outcome once a commit stalls past a
+    // second, which this test cannot force. The clamp's arithmetic is pinned by
+    // `services/tokenRevocation.test.ts`. What this adds is that the two halves
+    // are actually wired together end to end.
+    expect(rotated.cleanup.redisOk).toBe(true);
+    const replacementIat = tokenIssuedAt(rotated.issued.refreshToken);
+    expect(await isUserTokenRevoked(value.user.id, replacementIat)).toBe(false);
+    // ...and the cutoff is genuinely armed: anything predating the rotation is.
+    expect(await isUserTokenRevoked(value.user.id, replacementIat - 60)).toBe(true);
   });
 
   runDb('refuses to rotate onto an account whose MFA was disabled underneath it', async () => {
