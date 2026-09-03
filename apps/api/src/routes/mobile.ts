@@ -1243,10 +1243,12 @@ mobileRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Always over-fetch by one to know whether another page exists — not
-    // gated on `cursor`, or a cold-start caller's first response could never
-    // carry a usable `nextCursor` (#3770).
-    const fetchLimit = limit + 1;
+    // Over-fetch by one to know whether another page exists — not gated on
+    // `cursor` (a cold-start caller's first response could otherwise never
+    // carry a usable `nextCursor`, #3770), but legacy `?page=N` never mints
+    // one anyway (see above), so there's nothing to gain from the extra row
+    // there. Matches devices/core.ts's identical guard.
+    const fetchLimit = isCursorMode ? limit + 1 : limit;
     const deviceRows = await db
       .select({
         id: devices.id,
