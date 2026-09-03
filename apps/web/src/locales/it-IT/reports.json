@@ -157,7 +157,7 @@
       "noGrouping": "Nessun raggruppamento",
       "noNumericFields": "Nessun campo numerico",
       "placeholders": { "email": "name@company.com", "reportName": "Panoramica mensile della sicurezza", "templateName": "Pacchetto trimestrale di conformità", "value": "Valore" },
-      "recipients": { "contacts": "Contatti dell'organizzazione", "legacy": "Indirizzi email precedenti", "convert": "Converti in contatto", "added": "Destinatario del report aggiunto", "removed": "Destinatario del report rimosso", "converted": "Indirizzo email convertito in contatto", "updateFailed": "Impossibile aggiornare i destinatari del report", "convertFailed": "Impossibile convertire questo indirizzo email" },
+      "recipients": { "contacts": "Contatti dell'organizzazione", "legacy": "Indirizzi email precedenti", "convert": "Converti in contatto", "added": "Destinatario del report aggiunto", "removed": "Destinatario del report rimosso", "converted": "Indirizzo email convertito in contatto", "updateFailed": "Impossibile aggiornare i destinatari del report", "convertFailed": "Impossibile convertire questo indirizzo email", "loadFailed": "Impossibile caricare i destinatari del report" },
       "previewTable": { "selectFields": "Seleziona campi per popolare la tabella di anteprima." },
       "reportTypes": { "activity": { "description": "Tracce di attività utente, amministrative e di sistema", "label": "Attività" }, "alerts": { "description": "Volume avvisi, gravità e prestazioni di risposta", "label": "Avvisi" }, "compliance": { "description": "Prontezza agli audit e visibilità sull'allineamento ai criteri", "label": "Conformità" }, "devices": { "description": "Inventario e stato di salute degli endpoint gestiti", "label": "Dispositivi" }, "patches": { "description": "Prontezza patch, stato distribuzione ed esposizione", "label": "Patch" } },
       "runTime": "Ora di esecuzione",
@@ -168,7 +168,6 @@
       "selectedFields": "Campi selezionati",
       "success": { "created": "Report \"{{name}}\" salvato.", "updated": "Report \"{{name}}\" aggiornato." },
       "values": { "enabled": "Abilitato", "off": "Off", "on": "On" },
-      "visibleInPortal": "Visibile nel portale clienti",
       "weekDays": { "friday": "Venerdì", "monday": "Lunedì", "saturday": "Sabato", "sunday": "Domenica", "thursday": "Giovedì", "tuesday": "Martedì", "wednesday": "Mercoledì" },
       "where": "Dove"
     },

@@ -318,4 +318,28 @@ describe('ReportBuilder recipients', () => {
       })
     );
   });
+
+  it('shows an error when contacts or recipients cannot be loaded', async () => {
+    fetchWithAuthMock.mockImplementation(async url => {
+      if (url.includes('/orgs/organizations/org-1/contacts')) {
+        throw new Error('network unavailable');
+      }
+      if (url.endsWith('/reports/report-1/recipients')) {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{ schedule: 'monthly' }}
+      />
+    );
+
+    expect(
+      await screen.findByText('Could not load the report recipients')
+    ).toBeInTheDocument();
+  });
 });

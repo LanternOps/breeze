@@ -789,26 +789,29 @@ export default function ReportBuilder({
       fetchWithAuth(`/orgs/organizations/${currentOrgId}/contacts`),
       fetchWithAuth(`/reports/${reportId}/recipients`)
     ]).then(async ([contactsResponse, recipientsResponse]) => {
-      if (contactsResponse.ok) {
-        const payload = await contactsResponse.json();
-        setContacts(
-          (payload.data ?? []).filter(
-            (contact: ContactOption) => Boolean(contact.email)
-          )
-        );
+      if (!contactsResponse.ok || !recipientsResponse.ok) {
+        throw new Error('Could not load report recipients');
       }
-      if (recipientsResponse.ok) {
-        const payload = await recipientsResponse.json();
-        setSelectedContactIds(
-          new Set(
-            (payload.data ?? []).map(
-              (recipient: { contactId: string }) => recipient.contactId
-            )
+
+      const contactsPayload = await contactsResponse.json();
+      setContacts(
+        (contactsPayload.data ?? []).filter(
+          (contact: ContactOption) => Boolean(contact.email)
+        )
+      );
+
+      const recipientsPayload = await recipientsResponse.json();
+      setSelectedContactIds(
+        new Set(
+          (recipientsPayload.data ?? []).map(
+            (recipient: { contactId: string }) => recipient.contactId
           )
-        );
-      }
+        )
+      );
+    }).catch(() => {
+      setError(t('reports.reportBuilder.recipients.loadFailed'));
     });
-  }, [currentOrgId, reportId, schedule]);
+  }, [currentOrgId, reportId, schedule, t]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   const dataSourceFields = dataSourceFieldsByType[builderType];

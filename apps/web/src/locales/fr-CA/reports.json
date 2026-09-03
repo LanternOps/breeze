@@ -700,7 +700,7 @@
         "templateName": "Pack de conformité trimestriel",
         "value": "Valeur"
       },
-      "recipients": { "contacts": "Contacts de l’organisation", "legacy": "Anciennes adresses courriel", "convert": "Convertir en contact", "added": "Destinataire du rapport ajouté", "removed": "Destinataire du rapport supprimé", "converted": "Adresse courriel convertie en contact", "updateFailed": "Impossible de mettre à jour les destinataires du rapport", "convertFailed": "Impossible de convertir cette adresse courriel" },
+      "recipients": { "contacts": "Contacts de l’organisation", "legacy": "Anciennes adresses courriel", "convert": "Convertir en contact", "added": "Destinataire du rapport ajouté", "removed": "Destinataire du rapport supprimé", "converted": "Adresse courriel convertie en contact", "updateFailed": "Impossible de mettre à jour les destinataires du rapport", "convertFailed": "Impossible de convertir cette adresse courriel", "loadFailed": "Impossible de charger les destinataires du rapport" },
       "previewTable": {
         "selectFields": "Sélectionnez les champs pour remplir la table d’aperçu."
       },
@@ -787,7 +787,6 @@
         "off": "Désactivé",
         "on": "Activé"
       },
-      "visibleInPortal": "Visible dans le portail client",
       "weekDays": {
         "friday": "Vendredi",
         "monday": "Lundi",

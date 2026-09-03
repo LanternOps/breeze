@@ -700,7 +700,7 @@
         "templateName": "Pacote Trimestral de Conformidade",
         "value": "Valor"
       },
-      "recipients": { "contacts": "Contatos da organização", "legacy": "Endereços de e-mail legados", "convert": "Converter em contato", "added": "Destinatário do relatório adicionado", "removed": "Destinatário do relatório removido", "converted": "Endereço de e-mail convertido em contato", "updateFailed": "Não foi possível atualizar os destinatários do relatório", "convertFailed": "Não foi possível converter este endereço de e-mail" },
+      "recipients": { "contacts": "Contatos da organização", "legacy": "Endereços de e-mail legados", "convert": "Converter em contato", "added": "Destinatário do relatório adicionado", "removed": "Destinatário do relatório removido", "converted": "Endereço de e-mail convertido em contato", "updateFailed": "Não foi possível atualizar os destinatários do relatório", "convertFailed": "Não foi possível converter este endereço de e-mail", "loadFailed": "Não foi possível carregar os destinatários do relatório" },
       "previewTable": {
         "selectFields": "Selecione campos para preencher a tabela de pre-visualização."
       },
@@ -787,7 +787,6 @@
         "off": "Desligado",
         "on": "Ligado"
       },
-      "visibleInPortal": "Visível no portal do cliente",
       "weekDays": {
         "friday": "Sexta-feira",
         "monday": "Segunda-feira",
