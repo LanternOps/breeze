@@ -1579,13 +1579,34 @@ export type AiFieldUpdateOutcome =
  * — CAS-guarded so an autonomous write can never clobber a field a human has
  * since touched, or one that changed concurrently since the caller last
  * observed it. One UPDATE, per-field `CASE WHEN <value unchanged since
- * expectedCurrent> AND <no human stamp on this field> THEN <new value> ELSE
- * <current value> END` — the CAS predicate is evaluated by Postgres against
- * the row under the UPDATE's own row lock, so this is atomic without a
- * separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
+ * expectedCurrent> AND <no human stamp on this field> AND <new value actually
+ * differs> THEN <new value> ELSE <current value> END` — the CAS predicate is
+ * evaluated by Postgres against the row under the UPDATE's own row lock, so
+ * this is atomic without a separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
  * 'ai_agent' with the SAME predicate, so a skipped field's provenance is left
  * exactly as it was (see `updateTicketFields`'s "AI writes never overwrite a
  * 'user' stamp" contract this implements).
+ *
+ * The predicate also requires the write to be a REAL change
+ * (`<column> IS DISTINCT FROM <new value>`, #4466). The CAS half only proves
+ * the field has not MOVED since the caller observed it, so without this an AI
+ * that merely re-asserts the value already on the ticket satisfied the
+ * predicate and stamped 'ai_agent' anyway — silently taking ownership of a
+ * value a human had set through a path that left no provenance entry (an
+ * absent stamp COALESCEs to '' and sails past the `<> 'user'` guard). The
+ * guard sits in the shared predicate rather than only on the provenance arm so
+ * the stamp and the field write can never drift apart; on the value arm it is
+ * a no-op by construction, since writing a column the value it already holds
+ * changes nothing. This mirrors the human path, where `updateTicketFields`
+ * likewise stamps only the fields its own diff found changed.
+ *
+ * Read `applied: true` as "the field HOLDS the proposed value now", NOT as
+ * "this call wrote it" — the outcome is derived from the RETURNING row, which
+ * cannot distinguish a write from a field that already agreed. So a same-value
+ * confirmation reports `applied: true` having written and stamped nothing, and
+ * so does one against a field already stamped 'user' that happens to hold the
+ * proposed value. Anything asking "did the AI take ownership of this field?"
+ * must read `field_provenance`, never this flag.
  *
  * `categoryId`'s value is validated against `ticket_categories` for the
  * ticket's PARTNER before the UPDATE runs — a cross-partner categoryId must
@@ -1619,11 +1640,15 @@ export async function applyAiFieldUpdates(
     await assertCategoryInPartner(updates.categoryId.value, await resolveTicketPartnerId(ticket));
   }
 
+  // Three conjuncts, and all three are load-bearing: the CAS half (the value
+  // has not moved since the caller observed it), the human-stamp guard, and
+  // the real-change guard (#4466 — an AI re-asserting the value already on
+  // the ticket must not take ownership of it; see the doc block above).
   const categoryCond = updates.categoryId
-    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'categoryId', '') <> 'user')`
+    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'categoryId', '') <> 'user' AND ${tickets.categoryId} IS DISTINCT FROM ${updates.categoryId.value}::uuid)`
     : null;
   const priorityCond = updates.priority
-    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'priority', '') <> 'user')`
+    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'priority', '') <> 'user' AND ${tickets.priority} IS DISTINCT FROM ${updates.priority.value}::ticket_priority)`
     : null;
 
   const setClause: Record<string, unknown> = { updatedAt: new Date() };
@@ -2194,6 +2219,28 @@ export async function moveTicketOrg(
   let updated: typeof tickets.$inferSelect | undefined;
   let guard: MoveCurrencyGuardDetails | null = null;
   await db.transaction(async (tx) => {
+    // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
+    // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
+    // INITIALLY IMMEDIATE — i.e. checked at the end of EACH statement unless
+    // deferred here. The `tx.update(tickets)` below changes `tickets.org_id`
+    // while both children still point at the OLD org, so without this the
+    // ticket UPDATE 23503s the instant it completes.
+    //
+    // The children are rewritten a few statements later (the
+    // TICKET_ORG_DENORMALIZED_TABLES loop), so deferring to COMMIT is exactly
+    // right: at commit time every (ticket_id, org_id) pair resolves again.
+    //
+    // BY NAME, never `ALL`: `tickets_requester_contact_org_fk`,
+    // `ticket_drafts_ticket_org_fk` and `action_intents_scope_ticket_org_fk`
+    // are deliberately left IMMEDIATE here — the pre-UPDATE tombstone/delete
+    // statements below exist precisely so those fail fast and loudly if a new
+    // referencing row type is ever added without its own cleanup.
+    //
+    // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
+    // so it does not participate in the lock order this transaction documents.
+    await tx.execute(
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`
+    );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → tickets → ticket_comments
@@ -2236,8 +2283,10 @@ export async function moveTicketOrg(
     // `tx.update(tickets)` UPDATE just below — not after, despite every
     // other cleanup here (the child-table org_id rewrites) following it.
     // Both composite FKs below are DEFERRABLE INITIALLY IMMEDIATE (checked
-    // at the end of EACH statement, not deferred to COMMIT — no
-    // `SET CONSTRAINTS ... DEFERRED` is issued in this transaction), and
+    // at the end of EACH statement, not deferred to COMMIT — the
+    // `SET CONSTRAINTS ... DEFERRED` at the top of this transaction names ONLY
+    // `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk` (#4596 W2),
+    // so the two below remain immediate and this ordering stays load-bearing), and
     // both reference `tickets(id, org_id)` — org_id is part of the key the
     // ticket UPDATE below changes. Running the ticket UPDATE first (as a
     // first attempt at this fix did) fails immediately with 23503 the
@@ -2326,8 +2375,10 @@ export async function moveTicketOrg(
     // `requesterContactId: null` (#3258 W03 final review C1) is part of THIS
     // statement, not a follow-up: `tickets_requester_contact_org_fk` is the
     // composite (requester_contact_id, org_id) -> contacts(id, org_id), and it
-    // is DEFERRABLE INITIALLY IMMEDIATE with no `SET CONSTRAINTS ... DEFERRED`
-    // in this transaction — so it is checked the instant this UPDATE finishes.
+    // is DEFERRABLE INITIALLY IMMEDIATE and is NOT among the two constraints
+    // deferred at the top of this transaction (#4596 W2 names only the
+    // time_entries/ticket_parts ones) — so it is checked the instant this
+    // UPDATE finishes.
     // A contact-linked ticket moved to another org would 23503 here, and
     // permanently: contacts are org-pinned and the requester does NOT move with
     // the ticket. Detaching is the same ruling as `deviceId: null` beside it —

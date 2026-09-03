@@ -229,7 +229,7 @@ MFA verification is rate-limited separately from login.
 
   Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), and `invalid_credentials` (a rejected step-up password or enrollment grant). Never branch on the human-readable `error`/`message` text — it is not part of the contract.
 
-  This applies to `/auth/mfa/*` and `/auth/phone/*`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit.
+  This applies to `/auth/mfa/*` and `/auth/phone/*`, and to the two other endpoints that verify a password supplied in the request body: `POST /auth/change-password` and `POST /auth/account-deletion-request`. Both answer a rejected password with `400` and `code: "invalid_credentials"`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit — or, on those two endpoints, mid-flow for a mistyped password.
 </Aside>
 
 ### Disabling MFA
@@ -278,6 +278,8 @@ Authenticated users can change their password via `POST /auth/change-password` b
 <Aside type="tip">
   SSO-provisioned users do not have a password. The change password endpoint returns `400` for these accounts.
 </Aside>
+
+A **wrong `currentPassword`** also returns `400`, with the stable body `{ "error": "Current password is incorrect", "message": "Current password is incorrect", "code": "invalid_credentials" }`. It previously returned `401`; branch on the status and on `code`, never on the message text. `401` from this endpoint now means only that the bearer token is dead.
 
 ---
 

@@ -11,7 +11,7 @@ import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 
 type Fixture = {
-  orgId: string; siteId: string; deviceId: string; requestId: string; actuationId: string;
+  orgId: string; partnerId: string; siteId: string; deviceId: string; requestId: string; actuationId: string;
   commandId: string; agentId: string;
 };
 
@@ -51,8 +51,8 @@ async function createFixture(): Promise<Fixture> {
     )
     SELECT device.id AS "deviceId", device.site_id AS "siteId", request.id AS "requestId", command.id AS "commandId",
            actuation.id AS "actuationId" FROM device, request, command, actuation
-  `) as unknown as Array<Omit<Fixture, 'orgId' | 'agentId'>>;
-  return { orgId: org.id, agentId, ...row! };
+  `) as unknown as Array<Omit<Fixture, 'orgId' | 'agentId' | 'partnerId'>>;
+  return { orgId: org.id, partnerId: partner.id, agentId, ...row! };
 }
 
 function resultFor(fixture: Fixture, overrides: Partial<PamAgentResultV2> = {}): PamAgentResultV2 {
@@ -69,6 +69,7 @@ function restApp(fixture: Fixture): Hono {
     c.set('agent', {
       deviceId: fixture.deviceId,
       orgId: fixture.orgId,
+      partnerId: fixture.partnerId,
       agentId: fixture.agentId,
       siteId: fixture.siteId,
       role: 'agent',

@@ -105,6 +105,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // cluster groupable and actionable.
   'body_limit_rule',
   'body_limit_max_size',
+  // #4514: the AI session cap alarm fires when EVERY in-memory session is
+  // mid-turn, so LRU can evict nothing and MAX_ACTIVE_SESSIONS is exceeded.
+  // `scrubEvent` deletes `message`, so without this the event says only that it
+  // happened — and a single-request blip is then byte-identical to a manager
+  // wedged at several times its cap, which is exactly the distinction that
+  // decides whether to page. Closed four-value set from
+  // `bucketSessionOvershoot` (services/streamingSessionManager.ts); the raw
+  // count would be unbounded cardinality, and the bucket carries no tenant,
+  // device or session identifier.
+  'ai_session_cap_bucket',
   // BREEZE-18: the required `captureMessage` discriminator. `scrubEvent`
   // deletes `message`, `logentry` and `extra` from every event, so before this
   // existed any captureMessage that happened not to carry one of the tags above

@@ -1,4 +1,39 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Atualizando ao vivo"
+    },
+    "list": {
+      "clearFilters": "Limpar filtros",
+      "emptyDescription": "As execuções acionadas por alertas, agendamentos, tickets e ações manuais aparecerão aqui assim que um agente as executar.",
+      "emptyFilteredDescription": "Nenhuma execução corresponde a esses filtros. Tente outro agente ou status.",
+      "emptyConfigureLink": "Configurar agentes de IA"
+    },
+    "detail": {
+      "notFoundDescription": "Esta execução pode ter sido excluída, ou o link pode estar desatualizado.",
+      "trace": {
+        "emptyDescription": "As chamadas de ferramentas propostas ou executadas pelo agente serão listadas aqui."
+      },
+      "ledger": {
+        "emptyDescription": "As ferramentas realmente invocadas pelo agente serão listadas aqui.",
+        "statuses": {
+          "pending": "Pendente",
+          "approved": "Aprovado",
+          "executing": "Em execução",
+          "completed": "Concluído",
+          "failed": "Falhou",
+          "rejected": "Rejeitado"
+        }
+      },
+      "intents": {
+        "emptyDescription": "As aprovações solicitadas por esta execução serão listadas aqui."
+      },
+      "triage": {
+        "categoryLabel": "Categoria",
+        "categoryUnresolved": "Sugerida — nome não disponível nesta visualização"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Entidades de serviço",
     "description": "Gerencie identidades de máquina no nível do parceiro e suas chaves de acesso.",
@@ -1380,7 +1415,7 @@
       "deleteOverride": "Remover exceção",
       "confirmDelete": "Confirmar exclusão",
       "cron": "Expressão cron",
-      "cronHint": "Cinco campos: minuto hora dia-do-mês mês dia-da-semana. Por exemplo, 0 3 * * * é executado todos os dias às 03:00.",
+      "cronHint": "Cinco campos: minuto hora dia-do-mês mês dia-da-semana. Por exemplo, 0 3 * * * é executado todos os dias às 03:00. O campo de minutos deve ser um número literal ou uma lista separada por vírgulas (sem *, / ou intervalo -) — as programações são executadas no máximo a cada hora.",
       "cronInvalid": "Informe uma expressão cron válida de cinco campos antes de salvar.",
       "timezone": "Fuso horário",
       "kinds": {
@@ -1400,6 +1435,9 @@
       "tightenOnly": "Uma exceção só pode restringir a linha de base: pode desativar a varredura ou remover verificações, nunca adicioná-las.",
       "noKinds": "Nenhuma verificação",
       "lastRun": "Última execução {{at}} · {{admitted}} de {{total}} organizações varridas, {{skipped}} ignoradas.",
+      "nextRun": "Próxima execução {{at}} ({{timezone}})",
+      "nextRunInvalid": "Agendamento inválido",
+      "nextRunNone": "Nenhuma execução no próximo ano.",
       "kindLabels": {
         "disk_pressure": "Pressão de disco",
         "stale_agents": "Agentes desatualizados",
@@ -1432,6 +1470,26 @@
     "title": "Agentes de IA",
     "description": "Trabalhadores de IA nomeados, com uma política. Os parceiros definem a linha de base; as organizações só podem restringi-la.",
     "empty": "Nenhum agente ainda.",
+    "kindHints": {
+      "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
+      "patch": "Revisa as correções pendentes e propõe o que instalar.",
+      "helpdesk": "Assume chamados e propõe respostas e próximos passos."
+    },
+    "emptyState": {
+      "title": "Nenhum agente ainda",
+      "description": "Um agente é uma política salva, não um processo em execução: ele observa os alertas, as correções ou os chamados que você escolher, investiga com as ferramentas que você permitir e então propõe uma solução ou a executa. Comece no modo sombra, em que o agente propõe e uma pessoa aprova, para que nada chegue a um dispositivo antes de você autorizar.",
+      "action": "Criar seu primeiro agente"
+    },
+    "modeChoice": {
+      "legend": "O que este agente pode fazer",
+      "off": "Desligado",
+      "offConsequence": "Nada é executado.",
+      "shadow": "Sombra",
+      "shadowConsequence": "Observa e propõe; uma pessoa aprova tudo.",
+      "act": "Ação",
+      "actConsequence": "Executa as operações permitidas sem um clique. Não há reversão automática.",
+      "actUnavailable": "Ainda não está disponível para este agente."
+    },
     "allOrgs": "Todas as organizações",
     "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
     "stateEnabled": "Ativado",
@@ -1477,8 +1535,11 @@
     "sections": {
       "scope": "Quando é executado",
       "permissions": "Permissões",
+      "permissionsDescription": "O que este agente pode tocar. A lista de ferramentas amplia o que ele consegue fazer; os recursos protegidos a restringem e sempre prevalecem.",
       "policyDecide": "Autorização de política não supervisionada",
       "limits": "Limites",
+      "limitsBudget": "Orçamento e alcance",
+      "limitsTiming": "Tempos",
       "notifications": "Notificações",
       "instructions": "Instruções"
     },
@@ -1536,7 +1597,12 @@
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
       "ticketAutonomousWrites": "Gravações autônomas de chamados",
-      "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização"
+      "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização",
+      "enabledHint": "«Ativado» e o modo são chaves separadas e uma execução precisa das duas: com isto desligado nada roda, seja qual for o modo, e no modo Desligado nada roda mesmo com isto ligado.",
+      "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação.",
+      "toolSuggestLabel": "Adicionar uma ferramenta conhecida",
+      "toolSuggestHint": "As sugestões vêm do registro de ações decidíveis por política, que não é a lista completa de ferramentas. Qualquer outra permitida a este agente ainda pode ser digitada acima.",
+      "toolSuggestAdd": "Adicionar"
     },
     "loading": "Carregando agentes…",
     "runs": {
@@ -1742,6 +1808,29 @@
         "draftKinds": {
           "reply": "Rascunho de resposta",
           "resolutionNote": "Rascunho da nota de resolução"
+        },
+        "skippedTitle": "Não aplicado",
+        "skipped": {
+          "item": {
+            "fields": "Atualizações de campos",
+            "link": "Vínculo de dispositivo",
+            "note": "Nota privada",
+            "draftReply": "Rascunho de resposta",
+            "draftResolution": "Rascunho da nota de resolução"
+          },
+          "reason": {
+            "noFieldsProposed": "Nenhum campo foi proposto.",
+            "belowConfidenceFloor": "A confiança ficou abaixo do limite para uma gravação automática.",
+            "humanSet": "Uma pessoa já definiu este campo.",
+            "noDeviceProposed": "Nenhum dispositivo foi proposto.",
+            "deviceAlreadyLinked": "O chamado já tem um dispositivo vinculado.",
+            "noDraftReply": "Nenhuma resposta foi proposta.",
+            "noDraftResolution": "Nenhuma nota de resolução foi proposta.",
+            "resolutionNoteExists": "O chamado já tem uma nota de resolução.",
+            "maxActionsPerRun": "O limite de ações da execução foi atingido primeiro.",
+            "intentError": "Não foi possível criar a alteração.",
+            "ticketNotFound": "O chamado não pôde ser encontrado."
+          }
         }
       }
     },
@@ -1758,6 +1847,7 @@
       "refresh": "Atualizar",
       "refreshing": "Reconstruindo…",
       "retry": "Tentar novamente",
+      "moreActions": "Mais ações",
       "errors": {
         "load": "Não foi possível carregar o relatório de impacto.",
         "rebuild": "Não foi possível enfileirar a reconstrução do relatório.",
@@ -1770,6 +1860,15 @@
         "rebuildComplete": "O relatório de impacto foi reconstruído.",
         "rebuildStillRunning": "A reconstrução ainda está em andamento. Recarregue esta página em alguns minutos para ver os novos números."
       },
+      "emptyState": {
+        "title": "Ainda não há resultados de IA neste período",
+        "description": "Os resultados aparecerão aqui assim que seus agentes de IA avaliarem um alerta, triarem um chamado ou executarem uma correção no modo de observação ou de ação. Amplie o período do relatório acima ou configure um agente para começar.",
+        "action": "Configurar um agente"
+      },
+      "tileGroups": {
+        "judged": "Avaliados",
+        "executed": "Executados"
+      },
       "tiles": {
         "alertsJudged": "Alertas avaliados",
         "noiseFlagged": "Marcados como ruído",
@@ -1777,9 +1876,11 @@
         "draftsSent": "Rascunhos enviados",
         "fixesExecuted": "Correções executadas",
         "promoteEligible": "Operações elegíveis para promoção",
-        "promoteEligibleHint": "Operações com evidências suficientes e sem falhas para serem pré-autorizadas. Abra Configurações → Agentes de IA para revisar e promover.",
+        "promoteEligibleCaption": "Operações com evidências suficientes e sem falhas para serem pré-autorizadas. Abra Configurações → Agentes de IA para revisar e promover.",
         "estTimeSaved": "Tempo economizado estimado",
         "estTimeSavedValue": "{{hours}} horas",
+        "estTimeSavedCaption": "Estimado a partir de um tempo fixo por resultado.",
+        "howEstimatedToggle": "Como isso é estimado?",
         "llmSpend": "Gasto com LLM"
       },
       "weightsTooltipTitle": "Apenas uma estimativa — cada resultado recebe um tempo fixo:",
@@ -1863,6 +1964,8 @@
       "loading": "Carregando as evidências de graduação…",
       "error": "Não foi possível carregar as evidências de graduação.",
       "retry": "Tentar novamente",
+      "noBaselineTitle": "Ainda não há agente de referência",
+      "noBaseline": "O acompanhamento da graduação começa quando existir um agente de referência de todo o parceiro deste tipo. Crie um com o escopo \"Todas as organizações\" para começar a registrar evidências desta organização.",
       "orgRequired": "Escolha uma única organização no seletor de organizações para ver as evidências dela.",
       "empty": "Ainda não há evidências registradas para este agente.",
       "readOnlyNote": "A execução pré-autorizada está desligada nesta instalação; estes números são apenas informativos.",
@@ -1871,6 +1974,22 @@
       "approvalsLink": "Acompanhar esta solicitação na caixa de aprovações",
       "ceilingHint": "As chaves no nível do parceiro são um teto, não uma concessão. O agente de cada organização precisa receber a chave separadamente — pela graduação ou editando o agente daquela organização.",
       "promote": "Promover",
+      "revoke": "Revogar",
+      "emptyTitle": "Ainda não há evidências",
+      "demotedAt": "Revogada em {{at}}",
+      "demotedReason": "Motivo: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "uma tentativa falhou",
+        "recurrence": "o alerta corrigido voltou",
+        "operator": "uma pessoa operadora a revogou"
+      },
+      "revokeConfirm": {
+        "title": "Revogar a pré-autorização",
+        "message": "{{opKey}} volta para a fila de aprovação do agente desta organização. Uma execução em andamento não é afetada; cada uma seguinte volta a exigir uma decisão humana.",
+        "action": "Revogar",
+        "reasonLabel": "Motivo (opcional)",
+        "reasonHint": "Registrado na entrada de auditoria desta revogação. Até 500 caracteres."
+      },
       "verifiedOfThreshold": "{{verified}} de {{threshold}}",
       "columns": {
         "opKey": "Operação",
@@ -1901,11 +2020,17 @@
         "action": "Solicitar aprovação"
       },
       "toasts": {
-        "requested": "Pré-autorização solicitada. Uma segunda pessoa precisa aprová-la antes que esta operação rode sem supervisão, e ela vale somente para execuções futuras."
+        "requested": "Pré-autorização solicitada. Uma segunda pessoa precisa aprová-la antes que esta operação rode sem supervisão, e ela vale somente para execuções futuras.",
+        "revoked": "Pré-autorização revogada. Esta operação volta a exigir uma decisão humana a partir da próxima execução."
       },
       "errors": {
         "promote": "Não foi possível abrir a solicitação de pré-autorização.",
-        "policyDecideDisabled": "A execução pré-autorizada está desligada nesta instalação, por isso esta operação não pode ser promovida."
+        "policyDecideDisabled": "A execução pré-autorizada está desligada nesta instalação, por isso esta operação não pode ser promovida.",
+        "revoke": "Não foi possível revogar a pré-autorização.",
+        "noPromotedGrant": "Esta operação não está pré-autorizada para esta organização, portanto não há o que revogar.",
+        "alreadyDemoted": "Esta operação já voltou para a fila de aprovação.",
+        "alreadyRevoked": "Esta operação já havia sido removida do agente, então nada mudou.",
+        "ambiguousOpKey": "Mais de um agente detém esta operação para esta organização. Abra o agente que deseja alterar e revogue-a por lá."
       },
       "reliability": {
         "caption": "Operações do modo de ação, somente leitura: não são chaves de política, portanto nunca podem ser pré-autorizadas."

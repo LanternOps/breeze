@@ -117,6 +117,22 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     expect(body.data.map((d: any) => d.id)).toContain(deviceId);
   });
 
+  it('authenticated device CSV export materializes the portal user\'s org devices before request scope closes', async () => {
+    const { orgId } = await seedOrgWithDevice('portal-export-host');
+    const portalUser = await seedPortalUser(orgId);
+    const app = buildPortalApp();
+
+    const token = await loginPortal(app, portalUser.email, orgId);
+    const res = await app.request('/portal/devices/export.csv', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    const csv = await res.text();
+    expect(csv).toContain('portal-export-host');
+  });
+
   it('a portal user never sees another org\'s devices (org-scope isolation, not system)', async () => {
     const orgA = await seedOrgWithDevice('portal-orgA-host');
     const orgB = await seedOrgWithDevice('portal-orgB-host');
