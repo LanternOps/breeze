@@ -730,6 +730,70 @@ describe('DevicePatchStatusTab', () => {
     await screen.findByText(/pending approval/i);
   });
 
+  it('links to the fleet Patches page and the device\'s assigned patch policy (#4671)', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {
+        return makeJsonResponse({
+          deviceId,
+          features: {
+            patch: {
+              featureType: 'patch',
+              featurePolicyId: 'feature-policy-1',
+              inlineSettings: null,
+              sourceLevel: 'organization',
+              sourceTargetId: 'org-1',
+              sourcePolicyId: 'policy-abc',
+              sourcePolicyName: 'Standard Patch Ring',
+              sourcePriority: 1
+            }
+          },
+          inheritanceChain: []
+        });
+      }
+      return makeJsonResponse({
+        data: {
+          compliancePercent: 90,
+          pending: [],
+          installed: []
+        }
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    const manageLink = await screen.findByRole('link', { name: /manage patches/i });
+    expect(manageLink.getAttribute('href')).toBe('/patches');
+
+    const policyLink = await screen.findByRole('link', { name: 'Standard Patch Ring' });
+    expect(policyLink.getAttribute('href')).toBe('/configuration-policies/policy-abc');
+
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/configuration-policies/effective/${deviceId}`);
+  });
+
+  it('does not show a policy link when no patch policy is assigned to the device (#4671)', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {
+        return makeJsonResponse({
+          deviceId,
+          features: {},
+          inheritanceChain: []
+        });
+      }
+      return makeJsonResponse({
+        data: {
+          compliancePercent: 90,
+          pending: [],
+          installed: []
+        }
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    await screen.findByRole('link', { name: /manage patches/i });
+    expect(screen.queryByText(/managed by policy/i)).toBeNull();
+  });
+
   it('renders "Installed (date unknown)" when an installed patch has null installedAt (#3589)', async () => {
     const patchData = {
       data: {

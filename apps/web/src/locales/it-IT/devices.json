@@ -1227,6 +1227,8 @@
       "installOsPatches": "Installa patch OS in sospeso ({{count}})",
       "installThirdPartyPatches": "Installa patch di terze parti ({{count}})",
       "lastScan": "Ultima scansione: {{label}}",
+      "managePatches": "Gestisci patch",
+      "managedByPolicy": "Gestito dal criterio:",
       "pendingApprovalCount": "({{count}} in attesa di approvazione)",
       "polling": "Polling...",
       "refreshPatchData": "Aggiorna dati patch",

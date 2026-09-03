@@ -108,6 +108,22 @@ type DevicePatchStatusTabProps = {
   osType?: OSType;
 };
 
+// Minimal shape of the resolved `patch` feature from
+// GET /configuration-policies/effective/:deviceId — only the fields this tab
+// needs to link to the device's assigned patch policy (#4671). See
+// DeviceEffectiveConfigTab.tsx for the full effective-configuration shape.
+type ResolvedPatchFeature = {
+  sourceLevel?: string;
+  sourcePolicyId?: string;
+  sourcePolicyName?: string;
+};
+
+type EffectiveConfigPatchResponse = {
+  features?: {
+    patch?: ResolvedPatchFeature;
+  };
+};
+
 const categoryBadges: Record<string, { label: string; className: string }> = {
   system: { label: 'System', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
   security: { label: 'Security', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
@@ -639,6 +655,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   >(null);
   const [controlNotice, setControlNotice] = useState<{ kind: 'success' | 'error' | 'info'; message: string } | null>(null);
 
+  // The device's assigned patch policy (if any), for the "Managed by policy"
+  // deep link (#4671) — resolved separately from `/devices/:id/patches`
+  // because that endpoint carries no policy/job reference at all.
+  const [patchPolicyLink, setPatchPolicyLink] = useState<{ policyId: string; policyName: string } | null>(null);
+
   // Track per-patch install in progress: patchId -> true
   const [installingPatchIds, setInstallingPatchIds] = useState<Set<string>>(new Set());
 
@@ -690,6 +711,33 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   useEffect(() => {
     fetchPatchStatus();
   }, [fetchPatchStatus]);
+
+  // Resolve the device's effective patch policy so the tab can link straight
+  // to it instead of making a tech search for it (#4671, split from #4280).
+  // Best-effort: a failure here should not block the patch status view, so
+  // errors are swallowed and simply leave the link absent.
+  const fetchPatchPolicyLink = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth(`/configuration-policies/effective/${deviceId}`);
+      if (!response.ok) return;
+      const json: EffectiveConfigPatchResponse = await response.json();
+      const patchFeature = json?.features?.patch;
+      if (patchFeature && patchFeature.sourceLevel !== 'default' && patchFeature.sourcePolicyId) {
+        setPatchPolicyLink({
+          policyId: patchFeature.sourcePolicyId,
+          policyName: patchFeature.sourcePolicyName ?? patchFeature.sourcePolicyId
+        });
+      } else {
+        setPatchPolicyLink(null);
+      }
+    } catch {
+      setPatchPolicyLink(null);
+    }
+  }, [deviceId]);
+
+  useEffect(() => {
+    fetchPatchPolicyLink();
+  }, [fetchPatchPolicyLink]);
 
   const fetchRecentLinuxInstalls = useCallback(async (clear = false) => {
     if (normalizedOsType !== 'linux') {
@@ -1069,16 +1117,36 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 {t('devicePatchStatusTab.perUserNotScanned')}
               </p>
             )}
+            {patchPolicyLink && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('devicePatchStatusTab.controls.managedByPolicy')}{' '}
+                <a
+                  href={`/configuration-policies/${patchPolicyLink.policyId}`}
+                  className="font-medium text-primary hover:underline"
+                >
+                  {patchPolicyLink.policyName}
+                </a>
+              </p>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => refreshPatchView()}
-            disabled={isBusy}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isPolling ? 'animate-spin' : ''}`} />
-            {isPolling ? t('devicePatchStatusTab.controls.polling') : t('devicePatchStatusTab.controls.refreshPatchData')}
-          </button>
+          <div className="flex flex-col items-end gap-2">
+            <button
+              type="button"
+              onClick={() => refreshPatchView()}
+              disabled={isBusy}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isPolling ? 'animate-spin' : ''}`} />
+              {isPolling ? t('devicePatchStatusTab.controls.polling') : t('devicePatchStatusTab.controls.refreshPatchData')}
+            </button>
+            <a
+              href="/patches"
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            >
+              {t('devicePatchStatusTab.controls.managePatches')}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
