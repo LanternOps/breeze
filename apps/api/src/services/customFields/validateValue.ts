@@ -75,6 +75,8 @@ export function validateCustomFieldValue(
       return { ok: true, value };
     }
     case 'number': {
+      // Explicit, though String(true) -> 'true' -> NaN would also reject it:
+      // a bare Number(raw) would coerce true to 1, and this states that is wrong.
       if (typeof raw === 'boolean') return { ok: false, reason: 'invalid_type' };
       const trimmed = typeof raw === 'number' ? raw : String(raw).trim();
       // `Number('')` is 0 — an empty string is not a number.

@@ -82,6 +82,12 @@ export async function applyScriptCustomFieldWrites(
   const definitions = await loadScriptWritableDefinitions(device.orgId);
   const byKey = new Map(definitions.map((d) => [d.fieldKey, d]));
 
+  // Read-modify-write, with no optimistic-concurrency check: two script results
+  // for the same device that overlap can lose one field's write. This mirrors
+  // the PATCH value endpoint (routes/devices/customFieldValues.ts) exactly, is
+  // self-healing (the next run of the same script rewrites the value), and a
+  // version column here would be a device-wide contention point far worse than
+  // the rare lost update. Accepted deliberately, not overlooked.
   const existing = readExistingCustomFields(device.customFields);
   const merged = { ...existing };
 
@@ -113,6 +119,12 @@ export async function applyScriptCustomFieldWrites(
   }
 
   if (applied.length === 0) {
+    // No audit row when nothing landed: an audit event records a CHANGE, and
+    // there was none. The rejection is not lost — it is persisted on
+    // `script_executions.custom_field_result` (surfaced by GET
+    // /scripts/executions/:id) and warned by the caller. Auditing every
+    // rejected marker would also add an agent-driven row per script run to a
+    // table already dominated by agent telemetry.
     return { applied, rejected };
   }
 

@@ -161,10 +161,37 @@ describe('script custom-field write-back (integration)', () => {
     // The transport never lets this happen — but if the deviceId and the org
     // context ever disagree, RLS must win rather than the write landing.
     const summary = await runAsAgent(orgAId, deviceBId, marker('{"ram_slot_type":"DDR5-5600"}'));
-    expect(summary?.applied).toEqual([]);
+    // RLS blocks the SELECT in loadDeviceForWriteBack, so we never even reach
+    // the org_id predicate on the UPDATE. Asserting the reason pins WHICH
+    // layer refused, which is the diagnostic that matters if this regresses.
+    expect(summary).toEqual({ applied: [], rejected: [{ key: '(device)', reason: 'device_not_found' }] });
 
     const [other] = await readDevice(deviceBId);
     expect((other!.customFields as Record<string, unknown> | null)?.ram_slot_type).toBeUndefined();
+  });
+
+  it('does not leak an ORG-scoped definition to a sibling org under the same partner', async () => {
+    // `asset_tag` is owned by org A (org_id = A, partner_id = NULL). Org B
+    // shares org A's partner, so the ONLY thing keeping it out of org B's
+    // definition set is the `isNull(orgId)` guard on the partner-wide arm of
+    // loadScriptWritableDefinitions. Flatten that OR into a bare partner match
+    // and every org-scoped field on the partner becomes fleet-writable.
+    await systemContext(() =>
+      db.insert(customFieldDefinitions).values({
+        orgId: orgAId,
+        partnerId: null,
+        name: 'Org A only',
+        fieldKey: 'org_a_only',
+        type: 'text',
+        scriptWrite: true,
+      }),
+    );
+
+    const summary = await runAsAgent(orgBId, deviceBId, marker('{"org_a_only":"leaked"}'));
+    expect(summary).toEqual({ applied: [], rejected: [{ key: 'org_a_only', reason: 'unknown_field' }] });
+
+    const [row] = await readDevice(deviceBId);
+    expect((row!.customFields as Record<string, unknown> | null)?.org_a_only).toBeUndefined();
   });
 
   it('blocks a field that has not opted into script writes', async () => {

@@ -27,7 +27,12 @@ export type MarkerFailureReason =
   | 'marker_unparseable'
   | 'too_many_lines'
   | 'too_many_keys'
-  | 'marker_too_large';
+  | 'marker_too_large'
+  | 'forbidden_key'
+  // The envelope announced itself but could not be used. Distinct from "no
+  // envelope at all", which is silent because it is the normal case.
+  | 'envelope_unparseable'
+  | 'envelope_unsupported_version';
 
 export interface ExtractedCustomFieldWrites {
   /** Candidate key -> raw value. Empty means "nothing to do". */
@@ -54,13 +59,32 @@ function sample(text: string): string {
   return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
-/** Channel B: `{ customFieldWrites: { schemaVersion: 1, fields: {...} } }`. */
-function readEnvelope(resultEnvelope: unknown): Record<string, unknown> | null {
-  if (!isPlainObject(resultEnvelope)) return null;
+/**
+ * Channel B: `{ customFieldWrites: { schemaVersion: 1, fields: {...} } }`.
+ *
+ * Three outcomes, not two. `absent` means the result simply carried no
+ * write-back request — the normal case, and silent. Anything else means the
+ * envelope announced itself and then could not be used, which must be reported
+ * or a version-skewed agent looks identical to a script with nothing to say.
+ */
+type EnvelopeRead =
+  | { kind: 'absent' }
+  | { kind: 'ok'; fields: Record<string, unknown> }
+  | { kind: 'failed'; reason: 'envelope_unparseable' | 'envelope_unsupported_version' };
+
+function readEnvelope(resultEnvelope: unknown): EnvelopeRead {
+  if (!isPlainObject(resultEnvelope)) return { kind: 'absent' };
+  if (!('customFieldWrites' in resultEnvelope)) return { kind: 'absent' };
+
   const writes = resultEnvelope.customFieldWrites;
-  if (!isPlainObject(writes)) return null;
-  if (writes.schemaVersion !== 1) return null;
-  return isPlainObject(writes.fields) ? writes.fields : null;
+  if (!isPlainObject(writes)) return { kind: 'failed', reason: 'envelope_unparseable' };
+  if (writes.schemaVersion !== 1) {
+    return { kind: 'failed', reason: 'envelope_unsupported_version' };
+  }
+  if (!isPlainObject(writes.fields)) {
+    return { kind: 'failed', reason: 'envelope_unparseable' };
+  }
+  return { kind: 'ok', fields: writes.fields };
 }
 
 /** Adds `parsed`'s own entries to `candidates`, honouring the distinct-key cap. */
@@ -70,7 +94,10 @@ function collectFields(
   failures: ExtractedCustomFieldWrites['failures'],
 ): void {
   for (const [key, value] of Object.entries(parsed)) {
-    if (FORBIDDEN_KEYS.has(key)) continue;
+    if (FORBIDDEN_KEYS.has(key)) {
+      failures.push({ reason: 'forbidden_key', sample: key });
+      continue;
+    }
     if (candidates.size >= MAX_MARKER_KEYS && !candidates.has(key)) {
       failures.push({ reason: 'too_many_keys', sample: key });
       continue;
@@ -86,14 +113,27 @@ export function extractCustomFieldWrites(
   const failures: ExtractedCustomFieldWrites['failures'] = [];
   const candidates = new Map<string, unknown>();
 
-  const envelopeFields = readEnvelope(resultEnvelope);
-  if (envelopeFields) {
-    collectFields(envelopeFields, candidates, failures);
+  const envelope = readEnvelope(resultEnvelope);
+  if (envelope.kind === 'ok') {
+    collectFields(envelope.fields, candidates, failures);
     return { candidates, failures, channel: 'envelope' };
+  }
+  if (envelope.kind === 'failed') {
+    // Reported rather than swallowed — a version-skewed agent must not look
+    // identical to a script with nothing to say. We still fall through to the
+    // stdout marker below: during a fleet rollout an agent may emit both, and
+    // a channel the API DOES understand beats refusing the write outright.
+    failures.push({ reason: envelope.reason, sample: 'customFieldWrites' });
   }
 
   if (!stdout || !stdout.includes(CUSTOM_FIELD_MARKER)) {
-    return { candidates, failures, channel: 'none' };
+    // No usable stdout either. If the envelope announced itself and failed,
+    // that failure is the whole story and the channel is 'envelope'.
+    return {
+      candidates,
+      failures,
+      channel: envelope.kind === 'failed' ? 'envelope' : 'none',
+    };
   }
 
   let lineCount = 0;

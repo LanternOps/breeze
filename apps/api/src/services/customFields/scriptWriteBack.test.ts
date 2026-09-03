@@ -167,6 +167,36 @@ describe('applyScriptCustomFieldWrites', () => {
     expect(JSON.stringify(auditCalls[0])).not.toContain('secret_soup');
   });
 
+  it('reports device_not_found and writes no audit when the device row is invisible', async () => {
+    // RLS refused the SELECT, or the device was deleted concurrently.
+    selectDevice.mockResolvedValue(null);
+    const out = await applyScriptCustomFieldWrites(input(marker('{"a":1}')));
+    expect(out).toEqual({ applied: [], rejected: [{ key: '(device)', reason: 'device_not_found' }] });
+    expect(selectDefinitions).not.toHaveBeenCalled();
+    expect(updateDevice).not.toHaveBeenCalled();
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it('reports device_not_found and writes no audit when the UPDATE matches no row', async () => {
+    // The device vanished between the read and the write. `applied` must be
+    // reverted — claiming a write that did not land is worse than reporting it.
+    selectDefinitions.mockResolvedValue([
+      { fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+    ]);
+    updateDevice.mockResolvedValue(false);
+    const out = await applyScriptCustomFieldWrites(input(marker('{"ram_slot_type":"DDR5-5600"}')));
+    expect(out).toEqual({ applied: [], rejected: [{ key: '(device)', reason: 'device_not_found' }] });
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  it('carries an unsupported-envelope failure into the rejected list', async () => {
+    selectDefinitions.mockResolvedValue([]);
+    const out = await applyScriptCustomFieldWrites(
+      input(undefined, { customFieldWrites: { schemaVersion: 2, fields: { a: 1 } } }),
+    );
+    expect(out?.rejected).toEqual([{ key: '(marker)', reason: 'envelope_unsupported_version' }]);
+  });
+
   it('does not audit when nothing was applied', async () => {
     selectDefinitions.mockResolvedValue([]);
     await applyScriptCustomFieldWrites(input(marker('{"nope":"x"}')));

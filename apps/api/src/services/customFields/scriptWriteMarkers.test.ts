@@ -91,6 +91,39 @@ describe('extractCustomFieldWrites', () => {
     expect(out.candidates.size).toBe(0);
   });
 
+  it('reports an envelope whose schemaVersion the API does not recognise', () => {
+    // A Wave-3+ agent ahead of an API upgrade emits schemaVersion 2 and NO
+    // stdout fallback. Returning a bare `none` here would be indistinguishable
+    // from "this script had nothing to say" — the module's never-silent
+    // contract has to cover the envelope path too.
+    const out = extractCustomFieldWrites(undefined, {
+      customFieldWrites: { schemaVersion: 2, fields: { a: 1 } },
+    });
+    expect(out.candidates.size).toBe(0);
+    expect(out.failures[0]?.reason).toBe('envelope_unsupported_version');
+  });
+
+  it('reports an envelope whose fields payload is malformed', () => {
+    const out = extractCustomFieldWrites(undefined, {
+      customFieldWrites: { schemaVersion: 1, fields: [1, 2] },
+    });
+    expect(out.candidates.size).toBe(0);
+    expect(out.failures[0]?.reason).toBe('envelope_unparseable');
+  });
+
+  it('stays silent when the result envelope simply has no customFieldWrites key', () => {
+    // The overwhelmingly common case. Must NOT be reported as a failure.
+    const out = extractCustomFieldWrites('plain output', { somethingElse: true });
+    expect(out.channel).toBe('none');
+    expect(out.failures).toEqual([]);
+  });
+
+  it('records a rejection when a forbidden prototype key is dropped', () => {
+    const out = extractCustomFieldWrites(marker('{"__proto__":{"polluted":1},"ok":"v"}'), undefined);
+    expect(Object.fromEntries(out.candidates)).toEqual({ ok: 'v' });
+    expect(out.failures.some((f) => f.reason === 'forbidden_key')).toBe(true);
+  });
+
   it('ignores inherited Object.prototype keys in an envelope payload', () => {
     const out = extractCustomFieldWrites(undefined, {
       customFieldWrites: { schemaVersion: 1, fields: JSON.parse('{"__proto__":{"polluted":1},"ok":"v"}') },

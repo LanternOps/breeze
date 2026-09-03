@@ -363,6 +363,10 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         });
       }
     } catch (err) {
+      // The summary is discarded rather than partially persisted: a half-built
+      // summary would misreport what actually landed. Engineering still sees
+      // the failure via Sentry; the operator sees a run with no write-back,
+      // which is the honest reading of "we do not know what happened".
       console.error(`[AgentWs] Custom-field write-back failed for command ${command.id}:`, err);
       captureException(err, undefined, { commandId: command.id, agentId });
       customFieldResult = null;

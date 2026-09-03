@@ -28,6 +28,27 @@ describe('validateCustomFieldValue', () => {
     expect(validateCustomFieldValue(num, 'four')).toEqual({ ok: false, reason: 'invalid_type' });
   });
 
+  it('rejects a boolean for number rather than coercing true to 1', () => {
+    // Number(true) === 1. Without the explicit boolean guard a script emitting
+    // a flag for a numeric field silently stores 0/1 instead of being rejected.
+    expect(validateCustomFieldValue(num, true)).toEqual({ ok: false, reason: 'invalid_type' });
+    expect(validateCustomFieldValue(num, false)).toEqual({ ok: false, reason: 'invalid_type' });
+  });
+
+  it('rejects an empty/whitespace string for number rather than coercing to 0', () => {
+    // Number('') === 0 and Number('   ') === 0.
+    expect(validateCustomFieldValue(num, '')).toEqual({ ok: false, reason: 'invalid_type' });
+    expect(validateCustomFieldValue(num, '   ')).toEqual({ ok: false, reason: 'invalid_type' });
+  });
+
+  it('rejects non-finite numeric input', () => {
+    expect(validateCustomFieldValue(num, Number.NaN)).toEqual({ ok: false, reason: 'invalid_type' });
+    expect(validateCustomFieldValue(num, Number.POSITIVE_INFINITY)).toEqual({
+      ok: false,
+      reason: 'invalid_type',
+    });
+  });
+
   it('enforces number min/max from options', () => {
     expect(validateCustomFieldValue(num, 9)).toEqual({ ok: false, reason: 'out_of_range' });
     expect(validateCustomFieldValue(num, -1)).toEqual({ ok: false, reason: 'out_of_range' });
