@@ -2,7 +2,7 @@ import { Job, Worker } from 'bullmq';
 import type { AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
@@ -1196,10 +1196,19 @@ async function loadRunAndAgent(runId: string): Promise<{
  * | expired         | `expired`   | no                           | terminal, nobody decided                                        |
  * | anything else   | `update`    | no                           | unknown/pending — say only what is certain, and never share a key with a real outcome |
  *
- * "no" means only that the two do not share a key. `rejected`/`cancelled`/
- * `expired` are mutually exclusive with `granted` in practice (a rejected
- * intent is never released), so the sequence that actually produces two bells
- * is `granted` -> `failed`, which is exactly the correction that must survive.
+ * "no" means only that the two do not share a key — not that both bells
+ * normally ring. `rejected` genuinely cannot follow `granted` (a rejected
+ * intent is never released), but `cancelled` CAN:
+ * `cancelActionIntent` transitions from `['pending_approval', 'approved']`
+ * (intentService.ts), so an approver can withdraw an intent that already rang
+ * a `granted` bell. `granted` -> `failed` and `granted` -> `cancelled` are
+ * therefore both real corrections that must survive the dedupe.
+ *
+ * Caveat worth knowing when reading this table: a cancel writes NO outbox row
+ * today, so this worker only ever OBSERVES `cancelled` on a late delivery of
+ * some other event (an `intent_expired` row processed after the cancel
+ * landed). Keeping `cancelled` in its own class is what makes that late
+ * delivery able to correct the record; it is not what makes a cancel notify.
  *
  * Every unknown status shares the one `update` key on purpose: they all render
  * the same "changed state" copy, so a second one is noise, not news.
@@ -1207,20 +1216,27 @@ async function loadRunAndAgent(runId: string): Promise<{
  * Repeating the SAME class always dedupes — that is what makes the intentional
  * duplicate delivery silent.
  */
+const OUTCOME_CLASS_BY_STATUS: Record<ActionIntentStatus, string> = {
+  // Not yet an outcome. Shares the catch-all key so the generic "changed
+  // state" copy can never ring twice.
+  pending_approval: 'update',
+  approved: 'granted',
+  executing: 'granted',
+  completed: 'granted',
+  failed: 'failed',
+  rejected: 'rejected',
+  cancelled: 'cancelled',
+  expired: 'expired',
+};
+
 function outcomeNotificationClass(status: string): string {
-  switch (status) {
-    case 'approved':
-    case 'executing':
-    case 'completed':
-      return 'granted';
-    case 'failed':
-    case 'rejected':
-    case 'cancelled':
-    case 'expired':
-      return status;
-    default:
-      return 'update';
-  }
+  // The Record is exhaustive over ActionIntentStatus ON PURPOSE: a 9th status
+  // added to the enum is a COMPILE error here until somebody decides whether
+  // it corrects an earlier bell or is the same outcome seen again. The runtime
+  // fallback is for a value the DB holds that the type does not (drift, or a
+  // rollback across a status-adding deploy) — not a substitute for that
+  // decision.
+  return OUTCOME_CLASS_BY_STATUS[status as ActionIntentStatus] ?? 'update';
 }
 
 /**
