@@ -703,4 +703,38 @@ describe('manage_maintenance_windows — site-axis read scoping (#3654)', () => 
 
     expect(body.window.id).toBe('w-a');
   });
+
+  it('filters BOTH the active and the scheduled sets in active_now', async () => {
+    // active_now runs two queries and merges them; a filter applied to only one
+    // would leak the other. Forbidden window comes back in the ACTIVE set.
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      const rows = call++ === 0 ? [winForbidden] : [winA];
+      return { from: () => ({ where: () => Promise.resolve(rows) }) };
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')({ action: 'active_now' }, makeAuth(['site-A'])) as string;
+    const body = JSON.parse(raw);
+
+    expect(body.activeWindows.map((w: { id: string }) => w.id)).toEqual(['w-a']);
+    expect(body.count).toBe(1);
+    expect(raw).not.toContain('site-FORBIDDEN');
+    expect(body.activeWindows[0]).not.toHaveProperty('siteIds');
+  });
+
+  it('narrows a spanning window to the caller\u2019s own sites on get', async () => {
+    const spanning = { ...winA, id: 'w-span', siteIds: ['site-A', 'site-FORBIDDEN'] };
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([spanning]) }) }) };
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) };
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-span' }, makeAuth(['site-A'])
+    ) as string;
+
+    expect(JSON.parse(raw).window.siteIds).toEqual(['site-A']);
+    expect(raw).not.toContain('site-FORBIDDEN');
+  });
 });

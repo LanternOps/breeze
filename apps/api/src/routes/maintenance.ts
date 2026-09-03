@@ -17,7 +17,7 @@ import {
   MAINTENANCE_SITE_SCOPE_MESSAGES,
   checkMaintenanceTargetsWithinSiteScope,
   filterWindowsToSiteScope,
-  isWindowVisibleInSiteScope,
+  scopeWindowForRead,
   type MaintenanceWindowTarget,
 } from '../services/maintenanceSiteScope';
 
@@ -511,8 +511,10 @@ maintenanceRoutes.get(
     }
 
     // Site axis (#3654): a window that reaches none of the caller's sites is
-    // not theirs to see.
-    if (!(await isWindowVisibleInSiteScope(window, requestPermissions(c)))) {
+    // not theirs to see, and a visible one is returned with its target arrays
+    // narrowed to what they may see.
+    const scopedWindow = await scopeWindowForRead(window, requestPermissions(c));
+    if (!scopedWindow) {
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 
@@ -529,7 +531,7 @@ maintenanceRoutes.get(
       .orderBy(asc(maintenanceOccurrences.startTime))
       .limit(10);
 
-    return c.json({ ...window, upcomingOccurrences: occurrences });
+    return c.json({ ...scopedWindow, upcomingOccurrences: occurrences });
   }
 );
 
@@ -783,8 +785,8 @@ maintenanceRoutes.get(
     }
 
     // Site axis (#3654): a window that reaches none of the caller's sites is
-    // not theirs to see.
-    if (!(await isWindowVisibleInSiteScope(window, requestPermissions(c)))) {
+    // not theirs to see, and neither are its occurrences.
+    if (!(await scopeWindowForRead(window, requestPermissions(c)))) {
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 

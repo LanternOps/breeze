@@ -156,14 +156,23 @@ export async function checkMaintenanceTargetsWithinSiteScope(
 }
 
 /**
- * Read gate. Narrows a window list to those a site-restricted caller may see:
- * a window is visible when it can reach at least one of their sites.
+ * Read gate. Narrows a window list to those a site-restricted caller may see,
+ * AND redacts each surviving window's target arrays down to the entries that
+ * caller can actually see.
  *
- * Deliberately INTERSECTION, not the containment the write gate demands. A
- * window spanning Site A and Site B really does suppress the Site-A tech's own
- * devices; hiding it would leave them unable to explain why their fleet is in
- * maintenance. They still cannot mutate it. `targetType: 'all'` windows reach
- * every site and so stay visible for the same reason.
+ * Visibility is deliberately INTERSECTION, not the containment the write gate
+ * demands. A window spanning Site A and Site B really does suppress the Site-A
+ * tech's own devices; hiding it would leave them unable to explain why their
+ * fleet is in maintenance. They still cannot mutate it. `targetType: 'all'`
+ * windows reach every site and so stay visible for the same reason.
+ *
+ * Redaction closes the other half: visibility alone would hand the Site-A tech
+ * Site B's site/group/device UUIDs, identifiers the site axis exists to keep
+ * from them. `targetType` is left intact, so a window that reaches beyond the
+ * caller still reads as `all`/`site`/`group`/`device` rather than pretending to
+ * be scoped to them — and any attempt to mutate it is refused by the write gate
+ * with "Access to one or more target sites denied", which is where the caller
+ * learns its true reach.
  *
  * Resolution is batched — two queries for the whole list, not two per window.
  */
@@ -203,20 +212,41 @@ export async function filterWindowsToSiteScope<T extends MaintenanceWindowTarget
   const reaches = (siteId: string | null | undefined): boolean =>
     typeof siteId === 'string' && allowed.has(siteId);
 
-  return windows.filter((window) => {
-    if (window.targetType === 'all') return true;
-    if (uniqueIds(window.siteIds).some(reaches)) return true;
-    if (uniqueIds(window.groupIds).some((id) => reaches(groupSite.get(id)))) return true;
-    if (uniqueIds(window.deviceIds).some((id) => reaches(deviceSite.get(id)))) return true;
-    return false;
-  });
+  const scoped: T[] = [];
+  for (const window of windows) {
+    const siteIds = (window.siteIds ?? []).filter(reaches);
+    const groupIds = (window.groupIds ?? []).filter((id) => reaches(groupSite.get(id)));
+    const deviceIds = (window.deviceIds ?? []).filter((id) => reaches(deviceSite.get(id)));
+
+    // `all` reaches every site, so it is visible without matching a target id.
+    const visible =
+      window.targetType === 'all' ||
+      siteIds.length > 0 ||
+      groupIds.length > 0 ||
+      deviceIds.length > 0;
+    if (!visible) continue;
+
+    // Preserve null-vs-empty so a caller cannot tell "window has no site
+    // targets" from "none of its site targets are yours".
+    scoped.push({
+      ...window,
+      siteIds: window.siteIds === null || window.siteIds === undefined ? window.siteIds : siteIds,
+      groupIds: window.groupIds === null || window.groupIds === undefined ? window.groupIds : groupIds,
+      deviceIds: window.deviceIds === null || window.deviceIds === undefined ? window.deviceIds : deviceIds,
+    });
+  }
+  return scoped;
 }
 
-/** Single-row form of {@link filterWindowsToSiteScope}, for detail routes. */
-export async function isWindowVisibleInSiteScope(
-  window: MaintenanceWindowTarget,
+/**
+ * Single-row form of {@link filterWindowsToSiteScope}, for detail routes.
+ * Returns the window with its target arrays redacted to the caller's scope, or
+ * `null` when the window reaches none of their sites.
+ */
+export async function scopeWindowForRead<T extends MaintenanceWindowTarget>(
+  window: T,
   perms: Pick<UserPermissions, 'allowedSiteIds'> | undefined,
-): Promise<boolean> {
-  const visible = await filterWindowsToSiteScope([window], perms);
-  return visible.length > 0;
+): Promise<T | null> {
+  const [scoped] = await filterWindowsToSiteScope([window], perms);
+  return scoped ?? null;
 }
