@@ -195,6 +195,42 @@ export function hasNoTransactionDirective(content: string): boolean {
 }
 
 /**
+ * Every SQL function/procedure name a migration file (re)defines via
+ * `CREATE FUNCTION` / `CREATE OR REPLACE FUNCTION` / `CREATE PROCEDURE` /
+ * `CREATE OR REPLACE PROCEDURE`.
+ *
+ * Names are matched case-insensitively and returned lowercase, schema-
+ * qualified exactly as written (e.g. `public.breeze_device_child_orgid_tables`).
+ * Line comments (`-- ...`) are stripped first so a comment that merely
+ * *mentions* a `CREATE ... FUNCTION` statement (documentation, changelog
+ * prose) is never mistaken for a real definition.
+ *
+ * This is a name-detector, not a SQL parser: it does not understand dollar-
+ * quoted bodies, so a `--` sequence inside a string literal or a PL/pgSQL
+ * comment would also be stripped. That's fine for this purpose — the only
+ * thing scanned for is the `CREATE ... FUNCTION <name>` header itself, which
+ * migrations in this repo never construct from a string literal.
+ *
+ * Used by `__tests__/integration/replayMigration.ts` to find every LATER
+ * migration that must be re-applied after a suite replays an EARLIER one by
+ * path, so the database ends up in the same state a fresh `autoMigrate` run
+ * produces instead of reverting a function to an older body for the rest of
+ * that vitest process (#3205 W07 / PR #4838).
+ *
+ * Exported for unit testing.
+ */
+export function extractDefinedFunctionNames(content: string): string[] {
+  const withoutLineComments = content.replace(/--[^\n]*/g, '');
+  const pattern = /\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\s+("?[\w.]+"?)/gi;
+  const names = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(withoutLineComments)) !== null) {
+    names.add(match[1]!.replace(/"/g, '').toLowerCase());
+  }
+  return [...names].sort();
+}
+
+/**
  * Split a SQL file into individual statements for no-transaction execution.
  *
  * Postgres's simple-query protocol wraps multi-statement single queries

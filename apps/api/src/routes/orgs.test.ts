@@ -4929,7 +4929,9 @@ describe('org routes', () => {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {}, invoiceDeviceAppendix: true,
+              }])
             })
           })
         };
@@ -4939,7 +4941,9 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+      expect(body).toMatchObject({
+        id: 'partner-123', name: 'Acme MSP', slug: 'acme', invoiceDeviceAppendix: true,
+      });
 
       expect(selectedColumns).toBeDefined();
       const keys = Object.keys(selectedColumns!);
@@ -4951,6 +4955,7 @@ describe('org routes', () => {
         'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
         'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
         'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'invoiceDeviceAppendix',
         'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
       ]) {
         expect(keys).toContain(expected);

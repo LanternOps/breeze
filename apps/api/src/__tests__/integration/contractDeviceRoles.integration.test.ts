@@ -79,11 +79,11 @@ describe('device-role contract counting (breeze_app, real DB) #3205', () => {
     const snap = await withSystemDbAccessContext(() => snapshotContractDevices(orgId));
     const sorted = [...snap].sort((a, b) => a.id.localeCompare(b.id));
     expect(sorted).toEqual([
-      { id: deviceIds.s1, role: 'server', siteId: siteAId },
-      { id: deviceIds.sw1, role: 'switch', siteId: siteBId },
-      { id: deviceIds.u1, role: 'unknown', siteId: siteAId },
-      { id: deviceIds.w1, role: 'workstation', siteId: siteAId },
-      { id: deviceIds.w2, role: 'workstation', siteId: siteBId },
+      { id: deviceIds.s1, hostname: 's1', role: 'server', siteId: siteAId },
+      { id: deviceIds.sw1, hostname: 'sw1', role: 'switch', siteId: siteBId },
+      { id: deviceIds.u1, hostname: 'u1', role: 'unknown', siteId: siteAId },
+      { id: deviceIds.w1, hostname: 'w1', role: 'workstation', siteId: siteAId },
+      { id: deviceIds.w2, hostname: 'w2', role: 'workstation', siteId: siteBId },
     ].sort((a, b) => a.id!.localeCompare(b.id!)));
     expect(snap).toHaveLength(5);
   });

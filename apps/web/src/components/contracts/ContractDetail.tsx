@@ -30,6 +30,7 @@ import ContractDocumentsSection from './ContractDocumentsSection';
 import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverageNotice';
 import { LINE_TYPE_LABELS } from './lineTypes';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
+import PeriodOutcomeRow from './PeriodOutcomeRow';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -437,12 +438,13 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                   <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.period')}</th>
                   <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.generated')}</th>
                   <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.invoice')}</th>
+                  <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.outcome')}</th>
                 </tr>
               </thead>
               <tbody>
                 {periods.length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="px-3 py-8 text-center text-sm text-muted-foreground" data-testid="contract-periods-empty">
+                    <td colSpan={4} className="px-3 py-8 text-center text-sm text-muted-foreground" data-testid="contract-periods-empty">
                       {t('contracts.contractDetail.billingHistory.empty')}
                     </td>
                   </tr>
@@ -464,6 +466,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                           <span className="text-muted-foreground">—</span>
                         )}
                       </td>
+                      <PeriodOutcomeRow contractId={contract.id} orgId={contract.orgId} period={p} />
                     </tr>
                   ))
                 )}

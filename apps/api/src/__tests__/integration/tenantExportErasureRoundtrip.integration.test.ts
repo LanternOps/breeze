@@ -169,6 +169,52 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     VALUES (${contractId}, ${orgA}, 'per_device_group', 'VIP', 40.00, false, ${groupId}, ${'Roundtrip group ' + suffix})
   `);
 
+  // #3205 W07: one billed-device evidence row plus its claimed-period outcome.
+  // The export must retain the scalar evidence while deliberately omitting the
+  // outcome's two open jsonb containers; erasure must remove both rows.
+  const invoiceId = crypto.randomUUID();
+  const invoiceLineId = crypto.randomUUID();
+  const billingPeriodId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO invoices (id, partner_id, org_id, status, currency_code, device_appendix, evidence_version)
+    VALUES (${invoiceId}, ${partnerId}, ${orgA}, 'draft', 'USD', true, 1)
+  `);
+  await db.execute(sql`
+    INSERT INTO invoice_lines (
+      id, invoice_id, org_id, source_type, source_contract_id, description,
+      quantity, unit_price, line_total
+    ) VALUES (
+      ${invoiceLineId}, ${invoiceId}, ${orgA}, 'contract', ${contractId},
+      'Endpoints', 1.00, 10.00, 10.00
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO invoice_line_devices (
+      invoice_line_id, invoice_id, org_id, device_id, hostname, device_role,
+      site_id, counted_as
+    ) VALUES (
+      ${invoiceLineId}, ${invoiceId}, ${orgA}, ${deviceId}, 'roundtrip-01',
+      'server', ${siteA1}, 'included'
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_billing_periods (
+      id, contract_id, org_id, period_start, period_end, invoice_id
+    ) VALUES (
+      ${billingPeriodId}, ${contractId}, ${orgA}, '2026-07-01', '2026-07-31', ${invoiceId}
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_billing_period_outcomes (
+      contract_billing_period_id, org_id, contract_id, invoice_id,
+      snapshot_device_total, uncovered_total, flagged_total, billed_overage_total,
+      uncovered_by_role, overages
+    ) VALUES (
+      ${billingPeriodId}, ${orgA}, ${contractId}, ${invoiceId},
+      3, 2, 0, 0, '{"server":2}'::jsonb, '[]'::jsonb
+    )
+  `);
+
   return {
     partnerId,
     orgA,
@@ -183,6 +229,12 @@ function rowCount(db: ReturnType<typeof getTestDb>, table: string, orgId: string
   return db
     .execute(sql`SELECT count(*)::int AS n FROM ${sql.raw(`"${table}"`)} WHERE org_id = ${orgId}`)
     .then((r) => (r as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+}
+
+async function archiveTable(archive: JSZip, table: string): Promise<Array<Record<string, unknown>>> {
+  const entry = archive.file(`${table}.json`);
+  expect(entry, `${table}.json must be present in the tenant archive`).toBeTruthy();
+  return JSON.parse(await entry!.async('string')) as Array<Record<string, unknown>>;
 }
 
 describe('tenant export + erasure round-trip (live DB)', () => {
@@ -218,9 +270,9 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     }
     expect(manifest.orgId).toBe(orgA);
 
-    const zip = await JSZip.loadAsync(zipBuffer);
+    const archive = await JSZip.loadAsync(zipBuffer);
     const portalBrandingRows = JSON.parse(
-      await zip.file('portal_branding.json')!.async('string'),
+      await archive.file('portal_branding.json')!.async('string'),
     ) as Array<Record<string, unknown>>;
     expect(portalBrandingRows).toEqual([
       expect.objectContaining({
@@ -234,7 +286,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     ]);
 
     const contractLines = JSON.parse(
-      await zip.file('contract_lines.json')!.async('string'),
+      await archive.file('contract_lines.json')!.async('string'),
     ) as Array<Record<string, unknown>>;
     const allowanceLine = contractLines.find((line) => line.description === 'Network gear');
     expect(allowanceLine).toMatchObject({
@@ -245,8 +297,20 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const groupLine = contractLines.find((line) => line.device_group_id === groupId);
     expect(groupLine?.device_group_id).toBe(groupId);
     expect(groupLine?.device_group_name).toBe(groupName);
+
+    // #3205 W07: evidence is ordinary exported customer data...
+    const evidence = await archiveTable(archive, 'invoice_line_devices');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({ hostname: 'roundtrip-01', device_role: 'server', counted_as: 'included' });
+    // ...but the outcome row's jsonb digests are DELIBERATELY absent (decision 3).
+    const outcome = await archiveTable(archive, 'contract_billing_period_outcomes');
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0]).toMatchObject({ uncovered_total: 2, flagged_total: 0, billed_overage_total: 0, snapshot_device_total: 3 });
+    expect(outcome[0]).not.toHaveProperty('uncovered_by_role');
+    expect(outcome[0]).not.toHaveProperty('overages');
+
     const serializedZip = await Promise.all(
-      Object.values(zip.files).map((entry) => entry.async('string')),
+      Object.values(archive.files).map((entry) => entry.async('string')),
     ).then((entries) => entries.join('\n'));
     for (const prohibitedKey of [
       'password_hash',
@@ -284,6 +348,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(1);
     expect(await rowCount(db, 'portal_branding', orgA)).toBe(1);
     expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
+    expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
+    expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(1);
 
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -294,6 +360,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'contract_lines', orgA)).toBe(0);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
     expect(await rowCount(db, 'portal_branding', orgA)).toBe(0);
+    expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(0);
     expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
     expect(stats.tablesDeleted.portal_branding).toBe(1);
     const orgARows = (await db.execute(
@@ -318,6 +386,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.tablesDeleted['device_groups']).toBe(3);
     expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
     expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(2);
+    expect(stats.tablesDeleted['invoice_line_devices']).toBe(1);
+    expect(stats.tablesDeleted['contract_billing_period_outcomes']).toBe(1);
     expect(stats.tablesDeleted['organizations']).toBe(1);
     // device_mtls_certificates is deleted explicitly (via its cascade-list
     // registration), not merely as a side effect of the devices row's
