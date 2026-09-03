@@ -78,11 +78,128 @@ type desktopDialogRun struct {
 	// started is false when the process never ran at all: zenity missing, the
 	// privilege drop refused, fork failed. Nothing reached a person.
 	started bool
-	// timedOut is true when the agent's own context killed it. The dialog was
-	// on screen for its whole window, so the user WAS warned.
+	// timedOut is true when the agent's own context killed the process, as
+	// opposed to zenity honouring its own --timeout and exiting 5.
 	timedOut bool
 	exitCode int
 	stdout   string
+	// stderr is what the child complained about. It is EVIDENCE, not just a log
+	// line: a GTK failure to reach the display exits 1, exactly like a user
+	// pressing Cancel, and this is the only thing that tells them apart.
+	stderr string
+	// elapsed is how long the process lived. Also evidence, and the backstop
+	// for a display failure whose message this code has never seen.
+	elapsed time.Duration
+}
+
+// minDialogRenderTime is the shortest a dialog can plausibly have been on
+// screen before a human dismissed it.
+//
+// A GTK program that cannot reach the display exits within a few tens of
+// milliseconds. A person has to notice a window that just appeared, move to it
+// and click — which does not happen in half a second. So an exit that is
+// AMBIGUOUS on its code alone stops being ambiguous once the clock is
+// consulted: fast means it never rendered, slow means somebody dismissed it.
+const minDialogRenderTime = 500 * time.Millisecond
+
+// displayFailureSignatures are the phrases GTK, GDK and Xlib print when they
+// cannot reach a display or a session bus. Matched case-insensitively against
+// the child's stderr.
+//
+// This list will always be incomplete — toolkits reword their errors — which
+// is precisely why minDialogRenderTime exists alongside it rather than instead
+// of it. Either signal alone is enough to conclude nothing was shown.
+var displayFailureSignatures = []string{
+	"cannot open display",
+	"unable to open display",
+	"failed to open display",
+	"could not connect to display",
+	"unable to init server",
+	"gtk initialization failed",
+	"no protocol specified",
+	"cannot autolaunch d-bus",
+	"failed to connect to the compositor",
+	"error: xdg_runtime_dir",
+}
+
+// looksLikeDisplayFailure reports whether the child's stderr says it never
+// reached a screen.
+func looksLikeDisplayFailure(stderr string) bool {
+	if stderr == "" {
+		return false
+	}
+	lower := strings.ToLower(stderr)
+	for _, sig := range displayFailureSignatures {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// dialogFailedToRender resolves the ambiguous exit.
+//
+// zenity gives the Cancel button, the window close box, the ESC key AND a
+// failure to open the display all the same exit status of 1. Reading that as a
+// dismissal — which is what the first version of this did — means that on any
+// box where the display cannot be reached at prompt time (a stale Xauthority
+// after a re-login, a compositor restarting, a runtime-dir race) the manager is
+// told the user saw a dialog, suppresses its fallback notification, and reboots
+// a machine whose user was never warned at all. That is the #3197 regression,
+// reintroduced silently and with no log trail.
+//
+// So the ambiguity is resolved from two independent signals, and either one is
+// enough: what the child said on stderr, and how long it lived.
+func dialogFailedToRender(run desktopDialogRun) bool {
+	if looksLikeDisplayFailure(run.stderr) {
+		return true
+	}
+	// elapsed is only zero when a caller did not measure it; treat that as "no
+	// evidence" rather than as an instantaneous exit.
+	return run.elapsed > 0 && run.elapsed < minDialogRenderTime
+}
+
+// classifyDialogRun turns the raw result of running a dialog into the evidence
+// zenityResult reasons over.
+//
+// Untagged and free of *exec.Cmd on purpose: this hop — deciding whether a
+// killed process, a non-zero exit and an I/O failure mean the same thing — is
+// where the shown/not-shown distinction is actually won or lost, and it is
+// worth nothing if it lives in a file no test can construct inputs for.
+//
+// hasExitStatus distinguishes "the process exited and told us a code" from
+// "Wait failed for some other reason". ctxExpired is the agent's own deadline.
+// A REAL exit status always wins over ctxExpired: a child that exited cleanly
+// in the same instant the deadline fired made a decision, and discarding it in
+// favour of "timed out" would throw away a click the user really made.
+func classifyDialogRun(started, hasExitStatus, ctxExpired bool, exitCode int, stdout, stderr string, elapsed time.Duration) desktopDialogRun {
+	if !started {
+		return desktopDialogRun{}
+	}
+	run := desktopDialogRun{
+		started: true,
+		stdout:  stdout,
+		stderr:  stderr,
+		elapsed: elapsed,
+	}
+	switch {
+	case hasExitStatus && exitCode >= 0:
+		// A genuine exit status, including 0. Authoritative.
+		run.exitCode = exitCode
+	case ctxExpired:
+		// Killed by our deadline (a signal death reports exitCode -1), or Wait
+		// gave up on the pipes after it.
+		run.timedOut = true
+		run.exitCode = -1
+	case hasExitStatus:
+		// Signalled by something other than us. Not a decision.
+		run.exitCode = exitCode
+	default:
+		// Wait failed with no exit status and no deadline: an I/O error on the
+		// pipes. Nothing can be concluded about what the user saw.
+		run.started = false
+	}
+	return run
 }
 
 // dialogTimeoutSeconds converts a rung's prompt window into zenity's --timeout,
@@ -143,8 +260,14 @@ func zenityResult(run desktopDialogRun, actions []string) (string, bool) {
 		return "", false
 	}
 	if run.timedOut {
-		// Killed for overrunning its window. It was on screen throughout.
-		return "", true
+		// WE killed it, because it outlived even its own --timeout. zenity
+		// honours --timeout by exiting 5, so reaching this means the process
+		// was wedged — quite possibly wedged trying to reach a display it never
+		// got. Nothing can be claimed about what was on screen, so take the
+		// safe reading and let the manager warn again. The cost of being wrong
+		// here is one duplicate notification; the cost of the other reading is
+		// a machine that reboots on a user who was never told.
+		return "", false
 	}
 	switch run.exitCode {
 	case zenityExitOK:
@@ -158,10 +281,19 @@ func zenityResult(run desktopDialogRun, actions []string) (string, bool) {
 		// read as no decision rather than guessed at.
 		printed := strings.TrimSpace(run.stdout)
 		if len(actions) > 1 && printed == actions[1] {
+			// A button we offered came back. Nothing can print that but a
+			// rendered dialog, so this is positive proof of delivery.
 			return actions[1], true
+		}
+		// Exit 1 with nothing on stdout is the ambiguous case: a dismissal and
+		// a display failure are indistinguishable on the exit code alone.
+		if dialogFailedToRender(run) {
+			return "", false
 		}
 		return "", true
 	case zenityExitTimeout:
+		// zenity's own --timeout. It ran the full window, which it could only
+		// do with a window on screen.
 		return "", true
 	default:
 		// zenity crashed, or was never really a zenity. Report not-shown so the
@@ -272,6 +404,36 @@ func promptDesktopSessions(ctx context.Context, sessions []linuxsession.Graphica
 		}
 	}
 	return "", shown
+}
+
+// promptOrNotifyDesktop is the whole decision DesktopPrompt makes, with its
+// three inputs injected.
+//
+// Extracted from the //go:build linux file so that all four outcomes — the
+// enumeration failed, nobody is signed in, zenity is missing, zenity is there —
+// are asserted by tests that run on every platform. The Linux file supplies the
+// real seams and nothing else.
+func promptOrNotifyDesktop(
+	ctx context.Context,
+	sessions []linuxsession.GraphicalSession,
+	listErr error,
+	zenityAvailable bool,
+	prompt desktopSessionPrompt,
+	notify desktopSessionNotify,
+) (string, bool) {
+	if listErr != nil || len(sessions) == 0 {
+		// Either logind could not be asked, or nobody is signed in at a desk.
+		// Both mean nothing reached a person, which makes the manager fall back
+		// to its plain notification and the reboot proceed on schedule.
+		return "", false
+	}
+	if !zenityAvailable {
+		// Warn without an offer. The user cannot postpone, but being told is
+		// the point of the ladder; shown=true stops the manager emitting a
+		// second, identical notification on top of this one.
+		return "", notifyDesktopSessions(ctx, sessions, notify)
+	}
+	return promptDesktopSessions(ctx, sessions, prompt)
 }
 
 // notifyDesktopSessions delivers a plain notification to every graphical

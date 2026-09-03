@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +31,14 @@ func statReturning(files map[string]fs.FileMode) func(string) (fs.FileInfo, erro
 }
 
 func TestResolveSystemBinary(t *testing.T) {
+	// The ownership check reads a real *syscall.Stat_t, which a fake FileInfo
+	// cannot supply. It has its own tests (below, and rootOwnedAndNotGroupOr
+	// WorldWritable's on Linux); here it is stubbed out so these cases exercise
+	// the search order and the mode rules.
+	prev := binaryOwnershipOK
+	t.Cleanup(func() { binaryOwnershipOK = prev })
+	binaryOwnershipOK = func(fs.FileInfo) bool { return true }
+
 	cases := []struct {
 		name    string
 		binary  string
@@ -44,11 +53,34 @@ func TestResolveSystemBinary(t *testing.T) {
 			want:   "/usr/bin/zenity",
 		},
 		{
-			// /usr/local/bin is searched first so a site-installed build wins.
-			name:   "local install takes precedence",
+			// Debian Policy makes /usr/local/bin root:staff mode 02775, so a
+			// non-root "staff" member can write there. A binary planted in it
+			// would be executed under ANOTHER signed-in user's uid, and its
+			// exit code decides whether that user's reboot was postponed.
+			name:    "a binary in the group-writable /usr/local/bin is never used",
+			binary:  "zenity",
+			files:   map[string]fs.FileMode{"/usr/local/bin/zenity": 0o755},
+			wantErr: true,
+		},
+		{
+			name:   "/usr/bin is searched before /bin",
 			binary: "zenity",
-			files:  map[string]fs.FileMode{"/usr/local/bin/zenity": 0o755, "/usr/bin/zenity": 0o755},
-			want:   "/usr/local/bin/zenity",
+			files:  map[string]fs.FileMode{"/usr/bin/zenity": 0o755, "/bin/zenity": 0o755},
+			want:   "/usr/bin/zenity",
+		},
+		{
+			// A setuid helper would regain privilege the instant it ran, making
+			// the credential drop that spawned it decorative.
+			name:    "a setuid binary is refused",
+			binary:  "zenity",
+			files:   map[string]fs.FileMode{"/usr/bin/zenity": fs.ModeSetuid | 0o755},
+			wantErr: true,
+		},
+		{
+			name:    "a setgid binary is refused",
+			binary:  "zenity",
+			files:   map[string]fs.FileMode{"/usr/bin/zenity": fs.ModeSetgid | 0o755},
+			wantErr: true,
 		},
 		{
 			name:    "absent",
@@ -110,12 +142,42 @@ func TestResolveSystemBinary(t *testing.T) {
 	}
 }
 
-func TestSystemBinaryDirsAreAllAbsoluteAndRootOwned(t *testing.T) {
-	// A relative entry here would resolve against the daemon's working
-	// directory, reintroducing exactly the hijack the fixed list removes.
+func TestSystemBinaryDirsAreAbsoluteAndExcludeGroupWritableDefaults(t *testing.T) {
 	for _, dir := range systemBinaryDirs {
+		// A relative entry would resolve against the daemon's working
+		// directory, reintroducing exactly the hijack the fixed list removes.
 		if len(dir) == 0 || dir[0] != '/' {
 			t.Errorf("systemBinaryDirs entry %q is not absolute", dir)
 		}
+		// /usr/local/bin is root:staff 02775 by Debian Policy. It must never
+		// come back: a "staff" member could plant a zenity there that the
+		// daemon then runs inside another user's session.
+		if dir == "/usr/local/bin" {
+			t.Error("/usr/local/bin is group-writable by default on Debian and Ubuntu; " +
+				"a local non-root account could plant the dialog binary")
+		}
+	}
+}
+
+func TestSafeExecPathMatchesTheResolvedSearchDirs(t *testing.T) {
+	// The PATH handed to the child and the dirs we resolve from must not drift:
+	// a child that re-execs something would otherwise search wider than the
+	// daemon was willing to.
+	want := strings.Join(systemBinaryDirs, ":")
+	if safeExecPath != want {
+		t.Errorf("safeExecPath = %q, want %q (the same dirs ResolveSystemBinary searches)", safeExecPath, want)
+	}
+}
+
+func TestResolveSystemBinaryRejectsANonRootOwnedBinary(t *testing.T) {
+	// The ownership hook is a no-op off Linux, so drive it directly rather than
+	// depending on which platform the test job runs on.
+	prev := binaryOwnershipOK
+	t.Cleanup(func() { binaryOwnershipOK = prev })
+	binaryOwnershipOK = func(fs.FileInfo) bool { return false }
+
+	files := map[string]fs.FileMode{"/usr/bin/zenity": 0o755}
+	if got, err := resolveSystemBinary("zenity", statReturning(files)); err == nil {
+		t.Fatalf("resolveSystemBinary returned %q for a binary the ownership check rejected", got)
 	}
 }

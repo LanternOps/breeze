@@ -2,6 +2,7 @@ package patching
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -68,9 +69,11 @@ func TestDialogTimeoutSeconds(t *testing.T) {
 
 func TestZenityResult(t *testing.T) {
 	// zenity --question exit codes: 0 = OK, 1 = Cancel OR an --extra-button,
-	// 5 = timeout. Cancel and extra-button share an exit code and are told
-	// apart only by what the child printed on stdout — which is exactly the
-	// distinction between "the user postponed" and "the user closed the box".
+	// 5 = timeout. Exit 1 is doubly overloaded: Cancel, ESC, the close box, an
+	// --extra-button, AND a GTK failure to open the display all produce it. The
+	// button case is told apart by stdout; the display failure by stderr and by
+	// how long the process lived.
+	const dismissed = 3 * time.Second // long enough that a person could have acted
 	cases := []struct {
 		name        string
 		run         desktopDialogRun
@@ -79,38 +82,78 @@ func TestZenityResult(t *testing.T) {
 	}{
 		{
 			name:        "ok button restarts now",
-			run:         desktopDialogRun{started: true, exitCode: 0},
+			run:         desktopDialogRun{started: true, exitCode: 0, elapsed: dismissed},
 			wantClicked: RebootActionRestartNow, wantShown: true,
 		},
 		{
 			name:        "extra button postpones",
-			run:         desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour\n"},
+			run:         desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour\n", elapsed: dismissed},
+			wantClicked: "Postpone 1 hour", wantShown: true,
+		},
+		{
+			// A label we offered can only be printed by a rendered dialog, so
+			// this is positive proof of delivery even if it came back fast.
+			name:        "an extra button pressed quickly is still proof it rendered",
+			run:         desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour", elapsed: 5 * time.Millisecond},
 			wantClicked: "Postpone 1 hour", wantShown: true,
 		},
 		{
 			// The window's X, the ESC key and the Cancel button all land here.
 			// None of them is a postponement: silence never buys time.
 			name:        "dismissed without a decision",
-			run:         desktopDialogRun{started: true, exitCode: 1},
+			run:         desktopDialogRun{started: true, exitCode: 1, elapsed: dismissed},
 			wantClicked: "", wantShown: true,
 		},
 		{
 			name:        "an unrecognised stdout is not a decision",
-			run:         desktopDialogRun{started: true, exitCode: 1, stdout: "Restart now"},
+			run:         desktopDialogRun{started: true, exitCode: 1, stdout: "Restart now", elapsed: dismissed},
+			wantClicked: "", wantShown: true,
+		},
+		{
+			// THE bug this classification exists for. GTK exits 1 when it
+			// cannot reach the display, identically to a user pressing Cancel.
+			// Reading it as a dismissal reports shown=true, which suppresses the
+			// manager's fallback notification and reboots a machine whose user
+			// was never warned.
+			name: "a GTK display failure is not a dismissal",
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: 12 * time.Millisecond,
+				stderr: "Gtk-WARNING **: cannot open display: :0"},
+			wantClicked: "", wantShown: false,
+		},
+		{
+			// The same conclusion from the clock alone, for a toolkit whose
+			// wording this code has never seen.
+			name:        "an exit too fast for a human is not a dismissal",
+			run:         desktopDialogRun{started: true, exitCode: 1, elapsed: 8 * time.Millisecond},
+			wantClicked: "", wantShown: false,
+		},
+		{
+			// And from stderr alone, when the process took its time failing.
+			name: "a slow display failure is still not a dismissal",
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: 4 * time.Second,
+				stderr: "Unable to init server: Could not connect to display"},
+			wantClicked: "", wantShown: false,
+		},
+		{
+			// Harmless GTK chatter must not flip a real dismissal.
+			name: "ordinary GTK noise on stderr is not a display failure",
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: dismissed,
+				stderr: "Gtk-Message: Failed to load module \"canberra-gtk-module\""},
 			wantClicked: "", wantShown: true,
 		},
 		{
 			name:        "zenity timeout leaves the schedule alone",
-			run:         desktopDialogRun{started: true, exitCode: 5},
+			run:         desktopDialogRun{started: true, exitCode: 5, elapsed: 90 * time.Second},
 			wantClicked: "", wantShown: true,
 		},
 		{
-			// We killed it because it outlived its window. It was on screen the
-			// whole time, so the user WAS warned — reporting shown=false here
-			// would make the manager emit a duplicate notification.
-			name:        "killed for overrunning its window still counts as shown",
-			run:         desktopDialogRun{started: true, timedOut: true, exitCode: -1},
-			wantClicked: "", wantShown: true,
+			// We killed it, which means it outlived even its own --timeout.
+			// zenity honours --timeout by exiting 5, so a process still alive
+			// past that was wedged — possibly wedged reaching a display it never
+			// got. Nothing can be claimed about what was on screen.
+			name:        "a dialog we had to kill is not claimed as shown",
+			run:         desktopDialogRun{started: true, timedOut: true, exitCode: -1, elapsed: 105 * time.Second},
+			wantClicked: "", wantShown: false,
 		},
 		{
 			// Nothing reached a person, so the manager must fall back to the
@@ -121,7 +164,7 @@ func TestZenityResult(t *testing.T) {
 		},
 		{
 			name:        "an unknown exit code is not a decision and not shown",
-			run:         desktopDialogRun{started: true, exitCode: 3},
+			run:         desktopDialogRun{started: true, exitCode: 3, elapsed: dismissed},
 			wantClicked: "", wantShown: false,
 		},
 	}
@@ -132,6 +175,110 @@ func TestZenityResult(t *testing.T) {
 			if clicked != tc.wantClicked || shown != tc.wantShown {
 				t.Errorf("zenityResult(%+v) = (%q, %v), want (%q, %v)",
 					tc.run, clicked, shown, tc.wantClicked, tc.wantShown)
+			}
+		})
+	}
+}
+
+func TestLooksLikeDisplayFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{name: "empty", stderr: "", want: false},
+		{name: "cannot open display", stderr: "Gtk-WARNING **: cannot open display: :0", want: true},
+		{name: "case is ignored", stderr: "CANNOT OPEN DISPLAY", want: true},
+		{name: "init server", stderr: "Unable to init server: Broadway display type not supported", want: true},
+		{name: "no protocol specified", stderr: "No protocol specified", want: true},
+		{name: "wayland compositor", stderr: "failed to connect to the compositor", want: true},
+		{
+			// The single most important negative: a module-load warning is
+			// routine on a perfectly working desktop, and treating it as a
+			// display failure would re-warn a user who really did dismiss.
+			name:   "a module warning is not a display failure",
+			stderr: "Gtk-Message: Failed to load module \"canberra-gtk-module\"",
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikeDisplayFailure(tc.stderr); got != tc.want {
+				t.Errorf("looksLikeDisplayFailure(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyDialogRun(t *testing.T) {
+	cases := []struct {
+		name          string
+		started       bool
+		hasExitStatus bool
+		ctxExpired    bool
+		exitCode      int
+		want          desktopDialogRun
+	}{
+		{
+			name: "never started", started: false,
+			want: desktopDialogRun{},
+		},
+		{
+			name: "clean exit", started: true, hasExitStatus: true, exitCode: 0,
+			want: desktopDialogRun{started: true, exitCode: 0},
+		},
+		{
+			name: "a real exit status", started: true, hasExitStatus: true, exitCode: 1,
+			want: desktopDialogRun{started: true, exitCode: 1},
+		},
+		{
+			// The race codex flagged: a child that exited cleanly in the same
+			// instant our deadline fired made a real decision, and reporting
+			// "timed out" would throw away a click the user actually made.
+			name: "a real exit status wins over an expired context", started: true,
+			hasExitStatus: true, ctxExpired: true, exitCode: 1,
+			want: desktopDialogRun{started: true, exitCode: 1},
+		},
+		{
+			// Killed by our own deadline: a signal death reports -1.
+			name: "killed by our deadline", started: true,
+			hasExitStatus: true, ctxExpired: true, exitCode: -1,
+			want: desktopDialogRun{started: true, timedOut: true, exitCode: -1},
+		},
+		{
+			name: "wait gave up after the deadline", started: true,
+			hasExitStatus: false, ctxExpired: true,
+			want: desktopDialogRun{started: true, timedOut: true, exitCode: -1},
+		},
+		{
+			// Signalled by something that is not us. Not a decision, and not
+			// something we can call shown.
+			name: "signalled by a third party", started: true,
+			hasExitStatus: true, ctxExpired: false, exitCode: -1,
+			want: desktopDialogRun{started: true, exitCode: -1},
+		},
+		{
+			// Wait failed with no exit status and no deadline: an I/O error on
+			// the pipes. Nothing can be concluded about what the user saw.
+			name: "pipe failure with no deadline", started: true,
+			hasExitStatus: false, ctxExpired: false,
+			want: desktopDialogRun{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyDialogRun(tc.started, tc.hasExitStatus, tc.ctxExpired,
+				tc.exitCode, "out", "err", 7*time.Second)
+			want := tc.want
+			// Evidence is carried for anything that actually ran, including a
+			// run demoted to started=false — the stderr of a dialog that
+			// half-worked is the only diagnostic that will ever exist for it.
+			if tc.started {
+				want.stdout, want.stderr, want.elapsed = "out", "err", 7*time.Second
+			}
+			if got != want {
+				t.Errorf("classifyDialogRun = %+v, want %+v", got, want)
 			}
 		})
 	}
@@ -311,3 +458,67 @@ func TestNotifyDesktopSessionsReportsAnySuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestPromptOrNotifyDesktop(t *testing.T) {
+	sessions := fakeSessions(1)
+	prompted, notified := 0, 0
+	prompt := func(context.Context, linuxsession.GraphicalSession) (string, bool) {
+		prompted++
+		return "Postpone 1 hour", true
+	}
+	notify := func(context.Context, linuxsession.GraphicalSession) bool {
+		notified++
+		return true
+	}
+
+	cases := []struct {
+		name            string
+		sessions        []linuxsession.GraphicalSession
+		listErr         error
+		zenityAvailable bool
+		wantClicked     string
+		wantShown       bool
+		wantPrompted    int
+		wantNotified    int
+	}{
+		{
+			// Headless box, or nobody at a desk. The manager falls back to its
+			// plain notification and the reboot proceeds on schedule.
+			name: "no graphical session", sessions: nil, zenityAvailable: true,
+			wantShown: false,
+		},
+		{
+			// logind could not be asked. Same conclusion, different cause: we
+			// must not claim delivery we cannot demonstrate.
+			name: "enumeration failed", sessions: sessions, listErr: errUnusableLogind,
+			zenityAvailable: true, wantShown: false,
+		},
+		{
+			// zenity absent: warn without an offer. shown=true so the manager
+			// does not stack a second identical notification on top.
+			name: "zenity is not installed", sessions: sessions, zenityAvailable: false,
+			wantShown: true, wantNotified: 1,
+		},
+		{
+			name: "the full prompt", sessions: sessions, zenityAvailable: true,
+			wantClicked: "Postpone 1 hour", wantShown: true, wantPrompted: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompted, notified = 0, 0
+			clicked, shown := promptOrNotifyDesktop(context.Background(),
+				tc.sessions, tc.listErr, tc.zenityAvailable, prompt, notify)
+			if clicked != tc.wantClicked || shown != tc.wantShown {
+				t.Errorf("got (%q, %v), want (%q, %v)", clicked, shown, tc.wantClicked, tc.wantShown)
+			}
+			if prompted != tc.wantPrompted || notified != tc.wantNotified {
+				t.Errorf("prompted %d / notified %d, want %d / %d",
+					prompted, notified, tc.wantPrompted, tc.wantNotified)
+			}
+		})
+	}
+}
+
+var errUnusableLogind = errors.New("loginctl reported sessions but none could be queried")

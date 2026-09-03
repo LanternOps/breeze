@@ -525,9 +525,12 @@ func (r *RebootManager) Cancel() error {
 // there told its caller the manager was quiescent moments before the machine
 // went down, and agent shutdown would then race a reboot it did not know about.
 //
-// The wait is bounded by osRebootCommandTimeout (thirty seconds), which is what
-// makes "wait" safe rather than a hang: runOSReboot always clears osInvoking,
-// success or failure.
+// The wait is bounded twice over. runOSReboot always clears osInvoking, success
+// or failure, and the shutdown invocation it wraps carries its own thirty-second
+// ceiling — but the invocation window also spans saveRebootHistory, a file write
+// with no deadline of its own, so a wedged filesystem could otherwise park Stop
+// forever. stopInvokeWaitTimeout is the backstop for that: past it, Stop gives
+// up the guarantee and says so, rather than never returning.
 func (r *RebootManager) Stop() {
 	r.mu.Lock()
 	if r.stopped {
@@ -535,9 +538,7 @@ func (r *RebootManager) Stop() {
 		// caller gets the same guarantee as the first.
 		done := r.osInvokeDone
 		r.mu.Unlock()
-		if done != nil {
-			<-done
-		}
+		waitForOSInvoke(done)
 		return // avoid double-close on stopChan
 	}
 	r.stopped = true
@@ -548,8 +549,31 @@ func (r *RebootManager) Stop() {
 	done := r.osInvokeDone
 	r.mu.Unlock()
 
-	if done != nil {
-		<-done
+	waitForOSInvoke(done)
+}
+
+// stopInvokeWaitTimeout bounds Stop's wait for a committed OS reboot. Comfortably
+// past osRebootCommandTimeout, so it only ever fires when something outside the
+// shutdown command itself has wedged.
+var stopInvokeWaitTimeout = 60 * time.Second
+
+// waitForOSInvoke blocks until a committed OS reboot invocation finishes, or
+// until the backstop expires.
+func waitForOSInvoke(done <-chan struct{}) {
+	if done == nil {
+		return
+	}
+	timer := time.NewTimer(stopInvokeWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		// Loud: the caller is about to proceed believing the manager is
+		// quiescent while a shutdown may still be in flight, which is exactly
+		// the state this wait exists to prevent.
+		log.Error("gave up waiting for an in-flight OS reboot invocation; "+
+			"agent shutdown continues while a restart may still fire",
+			"waited", stopInvokeWaitTimeout.String())
 	}
 }
 

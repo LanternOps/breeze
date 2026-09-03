@@ -86,6 +86,101 @@ func TestCredentialForRefusesRoot(t *testing.T) {
 	}
 }
 
+// TestCredentialFromIDs drives the privilege decision directly, so both
+// refusals are asserted without needing an exotic account to exist on the test
+// machine.
+func TestCredentialFromIDs(t *testing.T) {
+	cases := []struct {
+		name       string
+		uid, gid   string
+		groups     []string
+		wantErr    error
+		wantUID    uint32
+		wantGID    uint32
+		wantGroups []uint32
+	}{
+		{
+			name: "an ordinary user keeps their own groups",
+			uid:  "1000", gid: "1000", groups: []string{"1000", "27", "44"},
+			wantUID: 1000, wantGID: 1000, wantGroups: []uint32{1000, 27, 44},
+		},
+		{
+			name: "uid 0 is refused",
+			uid:  "0", gid: "0", wantErr: ErrRefusedRootSession,
+		},
+		{
+			// The gate the supplementary filter cannot reach. Without it the
+			// child runs with real and effective gid 0.
+			name: "a primary group of root is refused",
+			uid:  "1000", gid: "0", groups: []string{"1000"},
+			wantErr: ErrRefusedRootSession,
+		},
+		{
+			name: "gid 0 is stripped from supplementary groups",
+			uid:  "1000", gid: "1000", groups: []string{"0", "1000", "0", "27"},
+			wantUID: 1000, wantGID: 1000, wantGroups: []uint32{1000, 27},
+		},
+		{
+			// setgroups(0, NULL) then drops root's supplementary groups, which
+			// is the safe outcome — never an inherited one.
+			name: "no supplementary groups is valid and drops root's",
+			uid:  "1000", gid: "1000", groups: nil,
+			wantUID: 1000, wantGID: 1000, wantGroups: nil,
+		},
+		{
+			name: "an unparseable supplementary group is skipped, not fatal",
+			uid:  "1000", gid: "1000", groups: []string{"1000", "not-a-number", "27"},
+			wantUID: 1000, wantGID: 1000, wantGroups: []uint32{1000, 27},
+		},
+		{name: "an unparseable uid is an error", uid: "x", gid: "1000"},
+		{name: "an unparseable gid is an error", uid: "1000", gid: "x"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cred, err := credentialFromIDs(tc.uid, tc.gid, tc.groups)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if tc.wantUID == 0 {
+				if err == nil {
+					t.Fatalf("expected an error, got %+v", cred)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("credentialFromIDs: %v", err)
+			}
+			if cred.Uid != tc.wantUID || cred.Gid != tc.wantGID {
+				t.Errorf("uid/gid = %d/%d, want %d/%d", cred.Uid, cred.Gid, tc.wantUID, tc.wantGID)
+			}
+			if !slices.Equal(cred.Groups, tc.wantGroups) {
+				t.Errorf("Groups = %v, want %v", cred.Groups, tc.wantGroups)
+			}
+			for _, g := range cred.Groups {
+				if g == 0 {
+					t.Errorf("Groups %v keeps gid 0; the dialog would retain root group access", cred.Groups)
+				}
+			}
+		})
+	}
+}
+
+// TestMaxEnumeratedSessionsExceedsTheGraphicalCap pins the separation the
+// enumeration cap exists for: if the raw list were capped at maxSessions, a
+// local user could hide every real desktop behind cheap tty or ssh logins and
+// silently suppress the reboot dialog for everyone else on the box.
+func TestMaxEnumeratedSessionsExceedsTheGraphicalCap(t *testing.T) {
+	if maxEnumeratedSessions <= maxSessions {
+		t.Fatalf("maxEnumeratedSessions (%d) must exceed maxSessions (%d); "+
+			"otherwise non-graphical logins crowd out the real desktops",
+			maxEnumeratedSessions, maxSessions)
+	}
+}
+
 // TestCommandDropsPrivilegesWhenTheDaemonIsRoot proves the Credential is
 // actually attached, not merely computed. Root-only, which is how the agent
 // really runs and how the container-based local verification runs.

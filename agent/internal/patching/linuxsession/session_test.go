@@ -266,6 +266,75 @@ func TestCommandEnvDoesNotInheritTheDaemonEnvironment(t *testing.T) {
 	}
 }
 
+func TestCommandEnvCarriesXAuthorityOnlyForX11(t *testing.T) {
+	// An unset XAUTHORITY is what makes a display-manager-started X session
+	// refuse the dialog: the cookie lives under /run/user/<uid>, not in the
+	// home directory Xlib would look in.
+	x11 := GraphicalSession{Username: "alice", UID: "1000", Type: TypeX11, Display: ":0",
+		XAuthority: "/run/user/1000/gdm/Xauthority"}
+	assertHasEnv(t, x11.CommandEnv(), "XAUTHORITY=/run/user/1000/gdm/Xauthority")
+
+	// A Wayland client authenticates through the compositor socket, so an
+	// XAUTHORITY there is noise at best.
+	wayland := GraphicalSession{Username: "alice", UID: "1000", Type: TypeWayland,
+		Display: "wayland-0", XAuthority: "/run/user/1000/gdm/Xauthority"}
+	assertNoEnvKey(t, wayland.CommandEnv(), "XAUTHORITY")
+
+	// Unknown cookie: omit the variable entirely rather than pointing the
+	// toolkit at a path that is not there.
+	unknown := GraphicalSession{Username: "alice", UID: "1000", Type: TypeX11, Display: ":0"}
+	assertNoEnvKey(t, unknown.CommandEnv(), "XAUTHORITY")
+}
+
+func TestXAuthorityCandidates(t *testing.T) {
+	cases := []struct {
+		name    string
+		session GraphicalSession
+		want    []string
+	}{
+		{
+			// Order matters: a display manager's own copy is authoritative for
+			// the session it started, and the home copy can be stale after a
+			// re-login.
+			name:    "x11 with a known home",
+			session: GraphicalSession{UID: "1000", Type: TypeX11, Home: "/home/alice"},
+			want: []string{
+				"/run/user/1000/gdm/Xauthority",
+				"/run/user/1000/.mutter-Xwaylandauth",
+				"/run/user/1000/Xauthority",
+				"/home/alice/.Xauthority",
+			},
+		},
+		{
+			name:    "x11 with no home still has runtime candidates",
+			session: GraphicalSession{UID: "1000", Type: TypeX11},
+			want: []string{
+				"/run/user/1000/gdm/Xauthority",
+				"/run/user/1000/.mutter-Xwaylandauth",
+				"/run/user/1000/Xauthority",
+			},
+		},
+		{
+			name:    "wayland has none",
+			session: GraphicalSession{UID: "1000", Type: TypeWayland, Home: "/home/alice"},
+			want:    nil,
+		},
+		{
+			name:    "no uid, no candidates",
+			session: GraphicalSession{Type: TypeX11, Home: "/home/alice"},
+			want:    nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.session.XAuthorityCandidates()
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("XAuthorityCandidates() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func assertHasEnv(t *testing.T, env []string, want string) {
 	t.Helper()
 	if !slices.Contains(env, want) {

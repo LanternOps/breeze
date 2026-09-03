@@ -422,6 +422,7 @@ Breeze ships no desktop helper for Linux, so the agent draws the restart dialog 
 - **Only local graphical sessions get the dialog.** X11 and Wayland sessions belonging to a signed-in user qualify. SSH and other remote sessions, text consoles, the display manager's own greeter, and sessions being torn down are all skipped — there is no local screen to draw on.
 - **Multiple signed-in users each get the dialog**, and the first answer decides for the machine; the other dialogs close by themselves.
 - **A headless Linux box behaves exactly as before.** No dialog, no error: the `shutdown -r +N` wall message that terminal sessions already receive remains the warning, and the restart happens on schedule.
+- **If the dialog can't reach the screen** — a stale X cookie, a compositor restarting — Breeze falls back to a desktop notification rather than assuming the user saw something. The worst case is a duplicate warning, never a silent restart.
 
 Note that this covers restarts that Breeze **schedules** — post-patch restarts. A restart triggered by a maintenance window's [Reboot if a reboot is pending](/features/maintenance-windows/#rebooting-devices-with-a-pending-reboot) setting is issued directly on Linux and is **not** postponable; it warns through `wall` only.
 

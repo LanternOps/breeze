@@ -31,11 +31,12 @@ const maxSessions = 8
 // display — so it is assumed rather than read.
 const defaultWaylandDisplay = "wayland-0"
 
-// safeExecPath is the PATH handed to the child. It is a fixed list rather than
-// the daemon's own PATH: an inherited PATH is the single input a local user
-// could aim at a binary of their choosing, and every directory here is
-// root-writable only.
-const safeExecPath = "/usr/local/bin:/usr/bin:/bin"
+// safeExecPath is the PATH handed to the child. A fixed list rather than the
+// daemon's own PATH, and the same directories ResolveSystemBinary searches: an
+// inherited PATH is the one input a local user could aim at a binary of their
+// choosing. /usr/local/bin is excluded for the reason given on
+// systemBinaryDirs — it is group-writable by default on Debian and Ubuntu.
+const safeExecPath = "/usr/bin:/bin"
 
 // GraphicalSession is one local, graphical, non-greeter login session belonging
 // to a real user.
@@ -55,6 +56,13 @@ type GraphicalSession struct {
 	// Display is the DISPLAY value for an x11 session, or the Wayland socket
 	// name for a wayland one.
 	Display string
+	// XAuthority is the X11 cookie file, filled in by List rather than by the
+	// parser — logind does not report it. Empty is valid and common: Xlib then
+	// falls back to $HOME/.Xauthority, which is right for a classic session.
+	// It matters for display-manager-started sessions (GDM keeps the cookie in
+	// /run/user/<uid>/gdm/Xauthority), where an unset XAUTHORITY means the
+	// toolkit is refused by the X server and the dialog never renders.
+	XAuthority string
 }
 
 // Session types this package can draw on. "mir" is deliberately absent: logind
@@ -221,5 +229,34 @@ func (s GraphicalSession) CommandEnv() []string {
 	if s.ID != "" {
 		env = append(env, "XDG_SESSION_ID="+s.ID)
 	}
+	// Only meaningful for X11. A Wayland client authenticates through the
+	// compositor socket in XDG_RUNTIME_DIR, and a stray XAUTHORITY there is
+	// noise at best.
+	if s.XAuthority != "" && s.Type == TypeX11 {
+		env = append(env, "XAUTHORITY="+s.XAuthority)
+	}
 	return env
+}
+
+// XAuthorityCandidates lists, in resolution order, where an x11 session's
+// cookie may live. Pure so the ordering is asserted without a display manager;
+// List stats them and takes the first that exists.
+//
+// The order matters: a display manager's own copy is authoritative for a
+// session it started, and the home-directory copy can be stale after a
+// re-login. Mirrors the resolution order in remote/desktop/x11/resolve_linux.go.
+func (s GraphicalSession) XAuthorityCandidates() []string {
+	if s.Type != TypeX11 || s.UID == "" {
+		return nil
+	}
+	runtimeDir := s.RuntimeDir()
+	candidates := []string{
+		runtimeDir + "/gdm/Xauthority",
+		runtimeDir + "/.mutter-Xwaylandauth",
+		runtimeDir + "/Xauthority",
+	}
+	if s.Home != "" {
+		candidates = append(candidates, s.Home+"/.Xauthority")
+	}
+	return candidates
 }
