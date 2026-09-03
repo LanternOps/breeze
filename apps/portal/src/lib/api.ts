@@ -149,6 +149,12 @@ export function buildServerForwardHeaders(request: Request): Headers {
 export interface ApiRequestConfig {
   headers?: HeadersInit;
   redirectOnUnauthorized?: boolean;
+  /** Abort the request after this many ms, falling into the existing
+   *  network-error catch path below (so callers that already fail closed on
+   *  a network error — e.g. loadPortalBranding — also fail closed on a
+   *  hang, not just a hard error). Undefined = no bound, matching prior
+   *  behavior for every other call site. */
+  timeoutMs?: number;
 }
 
 export interface ApiResponse<T> {
@@ -197,7 +203,8 @@ export async function apiRequest<T>(
     const response = await fetch(url, {
       ...options,
       headers,
-      credentials: 'include'
+      credentials: 'include',
+      signal: config.timeoutMs !== undefined ? AbortSignal.timeout(config.timeoutMs) : options.signal
     });
 
     if (response.status === 401) {
@@ -693,6 +700,11 @@ export interface BrandingConfig {
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
   enablePasswordReset?: boolean;
+  enableDashboard?: boolean;
+  enableSecurity?: boolean;
+  enableBackups?: boolean;
+  enableReports?: boolean;
+  enableSupportUsage?: boolean;
 }
 
 export interface ListParams {
@@ -937,6 +949,31 @@ export const portalApi = {
 
   getBranding: async (config: ApiRequestConfig = {}): Promise<ApiResponse<BrandingConfig>> => {
     const response = await apiGet<{ branding: BrandingConfig }>('/portal/branding', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.branding,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  // Public (unauthenticated) branding lookup by custom domain / forwarded host —
+  // used for the anonymous landing/redirect path before a portal session exists.
+  getBrandingByDomain: async (
+    domain: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BrandingConfig>> => {
+    const response = await apiGet<{ branding: BrandingConfig }>(
+      `/portal/branding/${encodeURIComponent(domain)}`,
+      config
+    );
     if (!response.data) {
       return {
         error: response.error,

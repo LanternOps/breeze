@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilidad",
+      "description": "Elija qué información de servicio puede ver este cliente en el portal.",
+      "enableAll": "Habilitar toda la visibilidad",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Panel",
+          "description": "Muestra un resumen del estado del servicio al iniciar sesión."
+        },
+        "enableSecurity": {
+          "label": "Seguridad",
+          "description": "Muestra la postura de seguridad, protección, amenazas y vulnerabilidades."
+        },
+        "enableBackups": {
+          "label": "Copias de seguridad",
+          "description": "Muestra la cobertura de copias de seguridad, verificación, pruebas de restauración y preparación."
+        },
+        "enableReports": {
+          "label": "Informes",
+          "description": "Permite a los clientes generar y descargar informes aprobados."
+        },
+        "enableSupportUsage": {
+          "label": "Uso de soporte",
+          "description": "Muestra el total de tiempo de soporte facturable del mes en curso."
+        }
+      }
+    },
     "support": {
       "title": "Contacto de soporte",
       "description": "Mostrado a los clientes en el portal.",
