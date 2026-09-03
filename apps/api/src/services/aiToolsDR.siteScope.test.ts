@@ -13,7 +13,11 @@ import { registerDRTools } from './aiToolsDR';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
-const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
+const mockDb = db as unknown as {
+  select: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
+  delete: ReturnType<typeof vi.fn>;
+};
 const mockEnqueue = createDrExecutionAndEnqueue as unknown as ReturnType<typeof vi.fn>;
 
 function handlerFor(name: string): AiTool['handler'] {
@@ -109,5 +113,82 @@ describe('query_dr_plans — hides fully out-of-scope plans', () => {
     const result = await handlerFor('query_dr_plans')({}, makeAuth(undefined));
     const parsed = JSON.parse(result);
     expect(parsed.showing).toBe(2);
+  });
+});
+
+// ── #3653 ───────────────────────────────────────────────────────────────────
+// The central `deviceArgs` gate org+site checks the ids a caller SUBMITS. It
+// cannot see what a group already holds, so these mutations need their own
+// barrier against the stored membership.
+describe('manage_dr_plan — stored group membership is site-scoped', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Chain that also answers the write-builder methods. */
+  function writeChain(rows: unknown[]): any {
+    const p: any = Promise.resolve(rows);
+    for (const m of ['from', 'where', 'limit', 'set', 'values', 'returning']) p[m] = () => p;
+    return p;
+  }
+
+  const GROUP_SPANNING_SITES = {
+    id: 'g1',
+    orgId: 'org-1',
+    devices: ['dev-A', 'dev-B'],
+  };
+  const ORG_DEVICES = [
+    { id: 'dev-A', siteId: 'site-A' },
+    { id: 'dev-B', siteId: 'site-B' },
+  ];
+
+  it('refuses an update that would silently drop an out-of-site device', async () => {
+    mockDb.update.mockImplementation(() => writeChain([]));
+    seqSelect([[GROUP_SPANNING_SITES], ORG_DEVICES]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_group', planId: 'p1', groupId: 'g1', devices: ['dev-A'] },
+      makeAuth(['site-A']),
+    );
+
+    expect(JSON.parse(result).error).toMatch(/access denied/i);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses deleting a group that holds an out-of-site device', async () => {
+    mockDb.delete.mockImplementation(() => writeChain([]));
+    seqSelect([[GROUP_SPANNING_SITES], ORG_DEVICES]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'delete_group', planId: 'p1', groupId: 'g1' },
+      makeAuth(['site-A']),
+    );
+
+    expect(JSON.parse(result).error).toMatch(/access denied/i);
+    expect(mockDb.delete).not.toHaveBeenCalled();
+  });
+
+  it('allows updating a group confined to the caller sites', async () => {
+    mockDb.update.mockImplementation(() => writeChain([{ id: 'g1', name: 'Renamed' }]));
+    seqSelect([[{ id: 'g1', orgId: 'org-1', devices: ['dev-A'] }], ORG_DEVICES]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_group', planId: 'p1', groupId: 'g1', name: 'Renamed' },
+      makeAuth(['site-A']),
+    );
+
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mockDb.update).toHaveBeenCalled();
+  });
+
+  it('leaves an unrestricted caller unaffected and issues no partition query', async () => {
+    mockDb.update.mockImplementation(() => writeChain([{ id: 'g1', name: 'Renamed' }]));
+    seqSelect([[GROUP_SPANNING_SITES]]);
+
+    const result = await handlerFor('manage_dr_plan')(
+      { action: 'update_group', planId: 'p1', groupId: 'g1', name: 'Renamed' },
+      makeAuth(undefined),
+    );
+
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 });

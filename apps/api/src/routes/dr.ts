@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq, and, desc, asc, inArray } from 'drizzle-orm';
@@ -14,8 +14,13 @@ import {
   drExecutionTriggerSchema,
   drExecutionsQuerySchema,
 } from './backup/schemas';
-import { PERMISSIONS } from '../services/permissions';
-import { createDrExecutionAndEnqueue } from '../services/drExecutionService';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import type { AuthContext } from '../middleware/auth';
+import { isSiteRestrictedPrincipalKind } from '../services/resilienceSiteAuthorization';
+import {
+  classifyDrExecutionAuthorizationError,
+  createDrExecutionAndEnqueue,
+} from '../services/drExecutionService';
 
 export const drRoutes = new Hono();
 const requireDrRead = requirePermission(
@@ -36,21 +41,120 @@ drRoutes.use('*', authMiddleware);
 const idParamSchema = z.object({ id: z.string().guid() });
 const groupParamSchema = z.object({ id: z.string().guid(), gid: z.string().guid() });
 
+type DeviceScopeDenial = { status: 403; error: string };
+
+const ORG_DENIAL: DeviceScopeDenial = {
+  status: 403,
+  error: 'One or more devices do not belong to this organization',
+};
+const SITE_DENIAL: DeviceScopeDenial = { status: 403, error: 'site_access_denied' };
+
+function denyDeviceScope(c: Context, denial: DeviceScopeDenial) {
+  return c.json({ error: denial.error }, denial.status);
+}
+
+function uniqueDeviceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((id): id is string => typeof id === 'string'))];
+}
+
 /**
- * Confirm every device id assigned to a DR group belongs to the plan's org.
- * DR group commands are dispatched under withSystemDbAccessContext (RLS off), so
- * a foreign-org device id slipping into devices[] would let a destructive restore
- * command target another tenant's device. Validate ownership with the
- * request-scoped RLS `db` before persisting. Returns true when all ids are owned.
+ * The caller's site restriction, or null when they carry none.
+ *
+ * RLS enforces the org axis but has no concept of a site, so for every route in
+ * this file the app layer is the ONLY barrier between a site-restricted
+ * technician and another site's disaster-recovery configuration (#3653). The
+ * shape mirrors `resolveRouteAuthorizedDeviceIds` in
+ * routes/backup/resilienceAuthorization.ts so both read the grant identically.
  */
-async function allDevicesBelongToOrg(deviceIds: string[], orgId: string): Promise<boolean> {
-  if (deviceIds.length === 0) return true;
-  const uniqueIds = [...new Set(deviceIds)];
-  const owned = await db
-    .select({ id: devices.id })
+function siteRestriction(c: Context): UserPermissions | null {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (!permissions?.allowedSiteIds) return null;
+  const auth = c.get('auth') as AuthContext | undefined;
+  return isSiteRestrictedPrincipalKind(auth?.principal?.kind) ? permissions : null;
+}
+
+function loadDeviceSites(deviceIds: string[], orgId: string) {
+  return db
+    .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
-    .where(and(inArray(devices.id, uniqueIds), eq(devices.orgId, orgId)));
-  return owned.length === uniqueIds.length;
+    .where(and(inArray(devices.id, deviceIds), eq(devices.orgId, orgId)));
+}
+
+/**
+ * Authorize the device ids a caller is asking to STORE on a DR group.
+ *
+ * Org axis: DR group commands are dispatched under withSystemDbAccessContext
+ * (RLS off), so a foreign-org device id slipping into devices[] would let a
+ * destructive restore command target another tenant's device.
+ *
+ * Site axis: `devices:write` is a role permission orthogonal to allowedSiteIds,
+ * so a site-restricted technician normally holds it; without this check they
+ * could point a recovery group at another site's machines.
+ */
+async function authorizeProposedDevices(
+  c: Context,
+  deviceIds: string[],
+  orgId: string,
+): Promise<DeviceScopeDenial | null> {
+  const uniqueIds = uniqueDeviceIds(deviceIds);
+  if (uniqueIds.length === 0) return null;
+
+  const owned = await loadDeviceSites(uniqueIds, orgId);
+  if (owned.length !== uniqueIds.length) return ORG_DENIAL;
+
+  const restriction = siteRestriction(c);
+  if (!restriction) return null;
+  return owned.every((row) => canAccessSite(restriction, row.siteId)) ? null : SITE_DENIAL;
+}
+
+/**
+ * Authorize the membership a group ALREADY holds, before replacing or removing it.
+ *
+ * Validating only the submitted array is bypassable: a site-restricted caller
+ * can PATCH devices:[theirOwnDevice] over a stored [theirOwnDevice,
+ * otherSiteDevice] and silently drop the out-of-site device from the recovery
+ * plan without ever naming it — degrading DR for a site they cannot see. So
+ * every mutation that replaces or removes stored membership is authorized
+ * against what is already there.
+ *
+ * Costs an unrestricted caller nothing: it returns before issuing any query.
+ */
+async function authorizeStoredDevices(
+  c: Context,
+  storedDeviceIds: unknown,
+  orgId: string,
+): Promise<DeviceScopeDenial | null> {
+  const restriction = siteRestriction(c);
+  if (!restriction) return null;
+
+  const uniqueIds = uniqueDeviceIds(storedDeviceIds);
+  if (uniqueIds.length === 0) return null;
+
+  // Ids with no surviving device row cannot be restore targets, so they do not
+  // gate the mutation — a deleted device must not wedge group maintenance.
+  const owned = await loadDeviceSites(uniqueIds, orgId);
+  return owned.every((row) => canAccessSite(restriction, row.siteId)) ? null : SITE_DENIAL;
+}
+
+/**
+ * Authorize every device across a plan's groups. Plan status gates execution
+ * and archival disables recovery outright, so those are control-plane actions
+ * over every site the plan touches — not just the caller's own.
+ */
+async function authorizePlanStoredDevices(
+  c: Context,
+  planId: string,
+  orgId: string,
+): Promise<DeviceScopeDenial | null> {
+  if (!siteRestriction(c)) return null;
+
+  const groups = await db
+    .select({ devices: drPlanGroups.devices })
+    .from(drPlanGroups)
+    .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)));
+
+  return authorizeStoredDevices(c, groups.flatMap((group) => uniqueDeviceIds(group.devices)), orgId);
 }
 
 function resolveOrgId(
@@ -187,6 +291,9 @@ drRoutes.patch(
 
     if (!existing) return c.json({ error: 'Plan not found' }, 404);
 
+    const planDenial = await authorizePlanStoredDevices(c, id, orgId);
+    if (planDenial) return denyDeviceScope(c, planDenial);
+
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.description !== undefined) updateData.description = payload.description;
@@ -231,6 +338,9 @@ drRoutes.delete(
 
     if (!existing) return c.json({ error: 'Plan not found' }, 404);
 
+    const planDenial = await authorizePlanStoredDevices(c, id, orgId);
+    if (planDenial) return denyDeviceScope(c, planDenial);
+
     // Archive instead of hard delete
     const [updated] = await db
       .update(drPlans)
@@ -274,8 +384,9 @@ drRoutes.post(
     if (!plan) return c.json({ error: 'Plan not found' }, 404);
 
     const payload = c.req.valid('json');
-    if (payload.devices && !(await allDevicesBelongToOrg(payload.devices, orgId))) {
-      return c.json({ error: 'One or more devices do not belong to this organization' }, 403);
+    if (payload.devices) {
+      const denial = await authorizeProposedDevices(c, payload.devices, orgId);
+      if (denial) return denyDeviceScope(c, denial);
     }
 
     const [row] = await db
@@ -326,8 +437,14 @@ drRoutes.patch(
 
     if (!existing) return c.json({ error: 'Group not found' }, 404);
 
-    if (payload.devices !== undefined && !(await allDevicesBelongToOrg(payload.devices, orgId))) {
-      return c.json({ error: 'One or more devices do not belong to this organization' }, 403);
+    // Authorize what the group already holds BEFORE what the caller proposes:
+    // a replace that merely omits an out-of-site device never names it.
+    const storedDenial = await authorizeStoredDevices(c, existing.devices, orgId);
+    if (storedDenial) return denyDeviceScope(c, storedDenial);
+
+    if (payload.devices !== undefined) {
+      const denial = await authorizeProposedDevices(c, payload.devices, orgId);
+      if (denial) return denyDeviceScope(c, denial);
     }
 
     const updateData: Record<string, unknown> = {};
@@ -367,7 +484,7 @@ drRoutes.delete(
     const { id: planId, gid } = c.req.valid('param');
 
     const [existing] = await db
-      .select({ id: drPlanGroups.id })
+      .select({ id: drPlanGroups.id, devices: drPlanGroups.devices })
       .from(drPlanGroups)
       .where(
         and(
@@ -379,6 +496,9 @@ drRoutes.delete(
       .limit(1);
 
     if (!existing) return c.json({ error: 'Group not found' }, 404);
+
+    const storedDenial = await authorizeStoredDevices(c, existing.devices, orgId);
+    if (storedDenial) return denyDeviceScope(c, storedDenial);
 
     await db
       .delete(drPlanGroups)
@@ -422,13 +542,24 @@ drRoutes.post(
       return c.json({ error: 'Cannot execute an archived plan' }, 400);
     }
 
-    const execution = await createDrExecutionAndEnqueue({
-      planId,
-      orgId,
-      executionType,
-      initiatedBy: auth.user?.id ?? null,
-      auth,
-    });
+    // createDrExecutionAndEnqueue authorizes every group device against the
+    // caller's site grant before an execution row exists, so a denial here is an
+    // expected outcome — not a fault. Uncaught it would reach the global handler
+    // and render as a 500 plus a Sentry event (#3653).
+    let execution;
+    try {
+      execution = await createDrExecutionAndEnqueue({
+        planId,
+        orgId,
+        executionType,
+        initiatedBy: auth.user?.id ?? null,
+        auth,
+      });
+    } catch (error) {
+      const failure = classifyDrExecutionAuthorizationError(error);
+      if (!failure) throw error;
+      return c.json({ error: failure.code }, failure.status);
+    }
 
     if (!execution) return c.json({ error: 'Failed to create execution' }, 500);
 
@@ -541,6 +672,11 @@ drRoutes.post(
     if (execution.status === 'completed' || execution.status === 'aborted') {
       return c.json({ error: `Cannot abort execution in ${execution.status} state` }, 400);
     }
+
+    // Aborting halts recovery for every site the plan touches, so a caller who
+    // cannot reach all of them must not be able to stop it.
+    const abortDenial = await authorizePlanStoredDevices(c, execution.planId, orgId);
+    if (abortDenial) return denyDeviceScope(c, abortDenial);
 
     const [updated] = await db
       .update(drExecutions)

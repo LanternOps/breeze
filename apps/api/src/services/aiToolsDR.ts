@@ -14,6 +14,31 @@ import type { AiTool } from './aiTools';
 import { createDrExecutionAndEnqueue } from './drExecutionService';
 import { resolveSiteDevicePartition } from './aiToolsSiteScope';
 
+/**
+ * Deny a group mutation whose STORED membership reaches outside the caller's
+ * sites.
+ *
+ * `manage_dr_plan` declares `deviceArgs: ['devices']`, so the central gate in
+ * aiTools.ts org+site checks every device id the caller SUBMITS. It cannot see
+ * what the group already holds, which leaves the same bypass the HTTP routes
+ * had (#3653): an update_group carrying devices:[theirOwnDevice] over a stored
+ * [theirOwnDevice, otherSiteDevice] silently drops the out-of-site device from
+ * the recovery plan without ever naming it. delete_group removes it outright.
+ *
+ * No-op for unrestricted callers — resolveSiteDevicePartition returns null.
+ */
+async function storedGroupDevicesDenied(
+  auth: AuthContext,
+  orgId: string,
+  storedDevices: unknown,
+): Promise<boolean> {
+  const partition = await resolveSiteDevicePartition(orgId, auth);
+  if (!partition) return false;
+  const forbidden = new Set(partition.forbidden);
+  return (Array.isArray(storedDevices) ? storedDevices : [])
+    .some((id) => typeof id === 'string' && forbidden.has(id));
+}
+
 type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
 // ============================================
@@ -495,12 +520,15 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         const gc = orgWhere(auth, drPlanGroups.orgId);
         if (gc) groupConditions.push(gc);
         const [existing] = await db
-          .select({ id: drPlanGroups.id })
+          .select({ id: drPlanGroups.id, orgId: drPlanGroups.orgId, devices: drPlanGroups.devices })
           .from(drPlanGroups)
           .where(and(...groupConditions))
           .limit(1);
 
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (await storedGroupDevicesDenied(auth, existing.orgId, existing.devices)) {
+          return JSON.stringify({ error: 'Group not found or access denied' });
+        }
 
         const updateData: Record<string, unknown> = {};
         if (typeof input.name === 'string') updateData.name = input.name.trim();
@@ -537,12 +565,15 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         const gc = orgWhere(auth, drPlanGroups.orgId);
         if (gc) groupConditions.push(gc);
         const [existing] = await db
-          .select({ id: drPlanGroups.id })
+          .select({ id: drPlanGroups.id, orgId: drPlanGroups.orgId, devices: drPlanGroups.devices })
           .from(drPlanGroups)
           .where(and(...groupConditions))
           .limit(1);
 
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (await storedGroupDevicesDenied(auth, existing.orgId, existing.devices)) {
+          return JSON.stringify({ error: 'Group not found or access denied' });
+        }
 
         await db.delete(drPlanGroups).where(eq(drPlanGroups.id, groupId));
         return JSON.stringify({ success: true, deleted: true, groupId });

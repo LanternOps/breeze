@@ -7,11 +7,15 @@ const PLAN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GROUP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const OUT_OF_SITE_DEVICE_ID = '11111111-1111-4111-8111-111111111111';
+const SITE_A = '22222222-2222-4222-8222-222222222222';
+const SITE_B = '33333333-3333-4333-8333-333333333333';
 
 vi.mock('../services', () => ({}));
 
 const writeRouteAuditMock = vi.fn();
 const createDrExecutionAndEnqueueMock = vi.fn();
+const classifyDrExecutionAuthorizationErrorMock = vi.fn(() => null as unknown);
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -31,7 +35,10 @@ let authState = {
   partnerId: null,
   orgId: ORG_ID,
   token: { sub: 'user-123' },
+  principal: { kind: 'user_session' as const },
 };
+/** null => the caller carries no site restriction (the pre-existing default). */
+let permissionsState: { allowedSiteIds: string[] | null } | null = null;
 
 vi.mock('../db', () => ({
   db: {
@@ -55,6 +62,7 @@ vi.mock('../db/schema', () => ({
     planId: 'dr_plan_groups.plan_id',
     orgId: 'dr_plan_groups.org_id',
     sequence: 'dr_plan_groups.sequence',
+    devices: 'dr_plan_groups.devices',
   },
   drExecutions: {
     id: 'dr_executions.id',
@@ -66,6 +74,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
+    siteId: 'devices.site_id',
   },
 }));
 
@@ -75,6 +84,8 @@ vi.mock('../services/auditEvents', () => ({
 
 vi.mock('../services/drExecutionService', () => ({
   createDrExecutionAndEnqueue: (...args: unknown[]) => createDrExecutionAndEnqueueMock(...(args as [])),
+  classifyDrExecutionAuthorizationError: (...args: unknown[]) =>
+    classifyDrExecutionAuthorizationErrorMock(...(args as [])),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -83,7 +94,10 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
-  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionsState) c.set('permissions', permissionsState);
+    return next();
+  }),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
@@ -94,12 +108,15 @@ describe('dr routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionsState = null;
+    classifyDrExecutionAuthorizationErrorMock.mockReturnValue(null);
     authState = {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
       orgId: ORG_ID,
       token: { sub: 'user-123' },
+      principal: { kind: 'user_session' },
     };
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -564,5 +581,224 @@ describe('dr routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Cannot abort execution');
+  });
+
+  // ── Site scoping (#3653) ──────────────────────────────────────────────────
+  //
+  // RLS enforces the ORG axis only. The SITE axis is app-layer, so these routes
+  // are the sole barrier between a site-restricted technician and another
+  // site's disaster-recovery configuration.
+  describe('site scoping', () => {
+    /** Rows the org+site lookup returns for the ids a handler asks about. */
+    const deviceRows = [
+      { id: DEVICE_ID, siteId: SITE_A },
+      { id: OUT_OF_SITE_DEVICE_ID, siteId: SITE_B },
+    ];
+
+    function restrictToSiteA() {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+    }
+
+    it('rejects a group create that includes an out-of-site device', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Tier 1', devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('allows a group create whose devices are all inside the caller sites', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID }]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Tier 1', devices: [DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertMock).toHaveBeenCalled();
+    });
+
+    // The bypass that makes "validate the submitted array" insufficient: every
+    // id the caller submits is inside their grant, yet the write silently drops
+    // the out-of-site device already stored on the group.
+    it('rejects a group update that silently drops a stored out-of-site device', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: GROUP_ID,
+        planId: PLAN_ID,
+        orgId: ORG_ID,
+        devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID],
+      }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ devices: [DEVICE_ID] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects deleting a group that holds an out-of-site device', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: GROUP_ID,
+        devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID],
+      }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects archiving a plan whose groups span sites the caller cannot reach', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      selectMock.mockReturnValueOnce(chainMock([{ devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID] }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects updating a plan whose groups span sites the caller cannot reach', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      selectMock.mockReturnValueOnce(chainMock([{ devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID] }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'archived' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects aborting a recovery that targets out-of-site devices', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: EXECUTION_ID,
+        planId: PLAN_ID,
+        orgId: ORG_ID,
+        status: 'running',
+      }]));
+      selectMock.mockReturnValueOnce(chainMock([{ devices: [DEVICE_ID, OUT_OF_SITE_DEVICE_ID] }]));
+      selectMock.mockReturnValueOnce(chainMock(deviceRows));
+
+      const res = await app.request(`/dr/executions/${EXECUTION_ID}/abort`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('allows aborting a recovery confined to the caller sites', async () => {
+      restrictToSiteA();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: EXECUTION_ID,
+        planId: PLAN_ID,
+        orgId: ORG_ID,
+        status: 'running',
+      }]));
+      selectMock.mockReturnValueOnce(chainMock([{ devices: [DEVICE_ID] }]));
+      selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: EXECUTION_ID, status: 'aborted' }]));
+
+      const res = await app.request(`/dr/executions/${EXECUTION_ID}/abort`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.status).toBe('aborted');
+    });
+
+    // An unrestricted principal must not pay for the site barrier, and must not
+    // change behaviour: no extra lookup beyond the group existence check.
+    it('costs an unrestricted caller no additional device lookup', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID, devices: [OUT_OF_SITE_DEVICE_ID] }]));
+      deleteMock.mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(selectMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── Execution authorization errors (#3653) ────────────────────────────────
+  describe('execution authorization failures', () => {
+    it('reports a site-denied execution as 403 rather than a 500', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      createDrExecutionAndEnqueueMock.mockRejectedValueOnce(new Error('site_access_denied'));
+      classifyDrExecutionAuthorizationErrorMock.mockReturnValue({
+        status: 403,
+        code: 'site_access_denied',
+      });
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('site_access_denied');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    // Only recognised authorization denials may be converted. A genuine fault
+    // must keep propagating, or this catch would swallow real breakage.
+    it('rethrows an unrecognised execution failure', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      createDrExecutionAndEnqueueMock.mockRejectedValueOnce(new Error('redis is on fire'));
+      classifyDrExecutionAuthorizationErrorMock.mockReturnValue(null);
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(500);
+    });
   });
 });
