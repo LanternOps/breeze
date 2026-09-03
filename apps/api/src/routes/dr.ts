@@ -68,8 +68,9 @@ function uniqueDeviceIds(value: unknown): string[] {
  * routes/backup/resilienceAuthorization.ts so both read the grant identically.
  */
 function siteRestriction(c: Context): UserPermissions | null {
+  // authMiddleware runs on '*' before every handler here, so auth is always set.
   const auth = c.get('auth') as AuthContext;
-  if (!isSiteRestrictedPrincipalKind(auth?.principal?.kind)) return null;
+  if (!isSiteRestrictedPrincipalKind(auth.principal?.kind)) return null;
 
   // Fall back to the token's own grant rather than treating a missing
   // `permissions` as "unrestricted". Every route here is behind
