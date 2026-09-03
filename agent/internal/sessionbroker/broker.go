@@ -1372,6 +1372,105 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	}
 }
 
+// notifyDecisionSeq numbers the envelope ids RequestNotificationDecision
+// allocates. A counter, not a timestamp: the repo's other correlated-request ids
+// use time.Now().UnixMilli() (see LaunchProcessViaUserHelperWithArgs), and
+// SendCommand rejects a duplicate in-flight id outright with ErrDuplicateCommand
+// — so two prompts raised inside the same millisecond, which two reminder rungs
+// or a rung and a retry easily are, would lose one answer.
+var notifyDecisionSeq atomic.Uint64
+
+// RequestNotificationDecision sends an interactive notification to every
+// notify-scoped session and returns the first answer.
+//
+// This is the response-bearing sibling of BroadcastNotification, which is
+// deliberately left alone: the reboot warning LADDER stays fire-and-forget
+// (#3197 guarantees the user is TOLD; it does not need an answer). Only the
+// rungs that offer a postponement come through here.
+//
+// The plumbing already existed and was never usable end to end.
+// NotifyRequest.Actions and NotifyResult.ActionClicked are declared in
+// ipc/message.go, expectedResponseType maps TypeNotify -> TypeNotifyResult, and
+// the helper's handleNotify already replies on the envelope id it was given —
+// but BroadcastNotification calls SendNotify with an EMPTY id, so no pending
+// entry exists, the reply matches nothing, and dispatchHelperMessage drops it as
+// unsolicited. Here the id is real and per-session.
+//
+// Fan-out is concurrent and first-answer-wins: there is one machine and one
+// reboot, so the first human to click decides. Sessions that time out or error
+// are not failures — an unanswered prompt means "proceed as scheduled", which is
+// the fail-safe direction. The reboot still happens; silence never cancels it and
+// never postpones it.
+//
+// The "notify" scope filter is the same one BroadcastNotification documents and
+// must not be weakened (#3255): the assist helper and the watchdog have no
+// TypeNotify handler at all, and a modal prompt is strictly more intrusive than
+// the toast that filter was written for.
+func (b *Broker) RequestNotificationDecision(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+	b.mu.RLock()
+	sessions := make([]*Session, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		if s.HasScope("notify") {
+			sessions = append(sessions, s)
+		}
+	}
+	b.mu.RUnlock()
+
+	if len(sessions) == 0 {
+		// Not an error: a headless box, or Windows sitting at the logon screen.
+		// There is no interactive user to ask.
+		return ipc.NotifyResult{}, nil
+	}
+
+	type answer struct {
+		res ipc.NotifyResult
+		err error
+	}
+	results := make(chan answer, len(sessions))
+	for _, s := range sessions {
+		go func(s *Session) {
+			id := fmt.Sprintf("notify-%s-%d", s.SessionID, notifyDecisionSeq.Add(1))
+			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, timeout)
+			if err != nil {
+				results <- answer{err: fmt.Errorf("session %s: %w", s.SessionID, err)}
+				return
+			}
+			if resp.Error != "" {
+				results <- answer{err: fmt.Errorf("session %s: notify helper error: %s", s.SessionID, resp.Error)}
+				return
+			}
+			var out ipc.NotifyResult
+			if err := json.Unmarshal(resp.Payload, &out); err != nil {
+				results <- answer{err: fmt.Errorf("session %s: decode notify result: %w", s.SessionID, err)}
+				return
+			}
+			results <- answer{res: out}
+		}(s)
+	}
+
+	// results is buffered to len(sessions), so the goroutines belonging to
+	// sessions we stop reading from still finish and exit rather than leaking.
+	var best ipc.NotifyResult
+	var lastErr error
+	for range sessions {
+		a := <-results
+		if a.err != nil {
+			lastErr = a.err
+			continue
+		}
+		if a.res.ActionClicked != "" {
+			return a.res, nil // the first real decision wins
+		}
+		if a.res.Delivered {
+			best.Delivered = true
+		}
+	}
+	if !best.Delivered && lastErr != nil {
+		return best, lastErr
+	}
+	return best, nil
+}
+
 // BroadcastToDesktopSessions sends a fire-and-forget IPC message to all
 // connected sessions that have the "desktop" scope.
 func (b *Broker) BroadcastToDesktopSessions(msgType string, payload any) {
