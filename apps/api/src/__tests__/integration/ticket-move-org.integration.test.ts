@@ -887,15 +887,70 @@ describe('moveTicketOrg — ai_agent_runs.ticket_id detach (#4524)', () => {
       .returning();
     expect(aiComment.agentRunId).toBe(run.id);
 
+    // Control: an AI comment on a DIFFERENT ticket in the SAME source org.
+    // Rejects a detach scoped by org rather than by the moved ticket — e.g.
+    // `WHERE ticket_id IN (SELECT id FROM tickets WHERE org_id = source)`,
+    // which the single-comment case alone would pass.
+    const sibling = await seedSiblingTicket(orgA.id, partner.id);
+    const siblingRun = await seedRunOnTicket(orgA.id, agent.id, sibling.id, null);
+    const [siblingComment] = await adminDb
+      .insert(ticketComments)
+      .values({
+        ticketId: sibling.id,
+        authorType: 'internal',
+        commentType: 'comment',
+        content: 'Triage note on a ticket that never moves.',
+        isPublic: false,
+        originPrincipalKind: 'ai_agent',
+        agentRunId: siblingRun.id,
+      })
+      .returning();
+
     await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
 
     const after = await readComment(aiComment.id);
     expect(after?.agentRunId).toBeNull();
+    // The sibling ticket never moved, so its comment keeps its run link.
+    expect((await readComment(siblingComment.id))?.agentRunId).toBe(siblingRun.id);
     // Only the cross-org link is dropped. The comment itself, its content and
     // its non-user provenance (which is what the helpdesk loop guard actually
     // keys on) all survive the move.
     expect(after?.ticketId).toBe(ticket.id);
     expect(after?.content).toBe('Proposed next step from triage.');
     expect(after?.originPrincipalKind).toBe('ai_agent');
+  });
+
+  it('rolls the detach back with the rest of the transaction when the currency guard blocks the move', async () => {
+    // The detach runs BEFORE assertTicketMoveCurrencyCompatible (deliberately —
+    // see the lock-order note at the statement), so a blocked move must unwind
+    // it along with everything else. Verified discriminating by mutation: hoist
+    // the detach out of db.transaction (its own withSystemDbAccessContext, as a
+    // "tidier" refactor might) and ONLY this case fails — every other test in
+    // this block still passes while the pointer is severed on a move that never
+    // happened. Note that swapping `tx` for `db` is NOT that mutation: `db` is
+    // an AsyncLocalStorage-bound proxy (db/index.ts) that resolves to the same
+    // pinned connection inside the callback, so it stays transactional.
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, partner, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+
+    // Nothing moved — and the pointer is still there, because the ticket is
+    // still the source org's.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+    const after = await readRun(run.id);
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.orgId).toBe(orgA.id);
   });
 });
