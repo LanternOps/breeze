@@ -81,8 +81,9 @@ export function billsOverage(r: ResolvedQuantity): boolean {
 }
 
 /**
- * The overage leg's money, exact in `currencyCode`. `'0.00'` (or the
- * zero-decimal currency's `'0'`) whenever nothing is billed — a flag-mode line,
+ * The overage leg's money, exact in `currencyCode`. `'0.00'` in every
+ * currency, zero-decimal ones included (storage is fixed-2 major units — spec:
+ * numeric(_,2) in every currency), whenever nothing is billed — a flag-mode line,
  * a line inside its allowance, or a line with no rate — so a caller can always
  * add it without a branch. The overage leg is never catalog-priced, so this is
  * the same number the estimate and the invoice both show.
