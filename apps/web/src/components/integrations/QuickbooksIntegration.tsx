@@ -294,6 +294,11 @@ export default function QuickbooksIntegration() {
   // the toast is chosen from the boolean, and `false` gets a warning. Toasting
   // "queued" on `enqueued: false` would leave the operator waiting on a sync
   // that will never run.
+  //
+  // Issue #4543 — a connection with pull_payments off gets a distinct 409
+  // `{ code: 'pull_disabled' }` (not a `{ enqueued: false }` 200), so runAction
+  // treats it as a failure and `friendly` swaps in the translated copy instead
+  // of the route's raw English message.
   const handleReconcileNow = useCallback(async () => {
     setReconciling(true);
     try {
@@ -303,6 +308,10 @@ export default function QuickbooksIntegration() {
             method: "POST",
           }),
         errorFallback: t("quickbooksIntegration.failedToSyncNow"),
+        friendly: (code) =>
+          code === "pull_disabled"
+            ? t("quickbooksIntegration.syncNowPullDisabled")
+            : undefined,
         onUnauthorized,
       });
       showToast(
@@ -617,6 +626,23 @@ export default function QuickbooksIntegration() {
                 : t("quickbooksIntegration.never")}
             </p>
           </div>
+
+          {/* Issue #4543 (silent-failure-hunter finding): the reconcile
+              worker stamps a skip/failure reason onto `last_error` even while
+              `status` stays "connected" (pull_disabled, run failures,
+              a truncated CDC window). Without rendering it here, that stamp
+              was DB-only — invisible to anyone who only clicks "Sync now"
+              (the route's 409 already covers that click; this covers the
+              15-minute sweep / webhook triggers racing a toggle-off). Mirrors
+              the `needsReauth` block above. */}
+          {status.lastError && (
+            <p
+              className="text-xs text-amber-700"
+              data-testid="quickbooks-reconcile-last-error"
+            >
+              {status.lastError}
+            </p>
+          )}
 
           <div className="flex items-center gap-3 border-t pt-4">
             <button

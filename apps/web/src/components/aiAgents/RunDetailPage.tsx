@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ArrowLeft, Bot, Download, ExternalLink, Loader2 } from 'lucide-react';
@@ -6,8 +6,12 @@ import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from '../reports/reportExport';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
+import { EmptyState } from '../shared/EmptyState';
 import type {
   AiAgentRunDetailDto,
+  AiAgentRunLedgerEntryDto,
+  AiAgentRunStatus,
   AiAgentRunSweepFindingDto,
   AiAgentRunTicketProposalDto,
   AiAgentRunTraceEntryDto,
@@ -23,40 +27,38 @@ interface RunDetailPageProps {
   runId: string;
 }
 
+/** Every status NOT in this set is "live" — mirrors RunsListPage's
+ * TERMINAL_RUN_STATUSES so both surfaces agree on when a run stops updating. */
+const TERMINAL_RUN_STATUSES = new Set<AiAgentRunStatus>([
+  'completed', 'failed', 'cancelled', 'expired', 'skipped',
+]);
+function isLiveRunStatus(status: AiAgentRunStatus): boolean {
+  return !TERMINAL_RUN_STATUSES.has(status);
+}
+
+const DETAIL_POLL_INTERVAL_MS = 5_000;
+
+/** See RunsListPage's `LiveIndicator` — same decorative-dot + sr-only-label
+ * contract, duplicated locally rather than shared since it is a two-line
+ * component and these two files intentionally don't share a module. */
+function LiveIndicator({ label }: { label: string }) {
+  return (
+    <span className="ml-1.5 inline-flex items-center" data-testid="run-live-indicator">
+      <span className="relative flex h-2 w-2" aria-hidden="true">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-500 opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500" />
+      </span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
 function formatDuration(ms: number | null): string {
   if (ms === null || Number.isNaN(ms)) return '—';
   const totalSeconds = Math.round(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-function statusBadgeClass(status: string): string {
-  switch (status) {
-    case 'completed':
-      return 'bg-emerald-500/10 text-emerald-600';
-    case 'failed':
-      return 'bg-red-500/10 text-red-600';
-    case 'running':
-      return 'bg-blue-500/10 text-blue-600';
-    case 'awaiting_approval':
-      return 'bg-amber-500/10 text-amber-700';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
-}
-
-function verdictBadgeClass(verdict: string | null): string {
-  switch (verdict) {
-    case 'remediated':
-      return 'bg-emerald-500/10 text-emerald-600';
-    case 'partial':
-      return 'bg-amber-500/10 text-amber-700';
-    case 'needs_attention':
-      return 'bg-red-500/10 text-red-600';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
 }
 
 function verdictLabel(t: (key: string) => string, value: string | null): string {
@@ -114,6 +116,27 @@ function triggerLabel(t: (key: string) => string, value: string): string {
   }
 }
 
+/** `AiAgentRunLedgerEntryDto.status` (`AiToolStatus`) → i18n label, so the
+ * ledger never prints the raw enum token (critique finding #6). */
+function ledgerStatusLabel(t: (key: string) => string, value: AiAgentRunLedgerEntryDto['status']): string {
+  switch (value) {
+    case 'pending':
+      return t('aiAgentsRuns.detail.ledger.statuses.pending');
+    case 'approved':
+      return t('aiAgentsRuns.detail.ledger.statuses.approved');
+    case 'executing':
+      return t('aiAgentsRuns.detail.ledger.statuses.executing');
+    case 'completed':
+      return t('aiAgentsRuns.detail.ledger.statuses.completed');
+    case 'failed':
+      return t('aiAgentsRuns.detail.ledger.statuses.failed');
+    case 'rejected':
+      return t('aiAgentsRuns.detail.ledger.statuses.rejected');
+    default:
+      return value;
+  }
+}
+
 function traceKindLabel(t: (key: string) => string, kind: AiAgentRunTraceEntryDto['kind']): string {
   switch (kind) {
     case 'executed':
@@ -160,13 +183,13 @@ function verificationLabel(t: (key: string) => string, value: string): string {
 function traceEntryBadgeClass(kind: AiAgentRunTraceEntryDto['kind']): string {
   switch (kind) {
     case 'executed':
-      return 'bg-blue-500/10 text-blue-600';
+      return badgeClass('info', { size: 'sm' });
     case 'proposed':
-      return 'bg-amber-500/10 text-amber-700';
+      return badgeClass('warning', { size: 'sm' });
     case 'denied':
-      return 'bg-red-500/10 text-red-600';
+      return badgeClass('danger', { size: 'sm' });
     default:
-      return 'bg-muted text-muted-foreground';
+      return badgeClass('neutral', { size: 'sm' });
   }
 }
 
@@ -176,6 +199,12 @@ function traceEntryBadgeClass(kind: AiAgentRunTraceEntryDto['kind']): string {
  * ever carry a raw tool input/output, by construction (see the DTO file's
  * header comment). `intentsById` links a `proposed` entry with an
  * `intentId` onward to `/approvals`, never to the intent's own content.
+ *
+ * UI critique finding #6: the DTO carries a `durationMs` for an `executed`
+ * entry but NO timestamp field on any of the three trace-entry variants
+ * (`AiAgentRunTraceEntryDto` in packages/shared/src/types/aiAgentRuns.ts) —
+ * there is nothing here to format. Rendering a start time is therefore out
+ * of scope for this component; it needs a wire-level field added first.
  */
 function TraceEntryRow({
   entry,
@@ -189,7 +218,7 @@ function TraceEntryRow({
   return (
     <li data-testid={`run-detail-trace-entry-${index}`} className="flex flex-col gap-1 border-b py-3 last:border-b-0">
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${traceEntryBadgeClass(entry.kind)}`}>
+        <span className={traceEntryBadgeClass(entry.kind)}>
           {traceKindLabel(t, entry.kind)}
         </span>
         <span className="font-medium">{entry.tool}</span>
@@ -253,16 +282,18 @@ function TraceEntryRow({
  * Same leak-impossible contract as the trace above: `AiAgentRunSweepDto` is
  * the SAFE projection (packages/shared/src/types/aiAgentRuns.ts), so nothing
  * rendered here can be a raw tool input/output. `evidence` is the bounded
- * scalar map the finding schema enforces and is rendered as `key: value`
- * pairs — never `JSON.stringify`d, which is how an unexpectedly nested value
- * would end up dumped verbatim into the DOM.
+ * scalar map the finding schema enforces and is rendered as a `<dl>` of
+ * term/value pairs (never `JSON.stringify`d, which is how an unexpectedly
+ * nested value would end up dumped verbatim into the DOM) — a `<dl>` rather
+ * than a flattened "k: v · k: v" string so a screen reader gets real
+ * term/value structure instead of one opaque run of text.
  */
 const SWEEP_SEVERITY_BADGE: Record<AiSweepSeverity, string> = {
-  critical: 'bg-red-500/10 text-red-600',
-  high: 'bg-orange-500/10 text-orange-700',
-  medium: 'bg-amber-500/10 text-amber-700',
-  low: 'bg-blue-500/10 text-blue-600',
-  info: 'bg-muted text-muted-foreground',
+  critical: badgeClass('danger', { size: 'sm' }),
+  high: badgeClass('warning', { size: 'sm' }),
+  medium: badgeClass('warning', { size: 'sm' }),
+  low: badgeClass('info', { size: 'sm' }),
+  info: badgeClass('neutral', { size: 'sm' }),
 };
 
 /**
@@ -294,11 +325,28 @@ function sweepReasonLabel(t: (key: string) => string, reason: string | null): st
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
 }
 
-/** `k: v · k: v` — the bounded scalar evidence map, never a JSON dump. */
-function formatSweepEvidence(evidence: AiAgentRunSweepFindingDto['evidence']): string {
-  return Object.entries(evidence)
-    .map(([key, value]) => `${key}: ${value === null ? '—' : String(value)}`)
-    .join(' · ');
+/** The bounded scalar evidence map, rendered as `<dt>`/`<dd>` pairs — never a
+ * JSON dump, and never a flattened "k: v" string a screen reader would read
+ * as one undifferentiated run of text. */
+function SweepEvidenceList({
+  evidence,
+  testId,
+}: {
+  evidence: AiAgentRunSweepFindingDto['evidence'];
+  testId: string;
+}) {
+  const entries = Object.entries(evidence);
+  if (entries.length === 0) return null;
+  return (
+    <dl className="mt-1 space-y-0.5 text-xs" data-testid={testId}>
+      {entries.map(([key, value]) => (
+        <div key={key} className="flex gap-1">
+          <dt className="text-muted-foreground">{key}:</dt>
+          <dd>{value === null ? '—' : String(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function SweepFindingRow({
@@ -310,16 +358,13 @@ function SweepFindingRow({
   index: number;
   t: (key: string) => string;
 }) {
-  const evidence = formatSweepEvidence(finding.evidence);
   const { proposal } = finding;
 
   return (
     <tr data-testid={`ai-agent-run-sweep-finding-${index}`} className="align-top">
       <td className="px-2 py-2 whitespace-nowrap">{sweepKindLabel(t, finding.kind)}</td>
       <td className="px-2 py-2">
-        <span
-          className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${SWEEP_SEVERITY_BADGE[finding.severity] ?? 'bg-muted text-muted-foreground'}`}
-        >
+        <span className={SWEEP_SEVERITY_BADGE[finding.severity] ?? badgeClass('neutral', { size: 'sm' })}>
           {sweepSeverityLabel(t, finding.severity)}
         </span>
       </td>
@@ -329,14 +374,7 @@ function SweepFindingRow({
       <td className="px-2 py-2 font-medium">{finding.title}</td>
       <td className="px-2 py-2 text-muted-foreground">
         <span>{finding.detail}</span>
-        {evidence && (
-          <span
-            className="mt-1 block text-xs"
-            data-testid={`ai-agent-run-sweep-finding-${index}-evidence`}
-          >
-            {evidence}
-          </span>
-        )}
+        <SweepEvidenceList evidence={finding.evidence} testId={`ai-agent-run-sweep-finding-${index}-evidence`} />
       </td>
       <td className="px-2 py-2" data-testid={`ai-agent-run-sweep-finding-${index}-proposal`}>
         {proposal === null ? (
@@ -449,6 +487,13 @@ function skipReasonLabel(t: (key: string) => string, reason: TicketTriageSkip['r
  * cross-reference by id, falling back to the bare id if the run's intents
  * projection ever disagrees with it (defensive only; in practice
  * `intentIds` is populated FROM the same `action_intents` rows).
+ *
+ * UI critique finding #6: `fields.categoryId.value` is a raw internal
+ * category UUID — the DTO carries no resolved category name anywhere
+ * (`TicketTriageProposal` in packages/shared/src/types/ticketTriage.ts only
+ * ever ships `{ value, confidence }`). Rather than leak that id to the user,
+ * it is hidden; only the confidence is shown, with a note that the name
+ * could not be resolved on this surface.
  */
 function TicketProposalSection({
   proposal,
@@ -479,13 +524,9 @@ function TicketProposalSection({
           <ul className="space-y-1 text-sm">
             {proposal.fields?.categoryId && (
               <li data-testid="ai-agent-run-triage-field-categoryId">
-                {/* I3 (#4191 final review): this value is a raw category UUID
-                    (no catalog fetch here to resolve it to a name) — the
-                    "ID" label plus monospace styling makes that legible
-                    instead of reading as a broken/garbled category name. */}
-                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.categoryIdLabel')}</span>
+                <span className="font-medium">{t('aiAgentsRuns.detail.triage.categoryLabel')}</span>
                 {': '}
-                <span className="font-mono text-xs">{proposal.fields.categoryId.value}</span>{' '}
+                <span className="text-muted-foreground">{t('aiAgentsRuns.detail.triage.categoryUnresolved')}</span>{' '}
                 <span className="text-xs text-muted-foreground">
                   {t('aiAgentsPage.runs.triage.confidence', {
                     value: Math.round(proposal.fields.categoryId.confidence * 100),
@@ -660,7 +701,10 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
 
   return (
     <div data-testid="run-detail-budget-card" className="rounded-lg border bg-card p-4">
-      <h3 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.budget.title')}</h3>
+      {/* Sibling to the other top-level sections (sweep/narrative/trace/
+          ledger/intents all use h2) — was h3, which produced an h1 → h3 → h2
+          document-outline gap (critique finding #5). */}
+      <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.budget.title')}</h2>
 
       {loading && (
         <p className="mt-2 text-sm text-muted-foreground" data-testid="run-detail-budget-loading">
@@ -687,7 +731,7 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
             {t('aiAgentsPage.runs.detail.budget.caption', { hours: budget.windowHours })}
           </p>
           {budget.accountingMode === 'partial' && (
-            <p className="text-xs text-amber-700" data-testid="run-detail-budget-partial-note">
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400" data-testid="run-detail-budget-partial-note">
               {t('aiAgentsPage.runs.detail.budget.partialNote')}
             </p>
           )}
@@ -705,6 +749,14 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
  * exposure-budget readout. Nothing on this page can ever be a raw tool
  * input/output — the DTO union makes that impossible by construction (see
  * `packages/shared/src/types/aiAgentRuns.ts`).
+ *
+ * UI critique fix: while `run.status` is still live (queued/running/
+ * awaiting_approval), the page silently re-fetches every
+ * `DETAIL_POLL_INTERVAL_MS` — without flipping the full-page `loading` state,
+ * which would otherwise blank the whole page every 5 seconds — so an
+ * in-flight run's trace/ledger/status update without a manual reload.
+ * Polling stops once the run reaches a terminal status and pauses while the
+ * tab is hidden.
  */
 export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const { t } = useTranslation('settings');
@@ -715,12 +767,31 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const [downloadingNarrative, setDownloadingNarrative] = useState(false);
   const [narrativeDownloadError, setNarrativeDownloadError] = useState<string>();
 
+  // Monotonic request id shared by `load` and `refreshSilently` (review
+  // finding P2-2, #4187 critique — same pattern as RunsListPage's
+  // `fetchPage`/`pollListSilently`): whichever of the two started most
+  // recently wins, so a poll response that resolves after a newer `load()`
+  // (e.g. the user hit Retry, or the runId changed) can't regress the page,
+  // and out-of-order poll responses can't either.
+  const requestIdRef = useRef(0);
+  // Guards every setState here against firing after unmount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const load = useCallback(async () => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
     setLoading(true);
     setError(undefined);
     setNotFound(false);
     try {
       const response = await fetchWithAuth(`/ai/agents/runs/${runId}`);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       if (response.status === 404) {
         setNotFound(true);
         return;
@@ -730,21 +801,55 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         return;
       }
       const body = (await response.json()) as { data?: AiAgentRunDetailDto };
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       if (!body.data) {
         setError(t('aiAgentsPage.runs.detail.errors.load'));
         return;
       }
       setRun(body.data);
     } catch {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setError(t('aiAgentsPage.runs.detail.errors.load'));
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
   }, [runId, t]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Background poll: refetches the run detail without touching `loading` (a
+   * silent refresh — flipping `loading` here would blank the whole page on
+   * every tick). Best-effort: a failed poll just tries again next tick,
+   * leaving whatever is currently on screen alone. Shares `requestIdRef`
+   * with `load` (review finding P2-2) so an older response landing after a
+   * newer one — from either function — is discarded instead of overwriting
+   * fresher data; `mountedRef` guards against setting state after unmount.
+   */
+  const refreshSilently = useCallback(async () => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
+    try {
+      const response = await fetchWithAuth(`/ai/agents/runs/${runId}`);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      if (!response.ok) return;
+      const body = (await response.json()) as { data?: AiAgentRunDetailDto };
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      if (body.data) setRun(body.data);
+    } catch {
+      // Best-effort background refresh; keep showing the last good data.
+    }
+  }, [runId]);
+
+  useEffect(() => {
+    if (!run || !isLiveRunStatus(run.status)) return undefined;
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshSilently();
+    }, DETAIL_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [run?.status, refreshSilently]);
 
   /**
    * Phase 2 wave P2-3 (#4190) — "Download PDF" on the narrative section.
@@ -796,9 +901,16 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
   if (notFound) {
     return (
-      <p className="text-sm text-muted-foreground" data-testid="run-detail-not-found">
-        {t('aiAgentsPage.runs.detail.notFound')}
-      </p>
+      <EmptyState
+        testId="run-detail-not-found"
+        title={t('aiAgentsPage.runs.detail.notFound')}
+        description={t('aiAgentsRuns.detail.notFoundDescription')}
+        secondary={
+          <a href="/ai-agents/runs" className="text-primary hover:underline">
+            {t('aiAgentsPage.runs.detail.back')}
+          </a>
+        }
+      />
     );
   }
 
@@ -820,6 +932,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const durationMs = run.startedAt && run.finishedAt
     ? new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()
     : null;
+  const runIsLive = isLiveRunStatus(run.status);
 
   return (
     <div className="space-y-6" data-testid="run-detail-page">
@@ -832,10 +945,14 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         <div className="flex flex-wrap items-center gap-2">
           <Bot className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">{run.agentName ?? t('aiAgentsPage.runs.noAgent')}</h1>
-          <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${statusBadgeClass(run.status)}`}>
+          <span
+            className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
+            aria-live={runIsLive ? 'polite' : undefined}
+          >
             {statusLabel(t, run.status)}
           </span>
-          <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(run.runVerdict)}`}>
+          {runIsLive && <LiveIndicator label={t('aiAgentsRuns.live.label')} />}
+          <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
             {verdictLabel(t, run.runVerdict)}
           </span>
           {/* P2-4 (#4191, Task 12) — the detail DTO carries no `profile`
@@ -843,10 +960,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               the discriminator, same as the sweep/narrative sections below
               gating on their own null-checked field. */}
           {run.ticketProposal && (
-            <span
-              data-testid="run-detail-profile-triage"
-              className="inline-flex rounded bg-teal-500/10 px-1.5 py-0.5 text-xs font-medium text-teal-700"
-            >
+            <span data-testid="run-detail-profile-triage" className={badgeClass('muted', { size: 'sm' })}>
               {t('aiAgentsPage.runs.profile.triage')}
             </span>
           )}
@@ -901,7 +1015,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           <a
             href={`/devices/${run.deviceId}#anomalies`}
             data-testid="run-detail-anomaly-link"
-            className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
+            className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline dark:text-sky-400"
           >
             {t('aiAgentsPage.runs.detail.anomalyLink')}
             <ExternalLink className="h-3 w-3" />
@@ -911,17 +1025,17 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         {(run.budgetExceeded || run.wallClockExceeded || run.maxTurnsExceeded) && (
           <div className="mt-3 flex flex-wrap gap-2" data-testid="run-detail-flags">
             {run.budgetExceeded && (
-              <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700">
+              <span className={badgeClass('warning', { size: 'sm' })}>
                 {t('aiAgentsPage.runs.detail.flags.budgetExceeded')}
               </span>
             )}
             {run.wallClockExceeded && (
-              <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700">
+              <span className={badgeClass('warning', { size: 'sm' })}>
                 {t('aiAgentsPage.runs.detail.flags.wallClockExceeded')}
               </span>
             )}
             {run.maxTurnsExceeded && (
-              <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700">
+              <span className={badgeClass('warning', { size: 'sm' })}>
                 {t('aiAgentsPage.runs.detail.flags.maxTurnsExceeded')}
               </span>
             )}
@@ -961,7 +1075,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           </p>
 
           {run.sweep.evidenceTruncated && (
-            <p className="mt-2 text-xs text-amber-700" data-testid="ai-agent-run-sweep-truncated">
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-sweep-truncated">
               {t('aiAgentsPage.runs.sweep.evidenceTruncated')}
             </p>
           )}
@@ -1015,7 +1129,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           )}
 
           {run.narrative.contextTruncated && (
-            <p className="mt-2 text-xs text-amber-700" data-testid="ai-agent-run-narrative-truncated">
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-narrative-truncated">
               {t('aiAgentsPage.runs.narrative.truncatedNote')}
             </p>
           )}
@@ -1064,7 +1178,12 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.trace.title')}</h2>
         {run.trace.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.detail.trace.empty')}</p>
+          <EmptyState
+            size="sm"
+            headingLevel={3}
+            title={t('aiAgentsPage.runs.detail.trace.empty')}
+            description={t('aiAgentsRuns.detail.trace.emptyDescription')}
+          />
         ) : (
           <ul data-testid="run-detail-trace" className="mt-2">
             {run.trace.map((entry, index) => (
@@ -1077,7 +1196,12 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.ledger.title')}</h2>
         {run.ledger.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.detail.ledger.empty')}</p>
+          <EmptyState
+            size="sm"
+            headingLevel={3}
+            title={t('aiAgentsPage.runs.detail.ledger.empty')}
+            description={t('aiAgentsRuns.detail.ledger.emptyDescription')}
+          />
         ) : (
           <div className="mt-2 overflow-x-auto">
             <table className="min-w-full divide-y text-sm" data-testid="run-detail-ledger">
@@ -1094,7 +1218,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
                 {run.ledger.map((entry, index) => (
                   <tr key={index}>
                     <td className="px-2 py-2 font-medium">{entry.toolName}</td>
-                    <td className="px-2 py-2 text-muted-foreground">{entry.status}</td>
+                    <td className="px-2 py-2 text-muted-foreground">{ledgerStatusLabel(t, entry.status)}</td>
                     <td className="px-2 py-2 text-muted-foreground">{formatDuration(entry.durationMs)}</td>
                     <td className="px-2 py-2 text-muted-foreground">{formatDateTime(entry.createdAt)}</td>
                     <td className="px-2 py-2 text-destructive">{entry.errorMessage ?? '—'}</td>
@@ -1109,7 +1233,12 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.intents.title')}</h2>
         {run.intents.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.detail.intents.empty')}</p>
+          <EmptyState
+            size="sm"
+            headingLevel={3}
+            title={t('aiAgentsPage.runs.detail.intents.empty')}
+            description={t('aiAgentsRuns.detail.intents.emptyDescription')}
+          />
         ) : (
           <ul data-testid="run-detail-intents" className="mt-2 space-y-1 text-sm">
             {run.intents.map((intent) => (

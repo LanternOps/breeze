@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (grupo eliminado)",
       "coverage": {
         "uncovered": "{{count}} dispositivo(s) de esta organización no se facturan en ninguna línea de este contrato: {{breakdown}}",
-        "allCovered": "Todos los dispositivos de esta organización se facturan en una línea de este contrato."
+        "allCovered": "Todos los dispositivos de esta organización se facturan en una línea de este contrato.",
+        "uncoveredLead": "{{count}} dispositivo(s) de esta organización no se facturan en ninguna línea de este contrato:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Activar",
@@ -41,6 +43,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "grupo eliminado"
+      },
+      "lineScope": {
+        "site": "Sitio: {{name}}"
       }
     },
     "contractDetail": {
@@ -153,13 +158,22 @@
         "addLine": "No se pudo agregar la línea.",
         "removeLine": "No se pudo eliminar la línea.",
         "activateContract": "No se pudo activar el contrato.",
-        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o borre el enlace del catálogo."
+        "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o borre el enlace del catálogo.",
+        "updateLine": "No se pudo actualizar la línea.",
+        "lineNotFound": "Esa línea ya no existe. Actualiza el contrato.",
+        "contractNotEditable": "Las líneas solo se pueden editar en contratos en borrador o activos.",
+        "siteNotInOrg": "Ese sitio pertenece a otra organización.",
+        "groupNotInOrg": "Ese grupo de dispositivos pertenece a otra organización.",
+        "invalidLinePatch": "Esos cambios no son válidos para este tipo de línea.",
+        "priceNotRepresentable": "Ese precio tiene demasiados decimales para {{currency}}.",
+        "catalogItemNotFound": "Ese artículo del catálogo no está disponible en este contrato."
       },
       "toast": {
         "contractCreated": "Contrato creado",
         "lineAdded": "Línea agregada",
         "lineRemoved": "Línea eliminada",
-        "contractActivated": "Contrato activado"
+        "contractActivated": "Contrato activado",
+        "lineUpdated": "Línea actualizada"
       },
       "schedule": {
         "title": "Cronograma",
@@ -190,7 +204,8 @@
         "unitPrice": "Precio unitario",
         "qty": "Cantidad",
         "tax": "Impuesto",
-        "empty": "Aún no hay líneas. Agregue una línea recurrente a continuación."
+        "empty": "Aún no hay líneas. Agregue una línea recurrente a continuación.",
+        "edit": "Editar"
       },
       "addLine": {
         "integrationHint": "Agregar desde una integración: rellena previamente una línea.",
@@ -223,6 +238,16 @@
         "priceLookupFailed": "No se pudo obtener el precio en {{currency}}.",
         "priceNotRepresentable": "El precio en {{currency}} guardado para este artículo no es válido en {{currency}}: corríjalo en el catálogo o quite el vínculo con el catálogo e ingrese una línea manual.",
         "priceSourceOrgOverride": "Precio específico de la organización {{org}}"
+      },
+      "editLine": {
+        "save": "Guardar línea",
+        "cancel": "Cancelar",
+        "typeLocked": "El tipo de línea no se puede cambiar. Elimina la línea y agrega una nueva.",
+        "priceFromCatalog": "El precio viene del catálogo. Quita el vínculo al catálogo para definirlo manualmente.",
+        "refreshPrice": "Actualizar precio desde el catálogo",
+        "restoreCatalogLink": "Restaurar vínculo con el catálogo",
+        "unlinkNeedsPrice": "Ingresa un precio unitario y la configuración de impuestos para quitar el vínculo al catálogo.",
+        "noChanges": "Aún no hay nada que guardar."
       },
       "estimate": {
         "title": "Estimado este periodo",
@@ -1697,7 +1722,9 @@
       "lastSynced": "Última sincronización: {{when}}",
       "push": "Enviar a QuickBooks",
       "pushed": "Factura enviada a QuickBooks.",
-      "pushFailed": "No se pudo enviar la factura a QuickBooks."
+      "pushFailed": "No se pudo enviar la factura a QuickBooks.",
+      "voidedHint": "Esta factura está anulada — no hay nada que enviar a QuickBooks.",
+      "remoteDeletedHint": "Esta factura fue eliminada en QuickBooks. Enviarla de nuevo crearía un duplicado — resuélvelo primero en QuickBooks."
     }
   },
   "invoiceDocument": {

@@ -63,7 +63,14 @@ const pendingApproval = {
   riskSummary: 'Interrupts active sessions',
   customerTenant: null,
   status: 'pending',
-  expiresAt: '2026-08-23T12:30:00.000Z',
+  // 30 real minutes out from whenever this file happens to load — critique
+  // #3 makes an expired card visibly different (badge, disabled actions), so
+  // a fixed past timestamp would render every default-fixture test as
+  // already-expired the moment real wall-clock time passes it. Tests that
+  // need a DETERMINISTIC expiry relationship override this alongside their
+  // own `vi.spyOn(Date, 'now')` / `vi.setSystemTime` instead of relying on
+  // the shared default.
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
   decidedAt: null,
   decisionReason: null,
   executionId: null,
@@ -74,6 +81,7 @@ const pendingApproval = {
   origin: 'human',
   agentName: null,
   orgId: 'org-1',
+  orgName: 'Acme Dental',
   action: null,
   targetDevice: null,
 };
@@ -277,8 +285,16 @@ describe('ApprovalsInbox', () => {
 
   it('shows how long is left to decide, not only when the request arrived', async () => {
     // Pin the clock rather than switching to fake timers: the component reads
-    // Date.now(), and fake timers would also stall the awaited fetch.
+    // Date.now(), and fake timers would also stall the awaited fetch. A fixed
+    // expiresAt (independent of the shared fixture's dynamic default — see
+    // its comment) keeps the "five minutes remain" relationship exact.
     vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-08-23T12:25:00.000Z').getTime());
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [{ ...pendingApproval, expiresAt: '2026-08-23T12:30:00.000Z' }],
+        nextCursor: null,
+      }),
+    );
     render(<ApprovalsInbox />);
 
     // expiresAt is 12:30, so five minutes remain.
@@ -369,14 +385,21 @@ describe('ApprovalsInbox', () => {
     vi.useFakeTimers();
     render(<ApprovalsInbox />);
 
-    // Flush the mount load (the fetch mock resolves in microtasks).
+    // Flush the mount load (the fetch mock resolves in microtasks). Mount
+    // fires TWO calls: the pending list, and its companion total-count read
+    // — see loadApprovals' `withCount`. The org display name now rides on
+    // each row's own server-resolved `orgName` field, so there is no
+    // separate org-names lookup to count here.
     await act(async () => {});
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The poll is silent and intentionally skips the count refresh (see
+    // `withCount` in loadApprovals), so it adds exactly ONE more call — the
+    // list itself.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('refreshes silently: no loading spinner while re-fetching an already-loaded list', async () => {
@@ -989,5 +1012,215 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     expect(showToastMock).not.toHaveBeenCalled();
     // The ordinary Approve affordance is unaffected by the failed side fetch.
     expect(screen.getByTestId('approval-approve-ap-a')).toBeEnabled();
+  });
+});
+
+describe('ApprovalsInbox — organization identity, live expiry, paging, and copy polish', () => {
+  /** Routes the list GET (with and without a `cursor`), the unpaginated
+   *  count, and the batch POST all separately — each critique fix below
+   *  depends on a distinct endpoint the blanket `fetchMock.mockResolvedValue`
+   *  in the top-level `beforeEach` cannot answer meaningfully (it has no
+   *  `count`/second-page shape). The org display name now rides on each
+   *  row's own `orgName` field (server-resolved) rather than a separate
+   *  bulk `/orgs/organizations` lookup — see fixtures below for how tests
+   *  drive it. */
+  const routeFull = (options: {
+    page1: unknown[];
+    nextCursor?: string | null;
+    page2?: unknown[];
+    page2NextCursor?: string | null;
+    count?: number;
+  }) => {
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/batch/decide')) return response({ results: [] });
+      if (raw.includes('/approvals/pending/count')) {
+        return response({ count: options.count ?? options.page1.length });
+      }
+      if (raw.includes('/approvals/pending') && raw.includes('cursor=')) {
+        return response({ approvals: options.page2 ?? [], nextCursor: options.page2NextCursor ?? null });
+      }
+      return response({ approvals: options.page1, nextCursor: options.nextCursor ?? null });
+    }) as unknown as typeof fetchWithAuth);
+  };
+
+  it('shows the organization name as the first line of a card', async () => {
+    routeFull({ page1: [{ ...pendingApproval, orgName: 'Acme Dental' }] });
+    render(<ApprovalsInbox />);
+
+    const orgLine = await screen.findByTestId('approval-org-approval-1');
+    expect(orgLine).toHaveTextContent('Acme Dental');
+  });
+
+  it('falls back to "Unknown organization" when the org name cannot be resolved', async () => {
+    routeFull({ page1: [{ ...pendingApproval, orgName: null }] });
+    render(<ApprovalsInbox />);
+
+    const orgLine = await screen.findByTestId('approval-org-approval-1');
+    expect(orgLine).toHaveTextContent('Unknown organization');
+  });
+
+  it('clusters cards by organization first, even when the server interleaves orgs', async () => {
+    routeFull({
+      page1: [
+        { ...pendingApproval, id: 'r1', orgId: 'org-1', orgName: 'Acme' },
+        { ...pendingApproval, id: 'r2', orgId: 'org-2', orgName: 'Contoso' },
+        { ...pendingApproval, id: 'r3', orgId: 'org-1', orgName: 'Acme' },
+      ],
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-r3');
+
+    const order = screen
+      .getAllByTestId(/^approval-row-/)
+      .map((el) => el.getAttribute('data-testid'));
+    // org-1 appeared FIRST in the server's own order (r1), so both its cards
+    // (r1, r3) must render adjacent, ahead of org-2's r2 — even though r2
+    // arrived between them.
+    expect(order).toEqual(['approval-row-r1', 'approval-row-r3', 'approval-row-r2']);
+  });
+
+  it('shows a live "Expired" state between polls, driven by the ticking clock rather than a new fetch', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFull({ page1: [{ ...pendingApproval, expiresAt: '2026-08-23T12:00:05.000Z' }] });
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-approve-approval-1')).toBeEnabled();
+    expect(screen.queryByTestId('approval-expired-badge-approval-1')).not.toBeInTheDocument();
+
+    const callsBeforeTick = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(screen.getByTestId('approval-expired-badge-approval-1')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-approve-approval-1')).toBeDisabled();
+    // Proves the flip came from the ticking clock, not a re-fetch.
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeTick);
+  });
+
+  it('shows a live character counter on the deny reason', async () => {
+    routeFull({ page1: [pendingApproval] });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-deny-approval-1'));
+    fireEvent.change(screen.getByTestId('approval-deny-reason-approval-1'), {
+      target: { value: 'Wrong window' },
+    });
+
+    expect(screen.getByTestId('approval-deny-reason-count-approval-1')).toHaveTextContent(
+      '12/500',
+    );
+  });
+
+  it('renders the shared EmptyState component for an empty inbox', async () => {
+    routeFull({ page1: [] });
+    render(<ApprovalsInbox />);
+
+    const empty = await screen.findByTestId('approvals-empty');
+    expect(empty).toHaveTextContent('No approvals waiting');
+    expect(empty).toHaveTextContent(
+      'New requests will appear here when your decision is needed.',
+    );
+  });
+
+  it('shows an honest "Showing N of M" and a working Load more for a capped page', async () => {
+    routeFull({
+      page1: [
+        { ...pendingApproval, id: 'r1' },
+        { ...pendingApproval, id: 'r2' },
+      ],
+      nextCursor: 'cursor-1',
+      page2: [{ ...pendingApproval, id: 'r3' }],
+      page2NextCursor: null,
+      count: 40,
+    });
+    render(<ApprovalsInbox />);
+
+    const pagination = await screen.findByTestId('approvals-pagination');
+    expect(pagination).toHaveTextContent('Showing 2 of 40');
+    expect(screen.getByTestId('approvals-load-more')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('approvals-load-more'));
+
+    await waitFor(() => expect(screen.getByTestId('approval-row-r3')).toBeInTheDocument());
+    // The server's second page reported no further cursor.
+    expect(screen.queryByTestId('approvals-load-more')).not.toBeInTheDocument();
+  });
+
+  it('preserves a loaded "Load more" page across the 30s poll refresh, with no duplicates', async () => {
+    // A flat limit=PAGE_SIZE(25) refresh on every poll tick used to silently
+    // discard anything pulled in past the first page — this only reproduces
+    // once MORE than PAGE_SIZE rows are loaded (below that, a flat 25-row
+    // refetch happens to cover everything anyway), so this fixture needs 30
+    // rows across two pages, not the two-row fixture the test above uses.
+    //
+    // A realistic paged "server": 30 distinct rows, sliced by the requested
+    // limit/cursor exactly like the real `GET /approvals/pending` does.
+    // Cursor tokens here are just the slice offset — the client only ever
+    // echoes them back opaquely, so this need not match the server's real
+    // cursor encoding.
+    vi.useFakeTimers();
+    const full = Array.from({ length: 30 }, (_, i) => ({ ...pendingApproval, id: `row-${i}` }));
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/batch/decide')) return response({ results: [] });
+      if (raw.includes('/approvals/pending/count')) return response({ count: full.length });
+      if (raw.includes('/approvals/pending')) {
+        const query = new URL(raw, 'http://local').searchParams;
+        const limit = Number(query.get('limit')) || 25;
+        const cursorParam = query.get('cursor');
+        const start = cursorParam ? Number(cursorParam) : 0;
+        const page = full.slice(start, start + limit);
+        const nextCursor = start + limit < full.length ? String(start + limit) : null;
+        return response({ approvals: page, nextCursor });
+      }
+      return response({ approvals: [], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-row-row-0')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-row-24')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-row-row-25')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('approvals-load-more'));
+    await act(async () => {});
+
+    expect(screen.getAllByTestId(/^approval-row-/)).toHaveLength(30);
+
+    // The 30s poll fires — the OLD, flat limit=25 refresh would have dropped
+    // rows 25-29 back off the list here.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    const rows = screen.getAllByTestId(/^approval-row-/);
+    expect(rows).toHaveLength(30);
+    const ids = rows.map((el) => el.getAttribute('data-testid'));
+    expect(new Set(ids).size).toBe(30);
+    expect(screen.getByTestId('approval-row-row-0')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-row-29')).toBeInTheDocument();
+  });
+
+  it('shows a success toast naming the action and org after a single-card approve', async () => {
+    routeFull({ page1: [{ ...pendingApproval, orgName: 'Acme Dental' }] });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'success',
+          message: expect.stringContaining('Acme Dental'),
+        }),
+      ),
+    );
   });
 });
