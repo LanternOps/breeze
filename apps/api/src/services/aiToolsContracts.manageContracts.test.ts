@@ -431,6 +431,6 @@ describe('manage_contracts update_line (#3205 W03)', () => {
     expect(patchDesc).toMatch(/For update_line, the rule applies to the merged line/i);
     expect(patchDesc).toMatch(/absent fields are unchanged/i);
     expect(patchDesc).toMatch(/null clears/i);
-    expect(patchDesc).toMatch(/clearing includedQuantity clears the allowance/i);
+    expect(patchDesc).toMatch(/send includedQuantity, overageMode and overageUnitPrice all as null/i);
   });
 });
