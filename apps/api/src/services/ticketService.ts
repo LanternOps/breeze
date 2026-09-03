@@ -2196,11 +2196,23 @@ export async function moveTicketOrg(
   await db.transaction(async (tx) => {
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
-    // ai_agent_runs → tickets → time_entries → ticket_parts. ai_agent_runs sits
-    // ahead of tickets (#4524) to match breeze_cascade_device_org_id(), which
-    // severs runs before re-stamping its child tables — `tickets` among them;
-    // the two paths must agree on that pair or a concurrent device-move and
-    // ticket-move over the same device-linked ticket deadlocks.
+    // action_intents → ticket_drafts → ai_agent_runs → tickets → ticket_comments
+    // → the TICKET_ORG_DENORMALIZED_TABLES loop (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments).
+    //
+    // ai_agent_runs sits ahead of tickets (#4524) to match
+    // breeze_cascade_device_org_id(), which severs runs before re-stamping its
+    // child tables — `tickets` among them; the two paths must agree on that pair
+    // or a concurrent device-move and ticket-move over the same device-linked
+    // ticket deadlocks. action_intents is ordered the other way round from the
+    // device axis, which is safe only because the two can never contend for a
+    // row: action_intents_scope_device_chk / _scope_ticket_chk make
+    // scope_device_id and scope_ticket_id mutually exclusive, so the device
+    // axis's `WHERE scope_device_id = D` and this path's `WHERE scope_ticket_id`
+    // select disjoint rows. That argument does NOT cover ticket_alert_links,
+    // which both axes can reach for the same row in opposite order relative to
+    // time_entries/ticket_parts — a pre-existing instance of the same deadlock
+    // class, tracked separately rather than reordered here.
     //
     // The org lock is the FIRST statement of this transaction and is held to
     // commit, so the source/target currency pair the guard compares cannot be
@@ -2336,11 +2348,13 @@ export async function moveTicketOrg(
     // #3828 fixed for metric_anomaly_incidents.agent_run_id on the device axis,
     // just the other end of this ticket's link.
     //
-    // This one stays AFTER the ticket UPDATE, unlike the ai_agent_runs detach
-    // above: ticket_comments' UPDATE policy (breeze_ticket_parent_update)
-    // EXISTS-joins the parent ticket's CURRENT org_id, so it is the target org
-    // that has to be accessible here. No lock-order concern either way — the
-    // device axis never touches ticket_comments.
+    // Placement: after the ticket UPDATE, where ticket_comments' UPDATE policy
+    // (breeze_ticket_parent_update) EXISTS-joins the parent ticket's now-TARGET
+    // org_id. Running it earlier would also work — every caller holds access to
+    // both orgs for the whole transaction, so the source-org join would pass
+    // too — so this is placement for readability, not a constraint. There is no
+    // lock-order concern either way: the device axis never touches
+    // ticket_comments.
     //
     // Only the cross-org link is dropped: origin_principal_kind is untouched,
     // and that (not agent_run_id) is what the helpdesk loop guard keys on when
