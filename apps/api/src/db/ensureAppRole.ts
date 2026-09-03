@@ -245,22 +245,25 @@ export async function ensureAppRole(): Promise<boolean> {
         --                          erasure: breeze_audit_admin. Full
         --                          privilege-wall protection.
         --
-        --  peripheral_policy_      DELETE/TRUNCATE revoked; UPDATE STAYS
-        --  delivery_events         GRANTED. Device org-move's app-level
-        --                          restamp loop (getDeviceOrgDenormalizedTables,
-        --                          moveOrg.ts) issues a real breeze_app
-        --                          UPDATE against this table, and the
-        --                          append-only trigger's own column-diff +
-        --                          devices-EXISTS check (not a privilege
-        --                          wall) is what limits it to an org-only
-        --                          restamp. Device delete: DELETE routes
-        --                          through breeze_audit_admin (same
-        --                          escalation set as above). Org merge:
-        --                          plain 'repoint' (UPDATE, granted, no
-        --                          conflict). Org erasure: breeze_audit_admin.
-        --                          RESIDUAL GAP: this table's append-only
-        --                          guarantee depends on the trigger alone,
-        --                          not privilege — tracked as issue #4806.
+        --  peripheral_policy_      UPDATE/DELETE/TRUNCATE all revoked (full
+        --  delivery_events         append-only, #4806 fixup). Device
+        --                          org-move: restamped by the SECURITY
+        --                          DEFINER breeze_cascade_device_org_id()
+        --                          trigger (migrations/2026-05-18-device-
+        --                          child-orgid-cascade.sql), not an app-role
+        --                          UPDATE — DEVICE_ORG_FK_CASCADE_TABLES in
+        --                          routes/devices/core.ts skips the
+        --                          redundant app-level statement, same as
+        --                          agent_rollback_events above. Device
+        --                          delete: DELETE routes through breeze_
+        --                          audit_admin (same escalation set as
+        --                          above). Org merge: 'leave-for-erasure'
+        --                          (orgMergeRegistry.ts) — no role can ever
+        --                          UPDATE it, so a repoint was never valid,
+        --                          same reclassification as agent_rollback_
+        --                          events. Org erasure: breeze_audit_admin.
+        --                          Full privilege-wall protection — closes
+        --                          the residual gap tracked as issue #4806.
         --
         --  automation_action_      Only TRUNCATE revoked; UPDATE/DELETE stay
         --  results                 granted. NOT an append-only table by
@@ -289,7 +292,7 @@ export async function ensureAppRole(): Promise<boolean> {
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ml_feedback_events FROM breeze_app;
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='peripheral_policy_delivery_events') THEN
-          REVOKE DELETE, TRUNCATE ON TABLE peripheral_policy_delivery_events FROM breeze_app;
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE peripheral_policy_delivery_events FROM breeze_app;
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='agent_rollback_events') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE agent_rollback_events FROM breeze_app;

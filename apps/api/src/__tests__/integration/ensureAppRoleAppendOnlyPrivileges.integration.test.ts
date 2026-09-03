@@ -55,6 +55,7 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
   it.each([
     'pam_actuation_results',
     'agent_rollback_events',
+    'peripheral_policy_delivery_events',
   ])('breeze_app has no UPDATE, DELETE, or TRUNCATE on %s after ensureAppRole runs', async (table) => {
     const p = await tablePrivileges(table);
     expect(p.can_update).toBe(false);
@@ -71,18 +72,6 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
   it('breeze_app has no UPDATE, DELETE, or TRUNCATE on ml_feedback_events after ensureAppRole runs', async () => {
     const p = await tablePrivileges('ml_feedback_events');
     expect(p.can_update).toBe(false);
-    expect(p.can_delete).toBe(false);
-    expect(p.can_truncate).toBe(false);
-    expect(p.can_insert).toBe(true);
-    expect(p.can_select).toBe(true);
-  });
-
-  // peripheral_policy_delivery_events intentionally KEEPS UPDATE granted
-  // (delivery status transitions are ordinary app writes) — only DELETE and
-  // TRUNCATE are revoked.
-  it('breeze_app keeps UPDATE but has no DELETE or TRUNCATE on peripheral_policy_delivery_events', async () => {
-    const p = await tablePrivileges('peripheral_policy_delivery_events');
-    expect(p.can_update).toBe(true);
     expect(p.can_delete).toBe(false);
     expect(p.can_truncate).toBe(false);
     expect(p.can_insert).toBe(true);
