@@ -107,8 +107,9 @@ async function getCommandQueue() {
 export interface PlaybookExecutorDeps {
   revalidate: typeof revalidateActExecution;
   executeToolFn: typeof executeTool;
-  /** Direct `commandQueue.executeCommand` access for the `service_status`
-   *  verify metric read — review fix (#3826 Task 5 follow-up): the
+  /** Direct `commandQueue.executeCommandWithSystemPrecheck` access for the
+   *  `service_status` verify metric read — review fix (#3826 Task 5
+   *  follow-up): the
    *  `manage_services` TOOL only forwards `{ name: serviceName }` to the
    *  agent (aiToolsScripts.ts), but the agent's `ListServices` command reads
    *  `search`/`status`/`page`/`limit`, not `name` (agent/internal/remote/
@@ -116,9 +117,14 @@ export interface PlaybookExecutorDeps {
    *  50-row-paginated list on every real device, and the target service is
    *  usually not on page one. actVerify.ts's `verifyServiceRunning` already
    *  does this read correctly (`{ search: target.serviceName }` straight
-   *  through `commandQueue.executeCommand`); this dep lets the playbook
+   *  through the same commandQueue entry point); this dep lets the playbook
    *  executor's read-back use the exact same call shape so the two act
-   *  paths cannot drift on the same postcondition again. */
+   *  paths cannot drift on the same postcondition again.
+   *
+   *  The `WithSystemPrecheck` variant is load-bearing, not incidental: this
+   *  read is awaited for up to SERVICE_STATUS_READ_TIMEOUT_MS, so the DB
+   *  context its RLS-gated precheck needs has to close before the wait
+   *  (#4150/#1105). */
   executeCommandFn: typeof import('../commandQueue').executeCommandWithSystemPrecheck;
   sleepFn: (ms: number) => Promise<void>;
 }
