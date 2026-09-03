@@ -162,7 +162,7 @@ export async function acceptQuote(
   const renderLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
   const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate, renderLocale);
 
-  const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts);
+  const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts, 2);
   const captured = await getAcceptanceProvider().capture({
     quoteId: quote.id,
     signerName: params.signerName,
@@ -186,6 +186,7 @@ export async function acceptQuote(
       ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
       userAgent: params.userAgent ?? null,
       quoteSha256,
+      hashVersion: 2,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
       renderLocale,
     })

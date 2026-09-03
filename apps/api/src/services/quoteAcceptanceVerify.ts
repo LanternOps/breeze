@@ -17,7 +17,7 @@ import { db } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../db/schema/quotes';
 import { loadContractBlockRenderData } from './contractTemplateRender';
 import { buildContractHashParts } from './contractDocumentService';
-import { computeQuoteSha256 } from './quoteContentHash';
+import { computeQuoteSha256, type QuoteHashVersion } from './quoteContentHash';
 import { QuoteServiceError } from './quoteTypes';
 
 /** The locale a stored acceptance hash was computed under. NULL (pre-backfill
@@ -30,6 +30,7 @@ export interface AcceptanceHashVerification {
   acceptanceId: string;
   quoteId: string;
   renderLocale: string;
+  hashVersion: QuoteHashVersion;
   storedSha256: string;
   recomputedSha256: string;
   matches: boolean;
@@ -62,11 +63,17 @@ export async function verifyQuoteAcceptanceHash(acceptanceId: string): Promise<A
   // Drizzle rows are structurally wider than HashableLine/QuoteRow (nullable
   // description et al.), and the hash canonicaliser reads only the fields it
   // declares. Recompute MUST mirror the accept path exactly or hashes diverge.
-  const recomputedSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, parts);
+  // Read, never inferred. Deriving it ("does any line have a descriptor?")
+  // re-creates the fragility the version exists to remove: a v1 quote whose
+  // line later ACQUIRED a descriptor through a migration or a support edit
+  // would silently verify under the wrong algorithm.
+  const hashVersion = (acceptance.hashVersion ?? 1) as QuoteHashVersion;
+  const recomputedSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, parts, hashVersion);
   return {
     acceptanceId: acceptance.id,
     quoteId: quote.id,
     renderLocale,
+    hashVersion,
     storedSha256: acceptance.quoteSha256,
     recomputedSha256,
     matches: recomputedSha256 === acceptance.quoteSha256,
