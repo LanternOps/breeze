@@ -12,7 +12,7 @@ it('labels threats honestly and displays severity and KEV totals', () => {
     band: 'strong',
     scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
     threatEvents: {
-      label: 'endpoint threat events',
+      label: 'Endpoint threat events',
       weeks: [{
         weekStart: '2026-08-31',
         detected: 3,
@@ -29,7 +29,7 @@ it('labels threats honestly and displays severity and KEV totals', () => {
   }} />);
 
   expect(screen.getByTestId('portal-security-overview').textContent).toContain(
-    'endpoint threat events',
+    'Endpoint threat events',
   );
   expect(screen.getByTestId('portal-security-vulnerabilities').textContent).toContain(
     '1 KEV',
@@ -44,7 +44,7 @@ it('explains when observations exist but no security score has been calculated',
     band: null,
     scoreHistory: [],
     threatEvents: {
-      label: 'endpoint threat events',
+      label: 'Endpoint threat events',
       weeks: [],
     },
     vulnerabilities: {
@@ -70,7 +70,7 @@ it('renders medium, low, and unknown vulnerability counts plus the last-detected
       score: 82,
       band: 'strong',
       scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
-      threatEvents: { label: 'endpoint threat events', weeks: [] },
+      threatEvents: { label: 'Endpoint threat events', weeks: [] },
       vulnerabilities: {
         openBySeverity: { critical: 1, high: 2, medium: 3, low: 4, unknown: 5 },
         kevCount: 1,
@@ -94,7 +94,7 @@ it('omits the last-detected line when no vulnerability has ever been observed', 
     score: 82,
     band: 'strong',
     scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
-    threatEvents: { label: 'endpoint threat events', weeks: [] },
+    threatEvents: { label: 'Endpoint threat events', weeks: [] },
     vulnerabilities: {
       openBySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
       kevCount: 0,

@@ -46,6 +46,47 @@ describe('deviceReadModel', () => {
     state.orderBys.length = 0;
   });
 
+  it('formats raw-SQL timestamps that postgres-js returns as strings', async () => {
+    // `lastPatchAt` / `lastBackupAt` are raw `sql` subqueries, and Drizzle only
+    // maps typed columns to Date — the driver hands these back as strings.
+    // Found by the portal QA walk (#4562): every /portal/devices request 500ed
+    // with `RangeError: Invalid time value`.
+    state.rows.push(
+      [{ count: 1 }],
+      [{
+        id: 'd-1',
+        hostname: 'Laptop',
+        displayName: null,
+        osType: 'windows',
+        osVersion: '11',
+        status: 'online',
+        lastSeenAt: new Date('2026-09-02T11:00:00Z'),
+        lastPatchAt: '2026-09-01 00:00:00+00',
+        realTimeProtection: null,
+        provider: null,
+        avProducts: null,
+        securityUpdatedAt: null,
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+        encryption: null,
+        lastBackupAt: '2026-09-02T08:00:00.000Z',
+        warrantyEndsAt: null,
+      }],
+    );
+
+    const result = await enrichedDevicesForOrg(ORG_ID, {
+      page: 1,
+      limit: 50,
+      timezone: 'America/Denver',
+    });
+
+    expect(result.data[0]).toMatchObject({
+      lastSeenAt: 'Sep 2, 2026, 5:00 AM MDT',
+      lastPatchAt: 'Aug 31, 2026, 6:00 PM MDT',
+      lastBackupAt: 'Sep 2, 2026, 2:00 AM MDT',
+    });
+  });
+
   it('returns the enriched customer projection with explicit org scoping', async () => {
     state.rows.push(
       [{ count: 1 }],

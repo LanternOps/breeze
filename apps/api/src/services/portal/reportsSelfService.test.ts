@@ -378,6 +378,10 @@ describe('generatePortalReport', () => {
       status: 'completed',
       rowCount: null,
     }));
+    // The MSP Reports list reads reports.last_generated_at (#4562 QA walk).
+    expect(state.updated).toHaveBeenCalledWith(expect.objectContaining({
+      lastGeneratedAt: expect.any(Date),
+    }));
   });
 
   it('rejects limiter denial with the retry interval', async () => {

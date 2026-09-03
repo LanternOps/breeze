@@ -127,7 +127,7 @@ export interface SecurityOverviewDto {
   band: SecurityScoreBand | null;
   scoreHistory: SecurityTrendPoint[];
   threatEvents: {
-    label: 'endpoint threat events';
+    label: 'Endpoint threat events';
     weeks: ThreatWeekDto[];
   };
   vulnerabilities: {

@@ -92,6 +92,16 @@ describe('portal report self-service tenancy', () => {
 
     expect(generated.status).toBe('completed');
 
+    // The MSP Reports list reads `reports.last_generated_at`; portal-generated
+    // runs must stamp it too, or the MSP sees "Never" next to a definition the
+    // customer has generated five times (portal QA walk, #4562).
+    const [definition] = await withSystemDbAccessContext(() =>
+      db.select({ lastGeneratedAt: reports.lastGeneratedAt })
+        .from(reports)
+        .where(eq(reports.id, generated.reportId)),
+    );
+    expect(definition?.lastGeneratedAt).toBeInstanceOf(Date);
+
     const [stored] = await withSystemDbAccessContext(() =>
       db.select({
         requestedByKind: reportRuns.requestedByKind,

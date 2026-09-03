@@ -111,7 +111,7 @@ it('validates days and calls the overview with the session org', async () => {
     score: null,
     band: null,
     scoreHistory: [],
-    threatEvents: { label: 'endpoint threat events', weeks: [] },
+    threatEvents: { label: 'Endpoint threat events', weeks: [] },
     vulnerabilities: {
       openBySeverity: {
         critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
@@ -155,7 +155,7 @@ it('revalidates unchanged security data when only asOf changes', async () => {
     score: 82,
     band: 'strong',
     scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
-    threatEvents: { label: 'endpoint threat events', weeks: [] },
+    threatEvents: { label: 'Endpoint threat events', weeks: [] },
     vulnerabilities: {
       openBySeverity: {
         critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
