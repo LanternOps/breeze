@@ -1316,6 +1316,29 @@ describe('per_device_group quantities (#3205 W02)', () => {
     expect(snapshotContractDevices).toHaveBeenCalledTimes(1);
   });
 
+  // #3205 W05 fix round 4: two DIFFERENT contracts in one org, each introducing
+  // a group the other never referenced — orgSnapshot must resolve both groups
+  // (two groupMembersForBilling calls) from exactly ONE cached device snapshot,
+  // never re-issuing snapshotContractDevices just because the second contract's
+  // group id wasn't attempted yet.
+  it('two contracts each introducing a different new group still snapshot devices once', async () => {
+    const group2 = { ...group, id: 'group-2', name: 'Workstations' };
+    vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });
+    queueResult([contract(), contract({ id: 'c2' })]);
+    queueResult([
+      groupLine(),
+      groupLine({ id: 'l2', contractId: 'c2', deviceGroupId: 'group-2', deviceGroupName: 'Workstations' }),
+    ]);
+    queueResult([group]);
+    queueResult([group2]);
+
+    const out = await svc.listContracts({ orgId: 'org1' }, actor);
+
+    expect(out.map((c) => c.estimatedPeriodValue)).toEqual(['10.00', '10.00']);
+    expect(snapshotContractDevices).toHaveBeenCalledTimes(1);
+    expect(groupMembersForBilling).toHaveBeenCalledTimes(2);
+  });
+
   it('pre-warms all groups in one query before estimating a contract', async () => {
     const group2 = { ...group, id: 'group-2', name: 'Workstations' };
     vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });

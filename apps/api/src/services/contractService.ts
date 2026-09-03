@@ -38,9 +38,9 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
-import { countContractSeats, snapshotContractDevices, groupMembersForBilling, type DeviceSnapshotRow } from './contractQuantities';
+import { countContractSeats, type DeviceSnapshotRow } from './contractQuantities';
+import { buildOrgDeviceSnapshot } from './contractSnapshot';
 import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers } from './contractCoverage';
-import { GroupEvaluationError } from './groupMembership';
 import type { InvoiceActor } from './invoiceTypes';
 import { applyAllowance, billsOverage, overageValue, type ResolvedQuantity } from './contractAllowance';
 
@@ -154,7 +154,7 @@ function assertEditable(c: { status: string }): void {
   }
 }
 
-type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** #4693: returns the site row so the caller can STAMP its name with no second
  *  query — the shape W02's assertGroupInOrg already has. The 400 SITE_NOT_IN_ORG
@@ -324,7 +324,7 @@ export async function listContracts(query: {
 // evaluated once per calculation. Never shared across the worker's per-contract
 // transactions — "at generation time" must stay literally true.
 interface OrgSnapshotEntry {
-  devices: DeviceSnapshotRow[];
+  devices: readonly DeviceSnapshotRow[];
   groups: Map<string, GroupMembers>;
   failures: Map<string, ContractServiceError>;
   /** Group ids already looked up (resolved OR absent). Absent ids are not in `groups`, and
@@ -361,37 +361,39 @@ function groupIdsOf(lines: readonly Pick<ContractLineRow, 'lineType' | 'deviceGr
 }
 
 /** The org's snapshot with the members of every group in `groupIds` resolved
- *  (once per calculation). A group id that does not come back — deleted between
- *  the line read and here, or not in this org — is simply absent from the map;
- *  callers treat that like a null id (GROUP_DELETED / unresolved). */
+ *  (once per calculation). Behaviour is unchanged from wave 2: ONE contract's
+ *  estimate is all-or-nothing, and listContracts / the MRR rollup already catch
+ *  GROUP_EVALUATION_FAILED per contract. The assembly itself now lives in
+ *  contractSnapshot.buildOrgDeviceSnapshot so quote estimation shares it. */
 async function orgSnapshot(orgId: string, dc: DeviceCache, groupIds: readonly string[] = []): Promise<OrgDeviceSnapshot> {
   let entry = dc.get(orgId);
-  if (!entry) {
-    entry = { devices: await snapshotContractDevices(orgId), groups: new Map(), failures: new Map(), attempted: new Set() };
-    dc.set(orgId, entry);
-  }
-  const priorFailure = groupIds.map((id) => entry!.failures.get(id)).find((failure) => failure !== undefined);
+  const priorFailure = groupIds.map((id) => entry?.failures.get(id)).find((failure) => failure !== undefined);
   if (priorFailure) throw priorFailure;
-  const missing = groupIds.filter((id) => !entry!.attempted.has(id));
-  if (missing.length > 0) {
+  const missing = groupIds.filter((id) => !entry?.attempted.has(id));
+  if (!entry || missing.length > 0) {
+    // #3205 W05 fix round 4: when `entry` already exists, this org was already
+    // snapshotted this calculation — a NEW group id showing up on a later
+    // contract must not re-issue the full billable-device scan just to resolve
+    // it. Pass the cached device list through so the builder skips its own
+    // snapshotContractDevices call; group resolution still runs for `missing`.
+    const { snapshot, groupErrors, groupNames } = await buildOrgDeviceSnapshot(
+      orgId, missing, entry ? { devices: entry.devices } : undefined,
+    );
+    if (!entry) {
+      entry = { devices: snapshot.devices, groups: new Map(), failures: new Map(), attempted: new Set() };
+      dc.set(orgId, entry);
+    }
     for (const id of missing) entry.attempted.add(id);
-    const rows = await db.select({
-      id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type,
-      siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
-    }).from(deviceGroups).where(and(inArray(deviceGroups.id, missing), eq(deviceGroups.orgId, orgId)));
-    for (const g of rows) {
-      try {
-        entry.groups.set(g.id, await groupMembersForBilling(g));
-      } catch (err) {
-        if (err instanceof GroupEvaluationError) {
-          entry.failures.set(g.id, new ContractServiceError(
-            `Device group "${g.name}" could not be evaluated (${err.reason})`, 500, 'GROUP_EVALUATION_FAILED',
-            { groupId: g.id, groupName: g.name, reason: err.reason },
-          ));
-          continue;
-        }
-        throw err;
-      }
+    for (const [id, members] of snapshot.groups) entry.groups.set(id, members);
+    for (const [id, err] of groupErrors) {
+      // The builder already read this row while attempting groupMembersForBilling —
+      // groupNames carries its name forward so this never re-queries deviceGroups
+      // for something it already had in hand (#3205 W05 fix round 3).
+      const name = groupNames.get(id) ?? null;
+      entry.failures.set(id, new ContractServiceError(
+        `Device group "${name ?? id}" could not be evaluated (${err.reason})`, 500, 'GROUP_EVALUATION_FAILED',
+        { groupId: id, groupName: name, reason: err.reason },
+      ));
     }
   }
   const failure = groupIds.map((id) => entry.failures.get(id)).find((candidate) => candidate !== undefined);
