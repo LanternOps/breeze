@@ -64,10 +64,20 @@ export default function AiBudgetThresholdsInput({ value, onChange, onValidityCha
   // carrying `[50, 80, 95]` where the field had been cleared, and `null` where
   // `60, 90` had been typed. Deriving during render leaves no window at all:
   // there is no commit in which the box still shows the previous ladder.
-  const [seededFrom, setSeededFrom] = useState(value);
-  if (!Object.is(seededFrom, value)) {
-    setSeededFrom(value);
-    setText(value?.join(', ') ?? '');
+  //
+  // Same defect and same remedy as `InvoiceEditor`'s notes/terms drafts, which
+  // this deliberately mirrors — that one was filed five times (#2925, #3219,
+  // #3277, #3980, #4033) before the effect was recognised as the cause.
+  //
+  // Compare the RENDERED string, not the array identity: a refetch that hands
+  // back an equal-but-new `[50, 80, 95]` (or a `[]`/`undefined` round-trip)
+  // changes nothing on screen, and must not throw away a draft the user is
+  // still typing. The old `[value]` effect dependency had exactly that hole.
+  const seed = value?.join(', ') ?? '';
+  const [seededFrom, setSeededFrom] = useState(seed);
+  if (seededFrom !== seed) {
+    setSeededFrom(seed);
+    setText(seed);
     setInvalid(false);
   }
 
