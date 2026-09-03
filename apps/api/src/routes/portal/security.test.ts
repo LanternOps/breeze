@@ -149,6 +149,37 @@ it('paginates security devices', async () => {
   });
 });
 
+it('revalidates unchanged security data when only asOf changes', async () => {
+  const payload = {
+    dataStatus: 'ok',
+    score: 82,
+    band: 'strong',
+    scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
+    threatEvents: { label: 'endpoint threat events', weeks: [] },
+    vulnerabilities: {
+      openBySeverity: {
+        critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
+      },
+      kevCount: 0,
+      lastDetectedAt: null,
+    },
+  };
+  mocks.overview
+    .mockResolvedValueOnce({ ...payload, asOf: '2026-09-02T12:00:00.000Z' })
+    .mockResolvedValueOnce({ ...payload, asOf: '2026-09-02T12:00:01.000Z' });
+
+  const first = await isolatedApp().request('/security/overview');
+  const etag = first.headers.get('etag');
+  expect(etag).toBeTruthy();
+
+  const second = await isolatedApp().request('/security/overview', {
+    headers: { 'If-None-Match': etag! },
+  });
+
+  expect(second.status).toBe(304);
+  expect(second.headers.get('etag')).toBe(etag);
+});
+
 describe('assembled portal router security gate', () => {
   it('returns 401 without a portal session', async () => {
     const response = await assembledApp().request('/portal/security/overview');

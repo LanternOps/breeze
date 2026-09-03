@@ -34,3 +34,28 @@ it('labels threats honestly and displays severity and KEV totals', () => {
     '1 KEV',
   );
 });
+
+it('explains when observations exist but no security score has been calculated', () => {
+  render(<SecurityOverview overview={{
+    asOf: '2026-09-02T12:00:00Z',
+    dataStatus: 'ok',
+    score: null,
+    band: null,
+    scoreHistory: [],
+    threatEvents: {
+      label: 'endpoint threat events',
+      weeks: [],
+    },
+    vulnerabilities: {
+      openBySeverity: { critical: 1, high: 0, medium: 0, low: 0, unknown: 0 },
+      kevCount: 0,
+      lastDetectedAt: '2026-09-01T00:00:00Z',
+    },
+  }} />);
+
+  expect(screen.getByTestId('portal-security-score-unavailable').textContent).toBe(
+    'No security score has been calculated for this organization yet.',
+  );
+  expect(screen.queryByTestId('portal-sparkline')).toBeNull();
+  expect(screen.getByTestId('portal-security-overview').textContent).not.toContain('null');
+});

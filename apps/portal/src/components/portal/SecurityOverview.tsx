@@ -10,11 +10,21 @@ export function SecurityOverview({ overview }: { overview: SecurityOverviewDto }
   return (
     <section data-testid="portal-security-overview">
       <h1>Security</h1>
-      <Sparkline
-        values={overview.scoreHistory.map((point) => point.score)}
-        label="Security score history"
-      />
-      <p>{overview.score} · {overview.band}</p>
+      {overview.score != null ? (
+        <>
+          <Sparkline
+            values={overview.scoreHistory.map((point) => point.score)}
+            label="Security score history"
+          />
+          <p data-testid="portal-security-score">
+            {overview.score} · {overview.band ?? 'Band not available'}
+          </p>
+        </>
+      ) : (
+        <p data-testid="portal-security-score-unavailable">
+          No security score has been calculated for this organization yet.
+        </p>
+      )}
       <h2>{overview.threatEvents.label}</h2>
       <WeeklyBars
         label={overview.threatEvents.label}

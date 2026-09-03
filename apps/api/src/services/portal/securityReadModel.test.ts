@@ -198,6 +198,7 @@ describe('securityReadModel', () => {
     })).resolves.toMatchObject({
       dataStatus: 'ok',
       asOf: NOW.toISOString(),
+      timezone: 'UTC',
       data: [{
         id: 'd-1',
         name: 'risk-device',

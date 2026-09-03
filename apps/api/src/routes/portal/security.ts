@@ -34,7 +34,10 @@ function cached(c: Parameters<typeof applyPortalCacheHeaders>[0], payload: unkno
     staleWhileRevalidateSeconds: 0,
     vary: ['Authorization', 'Cookie'],
   });
-  const etag = buildWeakEtag(payload);
+  const etagPayload = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+    ? { ...(payload as Record<string, unknown>), asOf: undefined }
+    : payload;
+  const etag = buildWeakEtag(etagPayload);
   c.header('ETag', etag);
   if (isEtagFresh(c.req.header('if-none-match'), etag)) {
     return new Response(null, { status: 304, headers: c.res.headers });

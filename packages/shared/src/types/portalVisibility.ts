@@ -153,6 +153,7 @@ export interface SecurityDeviceRow {
 export interface SecurityDevicesDto {
   dataStatus: TileStatus;
   asOf: string;
+  timezone: string;
   data: SecurityDeviceRow[];
   pagination: PaginationDto;
 }

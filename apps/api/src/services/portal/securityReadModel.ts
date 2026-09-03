@@ -308,6 +308,7 @@ export async function securityDevicesPage(
   return {
     dataStatus: total > 0 ? 'ok' : 'no_data',
     asOf: args.now.toISOString(),
+    timezone: args.timezone,
     data,
     pagination: {
       page: args.page,

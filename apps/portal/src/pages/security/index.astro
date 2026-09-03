@@ -24,7 +24,17 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
   }
   {
     devices.data
-      ? <SecurityDeviceTable devices={devices.data.data} />
+      ? <>
+          <SecurityDeviceTable
+            devices={devices.data.data}
+            timezone={devices.data.timezone}
+          />
+          {devices.data.pagination.total > devices.data.data.length && (
+            <p data-testid="portal-security-devices-cap">
+              Showing the first {devices.data.data.length} of {devices.data.pagination.total} devices. Additional devices are not shown.
+            </p>
+          )}
+        </>
       : <p data-testid="portal-security-devices-error">{devices.error}</p>
   }
 </PortalLayout>

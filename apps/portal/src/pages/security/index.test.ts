@@ -12,7 +12,7 @@ describe('security page device fetch states', () => {
     expect(pageSource).toContain('data-testid="portal-security-devices-error"');
     expect(pageSource).toContain('{devices.error}');
     expect(pageSource).toMatch(
-      /devices\.data\s*\?\s*<SecurityDeviceTable devices=\{devices\.data\.data\} \/>\s*:\s*<p data-testid="portal-security-devices-error">\{devices\.error\}<\/p>/,
+      /devices\.data\s*\?[\s\S]*<SecurityDeviceTable[\s\S]*devices=\{devices\.data\.data\}[\s\S]*timezone=\{devices\.data\.timezone\}[\s\S]*<\/\>\s*:\s*<p data-testid="portal-security-devices-error">\{devices\.error\}<\/p>/,
     );
     expect(pageSource).not.toContain('devices.data?.data ?? []');
   });
@@ -21,5 +21,11 @@ describe('security page device fetch states', () => {
     expect(tableSource).toContain('data-testid="portal-security-devices-empty"');
     expect(tableSource).toContain('No devices are enrolled.');
     expect(pageSource).not.toContain('portal-security-devices-empty');
+  });
+
+  it('tells customers when the first page is capped below the fleet total', () => {
+    expect(pageSource).toContain('data-testid="portal-security-devices-cap"');
+    expect(pageSource).toContain('devices.data.pagination.total');
+    expect(pageSource).toContain('Additional devices are not shown.');
   });
 });
