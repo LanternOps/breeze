@@ -664,6 +664,7 @@
     "retry": "Versuchen Sie es noch einmal",
     "activities": "Aktivitäten",
     "total": "insgesamt)",
+    "totalAtLeast": "{{count}}+",
     "searchActivities": "Aktivitäten suchen...",
     "all": "Alle",
     "success": "Erfolg",

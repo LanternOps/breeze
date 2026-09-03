@@ -664,6 +664,7 @@
     "retry": "Tekrar dene",
     "activities": "Faaliyetler",
     "total": "toplam)",
+    "totalAtLeast": "{{count}}+",
     "searchActivities": "Arama etkinlikleri...",
     "all": "Hepsi",
     "success": "Başarılı",
