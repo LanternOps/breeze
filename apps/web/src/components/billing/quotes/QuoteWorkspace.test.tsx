@@ -329,5 +329,12 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     // payload wins by arriving last and the canvas goes empty again. (Verified
     // red against the unguarded fetchDetail, so the flush above is sufficient.)
     expect(screen.queryByTestId('quote-blocks-empty')).not.toBeInTheDocument();
-  });
+    // Per-test budget. The two 5000ms waitFor windows above are each allowed to
+    // run long under CI load, but vitest's default per-test timeout is ALSO
+    // 5000ms, so the widened windows alone just moved the flake from
+    // "waitFor timed out" to "Test timed out in 5000ms" (observed twice on
+    // 2026-09-03, both on agent-only PRs, after the windows were widened in
+    // #4704). The test's own timeout has to cover the sum of every window it
+    // contains, not just the largest one: 1s mount + 5s + 5s + 1s + slack.
+  }, 20_000);
 });
