@@ -451,7 +451,12 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     queueResult([contract]);          // contract select
     queueResult(lines);               // contract lines
     queueResult([{ id: 'bp1' }]);     // claim period (won)
-    queueResult([]);                  // advance pointer
+    // W07 post-claim writes. Device-line runs consume the first empty result as
+    // their evidence chunk; flat-only runs leave one harmless queued result.
+    queueResult([]);                  // optional evidence insert / invoice evidence_version
+    queueResult([]);                  // invoice evidence_version / outcome
+    queueResult([]);                  // outcome / advance pointer
+    queueResult([]);                  // advance pointer (device-line runs)
   }
 
   const noAllowance = { includedQuantity: null, overageMode: null, overageUnitPrice: null };

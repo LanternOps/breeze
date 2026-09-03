@@ -1,8 +1,12 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
+import {
+  contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
+  organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
+  invoices, invoiceLineDevices,
+} from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
-import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import type { ContractLineInput, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
 import {
   ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
@@ -39,7 +43,10 @@ import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invo
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
 import { countContractSeats, snapshotContractDevices, groupMembersForBilling, type DeviceSnapshotRow } from './contractQuantities';
-import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers } from './contractCoverage';
+import {
+  isDeviceLine, matchingDevicesForLine, orderDevicesForEvidence, quantityFor, uncoveredByRole,
+  type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers,
+} from './contractCoverage';
 import { GroupEvaluationError } from './groupMembership';
 import type { InvoiceActor } from './invoiceTypes';
 import { applyAllowance, billsOverage, overageValue, type ResolvedQuantity } from './contractAllowance';
@@ -1618,6 +1625,32 @@ export interface PriceBookGap {
   currencyCode: string;
 }
 
+/**
+ * #3205 W07: one device's row of billing evidence, collected during the line
+ * loop and written only after the period claim succeeds (the period id does not
+ * exist before then, and a lost claim deletes the draft anyway).
+ */
+interface PendingEvidence {
+  invoiceLineId: string;
+  deviceId: string;
+  hostname: string;
+  deviceRole: string;
+  siteId: string | null;
+  countedAs: InvoiceLineDeviceCountedAs;
+}
+
+/** 500 rows/statement (#3205 W07 decision 16). One statement for a 5,000-device
+ *  line would build a single enormous parameter list inside the billing
+ *  transaction. All chunks are in the SAME transaction, so the all-or-nothing
+ *  property is unchanged. */
+const EVIDENCE_INSERT_CHUNK = 500;
+
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 export interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
@@ -1762,8 +1795,13 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    on a price-book gap, reported below), or uses them when it is null.
   const priceBookGaps: PriceBookGap[] = [];
   const overages: OverageSummary[] = [];
+  const pendingEvidence: PendingEvidence[] = [];
   for (const l of lines) {
     let quantity: string;
+    // The ONE device source for this line. `quantity` IS its length, so there is
+    // no second walk to disagree with. W06's parity test pins quantityFor to the
+    // same matchingDevicesForLine definition.
+    let ordered: DeviceSnapshotRow[] | null = null;
     switch (l.lineType) {
       case 'flat':
         quantity = '1';
@@ -1775,7 +1813,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
       case 'per_device_role':
       case 'per_device_group':
         assertRoleLineHasRoles(l);
-        quantity = String(quantityFor(snapshot, l));
+        ordered = orderDevicesForEvidence(matchingDevicesForLine(snapshot, l));
+        quantity = String(ordered.length);
         break;
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
@@ -1805,6 +1844,31 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
       priceBookGaps.push({ contractLineId: l.id, catalogItemId: l.catalogItemId, itemName: l.description, currencyCode: c.currencyCode });
     }
     if (materialized.overage) overages.push(materialized.overage);
+
+    // Evidence for THIS line, from the one array the quantity came from.
+    // With a fixed allowance above the count, the base line bills the allowance
+    // while only existing devices get rows. Rows past the allowance attach to
+    // the overage sibling in bill mode and to the base in flag mode.
+    if (ordered) {
+      const cut = r.included === null ? ordered.length : Math.min(r.included, ordered.length);
+      for (const [i, row] of ordered.entries()) {
+        const countedAs: InvoiceLineDeviceCountedAs =
+          i < cut ? 'included' : r.overageMode === 'bill' ? 'overage' : 'flagged';
+        if (countedAs === 'overage' && materialized.overageLine === null) {
+          throw new ContractServiceError(
+            `Overage evidence for contract line ${l.id} has no overage invoice line`, 500, 'INVALID_STATE',
+          );
+        }
+        pendingEvidence.push({
+          invoiceLineId: countedAs === 'overage' ? materialized.overageLine!.id : materialized.baseLine.id,
+          deviceId: row.id,
+          hostname: row.hostname,
+          deviceRole: row.role,
+          siteId: row.siteId,
+          countedAs,
+        });
+      }
+    }
   }
 
   // 3. Claim the period (idempotency guard). On conflict this run lost a race →
@@ -1820,6 +1884,34 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
+  // 3b. Billing evidence (#3205 W07). The period id does not exist until the
+  //     claim above succeeds, and a lost claim deletes the draft — so nothing is
+  //     written before this point. Everything here shares the caller-supplied
+  //     transaction with the draft, lines and claim.
+  const periodId = claimed[0]!.id;
+  for (const chunk of chunksOf(pendingEvidence, EVIDENCE_INSERT_CHUNK)) {
+    await db.insert(invoiceLineDevices).values(
+      chunk.map((p) => ({ ...p, invoiceId: inv.id, orgId: c.orgId })),
+    );
+  }
+  // 1 means W07 recorded evidence for this invoice, including the meaningful
+  // zero-row case where a contract had no device-counted lines.
+  await db.update(invoices).set({ evidenceVersion: 1 }).where(eq(invoices.id, inv.id));
+
+  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, resolvableLines(lines, snapshot)) : null;
+  await db.insert(contractBillingPeriodOutcomes).values({
+    contractBillingPeriodId: periodId,
+    orgId: c.orgId,
+    contractId,
+    invoiceId: inv.id,
+    snapshotDeviceTotal: hasDeviceLine ? snapshot.devices.length : 0,
+    uncoveredTotal: uncoveredDevices?.total ?? 0,
+    uncoveredByRole: uncoveredDevices?.byRole ?? {},
+    flaggedTotal: overages.filter((o) => o.mode === 'flag').reduce((n, o) => n + o.overage, 0),
+    billedOverageTotal: overages.filter((o) => o.mode === 'bill').reduce((n, o) => n + o.overage, 0),
+    overages,
+  });
+
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
   const nextIdx = idx + 1;
   const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
@@ -1834,7 +1926,6 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, resolvableLines(lines, snapshot)) : null;
   return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices, overages };
 }
 
