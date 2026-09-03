@@ -318,7 +318,7 @@ Provider status can be `active`, `inactive`, or `testing`. Only `active` provide
 
 ### SSO Check
 
-The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced.
+The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced. The dashboard login page does not have an `orgId` to pass this endpoint until after a user has chosen an organisation, so it instead discovers SSO from the typed email address via `POST /auth/sso-discovery` — see [Login Page Discovery](/reference/sso/#login-page-discovery) in the SSO reference.
 
 ---
 
