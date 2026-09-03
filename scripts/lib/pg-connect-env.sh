@@ -111,12 +111,17 @@ pg_url_to_env() {
     return 1
   fi
 
-  local user_raw="${BASH_REMATCH[3]}"
-  local password_raw="${BASH_REMATCH[5]}"
-  local host_raw="${BASH_REMATCH[6]}"
-  local port="${BASH_REMATCH[8]}"
-  local dbname_raw="${BASH_REMATCH[10]}"
-  local query="${BASH_REMATCH[12]}"
+  # `:-` on every optional group: bash 5.x (glibc) leaves BASH_REMATCH[n]
+  # UNSET for a trailing subexpression that did not participate (e.g. no
+  # `?query`), so under `set -u` a bare "${BASH_REMATCH[12]}" aborts the
+  # caller. macOS bash 3.2 sets it to "" instead, which is why this only
+  # surfaced in CI.
+  local user_raw="${BASH_REMATCH[3]:-}"
+  local password_raw="${BASH_REMATCH[5]:-}"
+  local host_raw="${BASH_REMATCH[6]:-}"
+  local port="${BASH_REMATCH[8]:-}"
+  local dbname_raw="${BASH_REMATCH[10]:-}"
+  local query="${BASH_REMATCH[12]:-}"
 
   if [[ -z "$host_raw" ]]; then
     echo "pg_url_to_env: connection URL is missing a host" >&2
