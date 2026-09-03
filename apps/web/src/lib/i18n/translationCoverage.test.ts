@@ -46,7 +46,7 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 57,
+    'billing.json': 58, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
