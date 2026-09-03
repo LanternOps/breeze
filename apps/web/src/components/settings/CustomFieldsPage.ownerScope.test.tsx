@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   canManagePartnerWide: undefined as boolean | undefined,
   isPartnerScope: true,
   defaultOwnerScope: 'organization' as 'organization' | 'partner',
-  currentOrgId: 'org-1',
+  currentOrgId: 'org-1' as string | null,
   partnerId: 'partner-1',
 }));
 
@@ -144,6 +144,157 @@ describe('CustomFieldsPage partner-wide gating (#2135 step 6)', () => {
       const body = JSON.parse(String((createCall![1] as RequestInit).body));
       expect(body.orgId).toBe('org-selected-1');
       expect(body.partnerId).toBeUndefined();
+    });
+  });
+
+  it('sends an explicit partnerId (not orgId) when a capable partner-scope user submits with All organizations selected', async () => {
+    state.canManagePartnerWide = true;
+    state.defaultOwnerScope = 'partner';
+    state.partnerId = 'partner-xyz';
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /add custom field/i }));
+    // Default selection follows defaultOwnerScope ('partner' here); confirm
+    // it's actually selected rather than relying on the default alone.
+    fireEvent.click(screen.getByTestId('custom-field-owner-partner'));
+    fireEvent.change(await screen.findByPlaceholderText('e.g., Asset Tag'), {
+      target: { value: 'Contract Tier' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create field/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/custom-fields' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(createCall).toBeTruthy();
+      const body = JSON.parse(String((createCall![1] as RequestInit).body));
+      expect(body.partnerId).toBe('partner-xyz');
+      expect(body.orgId).toBeUndefined();
+    });
+  });
+
+  it('sends an explicit orgId (not partnerId) when a capable partner-scope user submits with the default org-owned option', async () => {
+    state.canManagePartnerWide = true;
+    state.defaultOwnerScope = 'organization';
+    state.currentOrgId = 'org-9';
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /add custom field/i }));
+    fireEvent.change(await screen.findByPlaceholderText('e.g., Asset Tag'), {
+      target: { value: 'Contract Tier' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create field/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/custom-fields' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(createCall).toBeTruthy();
+      const body = JSON.parse(String((createCall![1] as RequestInit).body));
+      expect(body.orgId).toBe('org-9');
+      expect(body.partnerId).toBeUndefined();
+    });
+  });
+
+  it('sends neither ownership key for an org-scope user (the route derives orgId from auth context)', async () => {
+    state.isPartnerScope = false;
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /add custom field/i }));
+    fireEvent.change(await screen.findByPlaceholderText('e.g., Asset Tag'), {
+      target: { value: 'Contract Tier' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create field/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/custom-fields' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(createCall).toBeTruthy();
+      const body = JSON.parse(String((createCall![1] as RequestInit).body));
+      expect(body.orgId).toBeUndefined();
+      expect(body.partnerId).toBeUndefined();
+    });
+  });
+
+  // The org context can be genuinely unresolved (loading, or a partner-scope
+  // user who hasn't picked an org yet) when currentOrgId is null. Sending a
+  // literal { orgId: null } would fail createCustomFieldRequestSchema (orgId
+  // is .optional(), not .nullable()) and reproduce this PR's own 403 bug
+  // under that race — the key must be omitted entirely instead.
+  it('omits orgId rather than sending a literal null when the org context is unresolved', async () => {
+    state.canManagePartnerWide = false;
+    state.currentOrgId = null;
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /add custom field/i }));
+    fireEvent.change(await screen.findByPlaceholderText('e.g., Asset Tag'), {
+      target: { value: 'Contract Tier' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create field/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/custom-fields' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(createCall).toBeTruthy();
+      const body = JSON.parse(String((createCall![1] as RequestInit).body));
+      expect(body.orgId).toBeUndefined();
+      expect('orgId' in body).toBe(false);
+    });
+  });
+});
+
+describe('CustomFieldsPage dropdown choices — legacy string[] shape (#3257 Phase 0)', () => {
+  // Rows created before the shared {label,value} shape existed may still
+  // store choices as a bare string[] — the route's customFieldChoiceSchema
+  // union still accepts it for exactly this reason. Opening such a row for
+  // edit without normalizing left every choice input blank, and the raw
+  // length-only guard at submit didn't catch it, so saving silently wiped
+  // the dropdown's choices.
+  const LEGACY_DROPDOWN_FIELD = {
+    id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', orgId: 'org-1', partnerId: null,
+    name: 'Region', fieldKey: 'region', type: 'dropdown',
+    options: { choices: ['East', 'West'] },
+    required: false, defaultValue: null, deviceTypes: null, scriptWrite: false,
+    createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+  };
+
+  beforeEach(() => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).startsWith('/custom-fields?')) {
+        return jsonResponse({ data: [LEGACY_DROPDOWN_FIELD], total: 1 });
+      }
+      return jsonResponse({ data: LEGACY_DROPDOWN_FIELD }, 200);
+    });
+  });
+
+  it('populates choice label/value from legacy string entries when editing', async () => {
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+
+    const labelInputs = await screen.findAllByPlaceholderText('Label');
+    const valueInputs = screen.getAllByPlaceholderText('Value');
+    expect(labelInputs.map((i) => (i as HTMLInputElement).value)).toEqual(['East', 'West']);
+    expect(valueInputs.map((i) => (i as HTMLInputElement).value)).toEqual(['East', 'West']);
+  });
+
+  it('does not wipe legacy choices on save when they are untouched', async () => {
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+    await screen.findAllByPlaceholderText('Label');
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        ([url, opts]) => String(url).startsWith('/custom-fields/') && (opts as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(patchCall).toBeTruthy();
+      const body = JSON.parse(String((patchCall![1] as RequestInit).body));
+      expect(body.options.choices).toEqual([
+        { label: 'East', value: 'East' },
+        { label: 'West', value: 'West' },
+      ]);
     });
   });
 });

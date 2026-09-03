@@ -144,7 +144,7 @@ export default function CustomFieldsPage() {
     setFormDeviceTypes(field.deviceTypes ?? []);
     setFormOptions((field.options as CustomFieldOptions) ?? {});
     setDropdownChoices(
-      (field.options as CustomFieldOptions)?.choices ?? []
+      normalizeChoices((field.options as CustomFieldOptions | null)?.choices)
     );
     setFormError(null);
     setModalMode('edit');
@@ -159,6 +159,24 @@ export default function CustomFieldsPage() {
     setModalMode('closed');
     setSelectedField(null);
     resetForm();
+  };
+
+  // Rows created before the shared {label,value} shape existed — or via the
+  // API directly — may still store choices as a bare string[] (the route's
+  // customFieldChoiceSchema union still accepts it for exactly this reason).
+  // Opening such a row for edit without normalizing left every choice input
+  // blank (reading .label/.value off a string), and the length-only guard at
+  // submit didn't catch it, so saving silently wiped the dropdown's choices
+  // (options.choices = dropdownChoices.filter(c => c.label && c.value) => []).
+  const normalizeChoices = (
+    raw: unknown
+  ): Array<{ label: string; value: string }> => {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) =>
+      typeof entry === 'string'
+        ? { label: entry, value: entry }
+        : { label: (entry as { label?: string })?.label ?? '', value: (entry as { value?: string })?.value ?? '' }
+    );
   };
 
   const generateFieldKey = (name: string): string => {
@@ -261,11 +279,18 @@ export default function CustomFieldsPage() {
       // the 403 above — omitting the key here would fall through to the
       // route's partner-wide branch and reproduce it). An org-scope user
       // sends neither; the route derives orgId from their own auth context.
+      // currentOrgId can be null during the org-context unresolved/loading
+      // window (useDefaultOwnerScope defaults to org-owned there too) — send
+      // {} rather than a literal orgId:null, which createCustomFieldRequest
+      // Schema rejects (orgId is .optional(), not .nullable()) and would
+      // reproduce this very PR's 403 bug under that race.
       const ownerKey =
         modalMode === 'create' && isPartnerScope
           ? showOwnerScope && formOwnerScope === 'partner'
             ? { partnerId: getJwtClaims().partnerId }
-            : { orgId: currentOrgId }
+            : currentOrgId
+              ? { orgId: currentOrgId }
+              : {}
           : {};
 
       const payload = {
