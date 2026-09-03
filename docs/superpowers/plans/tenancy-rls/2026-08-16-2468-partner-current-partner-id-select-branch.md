@@ -274,6 +274,30 @@ policies restores exact pre-wave behavior.
   request (the #1105 pool-starvation shape) and N RLS-bypass surfaces.
 - **Rollback:** revert the PR; Wave 1 policies are additive so reverting code alone is safe.
 
+**Implementation notes (as shipped, wave #4676):**
+
+- `routes/agents/heartbeat.ts` was deliberately NOT converted. Its five
+  config-delivery reads sit in their own TOP-LEVEL `withSystemDbAccessContext`
+  blocks (the route opts out of the request-long wrap), so they are not nested
+  and cost no second connection — W03's target was the nested escapes.
+  Converting them is a worthwhile follow-up but not a drop-in swap:
+  `buildPatchSourceConfigUpdate` reaches `resolveDeviceTimezone`, whose
+  `partners` read is partner-AXIS and escapes via `readWithPartnerAxisVisibility`
+  (#2822). Under a system wrapper that escape short-circuits; under an
+  org-scoped wrapper it fires, uncached, once per heartbeat — converting one
+  hoisted context into a genuinely nested double-hold on the fleet's hottest
+  path. Hoist or batch the timezone read first. The stale W02 comment on that
+  route was corrected to say this.
+- `buildPolicyProbeConfigUpdate` must keep its escape: it reads
+  `automation_policies`, which has **no** `*_partner_wide_select` branch.
+  `getOrgAgentUpdateConfig` and `services/enrollmentDefaults.ts` likewise —
+  both read the partner-AXIS `partners` table. Same keep-list rationale as
+  `readWithPartnerAxisVisibility`.
+- `withDevicePartnerPolicyVisibility` (#3493, same-connection widening) was
+  kept. It is not a system-context escape, and it widens
+  `breeze.accessible_partner_ids`, which also admits partner-AXIS rows the
+  SELECT-only branch never grants. Retiring it is a separate change.
+
 ### Wave 4 — docs + guardrails
 
 - CLAUDE.md "Partner-Wide First" playbook step 3: replace "move them to a system context
@@ -288,6 +312,9 @@ policies restores exact pre-wave behavior.
   #2417 blindness again. If the assertion turns up already-shipped dual-axis tables without
   the branch (e.g. `software_policies`, patch rings, tenant variables' siblings), file a
   follow-up issue per table rather than growing this change.
+  **Known gap found during W03:** `automation_policies` is dual-axis
+  (`org_id NULL AND partner_id = P`, read by `buildPolicyProbeConfigUpdate`) and has no
+  branch — which is exactly why that resolver still escapes. The assertion should catch it.
 - Update `apps/api/migrations/README.md` only if it documents the read-branch pattern.
 
 ## Key risks
