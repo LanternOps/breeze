@@ -201,6 +201,18 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
+  // processDispatchBackup commits per-target child `backup_jobs` rows, so a
+  // retry duplicates them. Two consequences of that trade are things an
+  // operator must be able to see, and scrubEvent deletes message/logentry/extra
+  // and rewrites the exception value to '[redacted]' — so this tag is the ONLY
+  // part of either capture that reaches Sentry. Closed set of two string
+  // literals written at their call sites in jobs/backupWorker.ts:
+  // 'redelivery-refused' (a whole backup run was deliberately dropped rather
+  // than duplicated) | 'undelivered-settle-failed' (the fast cleanup of
+  // provably-unsent rows failed, so they wait on the stale reaper instead).
+  // Carries no tenant, device or job identifier.
+  'backup_dispatch_issue',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.

@@ -147,6 +147,22 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('prior_status', 'failed:server-timeout');
   });
 
+  // #4137: `dispatch-backup` is a one-shot, so a refused re-delivery drops a
+  // whole backup run on purpose. scrubEvent redacts the exception value, so
+  // this tag is the only thing that distinguishes that deliberate drop from any
+  // other backup-worker crash. Gated TWICE, like the pairs above.
+  it('captureException keeps the #4137 backup_dispatch_issue tag', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    captureException(new Error('Refusing to re-dispatch backup job'), undefined, {
+      backup_dispatch_issue: 'redelivery-refused',
+    });
+
+    expect(setTagMock).toHaveBeenCalledWith('backup_dispatch_issue', 'redelivery-refused');
+  });
+
   // #3022: a CONNECT_TIMEOUT already arrives tagged `pg_code:CONNECT_TIMEOUT`,
   // but that bucket mixes two unrelated failures — a handshake that really
   // failed, and a main thread too busy to run the socket callbacks. These tags
@@ -464,6 +480,7 @@ describe('scrubEvent', () => {
         manifest_refusal_reason: 'not-distributable',
         release_sync_failure_reason: 'ssrf-blocked',
         release_sync_context: 'stale-volume-fallback',
+        backup_dispatch_issue: 'redelivery-refused',
         worker: 'patchScheduler',
         worker_failure_reason: 'desktop_stop_pending',
         patch_reconcile_stage: 'enqueue_failed',
@@ -543,6 +560,12 @@ describe('scrubEvent', () => {
       // cannot tell a guard refusal from an ordinary GitHub outage.
       release_sync_failure_reason: 'ssrf-blocked',
       release_sync_context: 'stale-volume-fallback',
+      // #4137: dispatch-backup is at-most-once, so a refused re-delivery
+      // deliberately drops a backup run. scrubEvent rewrites the exception
+      // value to '[redacted]' — dropped here too, the capture arrives
+      // contentless and an operator cannot tell a deliberate at-most-once drop
+      // from an ordinary backup-worker crash.
+      backup_dispatch_issue: 'redelivery-refused',
       // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
       // and the allowlist introduced two days later (a50769487) has discarded
       // it ever since, which is why ~12k held-context events carry an empty

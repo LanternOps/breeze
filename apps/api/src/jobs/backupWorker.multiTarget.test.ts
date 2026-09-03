@@ -292,11 +292,15 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     expect(updateLog).toHaveLength(0);
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(mockDb.select).not.toHaveBeenCalled();
-    // Silent at-most-once would be indistinguishable from a lost backup.
+    // Silent at-most-once would be indistinguishable from a lost backup. The
+    // tag must be the allowlisted one — services/sentry.ts drops every tag
+    // outside ALLOWED_TAG_NAMES and redacts the exception value, so a
+    // non-allowlisted tag would make this capture arrive contentless
+    // (sentry.test.ts asserts the other half of that gate).
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      expect.objectContaining({ job_type: 'dispatch-backup', backup_job_id: 'job-1' }),
+      { backup_dispatch_issue: 'redelivery-refused' },
     );
     warn.mockRestore();
   });

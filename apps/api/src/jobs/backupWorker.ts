@@ -814,6 +814,12 @@ async function settleUndeliveredDispatchTargets(
       `[BackupWorker] Failed to settle ${undelivered.length} undelivered dispatch row(s) for job ${data.jobId}:`,
       settleError,
     );
+    // With `attempts: 1` this IS the only proactive cleanup for provably-unsent
+    // rows; if it fails they silently wait on the stale reaper instead, so the
+    // failure needs to be visible rather than log-only.
+    captureException(settleError, undefined, {
+      backup_dispatch_issue: 'undelivered-settle-failed',
+    });
   }
 }
 
@@ -834,10 +840,12 @@ async function processDispatchBackup(
       'this execution is a BullMQ re-delivery and the dispatch is not idempotent (#4137). ' +
       'Leaving the existing job row(s) for the stale-job reaper.';
     console.warn(message);
+    // `backup_dispatch_issue` is the only field that survives the Sentry
+    // scrubber — it deletes message/logentry/extra, rewrites the exception
+    // value to '[redacted]' and drops every tag outside ALLOWED_TAG_NAMES
+    // (services/sentry.ts). The ids stay in the console line above.
     captureException(new Error(message), undefined, {
-      job_type: 'dispatch-backup',
-      backup_job_id: data.jobId,
-      device_id: data.deviceId,
+      backup_dispatch_issue: 'redelivery-refused',
     });
     return { dispatched: false };
   }
