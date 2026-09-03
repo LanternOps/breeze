@@ -29,6 +29,8 @@ export interface CategoryRule {
   autoApproveSeverities?: string[];
   /** @deprecated Legacy stored alias for autoApproveSeverities (rows/snapshots written before 2026-08). Read-only. */
   severityFilter?: string[];
+  /** Opt-in: also auto-approve patches with no severity rating (#3758). Default false (fail-closed). */
+  autoApproveUnrated?: boolean;
   deferralDaysOverride?: number | null;
 }
 
@@ -214,6 +216,18 @@ export function buildAllowedPatchSources(sources: string[] | undefined): Set<str
 
 export function isThirdPartyPatchSource(source: string | null | undefined): boolean {
   return (THIRD_PARTY_PATCH_SOURCES as readonly string[]).includes(source ?? '');
+}
+
+/**
+ * True when a patch carries no usable severity signal: `severity` is
+ * NULL/empty, or the DB's explicit `'unknown'` sentinel value. Both must be
+ * treated identically by every auto-approve severity gate (#3758) — treating
+ * only NULL as "unrated" left 'unknown'-severity patches falling through a
+ * *different* code path that happened to reach the same fail-closed outcome,
+ * which is fragile (see the two guards below).
+ */
+export function isUnratedSeverity(severity: string | null | undefined): boolean {
+  return !severity || severity === 'unknown';
 }
 
 // ============================================
@@ -569,7 +583,11 @@ function evaluatePatchApproval(
     // never produced, so chips were silently unenforced (fail-open).
     const severityAllowlist = rule.autoApproveSeverities ?? rule.severityFilter;
     if (severityAllowlist && severityAllowlist.length > 0) {
-      if (!patch.severity || !severityAllowlist.includes(patch.severity)) {
+      if (isUnratedSeverity(patch.severity)) {
+        if (!rule.autoApproveUnrated) {
+          return null;
+        }
+      } else if (!severityAllowlist.includes(patch.severity)) {
         return null;
       }
     }
@@ -616,7 +634,11 @@ function evaluatePatchApproval(
     if (ringAutoApprove.severities.length === 0) {
       return null;
     }
-    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
+    if (isUnratedSeverity(patch.severity)) {
+      if (!ringAutoApprove.autoApproveUnrated) {
+        return null;
+      }
+    } else if (!ringAutoApprove.severities.includes(patch.severity)) {
       return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
@@ -688,6 +710,8 @@ interface RingAutoApproveConfig {
    * releaseDate when present, first-seen otherwise (#2218).
    */
   thirdPartyDeferralDays: number | null;
+  /** Opt-in: also auto-approve OS patches with no severity rating (#3758). Default false (fail-closed). */
+  autoApproveUnrated: boolean;
 }
 
 const RECOGNIZED_RING_SEVERITIES = new Set(['critical', 'important', 'moderate', 'low']);
@@ -698,6 +722,7 @@ const DISABLED_RING_AUTO_APPROVE: RingAutoApproveConfig = {
   deferralDays: 0,
   thirdPartyApps: false,
   thirdPartyDeferralDays: null,
+  autoApproveUnrated: false,
 };
 
 /**
@@ -763,7 +788,9 @@ export function parseRingAutoApprove(autoApprove: unknown, context?: string): Ri
     thirdPartyDeferralDays = rawTp;
   }
 
-  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
+  const autoApproveUnrated = config.autoApproveUnrated === true;
+
+  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays, autoApproveUnrated };
 }
 
 /**

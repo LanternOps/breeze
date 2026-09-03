@@ -818,6 +818,49 @@ describe('category rules — repaired semantics (#spec 2026-08-04)', () => {
   });
 });
 
+describe('category rule autoApproveUnrated (#3758)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('auto-approves a null-severity patch matching a category rule with autoApproveUnrated: true', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], autoApproveUnrated: true },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('holds a null-severity patch matching a category rule without autoApproveUnrated', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'] },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+});
+
 // ---- Ring-level auto-approve (#1317): enabled + severities + deferral ----
 describe('ring-level auto-approve', () => {
   beforeEach(() => {
@@ -966,6 +1009,47 @@ describe('ring-level auto-approve', () => {
     // Only the critical patch auto-approves; the null-severity one is held.
     expect(result.map((r) => r.patchId)).toEqual([P2]);
     expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('auto-approves a null-severity patch when autoApproveUnrated is true', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: null })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('auto-approves a severity:"unknown" patch when autoApproveUnrated is true (same as null)', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'unknown' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('still holds a null-severity patch when autoApproveUnrated is false (default)', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: null })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('disabled ring auto-approve approves nothing without a manual approval', async () => {
@@ -1829,7 +1913,7 @@ describe('ring auto-approve — third-party dual consent (#spec 2026-08-04)', ()
 describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-04)', () => {
   it('derives thirdPartyApps=true for a legacy enabled row with recognized severities', () => {
     const cfg = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 3 });
-    expect(cfg).toEqual({ enabled: true, severities: ['critical'], deferralDays: 3, thirdPartyApps: true, thirdPartyDeferralDays: null });
+    expect(cfg).toEqual({ enabled: true, severities: ['critical'], deferralDays: 3, thirdPartyApps: true, thirdPartyDeferralDays: null, autoApproveUnrated: false });
   });
 
   it('derives thirdPartyApps=false for legacy enabled rows with no recognized severities', () => {
