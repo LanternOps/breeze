@@ -107,4 +107,31 @@ describe('DeviceEventLogViewer — capped total (#4834)', () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByTestId('event-log-next-page')).toBeDisabled());
   });
+
+  it('handles an empty page past the cap without an inverted range, and disables Next', async () => {
+    // The true total lands exactly on a page-size boundary above the cap
+    // (e.g. 10,050 with a 50-row page): the last full page (page 1 here)
+    // still reports totalIsLowerBound, so Next stays enabled and the tech
+    // pages to page 2, which is genuinely past the end and comes back empty.
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const page = pageFromUrl(url);
+      const rows = page === 1 ? 50 : 0;
+      return Promise.resolve(
+        jsonResponse({
+          data: Array.from({ length: rows }, (_, i) => activity(`p${page}-${i}`)),
+          pagination: { page, limit: 50, total: 10000, totalIsLowerBound: true },
+        }),
+      );
+    });
+    render(<DeviceEventLogViewer deviceId="dev-1" />);
+    await screen.findByTestId('event-log-total');
+    await userEvent.click(screen.getByTestId('event-log-next-page'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+
+    const status = await screen.findByTestId('event-log-pagination-status');
+    // No inverted "10051–10050 of 10,000+" range on the empty page.
+    await waitFor(() => expect(status).toHaveTextContent('No more activity'));
+    expect(status).not.toHaveTextContent('–');
+    await waitFor(() => expect(screen.getByTestId('event-log-next-page')).toBeDisabled());
+  });
 });

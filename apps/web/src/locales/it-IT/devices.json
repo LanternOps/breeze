@@ -664,7 +664,7 @@
     "retry": "Riprova",
     "activities": "Attività",
     "total": "in totale)",
-    "totalAtLeast": "{{count}}+",
+    "totalAtLeast": "{{count}} o più",
     "searchActivities": "Cerca attività...",
     "all": "Tutte",
     "success": "Riuscito",
@@ -684,7 +684,8 @@
     "details": "Dettagli",
     "showing": "Visualizzati",
     "text": "–",
-    "of": "di"
+    "of": "di",
+    "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",

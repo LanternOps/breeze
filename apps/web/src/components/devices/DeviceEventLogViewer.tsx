@@ -349,13 +349,18 @@ export default function DeviceEventLogViewer({
       })
     : formatNumber(pagination.total);
 
-  // totalPages is derived from the (possibly capped) total, so once the user
-  // pages past it the button must stay enabled as long as the last page came
-  // back full — that's the only signal there could be more rows beyond the
-  // cap, since the exact remaining count isn't known.
-  const canGoNext =
-    page < totalPages ||
-    (pagination.totalIsLowerBound && activities.length === pagination.limit);
+  // A page is short (fewer than `limit` rows) only when it is genuinely the
+  // last one — the API always fills a page to `limit` until the underlying
+  // result set runs out (mergeFeedPage slices a top-N union). That holds
+  // whether or not a total was even requested, so it's a more reliable "is
+  // there more" signal than comparing `page` to `totalPages`, which is
+  // derived from a total that's clamped past FEED_TOTAL_CAP (#4834) — a
+  // page<totalPages check would misfire exactly when the true count lands on
+  // a page-size boundary above the cap (e.g. true total 10,050 with a 50-row
+  // page: the last full page still reports totalIsLowerBound, so Next must
+  // stay enabled there and only disable once the following, empty page comes
+  // back).
+  const canGoNext = activities.length === pagination.limit;
 
   if (error) {
     return (
@@ -718,12 +723,26 @@ export default function DeviceEventLogViewer({
         {/* Pagination */}
         {!loading && pagination.total > pagination.limit && (
           <div className="flex items-center justify-between border-t px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              {t("deviceEventLogViewer.showing")}{" "}
-              {(page - 1) * pagination.limit + 1}
-              {t("deviceEventLogViewer.text")}
-              {(page - 1) * pagination.limit + activities.length}{" "}
-              {t("deviceEventLogViewer.of")} {formattedTotal}
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="event-log-pagination-status"
+            >
+              {/* Past FEED_TOTAL_CAP (#4834) the true total is unknown, so
+                  paging can overshoot the real end by one page — that page
+                  comes back empty. Compute the range from the rows actually
+                  returned rather than from `limit`, or the trailing page
+                  renders an inverted "10051–10050" range. */}
+              {activities.length === 0 ? (
+                t("deviceEventLogViewer.noMoreActivity")
+              ) : (
+                <>
+                  {t("deviceEventLogViewer.showing")}{" "}
+                  {(page - 1) * pagination.limit + 1}
+                  {t("deviceEventLogViewer.text")}
+                  {(page - 1) * pagination.limit + activities.length}{" "}
+                  {t("deviceEventLogViewer.of")} {formattedTotal}
+                </>
+              )}
             </p>
             <div className="flex items-center gap-1">
               <button
@@ -735,7 +754,7 @@ export default function DeviceEventLogViewer({
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="px-2 text-xs text-muted-foreground">
-                {page} / {totalPages}
+                {page} / {Math.max(totalPages, page)}
               </span>
               <button
                 type="button"
