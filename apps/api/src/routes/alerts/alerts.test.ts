@@ -114,6 +114,11 @@ vi.mock('../../db/schema', () => ({
   aiAlertVerdicts: {}, alertCorrelationGroups: {}, alertCorrelationMembers: {},
   alertRules: {}, alertTemplates: {}, alerts: {}, notificationChannels: {},
   alertNotifications: {}, devices: {}, organizations: {}, tickets: {}, ticketAlertLinks: {},
+  // #4445 — actorNames.ts (real implementation, not mocked here) selects
+  // `users.id`/`users.name`; without this the feedbackByName lookup throws
+  // on an undefined `users` and silently degrades via withAlertActorNames'
+  // own catch, masking every feedbackByName test behind a false null.
+  users: { id: 'id', name: 'name' },
 }));
 vi.mock('../../services/alertCooldown', () => ({
   setCooldown: vi.fn(), markConfigPolicyRuleCooldown: vi.fn(),
@@ -250,6 +255,67 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
     expect(projectAlertAiVerdictSummaryMock).toHaveBeenCalledWith(verdictRow);
   });
 
+  // #4445 review follow-up (pr-test-analyzer) — every prior test here only
+  // ever has a SINGLE verdict with an unresolvable (undefined) feedbackBy,
+  // so the batched name lookup short-circuits before it ever reaches the
+  // fake `users` select, and the per-verdict `Map` merge in the route never
+  // actually runs against more than one entry. These two tests exercise the
+  // real merge: two different alerts, two different verdicts, two different
+  // voters — proving `feedbackByNameByVerdictId.get(verdict.id)` keys off
+  // the VERDICT, not alert position/array order.
+  it('resolves feedbackByName independently per alert when two alerts carry different verdicts voted by different users', async () => {
+    dbState.selectQueue.push([{ count: 2 }]); // count
+    dbState.selectQueue.push([baseAlertRow(ALERT_1), baseAlertRow(ALERT_2)]); // alertsList
+    dbState.selectQueue.push([]); // correlationRows
+    dbState.selectQueue.push([
+      { id: 'user-a', name: 'Alice' },
+      { id: 'user-b', name: 'Bob' },
+    ]); // feedbackBy -> feedbackByName batched lookup
+
+    const verdictA = { id: 'verdict-a', alertId: ALERT_1, feedbackBy: 'user-a' };
+    const verdictB = { id: 'verdict-b', alertId: ALERT_2, feedbackBy: 'user-b' };
+    latestVerdictsForAlertsMock.mockResolvedValue(
+      new Map([[ALERT_1, verdictA], [ALERT_2, verdictB]])
+    );
+    projectAlertAiVerdictSummaryMock.mockImplementation(
+      (verdict: { id: string }) => ({ ...VERDICT_DTO, id: verdict.id })
+    );
+
+    const res = await makeApp().request('/alerts');
+    const body = await res.json() as {
+      data: Array<{ id: string; aiVerdict: { feedbackByName: string | null } }>;
+    };
+
+    const byAlertId = Object.fromEntries(body.data.map((a) => [a.id, a.aiVerdict.feedbackByName]));
+    expect(byAlertId[ALERT_1]).toBe('Alice');
+    expect(byAlertId[ALERT_2]).toBe('Bob');
+  });
+
+  it('applies the SAME group verdict feedbackByName to every member alert that shares it', async () => {
+    dbState.selectQueue.push([{ count: 2 }]);
+    dbState.selectQueue.push([baseAlertRow(ALERT_1), baseAlertRow(ALERT_2)]);
+    dbState.selectQueue.push([]); // correlationRows
+    // Only ONE distinct user id despite two alerts sharing the verdict —
+    // resolveUserDisplayNames dedups via a Set before querying.
+    dbState.selectQueue.push([{ id: 'user-a', name: 'Alice' }]);
+
+    const sharedVerdict = { id: 'verdict-shared', feedbackBy: 'user-a' };
+    latestVerdictsForAlertsMock.mockResolvedValue(
+      new Map([[ALERT_1, sharedVerdict], [ALERT_2, sharedVerdict]])
+    );
+    projectAlertAiVerdictSummaryMock.mockImplementation(
+      (verdict: { id: string }) => ({ ...VERDICT_DTO, id: verdict.id })
+    );
+
+    const res = await makeApp().request('/alerts');
+    const body = await res.json() as {
+      data: Array<{ id: string; aiVerdict: { feedbackByName: string | null } }>;
+    };
+
+    expect(body.data.find((a) => a.id === ALERT_1)!.aiVerdict.feedbackByName).toBe('Alice');
+    expect(body.data.find((a) => a.id === ALERT_2)!.aiVerdict.feedbackByName).toBe('Alice');
+  });
+
   it('derives orgId(s) for latestVerdictsForAlerts from the loaded rows, not auth alone — a partner-scoped multi-org page widens to an array', async () => {
     const ORG_2 = 'org-2';
     authRef.current = {
@@ -331,5 +397,23 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
 
     expect(body.aiVerdict).toEqual(VERDICT_DTO_WITH_NAME);
     expect(projectAlertAiVerdictSummaryMock).toHaveBeenCalledWith(verdictRow);
+  });
+
+  // #4445 review follow-up (pr-test-analyzer) — the test above never gives
+  // the verdict a real `feedbackBy`, so it never proves the detail route's
+  // name lookup actually resolves a name (only that it no-ops). This drives
+  // a non-null feedbackBy through the real `withAlertActorNames` call.
+  it('resolves feedbackByName for the single verdict on the detail route', async () => {
+    getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
+    dbState.selectQueue.push([]); // device
+    dbState.selectQueue.push([]); // notifications
+    dbState.selectQueue.push([{ id: 'user-a', name: 'Alice' }]); // feedbackBy -> feedbackByName lookup
+    const verdictRow = { id: 'verdict-1', alertId: ALERT_1, feedbackBy: 'user-a' };
+    latestVerdictsForAlertsMock.mockResolvedValue(new Map([[ALERT_1, verdictRow]]));
+
+    const res = await makeApp().request(`/alerts/${ALERT_1}`);
+    const body = await res.json() as { aiVerdict: { feedbackByName: string | null } };
+
+    expect(body.aiVerdict.feedbackByName).toBe('Alice');
   });
 });
