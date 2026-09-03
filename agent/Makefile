@@ -227,6 +227,11 @@ lint:
 #   identity is used across builds, macOS will treat all dev pushes as the
 #   "same app" and TCC grants persist across iterations.
 #
+#   Darwin dev pushes are ALWAYS signed: without CODESIGN_IDENTITY the binary is
+#   ad-hoc signed instead, because the agent refuses to install a macOS binary
+#   that fails `codesign --verify` (#3458). Ad-hoc identities differ per build,
+#   so TCC grants are re-prompted on every push until you set an identity.
+#
 #   Setup:
 #     1. Keychain Access > Certificate Assistant > Create a Certificate
 #        Name: BreezeDevSigning, Identity Type: Self Signed Root, Type: Code Signing
@@ -263,12 +268,23 @@ endif
 	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
 	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
 	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
-ifneq ($(CODESIGN_IDENTITY),)
-ifeq ($(TARGET_GOOS),darwin)
-	@echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-agent-dev
-endif
-endif
+	@if [ "$(TARGET_GOOS)" = "darwin" ]; then \
+		if ! command -v codesign >/dev/null 2>&1; then \
+			echo "WARNING: codesign not found on this host; the darwin dev binary will be unsigned"; \
+			echo "  and the agent will REFUSE to install it (see #3458). Build the push from a Mac."; \
+		elif [ -n "$(CODESIGN_IDENTITY)" ]; then \
+			echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."; \
+			codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-agent-dev; \
+		else \
+			echo "CODESIGN_IDENTITY not set - ad-hoc signing the dev binary."; \
+			echo "  The agent refuses to install a macOS binary that fails 'codesign --verify' (#3458),"; \
+			echo "  and a cross-compiled darwin/amd64 build carries no signature at all, so signing"; \
+			echo "  here is what makes the push installable. Ad-hoc identities change on every build,"; \
+			echo "  so macOS re-prompts for Screen Recording / Accessibility / Full Disk Access after"; \
+			echo "  each push - set CODESIGN_IDENTITY (see the comment above this target) to keep them."; \
+			codesign --force --sign - bin/breeze-agent-dev; \
+		fi; \
+	fi
 	@echo "Uploading binary to API..."
 	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
 		-H "$(AUTH_HEADER)" \
@@ -315,12 +331,10 @@ endif
 	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
 	@echo "Building watchdog for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
 	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-watchdog-dev ./cmd/breeze-watchdog
-ifneq ($(CODESIGN_IDENTITY),)
-ifeq ($(TARGET_GOOS),darwin)
-	@echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-watchdog-dev
-endif
-endif
+	@if [ "$(TARGET_GOOS)" = "darwin" ] && [ -n "$(CODESIGN_IDENTITY)" ] && command -v codesign >/dev/null 2>&1; then \
+		echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."; \
+		codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-watchdog-dev; \
+	fi
 	@echo "Uploading watchdog binary to API..."
 	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
 		-H "$(AUTH_HEADER)" \

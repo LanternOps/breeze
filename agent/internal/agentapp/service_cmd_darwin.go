@@ -207,18 +207,22 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
-		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
-		if desktopHelperErr != nil {
-			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
+		// Stage the REAL desktop helper — sibling binary first, matching-version
+		// signed release asset second. It must never be substituted with the
+		// agent binary: see stageDesktopHelper for why (#3457). A failure here
+		// is a warning, not a fatal error, so an offline or air-gapped install
+		// still gets a working agent service (same policy as the watchdog).
+		if err := stageDesktopHelper(desktopHelperStageOptions{
+			agentPath: exePath,
+			destPath:  darwinDesktopHelperBinaryPath,
+			version:   version,
+			goos:      runtime.GOOS,
+			goarch:    runtime.GOARCH,
+		}); err != nil {
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(err, version, runtime.GOOS, runtime.GOARCH))
+		} else {
+			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}
-		if desktopHelperErr != nil {
-			return fmt.Errorf("failed to stage desktop helper binary: %w", desktopHelperErr)
-		}
-		if err := os.WriteFile(darwinDesktopHelperBinaryPath, desktopHelperBytes, 0755); err != nil {
-			return fmt.Errorf("failed to copy desktop helper to %s: %w", darwinDesktopHelperBinaryPath, err)
-		}
-		fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 
 		if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
