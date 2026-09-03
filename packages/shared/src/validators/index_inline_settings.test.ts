@@ -81,7 +81,7 @@ describe('ringAutoApproveSchema', () => {
     // Stored explicit opt-in carried
     expect(mergeRingAutoApproveWrite(incoming, {
       enabled: true, severities: ['critical'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 9,
-    })).toEqual({ enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: true, thirdPartyDeferralDays: 9 });
+    })).toEqual({ enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: true, thirdPartyDeferralDays: 9, autoApproveUnrated: false });
     // Legacy stored row without the field: derives from stored severities
     expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: ['critical'] }).thirdPartyApps).toBe(true);
     expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: [] }).thirdPartyApps).toBe(false);
@@ -94,13 +94,47 @@ describe('ringAutoApproveSchema', () => {
     })).toMatchObject({ thirdPartyApps: false, thirdPartyDeferralDays: null });
     // Create (no stored row): explicit fail-closed defaults
     expect(mergeRingAutoApproveWrite(incoming, undefined)).toEqual({
-      enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: false, thirdPartyDeferralDays: null,
+      enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false,
     });
   });
 
   it('rejects out-of-range thirdPartyDeferralDays', () => {
     expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 366 }).success).toBe(false);
     expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: -1 }).success).toBe(false);
+  });
+
+  it('accepts autoApproveUnrated as an optional boolean, absent by default', () => {
+    const result = ringAutoApproveSchema.safeParse({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.autoApproveUnrated).toBeUndefined();
+    }
+  });
+
+  it('accepts an explicit autoApproveUnrated: true alongside severities', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.autoApproveUnrated).toBe(true);
+    }
+  });
+
+  it('mergeRingAutoApproveWrite: absent autoApproveUnrated carries the stored value; explicit value wins; create defaults to false', () => {
+    const incoming = ringAutoApproveSchema.parse({ enabled: true, severities: ['low'], deferralDays: 2 });
+    expect(mergeRingAutoApproveWrite(incoming, {
+      enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true,
+    }).autoApproveUnrated).toBe(true);
+
+    const explicitOff = ringAutoApproveSchema.parse({
+      enabled: true, severities: ['low'], deferralDays: 0, autoApproveUnrated: false,
+    });
+    expect(mergeRingAutoApproveWrite(explicitOff, {
+      enabled: true, severities: [], deferralDays: 0, autoApproveUnrated: true,
+    }).autoApproveUnrated).toBe(false);
+
+    expect(mergeRingAutoApproveWrite(incoming, undefined).autoApproveUnrated).toBe(false);
   });
 });
 
