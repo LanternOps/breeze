@@ -26,12 +26,14 @@ function setAuthenticated(value: boolean) {
 }
 
 import {
+  ExtensionModuleImportError,
   ExtensionRegistryError,
   UntrustedExtensionModuleUrlError,
   clearExtensionRegistryCache,
   findExtensionPage,
   getExtensionRegistry,
   loadExtensionModule,
+  redactExtensionAssetTokens,
   __resetExtensionRegistryForTests,
   __setExtensionModuleImporterForTests,
   type RuntimeWebRegistry,
@@ -204,6 +206,19 @@ describe('loadExtensionModule — trust boundary', () => {
     ).rejects.toThrow('network error');
   });
 
+  it('a failed import clears the memo so a later call re-imports', async () => {
+    const importer = vi.fn()
+      .mockRejectedValueOnce(new Error('network error'))
+      .mockResolvedValueOnce({ ok: true });
+    __setExtensionModuleImporterForTests(importer);
+
+    const url = '/api/v1/extensions/assets/demo/abc123/index.js';
+    await expect(loadExtensionModule(url)).rejects.toThrow('network error');
+    await expect(loadExtensionModule(url)).resolves.toEqual({ ok: true });
+
+    expect(importer).toHaveBeenCalledTimes(2);
+  });
+
   // loadExtensionModule REJECTS a forged/untrusted URL by throwing
   // synchronously, before ever calling the importer — "throw, do not
   // import", per the brief. It never returns a promise for these inputs.
@@ -265,5 +280,77 @@ describe('loadExtensionModule — trust boundary', () => {
       expect(() => loadExtensionModule(url)).toThrow(UntrustedExtensionModuleUrlError);
     }
     expect(importer).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadExtensionModule — asset token handling (#4164)', () => {
+  it('imports the full tokened href verbatim — the credential must actually reach the network', async () => {
+    const importer = vi.fn().mockResolvedValue({ ok: true });
+    __setExtensionModuleImporterForTests(importer);
+
+    await loadExtensionModule('/api/v1/extensions/assets/t/tok-abc/demo/abc123/index.js');
+
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(importer).toHaveBeenCalledWith(
+      'http://localhost:3000/api/v1/extensions/assets/t/tok-abc/demo/abc123/index.js',
+    );
+  });
+
+  it('two URLs that differ only in the token share one import (a rotated token must not re-import or duplicate the module instance)', async () => {
+    const importer = vi.fn().mockResolvedValue({ ok: true });
+    __setExtensionModuleImporterForTests(importer);
+
+    const p1 = loadExtensionModule('/api/v1/extensions/assets/t/tok-original/demo/abc123/index.js');
+    const p2 = loadExtensionModule('/api/v1/extensions/assets/t/tok-rotated-later/demo/abc123/index.js');
+    await Promise.all([p1, p2]);
+
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(p2).toBe(p1);
+  });
+
+  it('a tokenless (pre-#4164 shape) URL still imports and dedupes under its own key', async () => {
+    const importer = vi.fn().mockResolvedValue({ ok: true });
+    __setExtensionModuleImporterForTests(importer);
+
+    const url = '/api/v1/extensions/assets/demo/abc123/index.js';
+    const p1 = loadExtensionModule(url);
+    const p2 = loadExtensionModule(url);
+    await Promise.all([p1, p2]);
+
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(importer).toHaveBeenCalledWith('http://localhost:3000/api/v1/extensions/assets/demo/abc123/index.js');
+    expect(p2).toBe(p1);
+  });
+
+  it('wraps a rejected import in ExtensionModuleImportError with the token redacted from the message but preserved on cause', async () => {
+    const rawError = new Error('network error');
+    const importer = vi.fn().mockRejectedValue(rawError);
+    __setExtensionModuleImporterForTests(importer);
+
+    const secretToken = 'v1.SUPER-SECRET-TOKEN-VALUE.sig';
+    let caught: unknown;
+    try {
+      await loadExtensionModule(`/api/v1/extensions/assets/t/${secretToken}/demo/abc123/index.js`);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ExtensionModuleImportError);
+    const err = caught as ExtensionModuleImportError;
+    expect(err.message).not.toContain(secretToken);
+    expect(err.message).toContain('<redacted>');
+    expect(err.cause).toBe(rawError);
+  });
+});
+
+describe('redactExtensionAssetTokens', () => {
+  it('strips the token segment from a native module-fetch error string while keeping name/digest/member intact', () => {
+    const raw = 'Failed to fetch dynamically imported module: '
+      + 'http://localhost:3000/api/v1/extensions/assets/t/v1.PAYLOAD.SIG/demo/sha256:aaa/web/index.js';
+
+    const redacted = redactExtensionAssetTokens(raw);
+
+    expect(redacted).not.toContain('v1.PAYLOAD.SIG');
+    expect(redacted).toContain('/api/v1/extensions/assets/t/<redacted>/demo/sha256:aaa/web/index.js');
   });
 });

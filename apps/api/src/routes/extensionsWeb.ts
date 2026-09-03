@@ -2,14 +2,27 @@
  * Authenticated runtime-extension web surface: the registry projection and
  * digest-addressed serving of extension web/* assets.
  *
- * Mounted under the authed `/api/v1` group (see index.ts), gated by the
- * ordinary `authMiddleware` — ANY authenticated user, not just platform
- * admins, may read the registry and fetch assets. There is no per-org
- * filtering here: `installed_extensions.enabled` (the state store's
- * `isEnabled`) is a GLOBAL fleet-wide switch, not an org-scoped one (see
- * stateStore.ts — `getRow`/`setEnabled` take only `name`), so "enabled" is
- * the only gate this surface applies. If a future task adds org-scoped
- * extension state, this router's live re-check is the place to extend.
+ * TWO DIFFERENT GATES (issue #4164). `GET /registry` keeps the ordinary
+ * bearer `authMiddleware` — ANY authenticated user, not just platform admins,
+ * may read it. `GET /assets/...` CANNOT: the browser loads an extension's
+ * entry module with a bare dynamic `import(url)`, a native module fetch that
+ * cannot attach an `Authorization` header, so a bearer gate there 401'd every
+ * extension UI permanently. Instead `/registry` — which is authenticated —
+ * mints a short-lived signed capability per extension bundle and embeds it in
+ * the `moduleUrl` it advertises, and the asset route verifies THAT (step 0
+ * below). See services/extensionAssetToken.ts for exactly what the token does
+ * and does not prove; the short version is that it cannot be forged,
+ * re-pointed at another extension or digest, re-scoped to another tenant, or
+ * used past its expiry — but it is a bearer capability, so whoever holds it
+ * within its lifetime can read the bundle.
+ *
+ * There is no per-org filtering here: `installed_extensions.enabled` (the
+ * state store's `isEnabled`) is a GLOBAL fleet-wide switch, not an org-scoped
+ * one (see stateStore.ts — `getRow`/`setEnabled` take only `name`), so
+ * "enabled" is the only gate this surface applies. If a future task adds
+ * org-scoped extension state, this router's live re-check is the place to
+ * extend — and the token already carries the minting principal's
+ * partner/org scope so that check has something to compare against.
  *
  * Part B (asset serving) is the highest-security code in this task: it
  * serves bytes read from disk in response to attacker-controlled path
@@ -35,7 +48,16 @@ import {
   isServableWebMember,
   type ExtensionWebAsset,
 } from '../extensions/webAssets';
-import { buildRuntimeWebRegistry, type RuntimeWebRegistrySource } from '../extensions/webRegistry';
+import {
+  ASSET_TOKEN_SEGMENT,
+  buildRuntimeWebRegistry,
+  type RuntimeWebRegistrySource,
+} from '../extensions/webRegistry';
+import {
+  mintExtensionAssetToken,
+  verifyExtensionAssetToken,
+  type ExtensionAssetTokenScope,
+} from '../services/extensionAssetToken';
 
 /** The state-store surface this router needs (injectable for tests). */
 export type ExtensionsWebStore = Pick<ExtensionStateStore, 'isEnabled'>;
@@ -48,6 +70,12 @@ export interface ExtensionsWebDeps {
   registry: ExtensionsWebRegistry;
   /** Task 2's retained `{ root, digest, files }` accessor. */
   getWebAsset: (name: string) => ExtensionWebAsset | undefined;
+  /** Injectable so tests can mint deterministically; production wires the real
+   *  HMAC minter (services/extensionAssetToken.ts). */
+  mintAssetToken: (
+    binding: { name: string; digest: string },
+    scope: ExtensionAssetTokenScope,
+  ) => string;
 }
 
 /**
@@ -93,11 +121,20 @@ function toRegistrySource(
 export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
   const routes = new Hono();
 
-  // ONE gate for the whole group — any authenticated user (no platform-admin
-  // requirement; extension web assets are ordinary tenant-facing UI).
-  routes.use('*', authMiddleware);
+  // Bearer gate scoped to `/registry` ONLY — deliberately not `use('*')`, so
+  // the carve-out for `/assets/*` is a property of this line rather than of
+  // route-registration order. Any authenticated user qualifies (no
+  // platform-admin requirement; extension web UI is ordinary tenant-facing).
+  // `/assets/*` is gated by the signed token minted here instead; see the
+  // header comment.
+  routes.use('/registry', authMiddleware);
+  // Belt and braces for a future `/registry/<something>` sub-route: the gate is
+  // enumerated per path, so a new one must not inherit "unauthenticated" from
+  // the `/assets/*` carve-out by accident.
+  routes.use('/registry/*', authMiddleware);
 
   routes.get('/registry', async (c) => {
+    const auth = c.get('auth');
     const candidates = deps.registry.listActive();
 
     // The in-process registry snapshot can be stale on THIS replica (another
@@ -119,7 +156,13 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
       sources.push(toRegistrySource(snapshot, asset));
     });
 
-    return c.json(buildRuntimeWebRegistry(sources));
+    // The response now carries live credentials (one asset token per
+    // extension), so it must never be stored by a shared or disk cache.
+    c.header('Cache-Control', 'no-store');
+    return c.json(buildRuntimeWebRegistry(sources, (binding) => deps.mintAssetToken(binding, {
+      partnerId: auth?.partnerId ?? null,
+      orgId: auth?.orgId ?? null,
+    })));
   });
 
   // `:member{.+}` (a named regex-capture param), NOT a bare `*` — this Hono
@@ -131,13 +174,33 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
   // collapses `.` / `..` dot-segments (and their `%2e` percent-encoded form
   // identically) BEFORE Hono's router ever sees the path, so a traversal
   // attempt reshuffles which segments land in `:digest` vs `:member` — it
-  // does not hand this handler a `member` string containing `..`. The exact
-  // inventory-key check below (step 4) is what actually rejects it either
-  // way; this comment just explains why a literal `../x` never reaches here.
-  routes.get('/assets/:name/:digest/:member{.+}', async (c) => {
+  // does not hand this handler a `member` string containing `..`. The token
+  // and inventory-key checks below (steps 0 and 4) are what actually reject it
+  // either way; this comment just explains why a literal `../x` never reaches
+  // here.
+  //
+  // The `t/:token` pair sits ABOVE `:member` on purpose (see
+  // webRegistry.ts's ASSET_TOKEN_SEGMENT): a relative specifier inside the
+  // bundle (`import './chunk.js'`) resolves against the importing module's
+  // URL, which drops a query string but keeps the parent path segments — so a
+  // path-carried capability is inherited by every sibling chunk request, while
+  // a `?t=` one would leave a code-split bundle's chunks all 404ing.
+  routes.get(`/assets/${ASSET_TOKEN_SEGMENT}/:token/:name/:digest/:member{.+}`, async (c) => {
+    const token = c.req.param('token');
     const name = c.req.param('name');
     const digest = c.req.param('digest');
     const member = c.req.param('member');
+
+    // 0. The signed capability, FIRST — before the state-store read, the two
+    //    `realpath` calls, the file read and the re-hash below. An
+    //    unauthenticated caller presenting junk must cost nothing but a regex
+    //    and one HMAC, never disk or database I/O. `verifyExtensionAssetToken`
+    //    binds the token to THIS `name` + `digest` and returns null (never
+    //    throws, never says why) for every failure mode, so a forged, expired,
+    //    re-scoped or mis-bound token is indistinguishable from the other
+    //    rejections below — the no-oracle property still holds.
+    const verified = verifyExtensionAssetToken(token, { name, digest });
+    if (!verified) return notFound(c);
 
     // 1. Must have a retained web asset at all.
     const asset = deps.getWebAsset(name);
@@ -205,12 +268,24 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
       return notFound(c);
     }
 
-    // 9. Response headers.
+    // 9. Response headers. The freshness lifetime is capped at the presented
+    //    token's REMAINING life, not the year an immutable digest-addressed URL
+    //    would otherwise earn: a private cache that outlived the token would go
+    //    on serving these bytes without ever re-reaching the enabled re-check
+    //    in step 3, which is how a disabled extension keeps running. `immutable`
+    //    still holds — the URL is digest-addressed, so within that window the
+    //    bytes genuinely cannot change.
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Content-Type', contentType);
-    c.header('Cache-Control', 'private, max-age=31536000, immutable');
+    c.header('Cache-Control', `private, max-age=${Math.max(0, verified.remainingSeconds)}, immutable`);
     return c.body(new Uint8Array(bytes));
   });
+
+  // Anything else under `/assets/` — a malformed or legacy URL shape — answers
+  // with this router's bare 404 rather than falling through to the app-level
+  // notFound handler, which echoes `c.req.path` back in the body (index.ts) and
+  // would therefore reflect a presented token into the response.
+  routes.all('/assets/*', notFound);
 
   return routes;
 }
@@ -220,4 +295,5 @@ export const extensionsWebRoutes = createExtensionsWebRoutes({
   stateStore: createExtensionStateStore(),
   registry: extensionContributionRegistry,
   getWebAsset: getExtensionWebAsset,
+  mintAssetToken: mintExtensionAssetToken,
 });
