@@ -727,6 +727,7 @@ const maintenanceStatus = (overrides: { active: boolean; suppressScripts: boolea
   suppressPatching: false,
   suppressAutomations: false,
   rebootIfPending: false,
+  windowEndsAt: null,
 });
 
 describe('executeScriptOnDevices — maintenance window suppression', () => {

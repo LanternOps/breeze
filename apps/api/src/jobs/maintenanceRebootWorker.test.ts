@@ -24,7 +24,7 @@ import {
   runMaintenanceRebootSweep,
   REBOOT_DEDUP_STATUSES,
 } from './maintenanceRebootWorker';
-import { DEFAULT_REBOOT_DELAY_MINUTES } from '../services/patchRebootHandler';
+import { DEFAULT_REBOOT_DELAY_MINUTES, DEFERRAL_OFF } from '../services/patchRebootHandler';
 
 // #3197: the grace period is no longer a constant in this module. It resolves
 // from the device's effective patch policy — the same setting the post-patch
@@ -40,38 +40,91 @@ describe('REBOOT_DEDUP_STATUSES', () => {
 
 describe('decideRebootCommand', () => {
   it('returns null when rebootIfPending is false', () => {
-    expect(decideRebootCommand({ rebootIfPending: false, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: false, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF })).toBeNull();
   });
 
   it('returns null when the window is not active', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: false, osType: 'windows', delayMinutes: POLICY_DELAY })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: false, osType: 'windows', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF })).toBeNull();
   });
 
   it('returns null on macOS even when active and enabled', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'macos', delayMinutes: POLICY_DELAY })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'macos', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF })).toBeNull();
   });
 
   it('carries the policy-resolved grace onto the Windows schedule_reboot payload', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY })).toEqual({
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF })).toEqual({
       type: 'schedule_reboot',
       payload: {
         delayMinutes: POLICY_DELAY,
         reason: 'Pending reboot — maintenance window',
         source: 'maintenance_window',
+        deadline: expect.any(String),
+        allowDeferral: false,
+        maxDeferrals: 0,
+        deferralMinutes: 0,
       },
     });
   });
 
   it('carries the policy-resolved grace onto the Linux reboot payload', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux', delayMinutes: POLICY_DELAY })).toEqual({
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux', delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF })).toEqual({
       type: 'reboot',
       payload: { delay: POLICY_DELAY },
     });
   });
 
+  // #3207: the Linux path is a different command with a different contract
+  // (`shutdown -r +N` via the `delay` wire key). It has no deferral surface
+  // until W4 ships a Linux prompt, and must not grow one by accident.
+  it('leaves the Linux reboot payload a bare delay even when deferral is enabled', () => {
+    expect(decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'linux',
+      delayMinutes: POLICY_DELAY,
+      deferral: { allowDeferral: true, maxDeferrals: 3, deferralMinutes: 60 },
+    })).toEqual({ type: 'reboot', payload: { delay: POLICY_DELAY } });
+  });
+
+  it('carries the deferral budget onto the Windows payload when enabled', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'windows',
+      delayMinutes: 15,
+      deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 60 },
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    expect(decision!.payload).toMatchObject({
+      allowDeferral: true, maxDeferrals: 2, deferralMinutes: 60,
+    });
+  });
+
+  it('clamps the maintenance-window deadline to the end of the window', () => {
+    // Budget would allow 15 + 240 = 255 minutes; the window closes in 45.
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'windows',
+      delayMinutes: 15,
+      deferral: { allowDeferral: true, maxDeferrals: 4, deferralMinutes: 60 },
+      windowEndsAt: new Date(Date.now() + 45 * 60_000),
+    });
+    expect(decision?.type).toBe('schedule_reboot');
+    const deadline = (decision!.payload as { deadline: string }).deadline;
+    const minutesOut = (Date.parse(deadline) - Date.now()) / 60000;
+    expect(minutesOut).toBeGreaterThan(44);
+    expect(minutesOut).toBeLessThanOrEqual(45);
+  });
+
+  it('with deferral off, the deadline is the scheduled reboot time itself', () => {
+    const decision = decideRebootCommand({
+      rebootIfPending: true, windowActive: true, osType: 'windows',
+      delayMinutes: 15, deferral: DEFERRAL_OFF,
+    });
+    const deadline = (decision!.payload as { deadline: string }).deadline;
+    const minutesOut = (Date.parse(deadline) - Date.now()) / 60000;
+    expect(minutesOut).toBeGreaterThan(14);
+    expect(minutesOut).toBeLessThanOrEqual(15);
+  });
+
   it('never hardcodes a grace of its own — the delay always comes from the caller (#3197)', () => {
     for (const delayMinutes of [1, 5, 15, 60, 1440]) {
-      const decision = decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes });
+      const decision = decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes, deferral: DEFERRAL_OFF });
       expect(decision).not.toBeNull();
       expect((decision as { payload: { delayMinutes: number } }).payload.delayMinutes).toBe(delayMinutes);
     }
@@ -93,7 +146,7 @@ describe('rebootWarranted', () => {
         for (const osType of ['windows', 'linux', 'macos'] as const) {
           const gate = { rebootIfPending, windowActive, osType };
           expect(rebootWarranted(gate)).toBe(
-            decideRebootCommand({ ...gate, delayMinutes: POLICY_DELAY }) !== null,
+            decideRebootCommand({ ...gate, delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF }) !== null,
           );
         }
       }
@@ -113,7 +166,7 @@ describe('processRebootCandidate', () => {
       isInMaintenanceWindow: vi.fn().mockReturnValue({ active: true }),
       hasRecentRebootCommand: vi.fn().mockResolvedValue(false),
       queueCommandForExecution: vi.fn().mockResolvedValue({ command: { id: 'cmd-1' } }),
-      resolveRebootDelayMinutes: vi.fn().mockResolvedValue(POLICY_DELAY),
+      resolveRebootPlan: vi.fn().mockResolvedValue({ delayMinutes: POLICY_DELAY, deferral: DEFERRAL_OFF }),
       rebootWarranted,
       decideRebootCommand,
       ...overrides,
@@ -189,7 +242,7 @@ describe('processRebootCandidate', () => {
       isInMaintenanceWindow: vi.fn().mockReturnValue({ active: false }),
     } as never);
     await processRebootCandidate(winDevice, deps);
-    expect(deps.resolveRebootDelayMinutes).not.toHaveBeenCalled();
+    expect(deps.resolveRebootPlan).not.toHaveBeenCalled();
   });
 
   it('does not resolve the reboot delay when the dedup guard suppresses the dispatch', async () => {
@@ -197,12 +250,50 @@ describe('processRebootCandidate', () => {
       hasRecentRebootCommand: vi.fn().mockResolvedValue(true),
     } as never);
     await processRebootCandidate(winDevice, deps);
-    expect(deps.resolveRebootDelayMinutes).not.toHaveBeenCalled();
+    expect(deps.resolveRebootPlan).not.toHaveBeenCalled();
+  });
+
+  // #3207: the fan-out that actually matters. The policy is resolved per
+  // device; if the worker dropped the deferral half of the plan on the floor,
+  // an enabled policy would silently never reach the endpoint.
+  it('threads the resolved deferral budget onto the dispatched payload', async () => {
+    const deps = makeDeps({
+      resolveRebootPlan: vi.fn().mockResolvedValue({
+        delayMinutes: 15,
+        deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30 },
+      }),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-1', 'schedule_reboot',
+      expect.objectContaining({ allowDeferral: true, maxDeferrals: 2, deferralMinutes: 30 }),
+      { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('caps the deadline at the close of the maintenance window it fired inside', async () => {
+    const windowEndsAt = new Date(Date.now() + 20 * 60_000);
+    const deps = makeDeps({
+      isInMaintenanceWindow: vi.fn().mockReturnValue({ active: true, windowEndsAt }),
+      resolveRebootPlan: vi.fn().mockResolvedValue({
+        delayMinutes: 5,
+        deferral: { allowDeferral: true, maxDeferrals: 4, deferralMinutes: 60 },
+      }),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    const payload = vi.mocked(deps.queueCommandForExecution).mock.calls[0]![2] as { deadline: string };
+    expect(Date.parse(payload.deadline)).toBeLessThanOrEqual(windowEndsAt.getTime());
+  });
+
+  it('resolves the policy exactly once per dispatched device', async () => {
+    const deps = makeDeps();
+    await processRebootCandidate(winDevice, deps);
+    expect(deps.resolveRebootPlan).toHaveBeenCalledTimes(1);
   });
 
   it('resolves the delay per device, so two devices can get different graces', async () => {
     const deps = makeDeps({
-      resolveRebootDelayMinutes: vi.fn(async (id: string) => (id === 'dev-1' ? 30 : 5)),
+      resolveRebootPlan: vi.fn(async (id: string) => ({ delayMinutes: id === 'dev-1' ? 30 : 5, deferral: DEFERRAL_OFF })),
     } as never);
     await processRebootCandidate(winDevice, deps);
     await processRebootCandidate(linuxDevice, deps);
@@ -216,7 +307,7 @@ describe('processRebootCandidate', () => {
 
   it('falls back to the shared default when the device has no patch policy', async () => {
     const deps = makeDeps({
-      resolveRebootDelayMinutes: vi.fn().mockResolvedValue(DEFAULT_REBOOT_DELAY_MINUTES),
+      resolveRebootPlan: vi.fn().mockResolvedValue({ delayMinutes: DEFAULT_REBOOT_DELAY_MINUTES, deferral: DEFERRAL_OFF }),
     } as never);
     await processRebootCandidate(winDevice, deps);
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(

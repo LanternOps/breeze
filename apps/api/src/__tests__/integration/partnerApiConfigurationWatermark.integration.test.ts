@@ -518,6 +518,10 @@ describe('partner desired-configuration material watermarks', () => {
       apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
       scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
       scheduleDayOfMonth: 1, rebootPolicy: 'if_required', rebootDelayMinutes: 15,
+      // #3207. This assertion is SUPPOSED to red on a new patch column: the
+      // canonical export is a hand-enumerated jsonb_build_object, so it is the
+      // only structural coverage the export has.
+      rebootAllowDeferral: false, rebootMaxDeferrals: 3, rebootDeferralMinutes: 60,
       exclusiveWindowsUpdate: false,
     });
     expect(settings.maintenance).toEqual({
