@@ -63,6 +63,7 @@ import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
 import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
 import { GroupEvaluationError } from './groupMembership';
+import { isKnownCurrency } from '@breeze/shared';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -1414,5 +1415,78 @@ describe('deterministic line ordering (#3205 W03)', () => {
     await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
     const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
     expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
+  });
+});
+
+describe('allowance writers (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const jpyContract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'JPY' };
+  const usdContract = { ...jpyContract, currencyCode: 'USD' };
+
+  it('rejects an unrepresentable overage price BEFORE any insert (adopted from #4547 finding 20)', async () => {
+    queueResult([jpyContract]); // lockContract
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '1000', taxable: false,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.50',
+    } as never, actor)).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    // The insert never ran: only the lock consumed a queued result.
+    expect(results.length).toBe(0);
+  });
+
+  it('checks the overage price on a CATALOG-linked line too — the overage leg is never catalog-priced', async () => {
+    queueResult([jpyContract]);
+    vi.mocked(resolvePrice).mockResolvedValue({ unitPrice: '1000', taxable: true, source: 'price_book' } as never);
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', catalogItemId: 'cat1',
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.50',
+    } as never, actor)).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+  });
+
+  it('persists the three columns on an allowance type and nulls them elsewhere', async () => {
+    queueResult([usdContract]);
+    queueResult([{ id: 'l1' }]);
+    await svc.addContractLineToContract('c1', {
+      lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: false,
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    } as never, actor);
+    const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
+    expect(values.at(-1)?.[0]).toEqual(expect.objectContaining({
+      includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12.00',
+    }));
+
+    vi.clearAllMocks();
+    queueResult([usdContract]);
+    queueResult([{ id: 'l2' }]);
+    await svc.addContractLineToContract('c1', {
+      lineType: 'flat', description: 'Base fee', unitPrice: '10.00', taxable: false,
+    } as never, actor);
+    expect((db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+    }));
+  });
+
+  it('W03 updateContractLine checks the MERGED row overage price', async () => {
+    queueResult([jpyContract]);                                     // lockContract
+    queueResult([{                                                  // the current line
+      id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device', description: 'Endpoints',
+      unitPrice: '1000', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null,
+      deviceRoles: null, deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '1200',
+    }]);
+    await expect(svc.updateContractLine('c1', 'l1', { overageUnitPrice: '12.50' } as never, actor))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+  });
+});
+
+// #3205 W04: the KWD case is a REJECTION, not a three-decimal rounding case —
+// CURRENCY_CODES is a 34-entry allowlist with no KWD/BHD/OMR/TND and
+// minorUnitExponent returns 0 | 2 only. There is no three-decimal money to
+// design for, and a test that pretends otherwise would encode a false contract.
+describe('three-decimal currencies are not supported at all (#3205 W04)', () => {
+  it('KWD is not a known currency', () => {
+    expect(isKnownCurrency('KWD')).toBe(false);
+    expect(isKnownCurrency('BHD')).toBe(false);
+    expect(isKnownCurrency('USD')).toBe(true);
   });
 });

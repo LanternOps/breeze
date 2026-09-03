@@ -4,7 +4,7 @@ import { contracts, contractLines, contractBillingPeriods, organizations, sites,
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import {
-  BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS,
+  ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS,
   contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
   type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
@@ -96,6 +96,7 @@ async function withLineRefs<T extends { siteId: string | null; deviceGroupId: st
 const AUDITED_LINE_COLUMNS = [
   'description', 'unitPrice', 'taxable', 'catalogItemId', 'manualQuantity',
   'siteId', 'deviceRoles', 'deviceGroupId', 'deviceGroupName', 'sortOrder',
+  'includedQuantity', 'overageMode', 'overageUnitPrice',
 ] as const;
 type AuditedLineColumn = typeof AUDITED_LINE_COLUMNS[number];
 type ContractLineRowT = typeof contractLines.$inferSelect;
@@ -405,6 +406,28 @@ function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 
 }
 
 const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
+
+// #3205 W04: the types contract_lines_allowance_chk lets carry an allowance.
+// Mirrors ALLOWANCE_LINE_TYPES in @breeze/shared; kept local so the writers do
+// not import a value they only need as a membership test.
+const ALLOWANCE_LINE_TYPE_SET: ReadonlySet<string> = new Set(ALLOWANCE_LINE_TYPES);
+
+/** The three allowance columns normalised for an insert: present only on a type
+ *  that may carry them, NULL everywhere else (same shape as the manualQuantity /
+ *  deviceRoles / siteId normalisation beside it). */
+function allowanceColumnsFor(input: {
+  lineType: string;
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
+}) {
+  const on = ALLOWANCE_LINE_TYPE_SET.has(input.lineType);
+  return {
+    includedQuantity: on ? (input.includedQuantity ?? null) : null,
+    overageMode: on ? (input.overageMode ?? null) : null,
+    overageUnitPrice: on ? (input.overageUnitPrice ?? null) : null,
+  };
+}
 
 // Task 7 widens the quote-conversion spec itself. Keep this producer ready for
 // that input without weakening the existing NewContractSpec contract elsewhere.
@@ -1145,6 +1168,14 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
+    const allowance = allowanceColumnsFor(input);
+    // W6-G3-1, extended by #4607 (adopted from #4547's Codex finding 20): the
+    // overage rate is the template for every future generated invoice line, so
+    // an unrepresentable ¥12.50 must fail HERE, not months later inside the
+    // billing transaction where it rolls back the whole contract's generation.
+    // Note this runs on BOTH branches: a catalog-linked base line still carries
+    // a hand-entered overage rate (the overage leg is never catalog-priced).
+    if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, c.currencyCode);
     const siteId = SITE_SCOPABLE.has(input.lineType) ? (input.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
     const group = input.lineType === 'per_device_group' && input.deviceGroupId
@@ -1160,6 +1191,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
         deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
         deviceGroupId: group?.id ?? null,
         deviceGroupName: group?.name ?? null,
+        ...allowance,
         taxable, sortOrder: input.sortOrder ?? 0
       }).returning();
       return { ...row!, contractName: c.name };
@@ -1248,6 +1280,14 @@ export async function updateContractLine(
       throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_LINE_PATCH', { issues });
     }
 
+    // #3205 W04: the merged row's overage rate must be representable in the
+    // contract's currency, beside the unitPrice calls the transition table
+    // already makes. Runs whenever the patch supplies a price — the overage leg
+    // is never catalog-resolved, so nothing else can correct it later.
+    if (patchHasKey(patch, 'overageUnitPrice') && merged.overageUnitPrice !== null) {
+      assertRepresentable(merged.overageUnitPrice, c.currencyCode);
+    }
+
     // Ownership checks, only when the patch actually moves them.
     if (merged.siteId !== null && merged.siteId !== current.siteId) {
       await assertSiteInOrg(tx, merged.siteId, c.orgId);
@@ -1278,6 +1318,9 @@ export async function updateContractLine(
         deviceGroupId: merged.deviceGroupId,
         deviceGroupName,
         sortOrder: merged.sortOrder,
+        includedQuantity: merged.includedQuantity,
+        overageMode: merged.overageMode,
+        overageUnitPrice: merged.overageUnitPrice,
       }).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).returning();
       if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
       updated = row;
@@ -1646,6 +1689,8 @@ export async function createContractWithLinesDetailed(
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
+    const allowance = allowanceColumnsFor(l);
+    if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, spec.currencyCode);
     const siteId = SITE_SCOPABLE.has(l.lineType) ? (l.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
     const group = l.lineType === 'per_device_group' && l.deviceGroupId
@@ -1664,6 +1709,7 @@ export async function createContractWithLinesDetailed(
         deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
         deviceGroupId: group?.id ?? null,
         deviceGroupName: group?.name ?? null,
+        ...allowance,
         taxable: l.taxable,
         sortOrder: l.sortOrder ?? i,
       }).returning({ id: contractLines.id });

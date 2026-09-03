@@ -16,6 +16,8 @@ export const contractBillingTimingEnum = pgEnum('contract_billing_timing', [
 export const contractLineTypeEnum = pgEnum('contract_line_type', [
   'flat', 'per_device', 'per_device_role', 'per_device_group', 'per_seat', 'manual'
 ]);
+// #3205 W04 (#4607): what happens to the units above included_quantity.
+export const contractOverageModeEnum = pgEnum('contract_overage_mode', ['bill', 'flag']);
 export const contractRenewalNoticeKindEnum = pgEnum('contract_renewal_notice_kind', [
   'advance', 'renewed'
 ]);
@@ -71,6 +73,14 @@ export const contractLines = pgTable('contract_lines', {
   // catalog_item_id / site_id FKs above). $type narrows the row to DeviceRole[]
   // so contractCoverage.ts needs no cast.
   deviceRoles: text('device_roles').array().$type<DeviceRole[]>(),
+  // #4607: allowance + overage. All three are NULL together on a line with no
+  // allowance, and NULL on flat/manual. The invariants live in
+  // contract_lines_allowance_chk (SQL-only, like contract_lines_device_roles_chk)
+  // and in contractLineInvariantIssues. included_quantity is the FIXED quantity
+  // the base line bills every period — not a cap on a variable count.
+  includedQuantity: numeric('included_quantity', { precision: 12, scale: 2 }),
+  overageMode: contractOverageModeEnum('overage_mode'),
+  overageUnitPrice: numeric('overage_unit_price', { precision: 12, scale: 2 }),
   // #3205 W02: the device group a per_device_group line bills. Composite FK
   // (device_group_id, org_id) -> device_groups(id, org_id) ON DELETE SET NULL
   // (device_group_id), and contract_lines_device_group_chk, are SQL-only like
