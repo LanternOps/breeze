@@ -280,7 +280,10 @@ describe('RunDetailPage', () => {
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
-    expect(screen.getByText('Triage')).toBeInTheDocument();
+    // UI critique finding #7 — the h1 now reads "<agent> run", not the bare
+    // agent name (see the "document title and heading" describe block below
+    // for the rest of that finding's coverage).
+    expect(screen.getByText('Triage run')).toBeInTheDocument();
     expect(screen.getByText('WKS-01')).toBeInTheDocument();
   });
 
@@ -1109,7 +1112,7 @@ describe('RunDetailPage summary', () => {
 // findings/proposals must not claim "No action needed" as the headline.
 describe('RunDetailPage verdict vs findings', () => {
   it('badges the count of findings to review instead of claiming no action', async () => {
-    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'no_action' as const, sweep: SWEEP } });
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'no_action' as const, sweep: SWEEP, findingsToReview: 7 } });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
@@ -1229,6 +1232,40 @@ describe('RunDetailPage evidence rendering', () => {
     expect(evidence.textContent).not.toContain('watchType');
   });
 
+  // Review finding — a critical-CVE row used to render "Cve id:" / "Cvss
+  // score:" because only the plural/aggregate keys (`cveIds`, `cveCount`)
+  // were curated, not the singular per-finding pair.
+  it('curates labels for cveId and cvssScore instead of sentence-casing the acronyms away', async () => {
+    mockEndpoints({ detail: withEvidence({ cveId: 'CVE-2026-12345', cvssScore: 9.8 }) });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    const terms = Array.from(evidence.querySelectorAll('dt')).map((dt) => dt.textContent);
+    expect(terms).toContain('CVE:');
+    expect(terms).toContain('CVSS score:');
+    expect(terms).not.toContain('Cve id:');
+    expect(terms).not.toContain('Cvss score:');
+  });
+
+  // Review finding — `sentenceCaseKey`'s fallback (for evidence keys with no
+  // curated label at all) must keep a known acronym word upper-cased rather
+  // than folding it into ordinary sentence case.
+  it('keeps known acronym words upper-cased in the sentence-case fallback for keys with no curated label', async () => {
+    mockEndpoints({
+      detail: withEvidence({ ipAddress: '10.0.0.5', macAddress: '00:11:22:33:44:55', smartStatus: 'failing', kev: true }),
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    const terms = Array.from(evidence.querySelectorAll('dt')).map((dt) => dt.textContent);
+    expect(terms).toContain('IP address:');
+    expect(terms).toContain('MAC address:');
+    expect(terms).toContain('SMART status:');
+    expect(terms).toContain('KEV:');
+  });
+
   it('links the finding device to its device page', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
     render(<RunDetailPage runId="run-1" />);
@@ -1332,12 +1369,17 @@ describe('RunDetailPage duration', () => {
 
 // Critique finding #5 — an exposure readout of "0 of 0 devices" is noise.
 describe('RunDetailPage exposure budget gating', () => {
-  it('hides the card entirely for a run that targeted no device', async () => {
+  it('hides the card entirely for a run that targeted no device, and never fetches the budget for it', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, deviceId: null, deviceHostname: null, sweep: null } });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
     expect(screen.queryByTestId('run-detail-budget-card')).not.toBeInTheDocument();
+    // Review finding: the card being hidden must mean the request never
+    // fired, not just that the response was discarded after a 404.
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).startsWith('/ai/agents/exposure-budget')),
+    ).toBe(false);
   });
 
   it('still shows the card for a device-less sweep run that touched devices', async () => {
@@ -1418,5 +1460,375 @@ describe('RunDetailPage findings at narrow widths', () => {
     expect(card).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
     expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0-evidence')).toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-run-sweep-card-proposal-link-0')).toHaveAttribute('href', '/approvals');
+  });
+
+  // Review finding — the card's proposal line rendered as a bare, unlabelled
+  // fact (just "Approval requested" or a reason, with no name for what kind
+  // of fact it was); a null proposal rendered as a bare, unexplained "—".
+  it('labels the proposal line, and omits it entirely when the finding has no proposal', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0')).toBeInTheDocument());
+    const labelledCard = screen.getByTestId('ai-agent-run-sweep-finding-card-0');
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0-proposal')).toHaveTextContent('Proposal:');
+    expect(labelledCard).toHaveTextContent('Proposal:');
+
+    // Finding index 2 (disk_pressure) carries `proposal: null` in the SWEEP
+    // fixture above.
+    expect(screen.queryByTestId('ai-agent-run-sweep-finding-card-2-proposal')).not.toBeInTheDocument();
+  });
+});
+
+// Impeccable UI pass (fix/4187-ai-agents-ui-critique-3) — finding #1: the
+// header card ran ~660px of dead space beside a max-w-prose summary at `lg`
+// (~1120px card, prose capped ~660px). Two-column the header body at `lg`:
+// summary left, metadata dl right. Below `lg` the two stack as before.
+describe('RunDetailPage hero layout at lg', () => {
+  it('two-columns the header body at lg when a summary is present', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header-body')).toBeInTheDocument());
+    const body = screen.getByTestId('run-detail-header-body');
+    expect(body.className).toContain('lg:flex');
+    expect(body).toContainElement(screen.getByTestId('run-detail-summary'));
+    expect(body).toContainElement(screen.getByTestId('run-detail-meta'));
+    // The metadata grid gets a bounded width at lg so it reads as a distinct
+    // second column rather than stretching across the newly-freed space.
+    expect(screen.getByTestId('run-detail-meta').className).toContain('lg:w-72');
+  });
+
+  it('does not force the two-column body when there is no summary to sit beside', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-meta')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-meta').className).not.toContain('lg:w-72');
+  });
+
+  it('caps the sweep summary at a readable measure', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-summary').className).toContain('max-w-prose');
+  });
+
+  it('renders the checked kinds as wrapped chips instead of one long comma sentence', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-kinds')).toBeInTheDocument());
+    const container = screen.getByTestId('ai-agent-run-sweep-kinds');
+    expect(container.className).toContain('flex-wrap');
+    // One chip element per kind rather than a single ~220ch run of text.
+    const chips = container.querySelectorAll('span');
+    expect(chips.length).toBeGreaterThanOrEqual(SWEEP.kinds.length);
+    expect(container).toHaveTextContent('Service down');
+    expect(container).toHaveTextContent('Failed backups');
+    expect(container.textContent).not.toContain('service_down');
+  });
+});
+
+// Finding #2 — "Execution trace" and "Tool executions" can render the same
+// single row under two different status vocabularies. When every ledger row
+// matches an `executed` trace entry 1:1 in order, the ledger collapses under
+// the trace instead of repeating it.
+describe('RunDetailPage ledger/trace duplication collapse', () => {
+  it('collapses the ledger under the trace when every ledger row matches an executed trace entry in order', async () => {
+    const trace = [
+      { kind: 'executed' as const, tool: 'diagnostics.processes', result: 'ok' as const, durationMs: 500 },
+      {
+        kind: 'executed' as const,
+        tool: 'manage_services',
+        action: 'restart',
+        result: 'ok' as const,
+        durationMs: 250,
+      },
+    ];
+    const ledger = [
+      {
+        toolName: 'diagnostics.processes',
+        status: 'completed' as const,
+        durationMs: 500,
+        createdAt: '2026-08-20T10:00:10.000Z',
+        completedAt: '2026-08-20T10:00:10.500Z',
+        errorMessage: null,
+      },
+      {
+        toolName: 'manage_services',
+        status: 'completed' as const,
+        durationMs: 250,
+        createdAt: '2026-08-20T10:00:11.000Z',
+        completedAt: '2026-08-20T10:00:11.250Z',
+        errorMessage: null,
+      },
+    ];
+    mockEndpoints({ detail: { ...RUN_DETAIL, trace, ledger } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger-details')).toBeInTheDocument());
+    const details = screen.getByTestId('run-detail-ledger-details');
+    expect(details.tagName).toBe('DETAILS');
+    expect(details).toHaveTextContent('Tool executions (2)');
+    expect(details).toHaveTextContent('same as the trace above');
+    // The data itself is still there, just collapsed under a <details>.
+    expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument();
+  });
+
+  it('renders the ledger as its own section when it does not match the trace 1:1', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-ledger-details')).not.toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-ledger-description')).toBeInTheDocument();
+  });
+});
+
+// Finding #3 — the ledger's error cell was unconditionally destructive-toned,
+// so a healthy row's em dash read as an error too.
+describe('RunDetailPage ledger error cell tone', () => {
+  it('only applies destructive tone to a row that actually carries an error', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ledger: [
+          {
+            toolName: 'a',
+            status: 'completed' as const,
+            durationMs: 100,
+            createdAt: '2026-08-20T10:00:10.000Z',
+            completedAt: null,
+            errorMessage: null,
+          },
+          {
+            toolName: 'b',
+            status: 'failed' as const,
+            durationMs: 100,
+            createdAt: '2026-08-20T10:00:11.000Z',
+            completedAt: null,
+            errorMessage: 'boom',
+          },
+        ],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument());
+    const rows = screen.getByTestId('run-detail-ledger').querySelectorAll('tbody tr');
+    const okCell = rows[0].querySelectorAll('td')[4];
+    const errorCell = rows[1].querySelectorAll('td')[4];
+    expect(okCell.className).not.toContain('text-destructive');
+    expect(okCell).toHaveTextContent('—');
+    expect(errorCell.className).toContain('text-destructive');
+    expect(errorCell).toHaveTextContent('boom');
+  });
+});
+
+// Finding #4 — a literal string "null"/"undefined"/empty in an evidence value
+// (not a real JS null) leaked as visible text ("Error count: null"). And the
+// Device column showed an em dash even when the evidence carried a name.
+describe('RunDetailPage evidence absent-string leak and device fallback', () => {
+  const withEvidence = (evidence: Record<string, string | number | boolean | null>) => ({
+    ...RUN_DETAIL,
+    sweep: { ...SWEEP, findings: [{ ...SWEEP.findings[0], evidence }] },
+  });
+
+  it('omits a row whose value is the literal string "null", "undefined", or empty', async () => {
+    mockEndpoints({ detail: withEvidence({ errorCount: 'null', note: 'undefined', blank: '', cveCount: 3 }) });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    expect(evidence.textContent).not.toContain('null');
+    expect(evidence.textContent).not.toContain('undefined');
+    expect(evidence.querySelectorAll('dt')).toHaveLength(1);
+    expect(evidence).toHaveTextContent('CVE count');
+  });
+
+  it('falls back to the evidence deviceName when deviceHostname is null', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        sweep: {
+          ...SWEEP,
+          findings: [
+            { ...SWEEP.findings[0], deviceHostname: null, deviceId: 'd9', evidence: { deviceName: 'WKS-99' } },
+          ],
+        },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-device')).toBeInTheDocument());
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-0-device');
+    expect(cell).toHaveTextContent('WKS-99');
+    expect(cell.querySelector('a')).toHaveAttribute('href', '/devices/d9');
+  });
+
+  it('falls back to the evidence hostname when neither deviceHostname nor deviceName is present', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        sweep: {
+          ...SWEEP,
+          findings: [
+            { ...SWEEP.findings[0], deviceHostname: null, deviceId: null, evidence: { hostname: 'SRV-05' } },
+          ],
+        },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-device')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-device')).toHaveTextContent('SRV-05');
+  });
+});
+
+// Finding #5 [P1 share] — the ledger had no mobile layout at all, unlike the
+// sweep findings table which already splits into cards below `md`.
+describe('RunDetailPage ledger at narrow widths', () => {
+  it('renders one stacked card per ledger entry below md and keeps the table from md up', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger-cards')).toBeInTheDocument());
+    const cards = screen.getByTestId('run-detail-ledger-cards');
+    expect(cards.className).toContain('md:hidden');
+    expect(screen.getByTestId('run-detail-ledger-card-0')).toBeInTheDocument();
+
+    const tableWrapper = screen.getByTestId('run-detail-ledger-table-wrapper');
+    expect(tableWrapper.className).toContain('hidden');
+    expect(tableWrapper.className).toContain('md:block');
+  });
+
+  it('carries the tool name, status, duration and error on a ledger card', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ledger: [
+          {
+            toolName: 'diagnostics.processes',
+            status: 'failed' as const,
+            durationMs: 500,
+            createdAt: '2026-08-20T10:00:10.000Z',
+            completedAt: null,
+            errorMessage: 'timed out',
+          },
+        ],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger-card-0')).toBeInTheDocument());
+    const card = screen.getByTestId('run-detail-ledger-card-0');
+    expect(card).toHaveTextContent('diagnostics.processes');
+    expect(card).toHaveTextContent('Failed');
+    expect(card).toHaveTextContent('500ms');
+    expect(card).toHaveTextContent('timed out');
+  });
+});
+
+// Finding #6 (craft-floor "nested cards are always wrong") — an EmptyState's
+// own dashed-border card was nested inside the section's already-bordered
+// card. The trace/ledger/intents in-card empties render as plain text now.
+describe('RunDetailPage in-card empty states are plain, not nested cards', () => {
+  it('renders the trace/ledger/intents empties without a nested dashed border', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, trace: [], ledger: [], intents: [] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-trace-empty')).toBeInTheDocument());
+    for (const testId of ['run-detail-trace-empty', 'run-detail-ledger-empty', 'run-detail-intents-empty']) {
+      const el = screen.getByTestId(testId);
+      expect(el.className).not.toContain('border-dashed');
+    }
+    expect(screen.getByText('No linked approvals.')).toBeInTheDocument();
+  });
+});
+
+// Finding #7 — the h1 was the bare agent name and document.title was a
+// static "Run Detail" no matter which run was open.
+describe('RunDetailPage document title and heading', () => {
+  it('sets document.title once the run loads, and names the h1 "<agent> run"', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1).toHaveTextContent('Triage run');
+    expect(document.title).toContain('Triage');
+    expect(document.title).toContain('Run');
+    expect(document.title).toContain('2026');
+    expect(document.title).not.toBe('Run Detail');
+  });
+
+  it('shows the started time as visible secondary text next to the h1', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header-started')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-header-started').textContent?.trim().length).toBeGreaterThan(0);
+    expect(screen.getByTestId('run-detail-header-started').textContent).not.toContain('—');
+  });
+
+  it('shows a dash for the header started text when the run has not started', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, startedAt: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header-started')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-header-started')).toHaveTextContent('—');
+  });
+});
+
+// Finding #8 — the verdict badge and the findings-override badge sat on
+// adjacent lines with no connective, reading as two unrelated facts.
+describe('RunDetailPage machine verdict prefix', () => {
+  it('prefixes the demoted verdict with "Machine verdict:" once the findings override fires', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'no_action' as const, sweep: SWEEP, findingsToReview: 7 } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-verdict-secondary')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-verdict-secondary')).toHaveTextContent('Machine verdict:');
+    expect(screen.getByTestId('run-detail-verdict-secondary')).toHaveTextContent('No action needed');
+  });
+});
+
+// `findingsToReview` is server-computed by the same helper the runs list
+// uses, and the override rule mirrors the list's `findingsOverrideActive`:
+// any verdict that is not already attention-toned understates a run that
+// left findings behind.
+describe('RunDetailPage findingsToReview from the server', () => {
+  it('renders the DTO findingsToReview count rather than recomputing it client-side', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        runVerdict: 'no_action' as const,
+        sweep: SWEEP,
+        findingsToReview: 42,
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-findings-badge')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-findings-badge')).toHaveTextContent('42 findings to review');
+  });
+
+  it('also overrides a remediated verdict that left findings behind, matching the runs list', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'remediated' as const, sweep: SWEEP, findingsToReview: 2 } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-findings-badge')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-findings-badge')).toHaveTextContent('2 findings to review');
+    expect(screen.getByTestId('run-detail-verdict-secondary')).toHaveTextContent('Machine verdict:');
+  });
+
+  it('leaves an attention-toned verdict alone even with findings', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'needs_attention' as const, sweep: SWEEP, findingsToReview: 2 } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-findings-badge')).toBeNull();
   });
 });

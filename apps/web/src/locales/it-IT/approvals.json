@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Approva tutto ({{count}})",
     "declineAll": "Rifiuta tutto ({{count}})",
-    "groupTitle": "{{count}} richieste simili · {{tool}}"
+    "groupTitle": "{{count}} richieste simili · {{tool}}",
+    "moreHostnames": "+{{count}} altri",
+    "denyConfirmSummary": "Questo rifiuta {{count}} richieste per {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organizzazione",
+    "allOrganizations": "Tutte le organizzazioni ({{count}})",
+    "orgOption": "{{name}} ({{count}} in attesa)",
+    "searchLabel": "Cerca",
+    "searchPlaceholder": "Cerca per azione, dispositivo o agente…",
+    "sortLabel": "Ordina per",
+    "sortExpiringSoonest": "In scadenza",
+    "sortNewest": "Più recenti",
+    "showingLoaded": "Mostrando {{shown}} di {{loaded}} caricate",
+    "clearFilters": "Cancella filtri",
+    "noMatches": {
+      "title": "Nessuna approvazione corrisponde ai filtri",
+      "description": "Prova un'altra organizzazione o un altro termine di ricerca, oppure cancella i filtri."
+    }
   },
   "risk": {
     "low": "Rischio basso",

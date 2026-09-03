@@ -29,6 +29,7 @@ import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { exportReport } from '../reports/reportExport';
 import { EmptyState } from '../shared/EmptyState';
+import { PageHeader } from '../shared/PageHeader';
 import ImpactWeightsDrawer from './ImpactWeightsDrawer';
 import {
   AI_AGENT_IMPACT_BY_ORG_LIMIT,
@@ -541,130 +542,164 @@ export default function ImpactPage() {
 
   return (
     <div className="space-y-6" data-testid="ai-impact-page">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-            <TrendingUp className="h-5 w-5" />
-            {t('aiAgentsPage.impact.title')}
-          </h1>
-          <p className="text-muted-foreground">{t('aiAgentsPage.impact.description')}</p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <div
-            className="flex items-center gap-1 rounded-md border p-1"
-            role="group"
-            aria-label={t('aiAgentsPage.impact.windowLabel')}
-          >
-            {AI_AGENT_IMPACT_WINDOWS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                data-testid={`ai-impact-window-${value}`}
-                aria-pressed={value === windowDays}
-                onClick={() => {
-                  setWindowDays(value);
-                  window.location.hash = String(value);
-                }}
-                className={`rounded px-3 py-1 text-sm ${
-                  value === windowDays
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }`}
+      <PageHeader
+        testId="ai-impact-header"
+        icon={<TrendingUp className="h-5 w-5" />}
+        title={t('aiAgentsPage.impact.title')}
+        description={t('aiAgentsPage.impact.description')}
+        actions={
+          // Two grouped units — "view controls" (window switcher, freshness,
+          // refresh) and "actions" (export/edit weights or the overflow menu
+          // that collapses them) — so a width squeeze wraps them as whole
+          // blocks instead of splitting a single button off alone (the
+          // "orphaned Edit weights at 1440px" review finding: the export
+          // button is hidden whenever the window has no outcomes yet, which
+          // left Edit weights as the SOLE item in its old flex-wrap slot).
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div
+              className="flex flex-wrap items-center gap-2"
+              data-testid="ai-impact-view-controls"
+            >
+              <div
+                className="flex items-center gap-1 rounded-md border p-1"
+                role="group"
+                aria-label={t('aiAgentsPage.impact.windowLabel')}
               >
-                {windowLabel(t, value)}
-              </button>
-            ))}
-          </div>
+                {AI_AGENT_IMPACT_WINDOWS.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    data-testid={`ai-impact-window-${value}`}
+                    aria-pressed={value === windowDays}
+                    onClick={() => {
+                      setWindowDays(value);
+                      window.location.hash = String(value);
+                    }}
+                    className={`rounded px-3 py-1 text-sm ${
+                      value === windowDays
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    }`}
+                  >
+                    {windowLabel(t, value)}
+                  </button>
+                ))}
+              </div>
 
-          <button
-            type="button"
-            data-testid="ai-impact-refresh"
-            onClick={() => void handleRefresh()}
-            disabled={poll !== null}
-            aria-label={poll ? t('aiAgentsPage.impact.refreshing') : t('aiAgentsPage.impact.refresh')}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${poll ? 'animate-spin' : ''}`} />
-          </button>
+              {/* Freshness, labelled and kept next to the window switcher it
+                  describes — it used to float unlabelled, disconnected from
+                  the control that determines what "through" means. */}
+              {dto && (
+                <div
+                  className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground"
+                  data-testid="ai-impact-freshness-wrap"
+                >
+                  <span className="font-medium text-foreground">
+                    {t('aiAgentsPage.impact.freshnessLabel')}
+                  </span>
+                  <span data-testid="ai-impact-freshness">
+                    {dto.rebuiltAt
+                      ? t('aiAgentsPage.impact.freshness', {
+                          through: dto.through,
+                          rebuiltAt: formatDateTime(dto.rebuiltAt),
+                        })
+                      : t('aiAgentsPage.impact.freshnessNeverRebuilt', { through: dto.through })}
+                  </span>
+                </div>
+              )}
 
-          {/* Two secondary buttons at md+, collapsed into a single overflow
-              menu below md so the header never wraps to 2-3 rows. */}
-          <div className="hidden items-center gap-2 md:flex">
-            {/* Nothing to export on a window with zero outcomes — Edit weights
-                stays available even then, since there's still a methodology
-                to configure ahead of the first outcome. */}
-            {dto && hasAnyOutcome && (
-              <button
-                type="button"
-                data-testid="ai-impact-export-pdf"
-                onClick={() => void handleExportPdf()}
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-              >
-                <Download className="h-4 w-4" />
-                {t('aiAgentsPage.impact.exportPdf')}
-              </button>
-            )}
-
-            {/* The server 403s a caller without canManagePartnerWidePolicies —
-                hiding the button for that case is a UX convenience, not the
-                real gate. */}
-            {dto?.canEditWeights && (
               <button
                 type="button"
-                data-testid="ai-impact-edit-weights"
-                onClick={() => setWeightsDrawerOpen(true)}
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                data-testid="ai-impact-refresh"
+                onClick={() => void handleRefresh()}
+                disabled={poll !== null}
+                aria-label={poll ? t('aiAgentsPage.impact.refreshing') : t('aiAgentsPage.impact.refresh')}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Settings2 className="h-4 w-4" />
-                {t('aiAgentsPage.impact.editWeights')}
+                <RefreshCw className={`h-4 w-4 ${poll ? 'animate-spin' : ''}`} />
               </button>
-            )}
-          </div>
+            </div>
 
-          {dto && (hasAnyOutcome || dto.canEditWeights) && (
-            <details ref={overflowMenuRef} className="relative md:hidden">
-              <summary
-                data-testid="ai-impact-overflow-menu"
-                aria-label={t('aiAgentsPage.impact.moreActions')}
-                className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border hover:bg-muted [&::-webkit-details-marker]:hidden"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </summary>
-              <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border bg-popover p-1 shadow-md">
-                {hasAnyOutcome && (
+            <div className="flex flex-wrap items-center gap-2" data-testid="ai-impact-actions">
+              {/* Two secondary buttons at md+, collapsed into a single overflow
+                  menu below md so the actions group never wraps to 2-3 rows. */}
+              <div className="hidden items-center gap-2 md:flex">
+                {/* Nothing to export on a window with zero outcomes — Edit weights
+                    stays available even then, since there's still a methodology
+                    to configure ahead of the first outcome. */}
+                {dto && hasAnyOutcome && (
                   <button
                     type="button"
-                    data-testid="ai-impact-export-pdf-overflow"
-                    onClick={() => {
-                      closeOverflowMenu();
-                      void handleExportPdf();
-                    }}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    data-testid="ai-impact-export-pdf"
+                    onClick={() => void handleExportPdf()}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
                   >
                     <Download className="h-4 w-4" />
                     {t('aiAgentsPage.impact.exportPdf')}
                   </button>
                 )}
-                {dto.canEditWeights && (
+
+                {/* The server 403s a caller without canManagePartnerWidePolicies —
+                    hiding the button for that case is a UX convenience, not the
+                    real gate. */}
+                {dto?.canEditWeights && (
                   <button
                     type="button"
-                    data-testid="ai-impact-edit-weights-overflow"
-                    onClick={() => {
-                      closeOverflowMenu();
-                      setWeightsDrawerOpen(true);
-                    }}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    data-testid="ai-impact-edit-weights"
+                    onClick={() => setWeightsDrawerOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
                   >
                     <Settings2 className="h-4 w-4" />
                     {t('aiAgentsPage.impact.editWeights')}
                   </button>
                 )}
               </div>
-            </details>
-          )}
-        </div>
-      </div>
+
+              {dto && (hasAnyOutcome || dto.canEditWeights) && (
+                <details ref={overflowMenuRef} className="relative md:hidden">
+                  <summary
+                    data-testid="ai-impact-overflow-menu"
+                    aria-label={t('aiAgentsPage.impact.moreActions')}
+                    className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border hover:bg-muted [&::-webkit-details-marker]:hidden"
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                  </summary>
+                  <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border bg-popover p-1 shadow-md">
+                    {hasAnyOutcome && (
+                      <button
+                        type="button"
+                        data-testid="ai-impact-export-pdf-overflow"
+                        onClick={() => {
+                          closeOverflowMenu();
+                          void handleExportPdf();
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                      >
+                        <Download className="h-4 w-4" />
+                        {t('aiAgentsPage.impact.exportPdf')}
+                      </button>
+                    )}
+                    {dto.canEditWeights && (
+                      <button
+                        type="button"
+                        data-testid="ai-impact-edit-weights-overflow"
+                        onClick={() => {
+                          closeOverflowMenu();
+                          setWeightsDrawerOpen(true);
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                      >
+                        <Settings2 className="h-4 w-4" />
+                        {t('aiAgentsPage.impact.editWeights')}
+                      </button>
+                    )}
+                  </div>
+                </details>
+              )}
+            </div>
+          </div>
+        }
+      />
 
       <ImpactWeightsDrawer
         open={weightsDrawerOpen}
@@ -801,16 +836,12 @@ export default function ImpactPage() {
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
-            <p data-testid="ai-impact-freshness">
-              {dto.rebuiltAt
-                ? t('aiAgentsPage.impact.freshness', {
-                    through: dto.through,
-                    rebuiltAt: formatDateTime(dto.rebuiltAt),
-                  })
-                : t('aiAgentsPage.impact.freshnessNeverRebuilt', { through: dto.through })}
-            </p>
-            {dto.positiveFeedback.rate !== null && (
+          {/* Freshness now lives in the header, beside the window switcher —
+              see ai-impact-freshness-wrap. Positive feedback is a separate
+              signal (supervision rate, not data recency) and keeps its own
+              line here. */}
+          {dto.positiveFeedback.rate !== null && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
               <p data-testid="ai-impact-positive-feedback">
                 <span className="font-medium text-foreground">
                   {t('aiAgentsPage.impact.positiveFeedbackRate')}
@@ -821,8 +852,8 @@ export default function ImpactPage() {
                   down: dto.positiveFeedback.down,
                 })}
               </p>
-            )}
-          </div>
+            </div>
+          )}
 
           {hasAnyOutcome ? (
             hasChartOutcome ? (

@@ -13,6 +13,7 @@ import { navigateTo } from '@/lib/navigation';
 import { badgeClass, modeTone, runStatusTone } from '../aiAgents/statusBadge';
 import { Drawer } from '../shared/Drawer';
 import { EmptyState } from '../shared/EmptyState';
+import { PageHeader } from '../shared/PageHeader';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 
 type Editing = { agent: AiAgentDto | null } | null;
@@ -53,6 +54,14 @@ export default function AiAgentsPage() {
   const [editorDirty, setEditorDirty] = useState(false);
   const [enablingId, setEnablingId] = useState<string | null>(null);
   const allOrgsHintId = useId();
+  /** The agent a Re-enable just restored, so its live row can show a one-time
+   *  "switched off, review its policy" note (Finding 1). Cleared by any
+   *  further state change — opening or closing the editor — rather than a
+   *  timer, so it never lingers past the moment it stops being news. */
+  const [justReenabledId, setJustReenabledId] = useState<string | null>(null);
+  /** First row's Re-enable button in the Disabled section — the target the
+   *  all-disabled empty state's primary CTA focuses (Finding 4). */
+  const firstDisabledReenableRef = useRef<HTMLButtonElement | null>(null);
 
   // Literal keys, not a dynamic `t()` on the token: the closed three-member
   // union is spelled out so the keyUsage guard verifies every label and hint
@@ -148,8 +157,17 @@ export default function AiAgentsPage() {
    * editor. Both the latch and the fragment are cleared here, together: the
    * latch alone would let the effect re-fire on the hash still in the URL.
    */
+  /** Opens the editor for an existing agent or a new one. The one place that
+   *  starts an edit, so it is also the one place that dismisses a still-open
+   *  re-enable note — opening the editor is unambiguously a "state change". */
+  const openEditor = useCallback((next: Editing) => {
+    setJustReenabledId(null);
+    setEditing(next);
+  }, []);
+
   const closeEditor = useCallback(() => {
     setEditing(null);
+    setJustReenabledId(null);
     appliedHashRef.current = null;
     setHashAgentId(null);
     // replaceState, not `location.hash = ''`: assigning leaves a bare '#' in
@@ -201,6 +219,10 @@ export default function AiAgentsPage() {
         onUnauthorized: UNAUTHORIZED,
       });
       enabled = true;
+      // Set on SUCCESS, before the reload below: the row this note belongs to
+      // is about to move from the Disabled section back into the live list,
+      // and the note has to survive that re-render to land on it there.
+      setJustReenabledId(agent.id);
     } catch (err) {
       handleActionError(err, t('aiAgentsPage.toasts.reenableFailed'));
     } finally {
@@ -214,20 +236,41 @@ export default function AiAgentsPage() {
    *  badge, or a plain sentence when the agent has never run. Both matter —
    *  "enabled, shadow" says nothing about whether the agent is actually
    *  doing anything. */
-  const lastRunCell = (agent: AiAgentDto) => (
-    <span className="inline-flex items-center gap-1.5" data-testid={`ai-agent-lastrun-${agent.id}`}>
-      {agent.lastRunAt && agent.lastRunStatus ? (
-        <>
-          <span className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}>
-            {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
-          </span>
-          <span>{t('aiAgentsPage.lastRun.at', { at: formatDateTime(agent.lastRunAt) })}</span>
-        </>
-      ) : (
-        t('aiAgentsPage.lastRun.never')
-      )}
-    </span>
-  );
+  const lastRunCell = (agent: AiAgentDto) => {
+    // P0: a run can complete "successfully" and still leave findings an
+    // operator has not looked at yet — the status badge alone says nothing
+    // about that. The list DTO carries no `lastRunId`, so the badge links to
+    // the runs list filtered to this agent, same as the row's own Runs link,
+    // rather than the run directly.
+    const findings = agent.lastRunFindingsToReview;
+    const runHref = `/ai-agents/runs#agent=${agent.id}`;
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5" data-testid={`ai-agent-lastrun-${agent.id}`}>
+        {agent.lastRunAt && agent.lastRunStatus ? (
+          <>
+            <span
+              className={badgeClass(runStatusTone(agent.lastRunStatus), { size: 'sm' })}
+              aria-label={`${t('aiAgentsPage.chipLabels.lastRunStatus')}: ${RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}`}
+            >
+              {RUN_STATUS_LABEL[agent.lastRunStatus] ?? agent.lastRunStatus}
+            </span>
+            <span>{t('aiAgentsPage.lastRun.at', { at: formatDateTime(agent.lastRunAt) })}</span>
+          </>
+        ) : (
+          t('aiAgentsPage.lastRun.never')
+        )}
+        {typeof findings === 'number' && findings > 0 && (
+          <a
+            href={runHref}
+            className={`${badgeClass('warning', { size: 'sm' })} hover:opacity-90`}
+            data-testid={`ai-agent-findings-badge-${agent.id}`}
+          >
+            {t('aiAgentsRuns.detail.findings.badge', { count: findings })}
+          </a>
+        )}
+      </span>
+    );
+  };
 
   const showFirstRun = loaded && !error && agents.length === 0;
   const showAllDisabled = loaded && !error && live.length === 0 && disabled.length > 0;
@@ -235,7 +278,7 @@ export default function AiAgentsPage() {
   const createButton = (testId: string) => (
     <button
       type="button"
-      onClick={() => setEditing({ agent: null })}
+      onClick={() => openEditor({ agent: null })}
       className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
       data-testid={testId}
     >
@@ -246,19 +289,16 @@ export default function AiAgentsPage() {
 
   return (
     <div className="space-y-6" data-testid="ai-agents-page">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-            <Bot className="h-5 w-5" />
-            {t('aiAgentsPage.title')}
-          </h1>
-          <p className="text-muted-foreground">{t('aiAgentsPage.description')}</p>
-        </div>
-        {/* One create affordance at a time: while the first-run panel is on
-            screen it owns the call to action, and a second identical button in
-            the header just competes with it. */}
-        {!showFirstRun && !showAllDisabled && createButton('ai-agent-create-button')}
-      </div>
+      <PageHeader
+        testId="ai-agents-page-header"
+        icon={<Bot className="h-5 w-5" />}
+        title={t('aiAgentsPage.title')}
+        description={t('aiAgentsPage.description')}
+        // One create affordance at a time: while the first-run panel is on
+        // screen it owns the call to action, and a second identical button in
+        // the header just competes with it.
+        actions={!showFirstRun && !showAllDisabled ? createButton('ai-agent-create-button') : undefined}
+      />
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -347,7 +387,7 @@ export default function AiAgentsPage() {
           action={
             <button
               type="button"
-              onClick={() => setEditing({ agent: null })}
+              onClick={() => openEditor({ agent: null })}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
               data-testid="ai-agents-empty-create"
             >
@@ -360,7 +400,11 @@ export default function AiAgentsPage() {
 
       {/* Every agent disabled is a real state with a real recovery, and it is
           NOT the first-run state — saying "No agents yet" here hid both the
-          run history and the way back. */}
+          run history and the way back. The primary CTA is Re-enable-oriented
+          (the Disabled section is already expanded by the effect above; this
+          just moves focus down to it) rather than pointing straight back at
+          "New agent" — creating a duplicate of the very kind that already has
+          one, disabled. */}
       {showAllDisabled && (
         <EmptyState
           testId="ai-agents-all-disabled"
@@ -368,7 +412,33 @@ export default function AiAgentsPage() {
           icon={<PauseCircle className="h-7 w-7" />}
           title={t('aiAgentsPage.allDisabled.title')}
           description={t('aiAgentsPage.allDisabled.description')}
-          action={createButton('ai-agents-all-disabled-create')}
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setDisabledOpen(true);
+                // Deferred a frame: the section is already open in this state,
+                // but this also has to work the instant `disabledOpen` flips
+                // true from false, before that render has committed.
+                requestAnimationFrame(() => firstDisabledReenableRef.current?.focus());
+              }}
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+              data-testid="ai-agents-all-disabled-reenable"
+            >
+              {t('aiAgentsPage.allDisabled.reenableCta')}
+            </button>
+          }
+          secondary={
+            <button
+              type="button"
+              onClick={() => openEditor({ agent: null })}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+              data-testid="ai-agents-all-disabled-create"
+            >
+              <Plus className="h-4 w-4" />
+              {t('aiAgentsPage.actions.add')}
+            </button>
+          }
         />
       )}
 
@@ -387,6 +457,7 @@ export default function AiAgentsPage() {
                       4.2:1 against its own background in light mode. */}
                   <span
                     className={badgeClass('neutral', { size: 'sm' })}
+                    aria-label={`${t('aiAgentsPage.chipLabels.kind')}: ${t(/* i18n-dynamic */ `aiAgentsPage.kinds.${agent.kind}`)}`}
                     data-testid={`ai-agent-kind-badge-${agent.id}`}
                   >
                     {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${agent.kind}`)}
@@ -397,6 +468,7 @@ export default function AiAgentsPage() {
                     <span
                       className={badgeClass('info', { size: 'sm' })}
                       aria-describedby={allOrgsHintId}
+                      aria-label={`${t('aiAgentsPage.chipLabels.ownership')}: ${t('aiAgentsPage.allOrgs')}`}
                       data-testid={`ai-agent-allorgs-${agent.id}`}
                     >
                       {t('aiAgentsPage.allOrgs')}
@@ -404,14 +476,39 @@ export default function AiAgentsPage() {
                   )}
                 </div>
                 <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span className={badgeClass(modeTone(agent.mode), { size: 'sm' })}>
-                    {t(/* i18n-dynamic */ `aiAgentsPage.modes.${agent.mode}`)}
+                  {/* One word, not the editor's full sentence ("Shadow —
+                      investigate and propose only") — this is a row chip
+                      among four others, not the place to re-explain the
+                      mode. */}
+                  <span
+                    className={badgeClass(modeTone(agent.mode), { size: 'sm' })}
+                    aria-label={`${t('aiAgentsPage.chipLabels.mode')}: ${t(/* i18n-dynamic */ `aiAgentsPage.modeChoice.${agent.mode}`)}`}
+                  >
+                    {t(/* i18n-dynamic */ `aiAgentsPage.modeChoice.${agent.mode}`)}
                   </span>
-                  <span className={badgeClass(agent.enabled ? 'success' : 'muted', { size: 'sm' })}>
-                    {agent.enabled ? t('aiAgentsPage.stateEnabled') : t('aiAgentsPage.stateDisabled')}
+                  {/* Deliberately NOT "Enabled"/"Disabled" (Finding 1): those
+                      words are also the Disabled SECTION's own name, so a
+                      just-restored agent — enabled: false by design, see the
+                      re-enable note below — read as if it had landed back in
+                      that section. "Running"/"Not running" names the thing
+                      this badge actually reports. */}
+                  <span
+                    className={badgeClass(agent.enabled ? 'success' : 'muted', { size: 'sm' })}
+                    aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${agent.enabled ? t('aiAgentsPage.runningBadge.running') : t('aiAgentsPage.runningBadge.notRunning')}`}
+                    data-testid={`ai-agent-running-badge-${agent.id}`}
+                  >
+                    {agent.enabled ? t('aiAgentsPage.runningBadge.running') : t('aiAgentsPage.runningBadge.notRunning')}
                   </span>
                   {lastRunCell(agent)}
                 </p>
+                {justReenabledId === agent.id && (
+                  <p
+                    className="mt-1 text-xs text-muted-foreground"
+                    data-testid={`ai-agent-reenabled-note-${agent.id}`}
+                  >
+                    {t('aiAgentsPage.reenableNote')}
+                  </p>
+                )}
               </div>
               {/* A real navigation, not a fragment on this page — a plain
                   anchor, so cmd-click and the browser's own affordances work. */}
@@ -424,7 +521,7 @@ export default function AiAgentsPage() {
               </a>
               <button
                 type="button"
-                onClick={() => setEditing({ agent })}
+                onClick={() => openEditor({ agent })}
                 className="rounded-md border px-3 py-1.5 text-sm font-medium"
                 data-testid={`ai-agent-edit-${agent.id}`}
               >
@@ -457,7 +554,7 @@ export default function AiAgentsPage() {
             {t('aiAgentsPage.disabledSection.hint')}
           </p>
           <ul className="divide-y border-t">
-            {disabled.map((agent) => (
+            {disabled.map((agent, index) => (
               <li
                 key={agent.id}
                 className="flex flex-wrap items-center gap-3 p-3"
@@ -466,11 +563,18 @@ export default function AiAgentsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{agent.name}</span>
-                    <span className={badgeClass('neutral', { size: 'sm' })}>
+                    <span
+                      className={badgeClass('neutral', { size: 'sm' })}
+                      aria-label={`${t('aiAgentsPage.chipLabels.kind')}: ${t(/* i18n-dynamic */ `aiAgentsPage.kinds.${agent.kind}`)}`}
+                    >
                       {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${agent.kind}`)}
                     </span>
                     {agent.allOrgs && (
-                      <span className={badgeClass('info', { size: 'sm' })} aria-describedby={allOrgsHintId}>
+                      <span
+                        className={badgeClass('info', { size: 'sm' })}
+                        aria-describedby={allOrgsHintId}
+                        aria-label={`${t('aiAgentsPage.chipLabels.ownership')}: ${t('aiAgentsPage.allOrgs')}`}
+                      >
                         {t('aiAgentsPage.allOrgs')}
                       </span>
                     )}
@@ -493,6 +597,11 @@ export default function AiAgentsPage() {
                 </a>
                 <button
                   type="button"
+                  // The all-disabled empty state's primary CTA focuses THIS
+                  // button on the first row (Finding 4) — only ever the first,
+                  // so re-enabling agents one at a time never leaves the ref
+                  // pointing at a row that has since left the list.
+                  ref={index === 0 ? firstDisabledReenableRef : undefined}
                   onClick={() => void reenable(agent)}
                   disabled={enablingId !== null}
                   className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-60"

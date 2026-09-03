@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Bot, Check, CheckCheck, Layers, Loader2, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Bot, Check, CheckCheck, Layers, Loader2, Search, ShieldCheck, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   AI_AGENT_KINDS,
@@ -27,6 +27,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { EmptyState } from '../shared/EmptyState';
+import { PageHeader } from '../shared/PageHeader';
 import { showToast } from '../shared/Toast';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
@@ -210,6 +211,91 @@ function clusterByOrg(rows: PendingApproval[]): PendingApproval[] {
     }
   }
   return order.flatMap((key) => buckets.get(key)!);
+}
+
+type SortOrder = 'expiringSoonest' | 'newest';
+
+/** Case-insensitive substring match over the fields Priya (an MSP tech
+ *  approving across dozens of orgs) scans an inbox by: the action label, the
+ *  target machine's hostname, and the proposing agent's name. An empty or
+ *  whitespace-only query matches every row. */
+function matchesSearch(approval: PendingApproval, query: string): boolean {
+  if (!query) return true;
+  const needle = query.toLowerCase();
+  return (
+    approval.actionLabel.toLowerCase().includes(needle) ||
+    (approval.targetDevice?.hostname.toLowerCase().includes(needle) ?? false) ||
+    (approval.agentName?.toLowerCase().includes(needle) ?? false)
+  );
+}
+
+/** One selectable option in the organization filter, in first-appearance
+ *  order among the currently loaded rows. `key` is what the `<select>`
+ *  stores and compares against — `orgId ?? ''` — so a null-`orgId` row
+ *  groups under one synthetic "Unknown organization" option instead of
+ *  splintering per row. */
+interface OrgFilterOption {
+  key: string;
+  name: string;
+  count: number;
+}
+
+function buildOrgOptions(rows: PendingApproval[], unknownLabel: string): OrgFilterOption[] {
+  const byKey = new Map<string, OrgFilterOption>();
+  const order: string[] = [];
+  for (const row of rows) {
+    const key = row.orgId ?? '';
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    byKey.set(key, { key, name: row.orgName ?? unknownLabel, count: 1 });
+    order.push(key);
+  }
+  return order.map((key) => byKey.get(key)!);
+}
+
+/** Explicit-index stable sort: ties (identical `expiresAt`/`createdAt` — the
+ *  common case across fixtures, and for cards created in the same request)
+ *  keep their original relative order rather than depending on the engine's
+ *  sort-stability guarantee. Runs BEFORE `clusterByOrg` below, not after:
+ *  clustering only reorders which ORG's bucket comes first and preserves
+ *  each bucket's internal order, so sorting the flat list first is what
+ *  actually decides the order approvers see within (and, secondarily,
+ *  across) organizations — org-first clustering (critique #1) is preserved
+ *  either way. */
+function sortRows(rows: PendingApproval[], order: SortOrder): PendingApproval[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const diff =
+        order === 'expiringSoonest'
+          ? new Date(a.row.expiresAt).getTime() - new Date(b.row.expiresAt).getTime()
+          : new Date(b.row.createdAt).getTime() - new Date(a.row.createdAt).getTime();
+      return diff !== 0 ? diff : a.index - b.index;
+    })
+    .map(({ row }) => row);
+}
+
+/** Comma-joined hostnames for a group header, so "Approve all (N)" names its
+ *  own scope instead of leaving the approver to open every card to find out
+ *  which machines it covers. Caps at GROUP_HOSTNAME_MAX_SHOWN names (kept
+ *  short enough that the header's `line-clamp-2` rarely has to truncate
+ *  mid-name) and folds everything past that — including any member with no
+ *  `targetDevice` at all — into one trailing "+K more" count. Returns null
+ *  when nothing in the group carries a hostname, so the caller renders no
+ *  line at all rather than an empty one. */
+const GROUP_HOSTNAME_MAX_SHOWN = 6;
+function groupHostnameSummary(
+  members: PendingApproval[],
+): { shown: string[]; more: number } | null {
+  const hostnames = members
+    .map((member) => member.targetDevice?.hostname)
+    .filter((hostname): hostname is string => Boolean(hostname));
+  if (hostnames.length === 0) return null;
+  const shown = hostnames.slice(0, GROUP_HOSTNAME_MAX_SHOWN);
+  return { shown, more: members.length - shown.length };
 }
 
 /** Whether a card's expiry has already passed as of `now`. `now` is a ticking
@@ -461,6 +547,15 @@ export default function ApprovalsInbox() {
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
+  // Org filter, text search, and sort are ALL client-side over whatever
+  // pages are currently loaded (`approvals`) — the server has no query
+  // params for any of the three today, and adding a per-keystroke round
+  // trip for a filter this cheap would be worse than the honesty cost of
+  // "of N loaded" below. `orgFilter` stores `orgId ?? ''` (see
+  // `buildOrgOptions`); '' means "All organizations".
+  const [orgFilter, setOrgFilter] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('expiringSoonest');
 
   const loadApprovals = useCallback(async (options?: { silent?: boolean; withCount?: boolean }) => {
     // Silent reloads (WS nudge, poll, reconnect, post-decision refresh) must
@@ -762,6 +857,16 @@ export default function ApprovalsInbox() {
     reason?: string,
   ) => {
     if (busy) return;
+    // The button's own `disabled` attribute is driven by the ticking `now`
+    // state, which can lag reality by up to EXPIRY_TICK_MS (10s) — a card
+    // can still read enabled, or even "Expires in 1 min", for a few seconds
+    // after it has actually expired. Re-checking against a FRESH
+    // `Date.now()` here (not the stale `now` state) closes that click-time
+    // race instead of letting it round-trip to the server only to 410.
+    if (isExpired(approval.expiresAt, Date.now())) {
+      setDecisionError(approval.id, 'expired');
+      return;
+    }
 
     setDecidingIds(new Set([approval.id]));
     clearRowErrors([approval.id]);
@@ -893,6 +998,15 @@ export default function ApprovalsInbox() {
   ) => {
     if (busy) return;
     const ids = group.members.map((member) => member.id);
+
+    // Same click-time race as the single-card `decide` above, checked
+    // against a fresh `Date.now()` rather than the ticking `now` state: any
+    // member having expired since the last EXPIRY_TICK_MS tick refuses the
+    // WHOLE batch client-side rather than letting the server 410 mid-batch.
+    if (group.members.some((member) => isExpired(member.expiresAt, Date.now()))) {
+      setGroupError(group.identity, 'expired');
+      return;
+    }
 
     // #4460: mirror the server's hard cap (`BATCH_MAX` in
     // services/approvals/batchDecide.ts, sourced from the same
@@ -1197,19 +1311,128 @@ export default function ApprovalsInbox() {
     );
   };
 
+  // Filter → sort → cluster, in that order (see `sortRows`'s own comment for
+  // why sort must run before `clusterByOrg`, not after). All three stages
+  // are client-side over `approvals` alone — whatever pages happen to be
+  // loaded right now — never a fresh fetch, hence the honest "of N loaded"
+  // copy on `filterSummary` below rather than reusing the server-authoritative
+  // `pagination.showing` copy.
+  const orgOptions = buildOrgOptions(approvals, t('unknownOrganization'));
+  const hasActiveFilters = orgFilter !== '' || searchQuery.trim() !== '';
+  const filteredApprovals = approvals
+    .filter((approval) => orgFilter === '' || (approval.orgId ?? '') === orgFilter)
+    .filter((approval) => matchesSearch(approval, searchQuery.trim()));
+  const visibleSections = buildSections(
+    clusterByOrg(sortRows(filteredApprovals, sortOrder)),
+    driftedIds,
+  );
+  const clearFilters = () => {
+    setOrgFilter('');
+    setSearchQuery('');
+  };
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6" data-testid="approvals-inbox">
-      <header className="flex items-start gap-3">
-        <div className="mt-0.5 rounded-xl bg-emerald-100 p-2 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-200">
-          <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+    <div className="space-y-6" data-testid="approvals-inbox">
+      <PageHeader
+        testId="approvals-page-header"
+        icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
+        title={t('title')}
+        description={t('description')}
+      />
+
+      {!loading && !loadError && approvals.length > 0 && (
+        <div
+          className="flex flex-col gap-3 rounded-xl border bg-card px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
+          data-testid="approvals-filters"
+        >
+          <div className="flex flex-1 flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor="approvals-filter-org">
+              {t('filters.orgLabel')}
+            </label>
+            <select
+              id="approvals-filter-org"
+              value={orgFilter}
+              onChange={(event) => setOrgFilter(event.target.value)}
+              className="h-9 rounded-lg border bg-background px-2 text-sm"
+              data-testid="approvals-filter-org"
+            >
+              <option value="">{t('filters.allOrganizations', { count: approvals.length })}</option>
+              {orgOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {t('filters.orgOption', { name: option.name, count: option.count })}
+                </option>
+              ))}
+            </select>
+
+            <label className="sr-only" htmlFor="approvals-filter-search">
+              {t('filters.searchLabel')}
+            </label>
+            <div className="relative flex-1 sm:max-w-xs">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <input
+                id="approvals-filter-search"
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder={t('filters.searchPlaceholder')}
+                className="h-9 w-full rounded-lg border bg-background pl-8 pr-3 text-sm"
+                data-testid="approvals-filter-search"
+              />
+            </div>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="text-sm font-medium text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                data-testid="approvals-clear-filters"
+              >
+                {t('filters.clearFilters')}
+              </button>
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <div
+              className="flex items-center gap-1 rounded-md border p-1"
+              role="group"
+              aria-label={t('filters.sortLabel')}
+            >
+              {(['expiringSoonest', 'newest'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setSortOrder(value)}
+                  aria-pressed={sortOrder === value}
+                  className={`rounded px-2.5 py-1 text-sm ${
+                    sortOrder === value
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                  data-testid={`approvals-sort-${value === 'expiringSoonest' ? 'expiring' : 'newest'}`}
+                >
+                  {value === 'expiringSoonest' ? t('filters.sortExpiringSoonest') : t('filters.sortNewest')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {hasActiveFilters && (
+            <p
+              className="w-full text-xs text-muted-foreground sm:w-auto"
+              data-testid="approvals-filter-summary"
+            >
+              {t('filters.showingLoaded', {
+                shown: filteredApprovals.length,
+                loaded: approvals.length,
+              })}
+            </p>
+          )}
         </div>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('title')}</h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            {t('description')}
-          </p>
-        </div>
-      </header>
+      )}
 
       {loading ? (
         <div
@@ -1245,9 +1468,30 @@ export default function ApprovalsInbox() {
           description={t('empty.description')}
           headingLevel={2}
         />
+      ) : filteredApprovals.length === 0 ? (
+        // Every currently-loaded row was filtered out — distinct from the
+        // true empty inbox above, and it must not read as one: nothing
+        // vanished, the filters are just narrower than what's on screen.
+        <EmptyState
+          testId="approvals-filtered-empty"
+          icon={<Search className="h-7 w-7" />}
+          title={t('filters.noMatches.title')}
+          description={t('filters.noMatches.description')}
+          action={
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="inline-flex h-10 items-center rounded-lg border px-4 text-sm font-medium transition-colors hover:bg-muted"
+              data-testid="approvals-filtered-empty-clear"
+            >
+              {t('filters.clearFilters')}
+            </button>
+          }
+          headingLevel={2}
+        />
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card">
-          {buildSections(clusterByOrg(approvals), driftedIds).map((section) =>
+          {visibleSections.map((section) =>
             section.kind === 'row' ? (
               renderRow(section.approval)
             ) : (
@@ -1276,6 +1520,24 @@ export default function ApprovalsInbox() {
                         })}
                       </span>
                     </p>
+                    {(() => {
+                      // Finding #2: "Approve all (N)" never named the
+                      // machines it covers — the approver had to open every
+                      // card to find out. This lists them right on the
+                      // header instead.
+                      const hostnameSummary = groupHostnameSummary(section.group.members);
+                      if (!hostnameSummary) return null;
+                      return (
+                        <p
+                          className="mt-1 line-clamp-2 text-xs text-muted-foreground"
+                          data-testid={`approval-group-hostnames-${section.group.testKey}`}
+                        >
+                          {hostnameSummary.shown.join(', ')}
+                          {hostnameSummary.more > 0 &&
+                            ` ${t('batch.moreHostnames', { count: hostnameSummary.more })}`}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button
@@ -1313,8 +1575,21 @@ export default function ApprovalsInbox() {
                     className="border-b bg-muted/20 px-5 py-3"
                     data-testid={`approval-group-deny-form-${section.group.testKey}`}
                   >
+                    {/* The batch's own confirm step: restates the count and
+                        the org involved (a group is always one org — that's
+                        part of its own batchability key) so the confirm
+                        button isn't the first place scope is named. */}
+                    <p
+                      className="text-sm text-muted-foreground"
+                      data-testid={`approval-group-deny-summary-${section.group.testKey}`}
+                    >
+                      {t('batch.denyConfirmSummary', {
+                        count: section.group.members.length,
+                        org: section.group.members[0]?.orgName ?? t('unknownOrganization'),
+                      })}
+                    </p>
                     <label
-                      className="text-sm font-medium"
+                      className="mt-2 block text-sm font-medium"
                       htmlFor={`approval-group-deny-reason-${section.group.testKey}`}
                     >
                       {t('denyPrompt')}
