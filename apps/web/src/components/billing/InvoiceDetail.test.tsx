@@ -425,6 +425,7 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
             lastSyncedAt: null,
             lastError: 'QuickBooks rejected the invoice sync (HTTP 500)',
             remoteDocNumber: null,
+            remoteDeleted: false,
           },
         }}
         onChanged={vi.fn()}
@@ -433,6 +434,31 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-detail-accounting-sync')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent('HTTP 500');
+  });
+
+  // #4544: the card must key off the INVOICE's own status, not just the
+  // mapping row's syncStatus — a voided invoice's mapping can still read
+  // 'error'/'pending' from before the void.
+  it('passes the invoice status through so a voided invoice hides the Push button even with an otherwise-pushable mapping', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          invoice: { ...issued.invoice, status: 'void' },
+          accountingSync: {
+            provider: 'quickbooks',
+            syncStatus: 'error',
+            lastSyncedAt: null,
+            lastError: 'QuickBooks rejected the invoice sync (HTTP 500)',
+            remoteDocNumber: null,
+            remoteDeleted: false,
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
   });
 
   it('refetches the invoice after a successful push', async () => {
@@ -447,6 +473,7 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
             lastSyncedAt: null,
             lastError: null,
             remoteDocNumber: null,
+            remoteDeleted: false,
           },
         }}
         onChanged={onChanged}

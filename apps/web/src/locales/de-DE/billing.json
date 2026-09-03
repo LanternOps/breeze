@@ -1720,7 +1720,9 @@
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
       "push": "An QuickBooks übertragen",
       "pushed": "Rechnung an QuickBooks übertragen.",
-      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden."
+      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",
+      "voidedHint": "Diese Rechnung ist storniert — es gibt nichts an QuickBooks zu übertragen.",
+      "remoteDeletedHint": "Diese Rechnung wurde in QuickBooks gelöscht. Ein erneutes Übertragen würde ein Duplikat erzeugen — lösen Sie dies zuerst in QuickBooks."
     }
   },
   "invoiceDocument": {

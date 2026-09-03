@@ -1720,7 +1720,9 @@
       "lastSynced": "Última sincronización: {{when}}",
       "push": "Enviar a QuickBooks",
       "pushed": "Factura enviada a QuickBooks.",
-      "pushFailed": "No se pudo enviar la factura a QuickBooks."
+      "pushFailed": "No se pudo enviar la factura a QuickBooks.",
+      "voidedHint": "Esta factura está anulada — no hay nada que enviar a QuickBooks.",
+      "remoteDeletedHint": "Esta factura fue eliminada en QuickBooks. Enviarla de nuevo crearía un duplicado — resuélvelo primero en QuickBooks."
     }
   },
   "invoiceDocument": {
