@@ -139,6 +139,26 @@ auto-suspended.
   `GET /internal/partners/:id/settled-card-charge` and
   `…/fraudulent-refund-match`; one new idempotent index on `billing_events`.
 
+## Device billing coverage and coverage-notice deep links (#3205 W06)
+
+**Self-Hosting / Upgrade Notes**
+
+- No migration, no schema change, no new env var, no feature flag.
+- New route `GET /api/v1/devices/:id/billing`, gated on **partner or system**
+  scope plus **both** `devices:read` and `contracts:read`. API keys cannot reach
+  it: there is no `contracts:read` API-key scope.
+
+**Behaviour worth naming so it is not read as a bug**
+
+- The device Overview **Billing** card needs Contracts read access and a
+  partner-scoped login; organization-scoped users do not see it, matching every
+  other contracts screen.
+- The card counts **active** contracts only, so a device covered by a *draft*
+  contract still reads "no active contract line bills this device" until the
+  contract is activated.
+- A deep link from a contract's coverage warning carries its organization, so a
+  pasted link switches the recipient's org scope to the contract's org.
+
 **Hosted rollout TODO (one-off, delete once done)**
 
 - [ ] Deploy billing first (both regions), then the API/web images.

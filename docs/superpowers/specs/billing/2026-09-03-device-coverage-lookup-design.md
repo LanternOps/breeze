@@ -212,9 +212,12 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   const pinnedFirst = /* org-predicated membership read: (group_id, org_id, device_id) → { isPinned } | undefined */;
 
   if (group.type !== 'dynamic') return pinnedFirst !== undefined;
-  if (pinnedFirst?.isPinned) return true;                              // cheap branch first
+  if (group.filterConditions !== null && group.filterConditions !== undefined
+      && !isFilterConditionGroup(group.filterConditions)) {
+    throw new GroupEvaluationError(group.id, 'invalid_filter');
+  }
+  if (pinnedFirst?.isPinned) return true;
   if (group.filterConditions === null || group.filterConditions === undefined) return false;
-  if (!isFilterConditionGroup(group.filterConditions)) throw new GroupEvaluationError(group.id, 'invalid_filter');
   if (group.siteId !== null && group.siteId !== device.siteId) return false;
   try {
     return await deviceMatchesFilter(device.id, group.filterConditions);
@@ -223,6 +226,8 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   }
 }
 ```
+
+A pinned member of a malformed group still throws `GroupEvaluationError(group.id, 'invalid_filter')`; filter-shape validation precedes the pinned short-circuit.
 
 Every membership read predicates on `group_id` **and** the group's own `org_id` — W02's finding that the membership table's RLS is org-only, so a forged row carrying another tenant's `org_id` and this group's id is visible to a system context. `resolveEffectiveGroupMembers` and `evaluateGroupMembership` are untouched.
 
