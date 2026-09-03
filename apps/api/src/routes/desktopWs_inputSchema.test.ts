@@ -207,6 +207,14 @@ describe('desktopWs input schema — Viewer coverage', () => {
     expect(result.success && result.data.capsLock).toBeUndefined();
   });
 
+  it('tolerates a stray capsLock on a non-keyboard event', () => {
+    // The schema is one flat object rather than a per-type union. Pinning this
+    // keeps a later refactor into a discriminated union from rejecting mouse
+    // events that happen to carry the field.
+    const result = desktopInputEvent.safeParse({ type: 'mouse_move', x: 1, y: 1, capsLock: true });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects a non-boolean capsLock', () => {
     expect(desktopInputEvent.safeParse({ type: 'key_down', key: 'a', capsLock: 'yes' }).success).toBe(false);
   });

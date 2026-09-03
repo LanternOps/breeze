@@ -780,10 +780,17 @@ func (h *DarwinInputHandler) sendKeyUp(key string, capsLock *bool) error {
 	return nil
 }
 
-// capsLockSetFlags picks the C helpers' setFlags argument. Only a viewer that
-// actually stated its Caps Lock state earns the unconditional CGEventSetFlags
-// call; without one we keep the ambient-flags branch that Shift+Click and
-// friends rely on (see the setFlags contract on inputKeyDown above).
+// capsLockSetFlags picks the C helpers' setFlags argument (see the setFlags
+// contract on inputKeyDown above). Only a viewer that actually stated its Caps
+// Lock state earns the unconditional CGEventSetFlags call; without one the
+// ambient-flags branch is preserved unchanged.
+//
+// Worth knowing before assuming this endangers held modifiers: it cannot, on
+// this platform. keyNameToKeycode below has no "shift"/"ctrl"/"alt"/"meta"
+// entries, so the viewer's standalone modifier key_down/key_up return
+// "unknown key" before reaching either branch — the agent never holds a
+// modifier on macOS, and the ambient flags this branch preserves are the
+// remote console's own physical state, not anything the agent set.
 func capsLockSetFlags(authoritative bool) C.int {
 	if authoritative {
 		return 1

@@ -104,3 +104,36 @@ func TestSuppressCapsLockKey(t *testing.T) {
 		})
 	}
 }
+
+// sendKeyDown/sendKeyUp derive two things from one call — the flags to post and
+// whether to call CGEventSetFlags at all (capsLockSetFlags). They only stay in
+// step if "authoritative" means exactly "the viewer stated a state". Pinned as
+// its own invariant so a later simplification of the two-value contract cannot
+// quietly decouple them.
+func TestApplyCapsLockFlagAuthoritativeMeansTheViewerStatedIt(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		capsLock *bool
+	}{
+		{"absent", nil},
+		{"stated on", boolPtr(true)},
+		{"stated off", boolPtr(false)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const base = 0x00040000 // ctrl, an unrelated modifier
+			got, authoritative := applyCapsLockFlag(base, tc.capsLock)
+			if want := tc.capsLock != nil; authoritative != want {
+				t.Fatalf("authoritative = %v, want %v", authoritative, want)
+			}
+			// Non-authoritative must additionally be a pure pass-through.
+			if !authoritative && got != base {
+				t.Fatalf("non-authoritative call changed flags: %#x -> %#x", base, got)
+			}
+		})
+	}
+}

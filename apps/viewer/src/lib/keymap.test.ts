@@ -38,6 +38,14 @@ describe('caps lock (issue #3595)', () => {
     expect(isCapsLock(evt({ code: 'KeyA', key: 'a' }))).toBe(false);
   });
 
+  it('identifies CapsLock from either code or key alone', () => {
+    // Both halves of the OR are load-bearing: webviews vary in which of the
+    // two they populate, and missing the key means the toggle falls through to
+    // the ordinary-key path that issue #3595 is about.
+    expect(isCapsLock(evt({ code: '', key: 'CapsLock' }))).toBe(true);
+    expect(isCapsLock(evt({ code: 'CapsLock', key: 'Unidentified' }))).toBe(true);
+  });
+
   it('is not classified as a modifier-only key', () => {
     // isModifierOnly gates the "hold this modifier down" branch, which would
     // latch capslock in pressedKeysRef and later emit a bogus key_up.

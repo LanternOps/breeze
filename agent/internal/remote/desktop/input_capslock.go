@@ -7,10 +7,15 @@ import "strings"
 // a press the agent has to interpret. See issue #3595.
 //
 // This file is deliberately untagged: the policy below is pure Go and is what
-// the CI unit job can actually execute. The platform job runs
-// `CGO_ENABLED=0 go test ./...` on Linux, so anything living in the
-// `darwin && cgo` input file is compiled by the macOS *build* job and never
-// covered by a test anywhere.
+// CI can actually execute. The blocking agent job runs
+// `CGO_ENABLED=0 go test ./...` on Linux, which never compiles the
+// `darwin && cgo` input file at all. That file IS compiled by two macOS jobs
+// (`build-agent darwin/arm64`, and `test-agent-race`'s
+// `CGO_ENABLED=1 go test -race ./...`), so it is type-checked in CI — but the
+// package has no `_darwin_test.go`, and injecting real CGEvents on a shared
+// runner is not something a test should do, so no test anywhere *executes*
+// the injection glue. Keeping the decisions here rather than there is what
+// puts them under the blocking job.
 const capsLockKeyName = "capslock"
 
 // cgEventFlagMaskAlphaShift is kCGEventFlagMaskAlphaShift from
