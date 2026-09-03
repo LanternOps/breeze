@@ -716,6 +716,25 @@ describe('sendQuote email delivery status', () => {
       }
     });
 
+    it('never rejects — a throw from the email-service lookup becomes send_failed', async () => {
+      // The swallow must cover the WHOLE delivery, not just the render and the
+      // transport. Three call sites rely on "never rejects": a rejection here
+      // 500s an already-COMMITTED send, and the tech's next move is to send
+      // again — into a 409, or a duplicate customer email on the re-send path.
+      const { getEmailService } = await import('./email');
+      vi.mocked(getEmailService).mockImplementationOnce(() => { throw new Error('email config exploded'); });
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+      queueResult([]); // outcome-marker update
+
+      const result = await sendQuote('q1', actor);
+      const delivery = await result.deliverEmail();
+
+      expect(delivery.emailed).toBe(false);
+      expect(delivery.emailReason).toBe('send_failed');
+      expect(delivery.quote.sendEmailReason).toBe('send_failed');
+    });
+
     it('skips every DB read when there is no email service configured', async () => {
       // A quote that was never going to be emailed must not open a context at
       // all — the no-op cases resolve before any read.

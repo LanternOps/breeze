@@ -522,7 +522,21 @@ function makeDeferredQuoteEmail(spec: DeferredQuoteEmailSpec): DeferredQuoteEmai
 
   return () => {
     inFlight ??= (async () => {
-      const { emailed, emailReason } = await deliverQuoteEmail(spec.input, spec.deliveryContext);
+      // Both callees swallow their own failures, so this catch should be
+      // unreachable — it is here because the "never rejects" contract is what
+      // three call sites depend on, and a memoised REJECTED promise would hand
+      // the same 500 to every later invocation. Reaching it means one of them
+      // grew an uncaught path: that is a bug, hence the Sentry capture rather
+      // than a quiet default.
+      let emailed = false;
+      let emailReason: SendQuoteEmailReason | undefined;
+      try {
+        ({ emailed, emailReason } = await deliverQuoteEmail(spec.input, spec.deliveryContext));
+      } catch (err) {
+        emailReason = 'send_failed';
+        console.error(`[quoteLifecycle] deferred delivery for quote ${spec.input.quote.id} threw past its own swallow:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
       const written = await persistQuoteSendOutcome(
         spec.input.quote.id, emailReason, spec.deliveryContext, spec.resetReasonOnSuccess,
       );
@@ -610,37 +624,43 @@ async function deliverQuoteEmail(
   deliveryContext: DbAccessContext,
 ): Promise<{ emailed: boolean; emailReason?: SendQuoteEmailReason }> {
   const id = quote.id;
-  // Reuse partnerRow (already fetched by the caller for the seller snapshot)
-  // rather than re-querying the partner just for its name.
-  const partnerName = partnerRow?.name;
-  // Composer-picked recipients win; the org's billing contact is the fallback
-  // so a bare "Send" keeps working exactly as before.
-  const recipients = opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []);
-  const emailService = getEmailService();
-  // Both no-op cases are resolved before any DB or network work, so a quote
-  // that was never going to be emailed touches neither.
-  if (!emailService) {
-    console.warn(`[quoteLifecycle] Email not configured — quote ${id} sent but not emailed`);
-    return { emailed: false, emailReason: 'no_email_service' };
-  }
-  if (recipients.length === 0) {
-    console.warn(`[quoteLifecycle] No billing email for org ${quote.orgId} — no recipient for quote ${id}, nothing emailed`);
-    return { emailed: false, emailReason: 'no_billing_contact' };
-  }
-
-  // Customer-emailed PDF: filter to customer-visible lines (mirrors the
-  // portal-download route, apps/api/src/routes/portal/quotes.ts). `lines`
-  // itself stays unfiltered for the caller — the deposit send-gate (and any
-  // other internal computation over `lines`) intentionally covers ALL lines /
-  // applies its own visibility rules internally. Internal-only line names
-  // + prices must never reach the customer's inbox.
-  const customerLines = toCustomerLines(lines.filter((l) => l.customerVisible));
-  // PDF attachment is composer-optional (default on). When off, the render +
-  // contract-merge work is skipped entirely (so phase 1 opens no DB context at
-  // all) and the email copy drops its "A PDF copy is attached." sentence.
-  const includePdf = opts.includePdf !== false;
-
+  // EVERYTHING below is inside this try, including the service lookup and the
+  // line filtering. That is the pre-#3905 scope and it is load-bearing: this
+  // function's swallow is what makes DeferredQuoteEmail's "never rejects"
+  // contract true, and a rejection escaping here would 500 an already-COMMITTED
+  // send — which the tech then retries into a 409, or (on the re-send path)
+  // into a duplicate customer email.
   try {
+    // Reuse partnerRow (already fetched by the caller for the seller snapshot)
+    // rather than re-querying the partner just for its name.
+    const partnerName = partnerRow?.name;
+    // Composer-picked recipients win; the org's billing contact is the fallback
+    // so a bare "Send" keeps working exactly as before.
+    const recipients = opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []);
+    const emailService = getEmailService();
+    // Both no-op cases are resolved before any DB or network work, so a quote
+    // that was never going to be emailed touches neither.
+    if (!emailService) {
+      console.warn(`[quoteLifecycle] Email not configured — quote ${id} sent but not emailed`);
+      return { emailed: false, emailReason: 'no_email_service' };
+    }
+    if (recipients.length === 0) {
+      console.warn(`[quoteLifecycle] No billing email for org ${quote.orgId} — no recipient for quote ${id}, nothing emailed`);
+      return { emailed: false, emailReason: 'no_billing_contact' };
+    }
+
+    // Customer-emailed PDF: filter to customer-visible lines (mirrors the
+    // portal-download route, apps/api/src/routes/portal/quotes.ts). `lines`
+    // itself stays unfiltered for the caller — the deposit send-gate (and any
+    // other internal computation over `lines`) intentionally covers ALL lines /
+    // applies its own visibility rules internally. Internal-only line names
+    // + prices must never reach the customer's inbox.
+    const customerLines = toCustomerLines(lines.filter((l) => l.customerVisible));
+    // PDF attachment is composer-optional (default on). When off, the render +
+    // contract-merge work is skipped entirely (so phase 1 opens no DB context at
+    // all) and the email copy drops its "A PDF copy is attached." sentence.
+    const includePdf = opts.includePdf !== false;
+
     let pdf: Buffer | null = null;
     if (includePdf) {
       const built = await withDbAccessContext(deliveryContext, async () => {
