@@ -65,10 +65,35 @@ describe('DashboardTiles', () => {
   it('renders every tile with stable data-testids', () => {
     render(<DashboardTiles dashboard={dashboard} />);
     expect(screen.getByTestId('portal-dashboard-tile-security').textContent).toContain('82');
-    expect(screen.getByTestId('portal-dashboard-tile-devices').textContent).toContain('8');
+    expect(screen.getByTestId('portal-dashboard-tile-devices').textContent).toContain(
+      '8 of 10 protected · 1 unknown',
+    );
     expect(screen.getByTestId('portal-dashboard-tile-patches').textContent).toContain('41');
     expect(screen.getByTestId('portal-dashboard-tile-support').textContent).toContain('3');
     expect(screen.getByTestId('portal-dashboard-tile-action-items').textContent).toContain('2');
+  });
+
+  it('does not describe an entirely unknown fleet as unprotected', () => {
+    render(
+      <DashboardTiles
+        dashboard={{
+          ...dashboard,
+          devicesProtected: {
+            ...dashboard.devicesProtected,
+            protected: 0,
+            unprotected: 0,
+            unknown: 10,
+            total: 10,
+          },
+        }}
+      />,
+    );
+
+    const deviceTile = screen.getByTestId('portal-dashboard-tile-devices');
+    expect(deviceTile.textContent).toContain(
+      'Protection status is unknown for all 10 devices',
+    );
+    expect(deviceTile.textContent).not.toContain('0 of 10 protected');
   });
 
   it('renders honest not-configured copy', () => {

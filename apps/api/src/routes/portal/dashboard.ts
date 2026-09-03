@@ -13,6 +13,20 @@ import {
 // second mount.
 export const portalDashboardRoutes = new Hono();
 
+function withoutCollectionTimestamps(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(withoutCollectionTimestamps);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => key !== 'asOf')
+        .map(([key, nested]) => [key, withoutCollectionTimestamps(nested)]),
+    );
+  }
+  return value;
+}
+
 portalDashboardRoutes.get('/dashboard', async (c) => {
   const auth = c.get('portalAuth');
   const payload = await dashboardForOrg(auth.user.orgId, {
@@ -26,7 +40,11 @@ portalDashboardRoutes.get('/dashboard', async (c) => {
     staleWhileRevalidateSeconds: 0,
     vary: ['Authorization', 'Cookie'],
   });
-  const etag = buildWeakEtag(payload);
+  // Collection timestamps are refreshed on every request even when the
+  // underlying values are unchanged. Excluding every `asOf` field keeps the
+  // validator useful while data timestamps such as capturedAt/completedAt
+  // still invalidate it when the source data changes.
+  const etag = buildWeakEtag(withoutCollectionTimestamps(payload));
   c.header('ETag', etag);
 
   if (isEtagFresh(c.req.header('if-none-match'), etag)) {

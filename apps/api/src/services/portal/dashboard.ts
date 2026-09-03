@@ -1,5 +1,5 @@
 import type { AwaitingYouTileDto, DashboardDto } from '@breeze/shared';
-import { and, eq, gt, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { invoices, quotes } from '../../db/schema';
 import { actionItemsTile } from './actionItemsReadModel';
@@ -28,7 +28,7 @@ export async function awaitingYouTile(
       .from(invoices)
       .where(and(
         eq(invoices.orgId, orgId),
-        ne(invoices.status, 'draft'),
+        inArray(invoices.status, ['sent', 'partially_paid', 'overdue']),
         gt(invoices.balance, '0'),
       )),
   ]);

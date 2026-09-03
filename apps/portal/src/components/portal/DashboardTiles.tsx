@@ -71,13 +71,17 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
           title="Devices protected"
           status={dashboard.devicesProtected.status}
         >
-          {dashboard.devicesProtected.protected == null || dashboard.devicesProtected.total == null
+          {dashboard.devicesProtected.protected == null ||
+          dashboard.devicesProtected.unknown == null ||
+          dashboard.devicesProtected.total == null
             ? unavailable(
                 dashboard.devicesProtected.status,
                 'No device protection data is available',
                 'Device protection is not configured',
               )
-            : `${dashboard.devicesProtected.protected} of ${dashboard.devicesProtected.total}`}
+            : dashboard.devicesProtected.unknown === dashboard.devicesProtected.total
+              ? `Protection status is unknown for all ${dashboard.devicesProtected.total} devices`
+              : `${dashboard.devicesProtected.protected} of ${dashboard.devicesProtected.total} protected · ${dashboard.devicesProtected.unknown} unknown`}
         </Tile>
 
         <Tile

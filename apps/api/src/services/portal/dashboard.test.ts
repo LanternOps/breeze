@@ -67,11 +67,21 @@ describe('portal dashboard read model', () => {
     });
 
     expect(dbState.wheres).toHaveLength(2);
-    for (const where of dbState.wheres) {
-      const query = new PgDialect().sqlToQuery(where as SQL);
+    const queries = dbState.wheres.map((where) =>
+      new PgDialect().sqlToQuery(where as SQL),
+    );
+    for (const query of queries) {
       expect(query.sql).toMatch(/"(quotes|invoices)"\."org_id" = \$1/);
       expect(query.params).toContain('org-1');
     }
+    expect(queries[1]!.sql).toContain('in ($2, $3, $4)');
+    expect(queries[1]!.params).toEqual([
+      'org-1',
+      'sent',
+      'partially_paid',
+      'overdue',
+      '0',
+    ]);
   });
 
   it('runs all dashboard tiles and preserves independent statuses', async () => {

@@ -11,7 +11,7 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
-      for (const method of ['from', 'innerJoin', 'where', 'groupBy']) {
+      for (const method of ['from', 'innerJoin', 'where', 'groupBy', 'limit']) {
         chain[method] = vi.fn((arg: unknown) => {
           if (method === 'where') state.wheres.push(arg);
           return chain;
@@ -35,7 +35,11 @@ describe('patchesAppliedTile', () => {
   });
 
   it('returns month-to-date installs and critical outstanding devices', async () => {
-    state.rows.push([{ applied: 41 }], [{ devicesWithOutstandingCritical: 3 }]);
+    state.rows.push(
+      [{ id: 'patch-source-row' }],
+      [{ applied: 41 }],
+      [{ devicesWithOutstandingCritical: 3 }],
+    );
 
     await expect(
       patchesAppliedTile(ORG_ID, {
@@ -54,11 +58,32 @@ describe('patchesAppliedTile', () => {
     const compiled = state.wheres.map((where) =>
       new PgDialect().sqlToQuery(where as SQL),
     );
-    expect(compiled).toHaveLength(2);
-    expect(compiled[0]!.sql).toContain('date_trunc');
+    expect(compiled).toHaveLength(3);
+    expect(compiled[1]!.sql).toContain('date_trunc');
     for (const query of compiled) {
       expect(query.sql).toContain('"device_patches"."org_id" =');
       expect(query.params).toContain(ORG_ID);
     }
+  });
+
+  it('returns no_data with null values when the org has no patch source rows', async () => {
+    state.rows.push(
+      [],
+      [{ applied: 0 }],
+      [{ devicesWithOutstandingCritical: 0 }],
+    );
+
+    await expect(
+      patchesAppliedTile(ORG_ID, {
+        timezone: 'America/Denver',
+        now: new Date('2026-09-02T12:00:00Z'),
+      }),
+    ).resolves.toMatchObject({
+      status: 'no_data',
+      applied: null,
+      devicesWithOutstandingCritical: null,
+      month: '2026-09',
+      timezone: 'America/Denver',
+    });
   });
 });

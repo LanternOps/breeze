@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
   dashboardForOrg: vi.fn(),
-  buildWeakEtag: vi.fn(() => 'W/"dashboard"'),
 }));
 
 const routerState = vi.hoisted(() => ({
@@ -14,10 +13,6 @@ const routerState = vi.hoisted(() => ({
 vi.mock('../../services/portal/dashboard', () => ({
   dashboardForOrg: mocks.dashboardForOrg,
 }));
-vi.mock('./helpers', async (importActual) => {
-  const actual = await importActual<typeof import('./helpers')>();
-  return { ...actual, buildWeakEtag: mocks.buildWeakEtag };
-});
 vi.mock('./auth', async () => {
   const { Hono: MockHono } = await import('hono');
   return {
@@ -109,7 +104,7 @@ describe('GET /dashboard', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toContain('private');
     expect(response.headers.get('cache-control')).toContain('max-age=30');
-    expect(response.headers.get('etag')).toBe('W/"dashboard"');
+    expect(response.headers.get('etag')).toMatch(/^W\/"[A-Za-z0-9_-]+"$/);
     expect(mocks.dashboardForOrg).toHaveBeenCalledWith(
       '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ timezone: 'America/Denver' }),
@@ -117,18 +112,70 @@ describe('GET /dashboard', () => {
   });
 
   it('returns 304 when the private ETag is fresh', async () => {
-    mocks.dashboardForOrg.mockResolvedValue({
+    const payload = {
       asOf: '2026-09-02T12:00:00.000Z',
       timezone: 'America/Denver',
-    });
+    };
+    mocks.dashboardForOrg.mockResolvedValue(payload);
+
+    const initial = await isolatedApp().request('/dashboard');
+    const etag = initial.headers.get('etag');
+    expect(etag).not.toBeNull();
 
     const response = await isolatedApp().request('/dashboard', {
-      headers: { 'If-None-Match': 'W/"dashboard"' },
+      headers: { 'If-None-Match': etag! },
     });
 
     expect(response.status).toBe(304);
     expect(response.headers.get('cache-control')).toContain('private');
-    expect(response.headers.get('etag')).toBe('W/"dashboard"');
+    expect(response.headers.get('etag')).toBe(etag);
+  });
+
+  it('keeps the real ETag stable when only aggregate and tile asOf values change', async () => {
+    mocks.dashboardForOrg
+      .mockResolvedValueOnce({
+        asOf: '2026-09-02T12:00:00.000Z',
+        timezone: 'America/Denver',
+        securityScore: {
+          status: 'ok',
+          score: 82,
+          band: 'strong',
+          delta30d: 4,
+          capturedAt: '2026-09-02T11:00:00.000Z',
+        },
+        devicesProtected: {
+          status: 'ok',
+          protected: 8,
+          unprotected: 1,
+          unknown: 1,
+          total: 10,
+          asOf: '2026-09-02T12:00:00.000Z',
+        },
+      })
+      .mockResolvedValueOnce({
+        asOf: '2026-09-02T12:00:01.000Z',
+        timezone: 'America/Denver',
+        securityScore: {
+          status: 'ok',
+          score: 82,
+          band: 'strong',
+          delta30d: 4,
+          capturedAt: '2026-09-02T11:00:00.000Z',
+        },
+        devicesProtected: {
+          status: 'ok',
+          protected: 8,
+          unprotected: 1,
+          unknown: 1,
+          total: 10,
+          asOf: '2026-09-02T12:00:01.000Z',
+        },
+      });
+
+    const first = await isolatedApp().request('/dashboard');
+    const second = await isolatedApp().request('/dashboard');
+
+    expect(first.headers.get('etag')).toBe(second.headers.get('etag'));
   });
 });
 

@@ -42,19 +42,20 @@ export async function securityScoreTile(orgId: string, now: Date) {
     };
   }
 
-  const targetDay = new Date(
-    now.getTime() - 30 * 86_400_000,
-  ).toISOString().slice(0, 10);
-  const prior = [...trend].sort((a, b) =>
-    Math.abs(
-      new Date(String(a.timestamp)).getTime() -
-        new Date(targetDay).getTime(),
-    ) -
-    Math.abs(
-      new Date(String(b.timestamp)).getTime() -
-        new Date(targetDay).getTime(),
-    ),
-  )[0];
+  const latestAt = latest.capturedAt.getTime();
+  const targetAt = latestAt - 30 * 86_400_000;
+  const oldestEligibleAt = latestAt - 20 * 86_400_000;
+  const prior = trend
+    .map((point) => ({
+      point,
+      timestamp: new Date(String(point.timestamp)).getTime(),
+    }))
+    .filter(({ timestamp }) =>
+      Number.isFinite(timestamp) && timestamp <= oldestEligibleAt,
+    )
+    .sort((a, b) =>
+      Math.abs(a.timestamp - targetAt) - Math.abs(b.timestamp - targetAt),
+    )[0]?.point;
 
   return {
     status:

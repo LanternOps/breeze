@@ -34,7 +34,12 @@ export async function patchesAppliedTile(
     args.timezone,
   );
 
-  const [appliedRows, outstandingRows] = await Promise.all([
+  const [sourceRows, appliedRows, outstandingRows] = await Promise.all([
+    db
+      .select({ id: devicePatches.id })
+      .from(devicePatches)
+      .where(eq(devicePatches.orgId, orgId))
+      .limit(1),
     db
       .select({ applied: sql<number>`count(*)::int` })
       .from(devicePatches)
@@ -62,6 +67,17 @@ export async function patchesAppliedTile(
   const devicesWithOutstandingCritical = Number(
     outstandingRows[0]?.devicesWithOutstandingCritical ?? 0,
   );
+
+  if (sourceRows.length === 0) {
+    return {
+      status: 'no_data' as const,
+      applied: null,
+      devicesWithOutstandingCritical: null,
+      month,
+      timezone: args.timezone,
+      asOf: args.now.toISOString(),
+    };
+  }
 
   return {
     status: 'ok' as const,

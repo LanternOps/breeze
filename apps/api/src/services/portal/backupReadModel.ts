@@ -8,11 +8,19 @@ import {
 } from '../../db/schema';
 
 export async function backupTile(orgId: string, now: Date) {
-  const [totalRows, configuredRows, latestRows] = await Promise.all([
+  const [totalRows, activeConfigRows, configuredRows, latestRows] = await Promise.all([
     db
       .select({ total: countDistinct(devices.id) })
       .from(devices)
       .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false))),
+    db
+      .select({ id: backupConfigs.id })
+      .from(backupConfigs)
+      .where(and(
+        eq(backupConfigs.orgId, orgId),
+        eq(backupConfigs.isActive, true),
+      ))
+      .limit(1),
     db
       .select({ configured: countDistinct(backupJobs.deviceId) })
       .from(backupJobs)
@@ -40,12 +48,13 @@ export async function backupTile(orgId: string, now: Date) {
   ]);
 
   const total = Number(totalRows[0]?.total ?? 0);
+  const hasActiveConfig = activeConfigRows.length > 0;
   const configured = Number(configuredRows[0]?.configured ?? 0);
   const latest = latestRows[0];
 
   return {
     status:
-      configured === 0
+      !hasActiveConfig
         ? 'not_configured' as const
         : latest
           ? 'ok' as const

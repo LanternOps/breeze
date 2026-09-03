@@ -123,4 +123,18 @@ describe('dashboard security tiles', () => {
       capturedAt: null,
     });
   });
+
+  it('returns a null 30-day delta when no sufficiently old point exists', async () => {
+    state.rows.push([
+      { overallScore: 82, capturedAt: new Date('2026-09-02T11:00:00Z') },
+    ]);
+    posture.trend.mockResolvedValue([
+      { timestamp: '2026-09-02T11:00:00.000Z', overall: 82 },
+    ]);
+
+    await expect(securityScoreTile(ORG_ID, NOW)).resolves.toMatchObject({
+      score: 82,
+      delta30d: null,
+    });
+  });
 });
