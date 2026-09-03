@@ -63,6 +63,14 @@ export const SENTRY_EVENT_CODES = [
   /** The FX provider returned rows the sync could not use. */
   'exchange_rate_rows_rejected',
 
+  // --- pam ---------------------------------------------------------------
+  /**
+   * Boot-time scan found stored PAM rules pinned to a risk tier no tool can
+   * resolve to any more, so they can never match (#3128). Usually the tail of
+   * a tool tier re-classification shipping in the same release.
+   */
+  'pam_rule_risk_tier_unreachable',
+
   // --- software / catalog -----------------------------------------------
   /** A software version was stored with an undetermined installer type. */
   'software_version_installer_type_unknown',
