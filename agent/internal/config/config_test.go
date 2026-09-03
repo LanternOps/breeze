@@ -479,7 +479,14 @@ func TestAtomicWriteFileRetriesTransientRenameFailure(t *testing.T) {
 // credential set was NOT written, so it must not confirm the rotation.
 func TestAtomicWriteFileExhaustsRenameRetriesAndCleansUp(t *testing.T) {
 	origRename := renameFile
-	defer func() { renameFile = origRename }()
+	origSleep := renameRetrySleep
+	defer func() {
+		renameFile = origRename
+		renameRetrySleep = origSleep
+	}()
+	// Skip the real backoff delay (worst case ~6s across 8 attempts) — this
+	// test cares about the attempt count and cleanup behavior, not timing.
+	renameRetrySleep = func(time.Duration) {}
 
 	attempts := 0
 	persistentErr := &os.PathError{Op: "rename", Path: "secrets.yaml", Err: os.ErrPermission}

@@ -919,6 +919,12 @@ const (
 // os.Rename in production.
 var renameFile = os.Rename
 
+// renameRetrySleep is a seam for tests to skip the real backoff delay.
+// Defaults to time.Sleep in production; the exhausted-retries test overrides
+// it to a no-op so it doesn't burn ~6s of real wall-clock time on every run
+// while still exercising the full attempt-count and cleanup logic.
+var renameRetrySleep = time.Sleep
+
 // renameWithRetry retries a failing rename with jittered exponential backoff.
 // Jitter keeps concurrent callers (the cert-renewal goroutine, the command
 // worker pool, and heartbeat's own SetAndPersist/StagePendingCredentials
@@ -930,7 +936,7 @@ func renameWithRetry(oldpath, newpath string) error {
 		if attempt > 0 {
 			backoff := renameBackoffBase << (attempt - 1)
 			sleep := backoff + time.Duration(mathrand.Int63n(int64(backoff)+1))
-			time.Sleep(sleep)
+			renameRetrySleep(sleep)
 		}
 		if err = renameFile(oldpath, newpath); err == nil {
 			return nil
