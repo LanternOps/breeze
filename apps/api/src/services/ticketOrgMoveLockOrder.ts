@@ -1,6 +1,7 @@
 /**
- * THE single cross-axis lock order for the ticket-linked child tables that
- * denormalize `org_id`, plus the ticket-axis table list that must respect it.
+ * The shared lock order for the two ORG-MOVE paths that re-stamp the
+ * ticket-linked child tables denormalizing `org_id`, plus the ticket-axis
+ * table list that must respect it.
  *
  * Two independent transactions re-stamp these rows and can contend for the
  * SAME row, so they must take the locks in the SAME order or Postgres kills
@@ -24,6 +25,26 @@
  * This module exists so the order is stated ONCE. Before #4657 each path
  * carried its own locally-reasoned comment, and the two reached opposite
  * conclusions without either being wrong on its own terms.
+ *
+ * SCOPE — two other walkers touch these tables, and neither is governed here:
+ *
+ *   - Org erasure (`cascadeDeleteOrg`, services/tenantCascade.ts) is NOT a
+ *     hazard: it gives each table its OWN system-context transaction, so it
+ *     never holds two of these locks at once and cannot form a cycle with
+ *     either mover.
+ *   - Org MERGE (services/orgMerge.ts) is a genuine third walker — the whole
+ *     merge runs in ONE transaction over `topologicalCascadeOrder()` reversed,
+ *     which for these four siblings (alphabetical tie-break, then reversed)
+ *     yields time_entries -> ticket_parts -> ticket_attachments ->
+ *     ticket_alert_links. That disagrees with the order below on the last
+ *     pair. It is held apart from the movers by a FENCE, not by lock order:
+ *     `fenceLoser()` stamps the loser org `status='merging'` before the merge
+ *     transaction opens, and the device/ticket move routes refuse a fenced
+ *     org. That fence is app-layer, so it does not close the window for a
+ *     move already in flight when the fence lands. Deliberately left as-is by
+ *     #4657, whose scope is the ticket/device pair; reordering the merge walk
+ *     means touching orgMergeRegistry's own ordering contract. Do not extend
+ *     the order below to cover merge without changing that walk to match.
  *
  * Contract enforced by ticketOrgMoveLockOrder.test.ts (both lists agree with
  * this order) and by moveOrg.test.ts (the device path's actual statement
@@ -61,6 +82,11 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  * stamped with the org that was billed (the device path excludes it for the
  * same reason). Its `ticket_id` FK is ON DELETE SET NULL, so moves never
  * orphan it.
+ *
+ * ticket_attachments (W08 #3902): comment photo/PDF metadata rows denormalize
+ * org_id from their ticket (shape 1) and have no `device_id`. Ordered last on
+ * both axes. Its S3 objects are keyed by attachment id only (spec D8) and are
+ * NOT touched by a move — only the metadata row's org_id is re-stamped.
  *
  * ticket_outbox (#3828 wave-6-3 review fix) carries both `ticket_id` and a
  * denormalized `org_id` (2026-09-19-ai-agents-ticket-shadow.sql). An

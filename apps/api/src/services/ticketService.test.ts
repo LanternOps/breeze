@@ -247,6 +247,7 @@ import {
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
 
@@ -3467,9 +3468,13 @@ describe('moveTicketOrg', () => {
     // to the source org's helpdesk agents after the move).
     // W08 #3902 added ticket_attachments as the 5th and LAST entry.
     expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5);
-    expect(executedTableNames()).toEqual(
-      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'])
-    );
+    // Ordered, not arrayContaining: the ORDER is the lock order this path
+    // shares with the device move (#4657), so an order-agnostic assertion here
+    // would let the loop be rewritten as hand-written statements in a
+    // different sequence without anything failing — the mirror of the bug
+    // #4657 fixed on the device axis, which moveOrg.test.ts pins the same way.
+    // Compared against the shared constant so the two stay coupled.
+    expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
 
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -3542,9 +3547,9 @@ describe('moveTicketOrg', () => {
 
     const tables = executedTableNames();
     expect(tables).toContain('ticket_attachments');
-    // Appended last so the device-move path (routes/devices/moveOrg.ts) and
-    // this path touch the ticket-linked tables in the same relative order —
-    // see the lock-order comment at moveOrg.ts:~311.
+    // Ordered last so this path and the device-move path
+    // (routes/devices/moveOrg.ts) touch the ticket-linked tables in the same
+    // relative order — the shared order lives in ticketOrgMoveLockOrder.ts.
     expect(tables[tables.length - 1]).toBe('ticket_attachments');
   });
 

@@ -806,9 +806,12 @@ describe('POST /devices/:id/move-org', () => {
       // moving the UPDATE without touching CUSTOM_ORG_REWRITE_TABLES is
       // caught here rather than in production.
       //
-      // Runs cross-currency so the guard's FOR UPDATE locks are in the stream
-      // too: they take time_entries then ticket_parts, which is what fixes the
-      // canonical direction (ticketOrgMoveLockOrder.ts).
+      // The currency guard is mocked for this whole file, so its own
+      // `FOR UPDATE` selects never reach the statement stream — only the four
+      // hand-written UPDATEs below are being ordered here. Cross-currency orgs
+      // are used so the guard resolves rather than short-circuits, putting the
+      // statements in the same positions they occupy on a real move; the real
+      // guard's lock order is covered by ticketMoveCurrencyGuard.test.ts.
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
       const { statements } = rigTransactionSuccess();
@@ -823,14 +826,20 @@ describe('POST /devices/:id/move-org', () => {
       const linksIdx = idx('UPDATE ticket_alert_links ');
       const attachmentsIdx = idx('UPDATE ticket_attachments ');
 
-      expect(timeEntriesIdx).toBeGreaterThanOrEqual(0);
+      // Every index must be found first: findIndex returns -1 for a missing
+      // statement, and -1 would satisfy the `toBeLessThan` chain below while
+      // actually meaning the rewrite was deleted.
+      expect(timeEntriesIdx, 'the time_entries rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(partsIdx, 'the ticket_parts rewrite went missing').toBeGreaterThanOrEqual(0);
       expect(linksIdx, 'the ticket_alert_links rewrite went missing').toBeGreaterThanOrEqual(0);
-      expect(attachmentsIdx).toBeGreaterThanOrEqual(0);
-      expect(
-        [timeEntriesIdx, partsIdx, linksIdx, attachmentsIdx],
-        'device move must lock time_entries -> ticket_parts -> ticket_alert_links -> ' +
-          'ticket_attachments, the same order moveTicketOrg uses (#4657)',
-      ).toEqual([...[timeEntriesIdx, partsIdx, linksIdx, attachmentsIdx]].sort((a, b) => a - b));
+      expect(attachmentsIdx, 'the ticket_attachments rewrite went missing').toBeGreaterThanOrEqual(0);
+
+      // Pairwise, matching the idiom already used for the tickets/time_entries
+      // ordering above: time_entries -> ticket_parts -> ticket_alert_links ->
+      // ticket_attachments, the same order moveTicketOrg uses (#4657).
+      expect(timeEntriesIdx, 'time_entries must precede ticket_parts').toBeLessThan(partsIdx);
+      expect(partsIdx, 'ticket_parts must precede ticket_alert_links (#4657)').toBeLessThan(linksIdx);
+      expect(linksIdx, 'ticket_alert_links must precede ticket_attachments').toBeLessThan(attachmentsIdx);
     });
 
     it('409s with code + details when the guard blocks — no Sentry capture, no failed-move audit, no WS disconnect', async () => {
