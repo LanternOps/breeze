@@ -93,14 +93,50 @@ export function coverageMatch(
   return matchReason(line, row, snapshot);
 }
 
+/**
+ * Every billable device this line bills. The plural transpose of W06's
+ * `coverageMatch`, over the SAME `matchReason` core — `contractLinesCoveringDevice`
+ * is one device × many lines, this is one line × many devices, and neither
+ * re-implements matching.
+ *
+ * Generation calls this ONCE per device line and uses the one array for both the
+ * quantity and the evidence rows, so the invoice can never say "12" beside
+ * eleven rows. Snapshot order; call `orderDevicesForEvidence` for the canonical
+ * order the evidence writer needs.
+ */
+export function matchingDevicesForLine(snapshot: OrgDeviceSnapshot, line: CoverageLine): DeviceSnapshotRow[] {
+  assertResolvable(line, snapshot);
+  if (!isDeviceLine(line)) throw new Error(`matchingDevicesForLine: ${line.lineType} is not a device-counted line type`);
+  return snapshot.devices.filter((row) => matchReason(line, row, snapshot) !== null);
+}
+
 /** Quantity for a device-counted line. Throws for any other type: the caller's
  *  switch is exhaustive and must not route flat/seat/manual here. */
 export function quantityFor(snapshot: OrgDeviceSnapshot, line: CoverageLine): number {
-  assertResolvable(line, snapshot);
-  if (!isDeviceLine(line)) throw new Error(`quantityFor: ${line.lineType} is not a device-counted line type`);
-  let n = 0;
-  for (const row of snapshot.devices) if (lineMatches(line, row, snapshot)) n += 1;
-  return n;
+  return matchingDevicesForLine(snapshot, line).length;
+}
+
+/**
+ * Canonical evidence order: UTF-16 code-unit comparison of hostname, then id.
+ *
+ * NOT localeCompare (#3205 W07 decision 6): collation is locale- and
+ * ICU-version-dependent ('a' vs 'B' flips, and Node's ICU data changes between
+ * releases), so it cannot underwrite a reproducibility promise. '<'/'>' on
+ * strings is a fixed code-unit comparison with no environment input.
+ *
+ * The id tiebreak is load-bearing: hostnames are NOT unique in a fleet, and this
+ * order decides which devices fall in the allowance and which in the overage
+ * tail.
+ */
+export function compareEvidenceDevices(a: DeviceSnapshotRow, b: DeviceSnapshotRow): number {
+  if (a.hostname < b.hostname) return -1;
+  if (a.hostname > b.hostname) return 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** Non-mutating canonical sort. */
+export function orderDevicesForEvidence(rows: readonly DeviceSnapshotRow[]): DeviceSnapshotRow[] {
+  return [...rows].sort(compareEvidenceDevices);
 }
 
 /** Billable devices that NO device-counted line on the contract bills, by role.

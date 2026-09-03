@@ -331,6 +331,33 @@ describe('acceptQuote document_locale stamp', () => {
   });
 });
 
+/**
+ * #3205 W07 decision 14a: this auto-issue path never goes through
+ * issueInvoice, so the appendix choice must be frozen HERE — same reason
+ * documentLocale is stamped on this same issueFields line.
+ */
+describe('acceptQuote device_appendix stamp (#3205 W07)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  it('stamps the auto-issued invoice with the RESOLVED partner default', async () => {
+    queueAcceptHappyPath({}, {}, { invoiceDeviceAppendix: true });
+    await acceptQuote(baseParams);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ deviceAppendix: true });
+  });
+
+  it('resolves to false, never null, when the partner default is false', async () => {
+    queueAcceptHappyPath({}, {}, { invoiceDeviceAppendix: false });
+    await acceptQuote(baseParams);
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ deviceAppendix: false });
+  });
+});
+
 describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
   beforeEach(() => {
     results.length = 0;

@@ -149,7 +149,12 @@ export async function acceptQuote(
   // Partner row (language setting + invoice numbering), read ONCE: the render
   // locale below and the invoice issue fields further down must agree on it.
   const [partner] = await db
-    .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings })
+    .select({
+      prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings,
+      // #3205 W07: read alongside the other issue-time partner defaults so the
+      // appendix stamp below costs no extra query.
+      invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+    })
     .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
   // Render locale for the contract parts + executed PDF: the quote's send-time
   // snapshot (every non-draft quote carries one since 2026-09-01-b), falling
@@ -299,6 +304,10 @@ export async function acceptQuote(
     // expression as `renderLocale` above, so the executed contract and the
     // invoice it issues can never be rendered in two different languages.
     issueFields.documentLocale = renderLocale;
+    // #3205 W07 decision 14a: this IS the invoice's issue moment (it never goes
+    // through issueInvoice), so the appendix choice is frozen here too — the
+    // same reason documentLocale is stamped on this line.
+    issueFields.deviceAppendix = invoice!.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false;
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.

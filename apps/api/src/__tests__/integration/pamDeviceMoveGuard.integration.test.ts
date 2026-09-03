@@ -1,7 +1,6 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import postgres, { type Sql } from 'postgres';
@@ -14,6 +13,7 @@ import {
   createSite,
   setupTestEnvironment,
 } from './db-utils';
+import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
 type PamObservedState =
@@ -485,12 +485,15 @@ describe('PAM device organization-move database guard', () => {
       ORDER BY table_name, privilege_type
     `);
     const before = await readPamGrants();
-    const migration = await readFile(
-      new URL('../../../migrations/2026-09-17-pam-device-move-guard.sql', import.meta.url),
-      'utf8',
-    );
 
-    await getTestDb().execute(sql.raw(migration));
+    // replayMigration (not a bare readFile + sql.raw) re-applies every LATER
+    // migration that redefines breeze_device_child_orgid_tables() too — this
+    // file's body is superseded by
+    // 2026-10-08-101300-device-move-exclude-billing-evidence.sql, and a bare
+    // replay of THIS file alone would silently strip that migration's
+    // invoice_line_devices exclusion for the rest of this vitest process
+    // (see billingEvidenceDeviceMove.integration.test.ts, #3205 W07 / #4838).
+    await replayMigration('2026-09-17-pam-device-move-guard.sql');
 
     expect(await readPamGrants()).toEqual(before);
   });

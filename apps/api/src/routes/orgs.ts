@@ -450,6 +450,7 @@ const partnerPublicColumns = () => ({
   billingTermsAndConditions: partners.billingTermsAndConditions,
   defaultMarkupPercent: partners.defaultMarkupPercent,
   autoTaxHardware: partners.autoTaxHardware,
+  invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   createdAt: partners.createdAt,

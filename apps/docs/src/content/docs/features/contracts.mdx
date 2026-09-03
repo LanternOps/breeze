@@ -102,6 +102,16 @@ You can also **generate now** to create the current period's invoice immediately
   When auto-issue is enabled, generated invoices can be emailed to the customer automatically if a billing email is configured. Otherwise they land as drafts for you to review and send.
 </Aside>
 
+## What each billing period recorded
+
+Breeze records the exact devices behind every auto-counted line **at generation** and never re-derives them. Reclassifying, deleting or moving a device afterwards cannot change what a past invoice says it billed. If that invoice is voided and reissued, its recorded device evidence is copied to the replacement rather than recalculated.
+
+Each billed period also records how many devices no line on that contract billed, **by role**, together with the flagged and billed overage totals. The contract's billing history shows this outcome for each period.
+
+**Uncovered device identity is not stored.** A period says *how many* devices were uncovered and *by which role*, never *which ones*. To answer "Which devices are uncovered right now?", use the device **Billing** panel or the contract's coverage notice. Both check today's fleet live.
+
+Periods billed before this feature was available have no recorded outcome and show **Not recorded**. A period on a contract with no device-counted line shows **No device lines**. That means no measurement was taken, not that zero devices were measured.
+
 ## Auto-Renewal
 
 A contract with an **end date** can be set to renew itself automatically instead of expiring. When auto-renew is on, Breeze extends the contract's term in place before it lapses, so billing continues without a gap and you never have to recreate the agreement.

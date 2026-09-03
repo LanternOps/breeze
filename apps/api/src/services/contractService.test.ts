@@ -451,7 +451,12 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     queueResult([contract]);          // contract select
     queueResult(lines);               // contract lines
     queueResult([{ id: 'bp1' }]);     // claim period (won)
-    queueResult([]);                  // advance pointer
+    // W07 post-claim writes. Device-line runs consume the first empty result as
+    // their evidence chunk; flat-only runs leave one harmless queued result.
+    queueResult([]);                  // optional evidence insert / invoice evidence_version
+    queueResult([]);                  // invoice evidence_version / outcome
+    queueResult([]);                  // outcome / advance pointer
+    queueResult([]);                  // advance pointer (device-line runs)
   }
 
   const noAllowance = { includedQuantity: null, overageMode: null, overageUnitPrice: null };
@@ -507,14 +512,14 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'server-1', role: 'server', siteId: null },
-      { id: 'server-2', role: 'server', siteId: null },
-      { id: 'workstation-1', role: 'workstation', siteId: null },
-      { id: 'workstation-2', role: 'workstation', siteId: null },
-      { id: 'workstation-3', role: 'workstation', siteId: null },
-      { id: 'workstation-4', role: 'workstation', siteId: null },
-      { id: 'workstation-5', role: 'workstation', siteId: null },
-      { id: 'unknown-1', role: 'unknown', siteId: null },
+      { id: 'server-1', hostname: 'server-1', role: 'server', siteId: null },
+      { id: 'server-2', hostname: 'server-2', role: 'server', siteId: null },
+      { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
+      { id: 'workstation-3', hostname: 'workstation-3', role: 'workstation', siteId: null },
+      { id: 'workstation-4', hostname: 'workstation-4', role: 'workstation', siteId: null },
+      { id: 'workstation-5', hostname: 'workstation-5', role: 'workstation', siteId: null },
+      { id: 'unknown-1', hostname: 'unknown-1', role: 'unknown', siteId: null },
     ]);
     queueRun([
       { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'], ...noAllowance },
@@ -910,8 +915,8 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
 
   it('batches device counts: one snapshot per org across all orgs', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'workstation-1', role: 'workstation', siteId: null },
-      { id: 'workstation-2', role: 'workstation', siteId: null },
+      { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
     ]);
     queueResult(['org1', 'org2', 'org3'].map((orgId, i) => contract({ id: `c${i}`, orgId })));
     queueResult(['c0', 'c1', 'c2'].flatMap((contractId) => [
@@ -944,7 +949,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
 
   it('uses the catalog base price plus the stamped billed-overage rate', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue(
-      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null })),
     );
     queueResult([contract({ currencyCode: 'USD', intervalMonths: 3 })]);
     queueResult([line({
@@ -1001,12 +1006,12 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
   const snapshot = [
-    { id: 'workstation-1', role: 'workstation', siteId: null },
-    { id: 'workstation-2', role: 'workstation', siteId: null },
-    { id: 'workstation-3', role: 'workstation', siteId: null },
-    { id: 'server-1', role: 'server', siteId: null },
-    { id: 'server-2', role: 'server', siteId: null },
-    { id: 'unknown-1', role: 'unknown', siteId: null },
+    { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+    { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
+    { id: 'workstation-3', hostname: 'workstation-3', role: 'workstation', siteId: null },
+    { id: 'server-1', hostname: 'server-1', role: 'server', siteId: null },
+    { id: 'server-2', hostname: 'server-2', role: 'server', siteId: null },
+    { id: 'unknown-1', hostname: 'unknown-1', role: 'unknown', siteId: null },
   ];
 
   it('bills the role set from the snapshot and reports uncovered devices by role', async () => {
@@ -1051,7 +1056,7 @@ describe('computeContractEstimate — allowance and overage (#3205 W04)', () => 
     deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
     includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
-  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null }));
+  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null }));
 
   async function estimateWith(line: Record<string, unknown>, deviceCount: number) {
     vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(deviceCount));
@@ -1157,7 +1162,7 @@ describe('listContracts estimatedPeriodValue with allowances (#3205 W04)', () =>
 
   it('includes a billed overage and excludes a flagged one', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue(
-      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null })),
     );
     const rows = [
       { id: 'cb', orgId: 'org1', currencyCode: 'USD' },
@@ -1184,8 +1189,8 @@ describe('per_device_group quantities (#3205 W02)', () => {
     results.length = 0;
     vi.clearAllMocks();
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'device-1', role: 'server', siteId: 'site-1' },
-      { id: 'device-2', role: 'workstation', siteId: 'site-1' },
+      { id: 'device-1', hostname: 'device-1', role: 'server', siteId: 'site-1' },
+      { id: 'device-2', hostname: 'device-2', role: 'workstation', siteId: 'site-1' },
     ]);
   });
 
@@ -1662,6 +1667,24 @@ describe('deterministic line ordering (#3205 W03)', () => {
     const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
     expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
     expect(res.overages).toEqual([]);
+  });
+});
+
+describe('getContract billing outcome summaries (#3205 W07)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('#3205 W07: getContract periods carry the outcome summary scalars, and null for a pre-W07 period', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'C', status: 'active', currencyCode: 'USD' }]);
+    queueResult([]); // lines
+    queueResult([
+      { id: 'p1', snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 },
+      { id: 'p0', snapshotDeviceTotal: null, uncoveredTotal: null, flaggedTotal: null, billedOverageTotal: null },
+    ]);
+    const { periods } = await svc.getContract('c1', actor);
+    expect(periods[0]).toMatchObject({ snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 });
+    expect(periods[1]).toMatchObject({ snapshotDeviceTotal: null, uncoveredTotal: null });
+    expect(periods[0]).not.toHaveProperty('uncoveredByRole');
+    expect(periods[0]).not.toHaveProperty('overages');
   });
 });
 

@@ -37,6 +37,8 @@ import type { Mock } from 'vitest';
 import { db } from '../db';
 import { runContractBillingSweep } from './contractWorker';
 
+const ACTOR = { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] } as const;
+
 describe('runContractBillingSweep price-book gap logging (#3775)', () => {
   beforeEach(() => { vi.clearAllMocks(); dueRows.length = 0; });
 
@@ -179,6 +181,21 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('uncovered devices'), 'c1', 2, '{"unknown":2}');
     } finally { warn.mockRestore(); }
+  });
+
+  it('#3205 W07: a contract whose evidence insert throws rolls that contract back and the sweep continues', async () => {
+    dueRows.push({ id: 'c1' }, { id: 'c2' });
+    generateDueInvoiceMock
+      .mockRejectedValueOnce(new Error('evidence insert failed'))
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv-2', autoIssue: false, actor: ACTOR, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-07-01T00:00:00Z'));
+      expect(res).toMatchObject({ billed: 1, failed: 1 });
+      expect(generateDueInvoiceMock).toHaveBeenCalledTimes(2);
+    } finally {
+      err.mockRestore();
+    }
   });
 });
 
