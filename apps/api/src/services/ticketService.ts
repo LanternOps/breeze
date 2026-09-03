@@ -2162,7 +2162,7 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // moved ticket strands its link rows on the source org on BOTH axes. Left out
 // of the #4524 fix deliberately — closing it correctly spans this service and
 // routes/devices/moveOrg.ts and turns on the inbound-email tenancy model, so it
-// is tracked as its own issue rather than half-fixed on one axis here.
+// is tracked in #4643 rather than half-fixed on one axis here.
 const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'] as const;
 
 /**
@@ -2212,7 +2212,7 @@ export async function moveTicketOrg(
     // select disjoint rows. That argument does NOT cover ticket_alert_links,
     // which both axes can reach for the same row in opposite order relative to
     // time_entries/ticket_parts — a pre-existing instance of the same deadlock
-    // class, tracked separately rather than reordered here.
+    // class, tracked in #4657 rather than reordered here.
     //
     // The org lock is the FIRST statement of this transaction and is held to
     // commit, so the source/target currency pair the guard compares cannot be
@@ -2369,8 +2369,8 @@ export async function moveTicketOrg(
     // the runs stay put — and it is NOT closed here, because closing it means a
     // new migration replacing breeze_cascade_device_org_id(). Neither axis leaks
     // today: nothing writes agent_run_id yet (the autonomous-note lane is
-    // deferred; see the column comment in db/schema/portal.ts). Tracked
-    // separately so the contract is in place before that lane ships.
+    // deferred; see the column comment in db/schema/portal.ts). Tracked in #4644
+    // so the contract is in place before that lane ships.
     await tx
       .update(ticketComments)
       .set({ agentRunId: null })
