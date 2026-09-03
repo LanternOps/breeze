@@ -3,6 +3,7 @@
 import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
+import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { eq, and } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
@@ -1091,7 +1092,10 @@ export async function seedDefaultAdmin() {
           name: 'Default Partner',
           slug: 'default-partner',
           type: 'msp',
-          plan: 'enterprise'
+          plan: 'enterprise',
+          // #4520: keep the seeded dev partner on the same inbound opt-out
+          // default real partners get, so local behaviour matches production.
+          settings: applyNewPartnerDefaultSettings()
         })
         .returning();
       await seedSystemTicketStatuses(tx, newPartner!.id);
