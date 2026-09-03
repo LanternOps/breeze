@@ -854,10 +854,17 @@ mobileRoutes.get(
         deviceId: alerts.deviceId,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
-        deviceStatus: devices.status
+        deviceStatus: devices.status,
+        // Alerts carry no type/category of their own — only a rule reference.
+        // The category one hop away on the rule's template is the closest
+        // thing mobile has to a meaningful alert "type" (#4535). Nullable:
+        // alerts can be created without a rule.
+        category: alertTemplates.category
       })
       .from(alerts)
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+      .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
       .where(whereCondition)
       .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
       .limit(fetchLimit)
@@ -884,6 +891,7 @@ mobileRoutes.get(
       triggeredAt: alert.triggeredAt,
       acknowledgedAt: alert.acknowledgedAt,
       resolvedAt: alert.resolvedAt,
+      category: alert.category ?? null,
       device: alert.deviceId ? {
         id: alert.deviceId,
         hostname: alert.deviceHostname,

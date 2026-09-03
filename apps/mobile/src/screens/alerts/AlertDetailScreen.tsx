@@ -151,6 +151,14 @@ export function AlertDetailScreen({ route }: Props) {
         {alert.message}
       </Text>
 
+      {alert.category ? (
+        <DetailRow
+          label="CATEGORY"
+          value={alert.category}
+          textHi={theme.textHi}
+          textLo={theme.textLo}
+        />
+      ) : null}
       {alert.deviceName ? (
         <DetailRow
           label="DEVICE"
