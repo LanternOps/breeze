@@ -297,7 +297,7 @@ export async function requireCurrentPasswordStepUp(
  * no password to satisfy {@link requireCurrentPasswordStepUp}. Verifies a fresh
  * TOTP code against the user's enrolled MFA secret. Mirrors the password
  * step-up's shape (rate limit → lookup → verify) and returns the same opaque
- * 401/429/503 responses so callers can `if (err) return err` uniformly. Only
+ * rejection/429/503 responses so callers can `if (err) return err` uniformly. Only
  * TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
  */
 export async function requireFreshMfaStepUp(
@@ -305,7 +305,10 @@ export async function requireFreshMfaStepUp(
   userId: string,
   code: string,
   keyPrefix = 'auth:mfa-stepup',
+  /** #4470 — see {@link requireCurrentPasswordStepUp}. Same default, same reason. */
+  opts: { rejectionStatus?: ProofRejectionStatus } = {},
 ): Promise<Response | null> {
+  const rejectionStatus = opts.rejectionStatus ?? 401;
   const redis = getRedis();
   if (!redis) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
@@ -329,12 +332,12 @@ export async function requireFreshMfaStepUp(
   // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
   // rejected even if a stale secret lingers — defense-in-depth for the auth path.
   if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   const secret = decryptMfaTotpSecret(user.mfaSecret);
   if (!secret) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   // consumeMFAToken (not verifyMFAToken): enforce single-use of the TOTP step
@@ -342,7 +345,7 @@ export async function requireFreshMfaStepUp(
   // its validity window. This L4 path had no other single-use binding. (sec review #2)
   const valid = await consumeMFAToken(secret, code, userId);
   if (!valid) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   return null;

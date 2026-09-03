@@ -117,12 +117,13 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     await fetchWithAuth('/auth/mfa/step-up', {
       method: 'POST',
       body: JSON.stringify(stepUpBody),
-      // #4470 moved a REJECTED proof here to 400 + `code: 'mfa_proof_invalid'`,
-      // so a 401 no longer means "wrong code". The opt-out stays anyway for the
-      // reason the flag actually documents: the passkey body carries a
-      // single-use WebAuthn assertion the server has already burned, and
-      // replaying it after a refresh can only fail again.
-      skipUnauthorizedRetry: true,
+      // #4470: no opt-out here any more. A rejected proof is now 400
+      // `mfa_proof_invalid`, and the handler has no 401 path left at all — so
+      // every 401 from this endpoint comes from `authMiddleware`, BEFORE the
+      // handler runs. The passkey assertion in this body is therefore still
+      // unburned, and refreshing the bearer and replaying it is exactly right.
+      // Keeping the flag would instead have signed the user out for an access
+      // token that simply aged out mid-ceremony.
     }),
     'Verification failed.'
   );

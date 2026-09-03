@@ -785,6 +785,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         ? { ssoReauthGrantId }
         : { currentPassword: passkeyPassword };
       const verifyProof = isPasswordless ? { ssoReauthGrantId } : {};
+      // #4470: `/auth/passkeys/register/{options,verify}` and the delete below
+      // answer a rejected step-up password (or a stale registration challenge)
+      // with 400 + a stable `code`, so these calls need no 401 opt-out — a 401
+      // from them now means only that the bearer expired, which SHOULD refresh.
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
         body: JSON.stringify({ ...optionsProof, name: label })
