@@ -448,3 +448,40 @@ describe('partner-owned policies actually reach the agent payload', () => {
     expect(systemEscapeMock).not.toHaveBeenCalled();
   });
 });
+
+describe('monitoring: a matched policy with zero enabled watches (#2949)', () => {
+  // A winning policy row with no enabled watches ("clear all watches") is a
+  // different fact than "no policy matched at all" — collapsing both to `null`
+  // means heartbeat.ts omits monitoring_settings from the payload entirely, and
+  // the agent (which handles an empty watches array fine — see
+  // agent/internal/monitoring/monitor.go ApplyConfig) never learns to clear out
+  // watches it was told about on a previous heartbeat.
+  it('returns an object with an empty watches array, not null', async () => {
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [], // no enabled watches for the winning settings row
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result).not.toBeNull();
+    expect(result?.check_interval_seconds).toBe(90);
+    expect(result?.watches).toEqual([]);
+  });
+
+  it('still returns null when no policy row matches at all', async () => {
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [], // no assignment/policy rows matched
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result).toBeNull();
+  });
+});
