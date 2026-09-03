@@ -17,6 +17,23 @@ function jsonResponse(body: unknown, ok = true) {
   } as Response;
 }
 
+function customField(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'f1',
+    name: 'RAM slot type',
+    fieldKey: 'ram_slot_type',
+    type: 'text',
+    required: false,
+    scriptWrite: false,
+    defaultValue: null,
+    deviceTypes: null,
+    options: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+    ...overrides
+  };
+}
+
 describe('CustomFieldsPage script-write toggle', () => {
   beforeEach(() => {
     mockedFetchWithAuth.mockReset();
@@ -80,5 +97,81 @@ describe('CustomFieldsPage script-write toggle', () => {
     )!;
     const body = JSON.parse(String((postCall[1] as RequestInit).body));
     expect(body.scriptWrite).toBe(false);
+  });
+
+  it('preserves scriptWrite:true through the edit (PATCH) path when left untouched', async () => {
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse({ data: [customField({ scriptWrite: true })] }));
+
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByTitle('Edit'));
+    // The toggle should already be checked, seeded from field.scriptWrite.
+    expect(screen.getByTestId('custom-field-script-write')).toBeChecked();
+
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: { id: 'f1' } }));
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    fireEvent.click(screen.getByTestId('custom-field-submit'));
+
+    await waitFor(() => {
+      const patchCall = mockedFetchWithAuth.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === 'PATCH'
+      );
+      expect(patchCall).toBeDefined();
+    });
+
+    const patchCall = mockedFetchWithAuth.mock.calls.find(
+      (call) => (call[1] as RequestInit | undefined)?.method === 'PATCH'
+    )!;
+    const body = JSON.parse(String((patchCall[1] as RequestInit).body));
+    expect(body.scriptWrite).toBe(true);
+  });
+
+  it('turns scriptWrite off through the edit (PATCH) path when unchecked', async () => {
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse({ data: [customField({ scriptWrite: true })] }));
+
+    render(<CustomFieldsPage />);
+
+    fireEvent.click(await screen.findByTitle('Edit'));
+    fireEvent.click(screen.getByTestId('custom-field-script-write'));
+    expect(screen.getByTestId('custom-field-script-write')).not.toBeChecked();
+
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: { id: 'f1' } }));
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    fireEvent.click(screen.getByTestId('custom-field-submit'));
+
+    await waitFor(() => {
+      const patchCall = mockedFetchWithAuth.mock.calls.find(
+        (call) => (call[1] as RequestInit | undefined)?.method === 'PATCH'
+      );
+      expect(patchCall).toBeDefined();
+    });
+
+    const patchCall = mockedFetchWithAuth.mock.calls.find(
+      (call) => (call[1] as RequestInit | undefined)?.method === 'PATCH'
+    )!;
+    const body = JSON.parse(String((patchCall[1] as RequestInit).body));
+    expect(body.scriptWrite).toBe(false);
+  });
+
+  it('renders the Script write badge only for fields with scriptWrite:true', async () => {
+    mockedFetchWithAuth.mockResolvedValue(
+      jsonResponse({
+        data: [
+          customField({ id: 'f1', fieldKey: 'ram_slot_type', scriptWrite: true }),
+          customField({ id: 'f2', fieldKey: 'asset_tag', scriptWrite: false })
+        ]
+      })
+    );
+
+    render(<CustomFieldsPage />);
+
+    const rows = await screen.findAllByRole('row');
+    // rows[0] is the header row; data rows follow in list order.
+    const [, ramRow, assetRow] = rows;
+
+    expect(ramRow).toHaveTextContent('Script write');
+    expect(assetRow).not.toHaveTextContent('Script write');
   });
 });

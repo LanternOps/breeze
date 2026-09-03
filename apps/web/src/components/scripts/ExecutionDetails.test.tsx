@@ -41,7 +41,9 @@ describe('ExecutionDetails custom-field write summary', () => {
 
     expect(await screen.findByTestId('exec-custom-fields-applied')).toHaveTextContent('ram_slot_type');
     expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('asset_tag');
-    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('not_script_writable');
+    // The raw reason code is translated, not shown verbatim -- see the
+    // 'falls back to the raw code' test below for the untranslated case.
+    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('Field is not script-writable');
   });
 
   it('renders nothing when customFieldResult is null', () => {
@@ -61,6 +63,31 @@ describe('ExecutionDetails custom-field write summary', () => {
 
     expect(screen.getByTestId('exec-custom-fields-applied')).toBeInTheDocument();
     expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('asset_tag');
-    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('unknown_field');
+    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('No matching field definition');
+  });
+
+  it('falls back to the raw reason code for a reason with no translation', () => {
+    renderExecution({
+      customFieldResult: {
+        applied: [],
+        // Not one of the known CustomFieldWriteRejection values -- exercises
+        // the t(key, { defaultValue }) fallback so a future backend-added
+        // reason renders as something rather than an empty string.
+        rejected: [{ key: 'asset_tag', reason: 'some_future_reason' }]
+      }
+    });
+
+    expect(screen.getByTestId('exec-custom-fields-rejected')).toHaveTextContent('some_future_reason');
+  });
+
+  it('does not crash when the API payload is missing the applied/rejected arrays', () => {
+    renderExecution({
+      // Cast past the type: this simulates a malformed/partial API response,
+      // which the component must tolerate rather than throw during render.
+      customFieldResult: { applied: ['ram_slot_type'] } as unknown as ScriptExecution['customFieldResult']
+    });
+
+    expect(screen.getByTestId('exec-custom-fields-applied')).toHaveTextContent('ram_slot_type');
+    expect(screen.queryByTestId('exec-custom-fields-rejected')).not.toBeInTheDocument();
   });
 });

@@ -174,8 +174,15 @@ export function CustomFieldWriteSummarySection({
   const { t } = useTranslation('scripts');
   if (!result) return null;
 
-  const hasApplied = result.applied.length > 0;
-  const hasRejected = result.rejected.length > 0;
+  // Defensive: the API's declared type guarantees both arrays, but this
+  // value is unvalidated `response.json()` output (ScriptExecutionsPage's
+  // detail fetch spreads it straight into state) — a version-skewed or
+  // partially-serialized payload missing one array must not crash the
+  // whole detail modal.
+  const applied = result.applied ?? [];
+  const rejected = result.rejected ?? [];
+  const hasApplied = applied.length > 0;
+  const hasRejected = rejected.length > 0;
 
   return (
     <div className="space-y-2">
@@ -191,7 +198,7 @@ export function CustomFieldWriteSummarySection({
             </p>
             {hasApplied ? (
               <div className="mt-1 flex flex-wrap gap-1">
-                {result.applied.map((key) => (
+                {applied.map((key) => (
                   <code
                     key={key}
                     className="rounded bg-success/15 px-1.5 py-0.5 text-xs text-success"
@@ -212,12 +219,17 @@ export function CustomFieldWriteSummarySection({
                 {t('executionDetails.customFields.rejected')}
               </p>
               <ul className="mt-1 space-y-1">
-                {result.rejected.map((r) => (
+                {rejected.map((r) => (
                   <li key={r.key} className="text-sm">
                     <code className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
                       {r.key}
                     </code>
-                    <span className="ml-2 text-muted-foreground">{r.reason}</span>
+                    <span className="ml-2 text-muted-foreground">
+                      {t(
+                        /* i18n-dynamic */ `executionDetails.customFields.reasons.${r.reason}`,
+                        { defaultValue: r.reason }
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>

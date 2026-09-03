@@ -622,7 +622,25 @@
       "title": "Skript-Schreibvorgänge für benutzerdefinierte Felder",
       "applied": "Übernommen",
       "rejected": "Abgelehnt",
-      "none": "Keine"
+      "none": "Keine",
+      "reasons": {
+        "unknown_field": "Keine passende Felddefinition",
+        "not_script_writable": "Feld ist nicht per Skript beschreibbar",
+        "not_applicable_to_device": "Feld gilt nicht für diesen Gerätetyp",
+        "device_not_found": "Gerät nicht gefunden",
+        "invalid_type": "Wert hat den falschen Typ",
+        "out_of_range": "Wert liegt außerhalb des zulässigen Bereichs",
+        "not_a_choice": "Wert ist keine der zulässigen Optionen des Feldes",
+        "too_long": "Wert ist zu lang",
+        "invalid_date": "Wert ist kein gültiges Datum",
+        "marker_unparseable": "Marker konnte nicht als JSON geparst werden",
+        "too_many_lines": "Zu viele Marker-Zeilen in diesem Lauf",
+        "too_many_keys": "Zu viele Schlüssel im Marker",
+        "marker_too_large": "Marker hat das Größenlimit überschritten",
+        "forbidden_key": "Schlüssel ist nicht zulässig",
+        "envelope_unparseable": "Strukturiertes Ergebnis konnte nicht geparst werden",
+        "envelope_unsupported_version": "Strukturiertes Ergebnis verwendet eine nicht unterstützte Version"
+      }
     },
     "actions": {
       "copyToClipboard": "In die Zwischenablage kopieren"

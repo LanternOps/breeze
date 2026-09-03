@@ -622,7 +622,25 @@
       "title": "Custom field writes",
       "applied": "Applied",
       "rejected": "Rejected",
-      "none": "None"
+      "none": "None",
+      "reasons": {
+        "unknown_field": "No matching field definition",
+        "not_script_writable": "Field is not script-writable",
+        "not_applicable_to_device": "Field does not apply to this device type",
+        "device_not_found": "Device not found",
+        "invalid_type": "Value has the wrong type",
+        "out_of_range": "Value is out of range",
+        "not_a_choice": "Value is not one of the field's allowed choices",
+        "too_long": "Value is too long",
+        "invalid_date": "Value is not a valid date",
+        "marker_unparseable": "Marker could not be parsed as JSON",
+        "too_many_lines": "Too many marker lines in this run",
+        "too_many_keys": "Too many keys in the marker",
+        "marker_too_large": "Marker exceeded the size limit",
+        "forbidden_key": "Key is not allowed",
+        "envelope_unparseable": "Structured result could not be parsed",
+        "envelope_unsupported_version": "Structured result used an unsupported version"
+      }
     },
     "actions": {
       "copyToClipboard": "Copy to clipboard"
