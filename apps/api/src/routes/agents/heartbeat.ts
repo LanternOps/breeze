@@ -864,6 +864,50 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       : null;
   }
 
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // Three-way, matching the wire contract in schemas.ts:
+  //   undefined -> no news. A pre-#3207 agent omits `rebootStatus` entirely,
+  //                and the whole point of the isVirtual-style `!== undefined`
+  //                guard is that such an agent must not wipe a live schedule
+  //                out of the console on its next beat.
+  //   null      -> news: nothing is scheduled any more. Clear all five.
+  //   object    -> store the snapshot as a unit.
+  //
+  // The snapshot is written whole rather than column-by-column against the
+  // stored row. This UPDATE already fires on every heartbeat (lastSeenAt /
+  // status / updatedAt are unconditional above) and none of these columns is
+  // indexed, so re-assigning an unchanged value costs no extra tuple, no extra
+  // WAL record and no index maintenance — while a per-column diff would add
+  // Date-vs-Date comparison hazards for nothing. The one case worth skipping is
+  // the steady state, below: the overwhelming majority of the fleet has no
+  // restart scheduled and reports null forever, so a device whose columns are
+  // ALREADY clear contributes nothing to the SET list at all.
+  if (data.rebootStatus === null) {
+    const alreadyClear = [
+      device.rebootScheduledAt,
+      device.rebootDeadline,
+      device.rebootSource,
+      device.rebootDeferralsUsed,
+      device.rebootMaxDeferrals,
+    ].every((stored) => stored === null || stored === undefined);
+    if (!alreadyClear) {
+      deviceUpdates.rebootScheduledAt = null;
+      deviceUpdates.rebootDeadline = null;
+      deviceUpdates.rebootSource = null;
+      deviceUpdates.rebootDeferralsUsed = null;
+      deviceUpdates.rebootMaxDeferrals = null;
+    }
+  } else if (data.rebootStatus !== undefined) {
+    deviceUpdates.rebootScheduledAt = new Date(data.rebootStatus.scheduledAt);
+    deviceUpdates.rebootDeadline = data.rebootStatus.deadline
+      ? new Date(data.rebootStatus.deadline)
+      : null;
+    deviceUpdates.rebootSource = data.rebootStatus.source ?? null;
+    deviceUpdates.rebootDeferralsUsed = data.rebootStatus.deferralsUsed ?? null;
+    deviceUpdates.rebootMaxDeferrals = data.rebootStatus.maxDeferrals ?? null;
+  }
+
   // Update hostname/OS version when agent reports changes
   if (data.hostname && data.hostname !== device.hostname) {
     deviceUpdates.hostname = data.hostname;

@@ -587,15 +587,24 @@ Schedule, cancel, and check the status of managed reboots (separate from the imm
 
 ### `schedule_reboot`
 
-| Param | Type | Default | Description |
-|---|---|---|---|
-| `delayMinutes` | int | `60` | Minutes until reboot (1-10080, i.e. up to 7 days) |
-| `reason` | string | `"Scheduled by administrator"` | Reboot reason for logging and user notification |
-| `source` | string | `"manual"` | Initiator: `"manual"`, `"patch"`, `"policy"`, etc. |
-| `deadline` | string | `now + delayMinutes` | RFC 3339 hard stop. The API always sends it; a payload without it falls back to the calculated reboot time |
-| `allowDeferral` | bool | `false` | Whether the signed-in user may postpone this restart. Absent means `false` -- a restart is never postponable by default |
-| `maxDeferrals` | int | `0` | How many postponements this restart allows |
-| `deferralMinutes` | int | `0` | How far each postponement pushes the restart out |
+| Param | Type | Required | Accepted range | If absent |
+|---|---|---|---|---|
+| `delayMinutes` | int | No | 1-10080 (minutes, up to 7 days) | Defaults to `60` |
+| `reason` | string | No | any string | Defaults to `"Scheduled by administrator"` |
+| `source` | string | No | `patch_job` (patch installs) or `maintenance_window` (maintenance sweeps) are the values Breeze itself sends | Defaults to `"manual"`. Echoed back on the heartbeat as `rebootStatus.source`, so a value outside `^[a-z0-9_]{1,32}$` is dropped by the server rather than stored |
+| `deadline` | string (RFC 3339) | No | must parse as RFC 3339 | Defaults to `now + delayMinutes`. A non-empty but malformed value **fails the command** rather than falling back |
+| `allowDeferral` | bool | No | `true` / `false` | **Absent means OFF.** A restart is never postponable unless this key is explicitly `true` |
+| `maxDeferrals` | int | Only when `allowDeferral` is `true` | 1-10 | Ignored when `allowDeferral` is absent or `false`. When `allowDeferral` is `true`, an absent or out-of-range value **fails the command** |
+| `deferralMinutes` | int | Only when `allowDeferral` is `true` | 5-1440 | Same as `maxDeferrals`: ignored unless `allowDeferral` is `true`, and an absent or out-of-range value then **fails the command** |
+
+<Aside type="caution">
+`maxDeferrals` and `deferralMinutes` are a hard contract, not a clamp target: a
+value outside 1-10 or 5-1440 (respectively) causes the agent to **fail the
+`schedule_reboot` command**, not coerce it to the nearest valid bound. The
+ranges mirror the API's own CHECK constraints, so an out-of-range value can
+only reach the agent via a forged or corrupted payload — clamping it would
+mask that instead of surfacing a failed command.
+</Aside>
 
 Supported on Windows, Linux and macOS. The agent warns the logged-in user
 immediately when the reboot is scheduled, follows up with reminders at 60, 15 and
@@ -967,6 +976,34 @@ The agent sends a heartbeat every 60 seconds containing:
 | `os` | OS name and version |
 | `hostname` | Current hostname |
 | `agentVersion` | Running agent version |
+| `rebootStatus` | Scheduled-restart snapshot from the agent's reboot manager (`#3207`). See [Reboot status](#reboot-status) below |
+
+### Reboot status
+
+`rebootStatus` is a three-way field, not a plain optional -- its meaning changes
+between "the key is missing," "the key is `null`," and "the key holds an
+object":
+
+- **Absent from the heartbeat body** -- "no news." An agent built before this
+  field existed omits `rebootStatus` entirely, and the server leaves the
+  device's stored reboot columns untouched.
+- **`rebootStatus: null`** -- there is no restart scheduled: it was cancelled,
+  or it already fired. The server clears the stored columns.
+- **`rebootStatus: { ... }`** -- the live schedule:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `scheduledAt` | string (RFC 3339, with offset) | Yes | When the restart will fire. The only required member -- a malformed value makes the server drop the whole `rebootStatus` object (treated the same as absent) rather than reject the heartbeat |
+| `deadline` | string (RFC 3339, with offset) | No | Absolute cutoff past which the restart happens regardless of remaining deferral budget |
+| `source` | string | No | What requested the restart, echoed back from the `schedule_reboot` command that scheduled it: `patch_job`, `maintenance_window`, or the agent's own `manual` default |
+| `deferralsUsed` | int (0-10) | No | How many times the signed-in user has postponed this restart |
+| `maxDeferrals` | int (0-10) | No | How many postponements this restart allows |
+
+<Aside type="note">
+`maxDeferrals: 0` means this restart cannot be postponed at all, which is a
+different statement from `maxDeferrals` being absent (an agent that predates
+deferral reporting). Do not treat the two as equivalent.
+</Aside>
 
 ---
 
