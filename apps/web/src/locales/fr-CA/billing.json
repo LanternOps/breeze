@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (groupe supprimé)",
       "coverage": {
         "uncovered": "{{count}} appareil(s) de cette organisation ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
-        "allCovered": "Chaque appareil de cette organisation est facturé par une ligne de ce contrat."
+        "allCovered": "Chaque appareil de cette organisation est facturé par une ligne de ce contrat.",
+        "uncoveredLead": "{{count}} appareil(s) de cette organisation ne sont facturés par aucune ligne de ce contrat :",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Activer",

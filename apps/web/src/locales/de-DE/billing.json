@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (gelöschte Gruppe)",
       "coverage": {
         "uncovered": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
-        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet."
+        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet.",
+        "uncoveredLead": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Aktivieren",

@@ -298,6 +298,26 @@
     "resolve": "Resolver",
     "promote": "Promover"
   },
+  "deviceBillingCard": {
+    "title": "Facturación",
+    "uncovered": "Ninguna línea de contrato activa factura este dispositivo.",
+    "viewContracts": "Ver contratos",
+    "notBillable": {
+      "decommissioned": "No facturado — este dispositivo está dado de baja",
+      "ephemeral": "No facturado — este dispositivo es de sesión de soporte efímera",
+      "not_billable": "No facturado — este dispositivo no es facturable actualmente"
+    },
+    "error": {
+      "generic": "No se pudo cargar la cobertura de facturación.",
+      "groupEvaluation": "No se pudo evaluar un grupo de dispositivos de un contrato activo ({{group}}). La cobertura es desconocida."
+    },
+    "matchedBy": {
+      "org": "Toda la organización",
+      "site": "Este sitio",
+      "role": "Rol: {{role}}",
+      "group": "Grupo: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Se activó la recopilación de métricas de arranque. Los datos aparecerán después del próximo ciclo de inicio o recopilación.",
     "failedToTriggerCollection": "No se pudo activar la recopilación",

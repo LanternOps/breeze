@@ -298,6 +298,26 @@
     "resolve": "Lösen",
     "promote": "Fördern"
   },
+  "deviceBillingCard": {
+    "title": "Abrechnung",
+    "uncovered": "Keine aktive Vertragsposition rechnet dieses Gerät ab.",
+    "viewContracts": "Verträge anzeigen",
+    "notBillable": {
+      "decommissioned": "Nicht abgerechnet — dieses Gerät ist stillgelegt",
+      "ephemeral": "Nicht abgerechnet — dieses Gerät ist ein temporäres Support-Sitzungsgerät",
+      "not_billable": "Nicht abgerechnet — dieses Gerät ist derzeit nicht abrechenbar"
+    },
+    "error": {
+      "generic": "Abrechnungsabdeckung konnte nicht geladen werden.",
+      "groupEvaluation": "Eine Gerätegruppe eines aktiven Vertrags konnte nicht ausgewertet werden ({{group}}). Die Abdeckung ist unbekannt."
+    },
+    "matchedBy": {
+      "org": "Organisationsweit",
+      "site": "Dieser Standort",
+      "role": "Rolle: {{role}}",
+      "group": "Gruppe: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Die Erfassung der Boot-Metriken wurde ausgelöst. Die Daten werden nach dem nächsten Start- oder Erfassungszyklus angezeigt.",
     "failedToTriggerCollection": "Die Erfassung konnte nicht ausgelöst werden",

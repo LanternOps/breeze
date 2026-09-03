@@ -18,6 +18,7 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
+import { useOrgIdFromHash } from './orgHash';
 import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
@@ -208,6 +209,14 @@ export default function DevicesPage() {
   // its server half.
   const [listFilters, setListFilters] = useState<ListFilters>(DEFAULT_LIST_FILTERS);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
+  // #3205 W06: a coverage-notice deep link pins the org in the hash. Adoption is a
+  // LAYOUT effect, and its position above useAdvancedFilterIds is load-bearing:
+  // React runs every layout effect in a commit before any passive effect, and the
+  // filter preview (useAdvancedFilterIds.ts:40) is a passive effect keyed on the
+  // FILTER alone — it never re-runs when the org changes, so a preview that fired
+  // first would be computed against the wrong org and never corrected.
+  // Pinned by DevicesPage.deepLink.test.tsx.
+  useOrgIdFromHash();
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.

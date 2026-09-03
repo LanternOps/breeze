@@ -298,6 +298,26 @@
     "resolve": "Resolve",
     "promote": "Promote"
   },
+  "deviceBillingCard": {
+    "title": "Billing",
+    "uncovered": "No active contract line bills this device.",
+    "viewContracts": "View contracts",
+    "notBillable": {
+      "decommissioned": "Not billed — this device is decommissioned",
+      "ephemeral": "Not billed — this device is an ephemeral support-session device",
+      "not_billable": "Not billed — this device is not currently billable"
+    },
+    "error": {
+      "generic": "Couldn't load billing coverage.",
+      "groupEvaluation": "A device group on an active contract couldn't be evaluated ({{group}}). Coverage is unknown."
+    },
+    "matchedBy": {
+      "org": "Org-wide",
+      "site": "This site",
+      "role": "Role: {{role}}",
+      "group": "Group: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Boot metrics collection triggered. Data will appear after next boot or collection cycle.",
     "failedToTriggerCollection": "Failed to trigger collection",

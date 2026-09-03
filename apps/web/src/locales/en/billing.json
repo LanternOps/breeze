@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (deleted group)",
       "coverage": {
         "uncovered": "{{count}} device(s) on this organization are not billed by any line on this contract: {{breakdown}}",
-        "allCovered": "Every device on this organization is billed by a line on this contract."
+        "allCovered": "Every device on this organization is billed by a line on this contract.",
+        "uncoveredLead": "{{count}} device(s) on this organization are not billed by any line on this contract:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Activate",

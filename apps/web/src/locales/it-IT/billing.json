@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (gruppo eliminato)",
       "coverage": {
         "uncovered": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
-        "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto."
+        "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto.",
+        "uncoveredLead": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Attiva",
