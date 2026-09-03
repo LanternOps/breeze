@@ -637,3 +637,78 @@ describe('AiAgentSchedulesSection next-run preview', () => {
     expect(await screen.findByTestId('ai-agent-schedule-editor-next-run-none')).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// onDirtyChange — what the parent form blocks its Save and its drawer on.
+// Review finding 3: dirtiness was `draft !== null`, so OPENING an editor to
+// read a schedule counted as unsaved work.
+// ---------------------------------------------------------------------------
+describe('AiAgentSchedulesSection unsaved-work reporting (#4187 UI critique round 2)', () => {
+  it('does not report an opened-but-unedited draft as dirty', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    await screen.findByTestId('ai-agent-schedule-editor');
+
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it('reports dirty on the first field change, for every editable field', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+    // The enabled toggle and the kind checkboxes are edits too — a guard that
+    // only watched the cron box would discard either without a word.
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-enabled'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-kind-disk_pressure'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('clears dirty when the draft is cancelled and when it saves', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  // Re-opening a draft after an edit must start clean: `touched` is per-draft,
+  // not per-mount, or the section would stay latched dirty forever after one
+  // keystroke anywhere.
+  it('starts clean again when a second draft is opened', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    await screen.findByTestId('ai-agent-schedule-editor');
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+  });
+});

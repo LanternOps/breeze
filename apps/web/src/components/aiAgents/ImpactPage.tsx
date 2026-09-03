@@ -41,6 +41,7 @@ import {
 import type {
   AiAgentImpactBucketDto,
   AiAgentImpactCounterKey,
+  AiAgentImpactCounters,
   AiAgentImpactDto,
   AiAgentImpactWindow,
   ImpactWeights,
@@ -49,6 +50,14 @@ import type {
 const DEFAULT_WINDOW: AiAgentImpactWindow = 30;
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 120_000;
+
+// Fallback counters for the (momentary, pre-load) window where the weights
+// drawer's props are wired before `dto` has ever resolved — the drawer only
+// actually OPENS once the Edit-weights button exists, which itself requires
+// `dto`, but the prop must still be a real, typed value at every render.
+const ZERO_IMPACT_COUNTERS: AiAgentImpactCounters = Object.fromEntries(
+  AI_AGENT_IMPACT_COUNTER_KEYS.map((key) => [key, 0]),
+) as AiAgentImpactCounters;
 
 /**
  * Scoped light/dark chart-fill custom properties for the outcomes bar chart.
@@ -184,6 +193,25 @@ function counterMetricLabel(t: (key: string) => string, key: AiAgentImpactCounte
 }
 
 /**
+ * `estTimeSavedValue` needs BOTH a display string and a `count` for
+ * i18next's `_one`/`_other` plural family ("1 hour" vs "1.5 hours") — passing
+ * only the formatted string left "1 hours" hard-coded regardless of value.
+ * Used by all four call sites of this key (the main tile, the by-org table,
+ * the PDF export, and — separately, in ImpactWeightsDrawer.tsx — the live
+ * re-pricing preview).
+ */
+function estTimeSavedLabel(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  seconds: number,
+): string {
+  const hours = seconds / 3600;
+  return t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
+    hours: formatNumber(hours, { maximumFractionDigits: 1 }),
+    count: hours,
+  });
+}
+
+/**
  * Uniform `{ metric, value }` rows for the PDF export — MANDATORY shape, not
  * a style choice: `renderGenericReport` derives its columns solely from
  * `Object.keys(rows[0])`, so a heterogeneous "summary header row" would
@@ -208,9 +236,7 @@ export function buildImpactPdfRows(
 
   rows.push({
     metric: t('aiAgentsPage.impact.pdf.metrics.estTimeSaved'),
-    value: t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-      hours: formatNumber(dto.totals.estSecondsSaved / 3600, { maximumFractionDigits: 1 }),
-    }),
+    value: estTimeSavedLabel(t, dto.totals.estSecondsSaved),
   });
   rows.push({
     metric: t('aiAgentsPage.impact.pdf.metrics.llmSpend'),
@@ -232,7 +258,15 @@ export function buildImpactPdfRows(
   for (const key of IMPACT_WEIGHT_KEYS) {
     rows.push({
       metric: t('aiAgentsPage.impact.pdf.weightRowLabel', { label: weightLabel(t, key) }),
-      value: String(dto.weights.effective[key]),
+      // Minutes — the one unit the editor, the disclosure, and this PDF all
+      // now speak; the wire value stays seconds (`dto.weights.effective`).
+      // maximumFractionDigits: 2, matching the editor's own round-trip
+      // precision (`secondsToMinutes` rounds to a hundredth of a minute) —
+      // at 1 digit this PDF silently disagreed with what the drawer showed
+      // and what was actually saved (e.g. 90s = 1.5min rendered "1.5" fine,
+      // but a value like 95s = 1.5833...min rounded to "1.6" here while the
+      // drawer's own round-trip kept 1.58).
+      value: formatNumber(dto.weights.effective[key] / 60, { maximumFractionDigits: 2 }),
     });
   }
 
@@ -557,7 +591,10 @@ export default function ImpactPage() {
           {/* Two secondary buttons at md+, collapsed into a single overflow
               menu below md so the header never wraps to 2-3 rows. */}
           <div className="hidden items-center gap-2 md:flex">
-            {dto && (
+            {/* Nothing to export on a window with zero outcomes — Edit weights
+                stays available even then, since there's still a methodology
+                to configure ahead of the first outcome. */}
+            {dto && hasAnyOutcome && (
               <button
                 type="button"
                 data-testid="ai-impact-export-pdf"
@@ -585,7 +622,7 @@ export default function ImpactPage() {
             )}
           </div>
 
-          {dto && (
+          {dto && (hasAnyOutcome || dto.canEditWeights) && (
             <details ref={overflowMenuRef} className="relative md:hidden">
               <summary
                 data-testid="ai-impact-overflow-menu"
@@ -595,18 +632,20 @@ export default function ImpactPage() {
                 <MoreHorizontal className="h-4 w-4" />
               </summary>
               <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border bg-popover p-1 shadow-md">
-                <button
-                  type="button"
-                  data-testid="ai-impact-export-pdf-overflow"
-                  onClick={() => {
-                    closeOverflowMenu();
-                    void handleExportPdf();
-                  }}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                >
-                  <Download className="h-4 w-4" />
-                  {t('aiAgentsPage.impact.exportPdf')}
-                </button>
+                {hasAnyOutcome && (
+                  <button
+                    type="button"
+                    data-testid="ai-impact-export-pdf-overflow"
+                    onClick={() => {
+                      closeOverflowMenu();
+                      void handleExportPdf();
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    <Download className="h-4 w-4" />
+                    {t('aiAgentsPage.impact.exportPdf')}
+                  </button>
+                )}
                 {dto.canEditWeights && (
                   <button
                     type="button"
@@ -631,6 +670,7 @@ export default function ImpactPage() {
         open={weightsDrawerOpen}
         effective={weights}
         overrides={dto?.weights.overrides ?? null}
+        counters={dto?.totals ?? ZERO_IMPACT_COUNTERS}
         onClose={() => setWeightsDrawerOpen(false)}
         onSaved={handleWeightsSaved}
       />
@@ -710,11 +750,7 @@ export default function ImpactPage() {
                   <Tile
                     testId="ai-impact-tile-est-seconds-saved"
                     label={t('aiAgentsPage.impact.tiles.estTimeSaved')}
-                    value={t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-                      hours: formatNumber(dto.totals.estSecondsSaved / 3600, {
-                        maximumFractionDigits: 1,
-                      }),
-                    })}
+                    value={estTimeSavedLabel(t, dto.totals.estSecondsSaved)}
                     caption={t('aiAgentsPage.impact.tiles.estTimeSavedCaption')}
                     disclosure={
                       <details
@@ -730,8 +766,12 @@ export default function ImpactPage() {
                             <li key={key}>
                               {t('aiAgentsPage.impact.weightsTooltipLine', {
                                 label: weightLabel(t, key),
+                                // maximumFractionDigits: 2 — see the PDF row
+                                // builder's comment; this disclosure must
+                                // agree with the editor's own round-trip
+                                // precision, not silently disagree at 1 digit.
                                 minutes: formatNumber(weights[key] / 60, {
-                                  maximumFractionDigits: 1,
+                                  maximumFractionDigits: 2,
                                 }),
                               })}
                             </li>
@@ -912,11 +952,7 @@ export default function ImpactPage() {
                           {formatNumber(row.fixesExecuted)}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
-                          {t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
-                            hours: formatNumber(row.estSecondsSaved / 3600, {
-                              maximumFractionDigits: 1,
-                            }),
-                          })}
+                          {estTimeSavedLabel(t, row.estSecondsSaved)}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
                           {formatCurrency(row.llmCents / 100)}

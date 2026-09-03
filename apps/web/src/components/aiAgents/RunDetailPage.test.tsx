@@ -425,7 +425,9 @@ describe('RunDetailPage sweep findings', () => {
     expect(evidence.tagName).toBe('DL');
     const terms = evidence.querySelectorAll('dt');
     const values = evidence.querySelectorAll('dd');
-    expect(Array.from(terms).map((el) => el.textContent)).toEqual(['serviceName:', 'state:']);
+    // Critique finding #2: the terms are HUMAN labels, never the raw
+    // camelCase field names the sweep loader happens to use.
+    expect(Array.from(terms).map((el) => el.textContent)).toEqual(['Service name:', 'State:']);
     expect(Array.from(values).map((el) => el.textContent)).toEqual(['Spooler', 'stopped']);
     // A JSON dump would carry the object punctuation; the k/v rendering never does.
     expect(container.innerHTML).not.toContain('{&quot;serviceName&quot;');
@@ -703,7 +705,10 @@ describe('RunDetailPage ticket triage proposal', () => {
 
     const intentRow = await screen.findByTestId('ai-agent-run-triage-intent-intent-42');
     expect(intentRow).toHaveTextContent('manage_tickets:update_fields');
-    expect(intentRow).toHaveTextContent('approved');
+    // Critique finding #2: the intent status is translated, never the raw
+    // `action_intents.status` token.
+    expect(intentRow).toHaveTextContent('Approved');
+    expect(intentRow.textContent).not.toContain('approved');
 
     expect(screen.getByTestId('ai-agent-run-triage-draft-draft-91')).toBeInTheDocument();
   });
@@ -996,5 +1001,422 @@ describe('RunDetailPage live polling', () => {
     });
 
     expect(screen.getByTestId('run-detail-header')).toHaveTextContent('Completed');
+  });
+});
+
+// Critique finding #1 — the run summary is the agent's own account of what it
+// found. It leads the header (above the machine-derived metadata grid), reads
+// at body weight, and renders a safe markdown subset instead of literal
+// asterisks and un-listed "1." lines.
+describe('RunDetailPage summary', () => {
+  it('leads the header with the summary, above the machine-derived metadata grid', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    expect(screen.getByText('What the agent found')).toBeInTheDocument();
+
+    const summary = screen.getByTestId('run-detail-summary');
+    const meta = screen.getByTestId('run-detail-meta');
+    // The summary must come FIRST in document order — the metadata grid is
+    // supporting detail, not the headline.
+    // eslint-disable-next-line no-bitwise
+    expect(summary.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders markdown emphasis and ordered lists instead of literal asterisks', async () => {
+    const summary = '**WKS-01** is degraded.\n\n1. **Failed backup** (high)\n2. Disk at 94%\n';
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    const block = screen.getByTestId('run-detail-summary');
+    expect(block.querySelector('strong')?.textContent).toBe('WKS-01');
+    expect(block.querySelectorAll('ol > li')).toHaveLength(2);
+    // The raw markup must be GONE, not merely styled around it.
+    expect(block.textContent).not.toContain('**');
+  });
+
+  it('renders inline code without leaking backticks', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary: 'Restarted `Spooler` on WKS-01.' } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    const block = screen.getByTestId('run-detail-summary');
+    expect(block.querySelector('code')?.textContent).toBe('Spooler');
+    expect(block.textContent).not.toContain('`');
+  });
+
+  it('never turns raw HTML in a model-authored summary into markup', async () => {
+    const summary = '<img src=x onerror="alert(1)"> <script>alert(2)</script> **bold**';
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    const block = screen.getByTestId('run-detail-summary');
+    expect(block.querySelector('img')).toBeNull();
+    expect(block.querySelector('script')).toBeNull();
+    // Review finding #7: `skipHtml` drops the raw tag source entirely rather
+    // than converting it to literal escaped text — the earlier comment's
+    // claim that it was already "dropped" was wrong for react-markdown 10
+    // (which turns it into text without `skipHtml`), so this is now the
+    // property that actually keeps the tag soup off the screen.
+    expect(block.textContent).not.toContain('<img');
+    expect(block.textContent).not.toContain('<script');
+    // The safe subset still applied to the parts that were markdown.
+    expect(block.querySelector('strong')?.textContent).toBe('bold');
+  });
+
+  // Review finding #7 — a fenced code block is common in a tool-output
+  // summary; `pre` was missing from the allowlist, so `unwrapDisallowed`
+  // dropped the wrapping element and left only the bare inline text.
+  it('renders a fenced code block as a pre element', async () => {
+    const summary = 'Ran:\n\n```\nGet-Service Spooler\n```';
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    const block = screen.getByTestId('run-detail-summary');
+    expect(block.querySelector('pre')).not.toBeNull();
+    expect(block.querySelector('pre')?.textContent).toContain('Get-Service Spooler');
+  });
+
+  it('keeps only http(s) links and renders any other scheme as plain text', async () => {
+    const summary = 'See [the runbook](https://example.com/runbook) or [this](javascript:alert(1)).';
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-summary')).toBeInTheDocument());
+    const block = screen.getByTestId('run-detail-summary');
+    const links = Array.from(block.querySelectorAll('a'));
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', 'https://example.com/runbook');
+    // The rejected link keeps its label as text, so no content is lost.
+    expect(block.textContent).toContain('this');
+    expect(block.innerHTML).not.toContain('javascript:');
+  });
+
+  it('omits the whole summary block when the run wrote none', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, summary: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-summary')).not.toBeInTheDocument();
+  });
+});
+
+// Critique finding #1c — a `no_action` verdict on a run that DID produce
+// findings/proposals must not claim "No action needed" as the headline.
+describe('RunDetailPage verdict vs findings', () => {
+  it('badges the count of findings to review instead of claiming no action', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'no_action' as const, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    const badge = screen.getByTestId('run-detail-findings-badge');
+    // 6 sweep findings + 1 proposed trace entry — the denied trace entry is a
+    // guardrail refusing a tool the model attempted, not a finding to review
+    // (review finding #6).
+    expect(badge).toHaveTextContent('7 findings to review');
+    expect(badge.className).toContain('amber');
+    // Review finding #7: `run-detail-verdict-badge` is a stable wrapper that
+    // survives the override — it's present here too, wrapping the findings
+    // badge, so a consumer that always looks for "the verdict badge" never
+    // sees it disappear.
+    expect(screen.getByTestId('run-detail-verdict-badge')).toContainElement(badge);
+    // The verdict itself survives, demoted to secondary text.
+    expect(screen.getByTestId('run-detail-verdict-secondary')).toHaveTextContent('No action needed');
+  });
+
+  // Review finding #6 — a guardrail DENIAL is the system working as
+  // intended, not something left for a human to review; it must never bump
+  // the findings count.
+  it('does not count a denied trace entry as a finding to review', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        runVerdict: 'no_action' as const,
+        sweep: null,
+        trace: [{ kind: 'denied' as const, tool: 'files.delete', reason: 'protected path' }],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    // A denial alone must not trip the findings-override — the plain verdict
+    // badge stands.
+    expect(screen.getByTestId('run-detail-verdict-badge')).toHaveTextContent('No action needed');
+    expect(screen.queryByTestId('run-detail-findings-badge')).not.toBeInTheDocument();
+  });
+
+  it('keeps the plain verdict badge when a no-action run really found nothing', async () => {
+    mockEndpoints({
+      detail: { ...RUN_DETAIL, runVerdict: 'no_action' as const, sweep: null, trace: [] },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-verdict-badge')).toHaveTextContent('No action needed');
+    expect(screen.queryByTestId('run-detail-findings-badge')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('run-detail-verdict-secondary')).not.toBeInTheDocument();
+  });
+
+  it('leaves a non-no_action verdict alone even when findings exist', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, runVerdict: 'needs_attention' as const, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-verdict-badge')).toHaveTextContent('Needs attention');
+    expect(screen.queryByTestId('run-detail-findings-badge')).not.toBeInTheDocument();
+  });
+});
+
+// Critique finding #2 — no machine internals on a reading surface.
+describe('RunDetailPage evidence rendering', () => {
+  const withEvidence = (evidence: Record<string, string | number | boolean | null>) => ({
+    ...RUN_DETAIL,
+    sweep: { ...SWEEP, findings: [{ ...SWEEP.findings[0], evidence }] },
+  });
+
+  it('renders booleans as words rather than true/false', async () => {
+    mockEndpoints({ detail: withEvidence({ knownExploited: true, autoRestartAttempted: false }) });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    expect(evidence).toHaveTextContent('Yes');
+    expect(evidence).toHaveTextContent('No');
+    expect(evidence.textContent).not.toContain('true');
+    expect(evidence.textContent).not.toContain('false');
+  });
+
+  it('formats ISO timestamps through the locale formatter instead of printing them raw', async () => {
+    mockEndpoints({ detail: withEvidence({ checkedAt: '2026-08-20T10:00:00.000Z', pendingSince: '2026-08-25' }) });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    expect(evidence.textContent).not.toContain('2026-08-20T10:00:00.000Z');
+    expect(evidence.textContent).not.toContain('2026-08-25');
+    expect(evidence.textContent).toContain('2026');
+  });
+
+  it('drops opaque uuid identifiers rather than showing them to an operator', async () => {
+    const uuid = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+    mockEndpoints({
+      detail: withEvidence({ deviceVulnerabilityId: uuid, deviceId: 'd1', cveCount: 3 }),
+    });
+    const { container } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    expect(container.innerHTML).not.toContain(uuid);
+    // The device id is already the Device column's link target, so it is not
+    // repeated as an evidence row either.
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    expect(evidence.textContent).not.toContain('deviceVulnerabilityId');
+    expect(evidence).toHaveTextContent('CVE count');
+  });
+
+  it('sentence-cases an unmapped key instead of printing camelCase', async () => {
+    mockEndpoints({ detail: withEvidence({ pendingSince: 'soon', watchType: 'service' }) });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toBeInTheDocument());
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    expect(evidence).toHaveTextContent('Pending since');
+    expect(evidence).toHaveTextContent('Watch type');
+    expect(evidence.textContent).not.toContain('pendingSince');
+    expect(evidence.textContent).not.toContain('watchType');
+  });
+
+  it('links the finding device to its device page', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0-device')).toBeInTheDocument());
+    const link = screen.getByTestId('ai-agent-run-sweep-finding-0-device').querySelector('a');
+    expect(link).toHaveAttribute('href', '/devices/d1');
+    expect(link).toHaveTextContent('WKS-01');
+  });
+
+  it('translates a linked-approval status instead of printing the raw enum token', async () => {
+    mockEndpoints({
+      detail: { ...RUN_DETAIL, intents: [{ ...RUN_DETAIL.intents[0], status: 'pending_approval' }] },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-intents')).toBeInTheDocument());
+    const list = screen.getByTestId('run-detail-intents');
+    expect(list).toHaveTextContent('Awaiting approval');
+    expect(list.textContent).not.toContain('pending_approval');
+  });
+});
+
+// Critique finding #3 — the one actionable finding must not be a dead end.
+describe('RunDetailPage sweep proposal affordances', () => {
+  it("links a not-allowlisted proposal to the agent's permissions", async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-1-proposal')).toBeInTheDocument());
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-1-proposal');
+    expect(cell).toHaveTextContent('Tool not allowed for this agent');
+    const link = screen.getByTestId('ai-agent-run-sweep-permissions-link-1');
+    expect(link).toHaveAttribute('href', '/settings/ai-agents#agent=a1');
+    // Warning tone, not muted: this is the one thing the operator can fix.
+    expect(cell.className).toContain('amber');
+  });
+
+  it('leaves a non-permissions reason unlinked but still in warning tone', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-3-proposal')).toBeInTheDocument());
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-3-proposal');
+    expect(cell).toHaveTextContent('Action limit reached for this run');
+    expect(screen.queryByTestId('ai-agent-run-sweep-permissions-link-3')).not.toBeInTheDocument();
+    expect(cell.className).toContain('amber');
+  });
+});
+
+// Critique finding #4 — duration belongs in the status row, and a sub-second
+// tool call must not read as "0s".
+describe('RunDetailPage duration', () => {
+  it('shows the run duration in the status row', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-header-duration')).toHaveTextContent('4m 55s');
+  });
+
+  it('renders a sub-second tool call in milliseconds rather than 0s', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-trace-entry-3')).toBeInTheDocument());
+    // trace[3].durationMs is 250 — `Math.round(250/1000)` floored it to "0s".
+    const entry = screen.getByTestId('run-detail-trace-entry-3');
+    expect(entry).toHaveTextContent('250ms');
+    expect(entry.textContent).not.toContain('0s');
+  });
+
+  // Review finding #7 — `formatDuration` fell through to `Math.round(NaN / 1000)`
+  // and rendered the literal string "NaNs" for any non-numeric input; a run
+  // with no `startedAt` (queued but never dequeued) hits this via the header,
+  // and a ledger entry with a missing `durationMs` hits it directly.
+  it('shows a dash rather than "NaNs" for a run with no startedAt', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, startedAt: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header-duration')).toBeInTheDocument());
+    const duration = screen.getByTestId('run-detail-header-duration');
+    expect(duration).toHaveTextContent('—');
+    expect(duration.textContent).not.toContain('NaN');
+  });
+
+  it('shows a dash rather than "NaNs" for a ledger entry with an undefined durationMs', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ledger: [{ ...RUN_DETAIL.ledger[0], durationMs: undefined as unknown as number }],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument());
+    const table = screen.getByTestId('run-detail-ledger');
+    expect(table.textContent).not.toContain('NaN');
+  });
+});
+
+// Critique finding #5 — an exposure readout of "0 of 0 devices" is noise.
+describe('RunDetailPage exposure budget gating', () => {
+  it('hides the card entirely for a run that targeted no device', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, deviceId: null, deviceHostname: null, sweep: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-budget-card')).not.toBeInTheDocument();
+  });
+
+  it('still shows the card for a device-less sweep run that touched devices', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, deviceId: null, deviceHostname: null, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-budget-card')).toBeInTheDocument());
+  });
+
+  it('hides the card when the readout itself is 0 of 0', async () => {
+    mockEndpoints({ budget: { ...BUDGET, distinctDevices: 0, allowance: 0 } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('run-detail-budget-loading')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-budget-card')).not.toBeInTheDocument();
+  });
+});
+
+// Critique finding #6 — the findings table needs an accessible caption, and
+// the two trace-shaped sections must say how they differ.
+describe('RunDetailPage accessibility', () => {
+  it('gives the sweep findings table a visually-hidden caption', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-findings')).toBeInTheDocument());
+    const caption = screen.getByTestId('ai-agent-run-sweep-findings').querySelector('caption');
+    expect(caption).not.toBeNull();
+    expect(caption?.className).toContain('sr-only');
+    expect(caption?.textContent?.trim().length).toBeGreaterThan(0);
+  });
+
+  it('explains how the execution trace and the tool-execution ledger differ', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-trace')).toBeInTheDocument());
+    const traceDescription = screen.getByTestId('run-detail-trace-description');
+    const ledgerDescription = screen.getByTestId('run-detail-ledger-description');
+    expect(traceDescription.textContent?.trim().length).toBeGreaterThan(0);
+    expect(ledgerDescription.textContent?.trim().length).toBeGreaterThan(0);
+    // Two sections that render the same single row must not carry the same
+    // explanation, or the reader learns nothing about the difference.
+    expect(traceDescription.textContent).not.toBe(ledgerDescription.textContent);
+  });
+});
+
+// Critique finding #7 — at 390px the six-column findings table degraded into
+// two visible columns and ~250px-tall empty rows. Stacked cards below `md`.
+describe('RunDetailPage findings at narrow widths', () => {
+  it('renders one stacked card per finding below md, and keeps the table from md up', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-cards')).toBeInTheDocument());
+    const cards = screen.getByTestId('ai-agent-run-sweep-finding-cards');
+    expect(cards.className).toContain('md:hidden');
+    for (let index = 0; index < 6; index += 1) {
+      expect(screen.getByTestId(`ai-agent-run-sweep-finding-card-${index}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('ai-agent-run-sweep-finding-card-6')).not.toBeInTheDocument();
+
+    const tableWrapper = screen.getByTestId('ai-agent-run-sweep-findings-table-wrapper');
+    expect(tableWrapper.className).toContain('hidden');
+    expect(tableWrapper.className).toContain('md:block');
+  });
+
+  it('carries the full finding on a card — severity, device, title, detail, evidence and proposal', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0')).toBeInTheDocument());
+    const card = screen.getByTestId('ai-agent-run-sweep-finding-card-0');
+    expect(card).toHaveTextContent('Critical');
+    expect(card).toHaveTextContent('WKS-01');
+    expect(card).toHaveTextContent('Print Spooler is stopped');
+    expect(card).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-card-0-evidence')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-sweep-card-proposal-link-0')).toHaveAttribute('href', '/approvals');
   });
 });
