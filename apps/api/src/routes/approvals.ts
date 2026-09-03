@@ -8,6 +8,7 @@ import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
+import { organizations } from '../db/schema/orgs';
 import { writeAuditEventAsync } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import {
@@ -380,6 +381,11 @@ approvalRoutes.get('/pending', async (c) => {
   const targetDevices = await resolveTargetDevices(
     page.map(({ approval, targetRef }) => ({ key: approval.id, intent: targetRef })),
   );
+  // Batched lookup: one query resolves the display name for every DISTINCT
+  // org on this page (no N+1) — see `lookupOrgNames`. Deliberately last among
+  // the page's batched lookups so a page with no orgId at all (every row
+  // intent-less) never issues it at all.
+  const orgNames = await lookupOrgNames(page.map(({ targetRef }) => targetRef?.orgId ?? null));
   return c.json({
     approvals: page.map(({ approval, approvalScope, attribution, targetRef }) =>
       serialize(
@@ -389,6 +395,7 @@ approvalRoutes.get('/pending', async (c) => {
         attribution,
         targetDevices.get(approval.id) ?? null,
         targetRef?.orgId ?? null,
+        (targetRef?.orgId && orgNames.get(targetRef.orgId)) || null,
       ),
     ),
     nextCursor,
@@ -1282,4 +1289,37 @@ async function lookupCustomerTenants(
     }
   }
   return map;
+}
+
+/**
+ * Resolve display names for a page's DISTINCT org ids in ONE query (no N+1) —
+ * same batching shape as `lookupCustomerTenants` above. Callers pass the exact
+ * `orgId` value (or null) they're about to hand `serialize` for each row, so a
+ * row with no linked intent (orgId null) is simply never a key here and
+ * serializes `orgName: null` — same for an orgId whose organization row no
+ * longer exists (a dangling id resolves to no map entry, not an error).
+ *
+ * System-scoped, same reasoning as `resolveTargetDevices` above: `orgId` here
+ * is always the linked intent's org, which the row's live-authorization check
+ * has ALREADY exposed to the caller in this very payload (as `orgId` itself) —
+ * a supervised row is authorized by REQUESTER IDENTITY, not org membership, so
+ * the caller's own ambient request context (their `organization_users` row,
+ * or lack of one for a partner approver) is not a reliable signal for whether
+ * they can see the org's name. Resolving a name for an org id already in the
+ * response is not a fresh authorization decision.
+ */
+async function lookupOrgNames(orgIds: (string | null)[]): Promise<Map<string, string>> {
+  const distinctIds = [...new Set(orgIds.filter((id): id is string => !!id))];
+  if (distinctIds.length === 0) return new Map();
+
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id, name: organizations.name })
+        .from(organizations)
+        .where(inArray(organizations.id, distinctIds)),
+    ),
+  );
+
+  return new Map(rows.map((row) => [row.id, row.name]));
 }

@@ -92,7 +92,10 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
   backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devicePatches: {},
   deviceWarranty: {},
   devices: {},
@@ -104,6 +107,8 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   portalBranding: {},
   portalUsers: {},
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   s1Agents: {},
   securityStatus: {},
   ticketComments: {},

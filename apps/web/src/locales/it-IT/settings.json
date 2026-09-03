@@ -1,4 +1,39 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Aggiornamento in tempo reale"
+    },
+    "list": {
+      "clearFilters": "Cancella filtri",
+      "emptyDescription": "Le esecuzioni attivate da avvisi, pianificazioni, ticket e azioni manuali appariranno qui una volta che un agente le avrà eseguite.",
+      "emptyFilteredDescription": "Nessuna esecuzione corrisponde a questi filtri. Prova un agente o uno stato diverso.",
+      "emptyConfigureLink": "Configura agenti IA"
+    },
+    "detail": {
+      "notFoundDescription": "Questa esecuzione potrebbe essere stata eliminata, oppure il link non è più valido.",
+      "trace": {
+        "emptyDescription": "Le chiamate agli strumenti proposte o eseguite dall'agente saranno elencate qui."
+      },
+      "ledger": {
+        "emptyDescription": "Gli strumenti effettivamente invocati dall'agente saranno elencati qui.",
+        "statuses": {
+          "pending": "In sospeso",
+          "approved": "Approvato",
+          "executing": "In esecuzione",
+          "completed": "Completato",
+          "failed": "Non riuscito",
+          "rejected": "Rifiutato"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Le approvazioni richieste da questa esecuzione saranno elencate qui."
+      },
+      "triage": {
+        "categoryLabel": "Categoria",
+        "categoryUnresolved": "Suggerita — nome non disponibile in questa vista"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Entità servizio",
     "description": "Gestisci le identità macchina con ambito partner e le relative chiavi di accesso.",
@@ -1380,7 +1415,7 @@
       "deleteOverride": "Rimuovi eccezione",
       "confirmDelete": "Conferma eliminazione",
       "cron": "Espressione cron",
-      "cronHint": "Cinque campi: minuto ora giorno-del-mese mese giorno-della-settimana. Ad esempio, 0 3 * * * viene eseguito ogni giorno alle 03:00.",
+      "cronHint": "Cinque campi: minuto ora giorno-del-mese mese giorno-della-settimana. Ad esempio, 0 3 * * * viene eseguito ogni giorno alle 03:00. Il campo dei minuti deve essere un numero letterale o un elenco separato da virgole (senza *, / o intervallo -) — le pianificazioni vengono eseguite al massimo ogni ora.",
       "cronInvalid": "Inserisci un'espressione cron valida a cinque campi prima di salvare.",
       "timezone": "Fuso orario",
       "kinds": {
@@ -1400,6 +1435,9 @@
       "tightenOnly": "Un'eccezione può solo restringere la baseline: può disattivare la scansione o rimuovere controlli, mai aggiungerne.",
       "noKinds": "Nessun controllo",
       "lastRun": "Ultima esecuzione {{at}} · {{admitted}} organizzazioni su {{total}} analizzate, {{skipped}} saltate.",
+      "nextRun": "Prossima esecuzione {{at}} ({{timezone}})",
+      "nextRunInvalid": "Pianificazione non valida",
+      "nextRunNone": "Nessuna esecuzione nel prossimo anno.",
       "kindLabels": {
         "disk_pressure": "Pressione sul disco",
         "stale_agents": "Agenti non aggiornati",
@@ -1432,6 +1470,26 @@
     "title": "Agenti AI",
     "description": "Lavoratori AI con un nome e una policy. I partner definiscono la linea di base; le organizzazioni possono soltanto restringerla.",
     "empty": "Nessun agente per ora.",
+    "kindHints": {
+      "triage": "Analizza i nuovi avvisi e propone cosa fare.",
+      "patch": "Esamina le patch mancanti e propone cosa installare.",
+      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi."
+    },
+    "emptyState": {
+      "title": "Nessun agente per ora",
+      "description": "Un agente è una policy salvata, non un processo in esecuzione: osserva gli avvisi, le patch o i ticket che scegliete, indaga con gli strumenti che consentite e poi propone una soluzione oppure la esegue. Iniziate in modalità ombra, in cui l’agente propone e una persona approva, così nulla raggiunge un dispositivo finché non lo decidete voi.",
+      "action": "Crea il primo agente"
+    },
+    "modeChoice": {
+      "legend": "Cosa può fare questo agente",
+      "off": "Disattivo",
+      "offConsequence": "Non viene eseguito nulla.",
+      "shadow": "Ombra",
+      "shadowConsequence": "Osserva e propone; una persona approva tutto.",
+      "act": "Azione",
+      "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
+      "actUnavailable": "Non ancora disponibile per questo agente."
+    },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
     "stateEnabled": "Attivo",
@@ -1477,8 +1535,11 @@
     "sections": {
       "scope": "Quando viene eseguito",
       "permissions": "Autorizzazioni",
+      "permissionsDescription": "Cosa può toccare questo agente. L’elenco degli strumenti amplia ciò che può fare; le risorse protette lo restringono e prevalgono sempre.",
       "policyDecide": "Autorizzazione della policy non presidiata",
       "limits": "Limiti",
+      "limitsBudget": "Budget e portata",
+      "limitsTiming": "Tempistiche",
       "notifications": "Notifiche",
       "instructions": "Istruzioni"
     },
@@ -1536,7 +1597,12 @@
       "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
-      "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione"
+      "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
+      "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
+      "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
+      "toolSuggestLabel": "Aggiungi uno strumento noto",
+      "toolSuggestHint": "I suggerimenti provengono dal registro delle azioni decidibili dalla policy, che non è l’elenco completo degli strumenti. Qualsiasi altro strumento consentito a questo agente si può comunque digitare qui sopra.",
+      "toolSuggestAdd": "Aggiungi"
     },
     "loading": "Caricamento degli agenti…",
     "runs": {
@@ -1781,6 +1847,7 @@
       "refresh": "Aggiorna",
       "refreshing": "Ricostruzione in corso…",
       "retry": "Riprova",
+      "moreActions": "Altre azioni",
       "errors": {
         "load": "Impossibile caricare il report di impatto.",
         "rebuild": "Impossibile accodare la ricostruzione del report.",
@@ -1793,6 +1860,15 @@
         "rebuildComplete": "Il report di impatto è stato ricostruito.",
         "rebuildStillRunning": "La ricostruzione è ancora in corso. Ricaricate questa pagina tra qualche minuto per vedere i nuovi dati."
       },
+      "emptyState": {
+        "title": "Nessun risultato IA in questo periodo",
+        "description": "I risultati appariranno qui non appena i tuoi agenti IA valuteranno un avviso, smisteranno un ticket o eseguiranno una correzione in modalità osservazione o azione. Amplia il periodo del report qui sopra, oppure configura un agente per iniziare.",
+        "action": "Configura un agente"
+      },
+      "tileGroups": {
+        "judged": "Valutati",
+        "executed": "Eseguiti"
+      },
       "tiles": {
         "alertsJudged": "Avvisi valutati",
         "noiseFlagged": "Contrassegnati come rumore",
@@ -1800,9 +1876,11 @@
         "draftsSent": "Bozze inviate",
         "fixesExecuted": "Correzioni eseguite",
         "promoteEligible": "Operazioni idonee alla promozione",
-        "promoteEligibleHint": "Operazioni con prove sufficienti e senza errori per essere preautorizzate. Apri Impostazioni → Agenti IA per esaminarle e promuoverle.",
+        "promoteEligibleCaption": "Operazioni con prove sufficienti e senza errori per essere preautorizzate. Apri Impostazioni → Agenti IA per esaminarle e promuoverle.",
         "estTimeSaved": "Tempo risparmiato stimato",
         "estTimeSavedValue": "{{hours}} ore",
+        "estTimeSavedCaption": "Stimato in base a un tempo fisso per risultato.",
+        "howEstimatedToggle": "Come viene stimato?",
         "llmSpend": "Spesa LLM"
       },
       "weightsTooltipTitle": "Solo una stima — a ogni risultato viene accreditato un tempo fisso:",
@@ -1886,6 +1964,8 @@
       "loading": "Caricamento delle prove di abilitazione…",
       "error": "Non è stato possibile caricare le prove di abilitazione.",
       "retry": "Riprova",
+      "noBaselineTitle": "Nessun agente di riferimento ancora",
+      "noBaseline": "Il monitoraggio dell’abilitazione inizia quando esiste un agente di riferimento a livello di partner di questo tipo. Creane uno con l’ambito \"Tutte le organizzazioni\" per iniziare a raccogliere le prove per questa organizzazione.",
       "orgRequired": "Scegli una sola organizzazione nel selettore delle organizzazioni per vedere le sue prove di abilitazione.",
       "empty": "Per questo agente non è stata ancora registrata alcuna prova.",
       "readOnlyNote": "L’esecuzione preautorizzata è disattivata in questa installazione; questi dati sono solo informativi.",
@@ -1894,6 +1974,22 @@
       "approvalsLink": "Segui questa richiesta nella casella delle approvazioni",
       "ceilingHint": "Le chiavi a livello di partner sono un limite massimo, non una concessione. L’agente di ogni organizzazione deve ricevere la chiave separatamente: tramite l’abilitazione o modificando l’agente di quella organizzazione.",
       "promote": "Promuovi",
+      "revoke": "Revoca",
+      "emptyTitle": "Ancora nessuna prova",
+      "demotedAt": "Revocata il {{at}}",
+      "demotedReason": "Motivo: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "un tentativo è fallito",
+        "recurrence": "l’avviso corretto si è ripresentato",
+        "operator": "un operatore l’ha revocata"
+      },
+      "revokeConfirm": {
+        "title": "Revoca la preautorizzazione",
+        "message": "{{opKey}} torna nella coda di approvazione per l’agente di questa organizzazione. Un’esecuzione già in corso non viene toccata; ogni successiva richiede di nuovo una decisione umana.",
+        "action": "Revoca",
+        "reasonLabel": "Motivo (facoltativo)",
+        "reasonHint": "Registrato nella voce di audit di questa revoca. Fino a 500 caratteri."
+      },
       "verifiedOfThreshold": "{{verified}} su {{threshold}}",
       "columns": {
         "opKey": "Operazione",
@@ -1924,11 +2020,17 @@
         "action": "Richiedi approvazione"
       },
       "toasts": {
-        "requested": "Preautorizzazione richiesta. Una seconda persona deve approvarla prima che questa operazione venga eseguita senza supervisione e vale solo per le esecuzioni future."
+        "requested": "Preautorizzazione richiesta. Una seconda persona deve approvarla prima che questa operazione venga eseguita senza supervisione e vale solo per le esecuzioni future.",
+        "revoked": "Preautorizzazione revocata. Questa operazione richiede di nuovo una decisione umana, a partire dalla prossima esecuzione."
       },
       "errors": {
         "promote": "Non è stato possibile inoltrare la richiesta di preautorizzazione.",
-        "policyDecideDisabled": "L’esecuzione preautorizzata è disattivata in questa installazione, quindi questa operazione non può essere promossa."
+        "policyDecideDisabled": "L’esecuzione preautorizzata è disattivata in questa installazione, quindi questa operazione non può essere promossa.",
+        "revoke": "Non è stato possibile revocare la preautorizzazione.",
+        "noPromotedGrant": "Questa operazione non è preautorizzata per questa organizzazione, quindi non c’è nulla da revocare.",
+        "alreadyDemoted": "Questa operazione è già tornata nella coda di approvazione.",
+        "alreadyRevoked": "Questa operazione era già stata rimossa dall’agente, quindi non è cambiato nulla.",
+        "ambiguousOpKey": "Più di un agente detiene questa operazione per questa organizzazione. Aprite l’agente da modificare e revocatela lì."
       },
       "reliability": {
         "caption": "Operazioni della modalità azione, in sola lettura: non sono chiavi di criterio, quindi non possono mai essere preautorizzate."
@@ -3927,7 +4029,8 @@
     },
     "columns": {
       "key": "Chiave",
-      "deviceTypes": "Tipi dispositivo"
+      "deviceTypes": "Tipi dispositivo",
+      "scriptWrite": "Scrittura da script"
     },
     "fieldTypes": {
       "text": {
@@ -3981,7 +4084,9 @@
       "patternPlaceholder": "ad es. ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Tipi dispositivo (opzionale)",
       "deviceTypesHelp": "Lascia vuoto per mostrarlo su tutti i tipi di dispositivo",
-      "requiredField": "Campo obbligatorio"
+      "requiredField": "Campo obbligatorio",
+      "scriptWrite": "Consenti agli script di scrivere questo campo",
+      "scriptWriteHelp": "Gli script eseguiti su un dispositivo possono impostare questo campo stampando ::breeze:custom-fields:: {\"key\": \"value\"}. Il valore appare anche nell'output salvato dello script: non scrivere mai un segreto in questo modo."
     },
     "delete": {
       "title": "Elimina campo personalizzato",

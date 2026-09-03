@@ -299,7 +299,7 @@ Shared audit type and the three service surfaces:
 export interface ContractLineAudit {
   orgId: string;
   contractId: string;
-  contractName: string;
+  contractName?: string; // The add audit has no contract name in scope.
   contractLineId: string;
   lineType: ContractLineType;
   /** Column NAMES whose persisted value changed. Empty on a no-op patch.

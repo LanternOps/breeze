@@ -82,7 +82,7 @@ import { accountingConnections } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { AccountingCurrencyContractError, normalizeAccountingPayment } from './accountingCurrency';
 import type { AccountingConnection } from './accountingConnectionService';
-import type { ChangeSetPaymentLine } from './types';
+import { INVOICE_REMOTE_DELETED_ERROR, type ChangeSetPaymentLine } from './types';
 import { recomputeInvoiceStatus } from '../invoiceService';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -878,7 +878,7 @@ export async function markInvoiceDeletedRemotely(
     if (!await realmStillMatches(conn, expectedRealmFingerprint)) return 'realm_changed';
     const mapping = await loadMappingByRemoteId(conn, 'invoice', 'Invoice', remoteInvoiceId);
     if (!mapping) return 'skipped_unmapped';
-    await markInvoiceMappingError(conn, mapping.id, 'Deleted in QuickBooks');
+    await markInvoiceMappingError(conn, mapping.id, INVOICE_REMOTE_DELETED_ERROR);
     return 'marked';
   });
 }

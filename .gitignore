@@ -110,8 +110,8 @@ monitoring/secrets/*
 docker-compose.override.yml
 docker-compose.override.pam.yml
 
-# Backups
-backups/
+# Repository-root backups
+/backups/
 
 # Drizzle drift check temp output
 .drizzle-tmp/

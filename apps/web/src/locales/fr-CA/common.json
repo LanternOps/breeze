@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",

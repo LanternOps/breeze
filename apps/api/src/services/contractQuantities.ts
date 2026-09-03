@@ -59,6 +59,19 @@ export async function snapshotContractDevices(orgId: string): Promise<DeviceSnap
     .where(and(...billableDeviceConds(orgId)));
 }
 
+/** The one billable device, as the snapshot sees it — the single-device twin of
+ *  snapshotContractDevices, sharing billableDeviceConds so a fourth predicate
+ *  added later applies to the device coverage panel automatically (#3205 W06).
+ *  null = decommissioned, ephemeral, in another org, or gone. */
+export async function billableDeviceById(deviceId: string, orgId: string): Promise<DeviceSnapshotRow | null> {
+  const [row] = await db
+    .select({ id: devices.id, role: devices.deviceRole, siteId: devices.siteId })
+    .from(devices)
+    .where(and(...billableDeviceConds(orgId), eq(devices.id, deviceId)))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Members of one group as billing sees them: matched ∪ pinned from the shared
  *  resolver. The intersection with the billable snapshot happens in
  *  contractCoverage (it iterates snapshot rows), so a decommissioned, ephemeral

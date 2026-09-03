@@ -59,6 +59,39 @@ describe('portalApi.getTicketForms request path', () => {
   });
 });
 
+describe('portalApi backup request paths', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the backup overview and device paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'not_configured',
+        asOf: '2026-09-02T12:00:00.000Z',
+        protected: 0, unprotected: 0, total: 0,
+        lastPassedVerification: null, lastTestRestoreAt: null,
+        openRpoBreaches: 0, openRtoBreaches: 0,
+        meanReadinessScore: null,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'no_data',
+        asOf: '2026-09-02T12:00:00.000Z',
+        data: [],
+        pagination: { page: 1, limit: 50, total: 0 },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBackupOverview();
+    await portalApi.getBackupDevices();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/portal/backups/overview');
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/portal/backups/devices?page=1&limit=50',
+    );
+  });
+});
+
 
 describe('publicApiPath (rendered into HTML)', () => {
   it('is same-origin relative on the server even with INTERNAL_API_URL set', async () => {
@@ -183,5 +216,64 @@ describe('ApiRequestConfig.timeoutMs', () => {
 
     expect(result.data).toBeUndefined();
     expect(result.error).toBe('Network error');
+  });
+});
+
+describe('portalApi.getDashboard', () => {
+  it('GETs the dashboard endpoint and preserves tile statuses', async () => {
+    const dto = {
+      asOf: '2026-09-02T12:00:00.000Z',
+      timezone: 'America/Denver',
+      securityScore: { status: 'stale', score: 76 },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(dto), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(portalApi.getDashboard()).resolves.toMatchObject({ data: dto });
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/portal/dashboard');
+  });
+});
+
+describe('portal security client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the overview and paginated device paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        asOf: '2026-09-02T12:00:00.000Z',
+        dataStatus: 'no_data',
+        score: null,
+        band: null,
+        scoreHistory: [],
+        threatEvents: { label: 'endpoint threat events', weeks: [] },
+        vulnerabilities: {
+          openBySeverity: {
+            critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
+          },
+          kevCount: 0,
+          lastDetectedAt: null,
+        },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'no_data',
+        asOf: '2026-09-02T12:00:00.000Z',
+        data: [],
+        pagination: { page: 2, limit: 25, total: 0 },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getSecurityOverview(30);
+    await portalApi.getSecurityDevices({ page: 2, limit: 25 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/security/overview?days=30',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/portal/security/devices?page=2&limit=25',
+    );
   });
 });

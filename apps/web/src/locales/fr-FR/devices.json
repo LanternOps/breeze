@@ -298,6 +298,26 @@
     "resolve": "Résoudre",
     "promote": "Promotion"
   },
+  "deviceBillingCard": {
+    "title": "Facturation",
+    "uncovered": "Aucune ligne de contrat active ne facture cet appareil.",
+    "viewContracts": "Voir les contrats",
+    "notBillable": {
+      "decommissioned": "Non facturé — cet appareil est mis hors service",
+      "ephemeral": "Non facturé — cet appareil est un appareil de session de support éphémère",
+      "not_billable": "Non facturé — cet appareil n'est pas facturable actuellement"
+    },
+    "error": {
+      "generic": "Impossible de charger la couverture de facturation.",
+      "groupEvaluation": "Un groupe d'appareils d'un contrat actif n'a pas pu être évalué ({{group}}). La couverture est inconnue."
+    },
+    "matchedBy": {
+      "org": "Toute l'organisation",
+      "site": "Ce site",
+      "role": "Rôle : {{role}}",
+      "group": "Groupe : {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Collecte des métriques de démarrage déclenchée. Les données apparaîtront après le prochain démarrage ou le prochain cycle de collecte.",
     "failedToTriggerCollection": "Impossible de déclencher la collecte",
@@ -569,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "État de sauvegarde, tâches, instantanés et vérification",
     "theOsReportsAPendingReboot": "Le système d’exploitation signale un redémarrage imminent (Windows registre / Linux marqueurs de redémarrage requis).",
     "rebootPending": "Redémarrage en attente",
+    "restartScheduled": "Redémarrage programmé",
+    "restartInProgress": "Redémarrage en cours",
+    "restartScheduledFor": "Redémarrage programmé pour {{time}}",
+    "restartInProgressAt": "Redémarrage démarré à {{time}}",
+    "restartDeadline": "Doit redémarrer avant {{time}}",
+    "restartPostponed": "Reporté {{used}} fois sur {{max}}",
+    "restartPostponedTooltip": "Nombre de fois où la personne utilisant cet appareil a reporté le redémarrage, sur le nombre autorisé par la stratégie.",
+    "restartCannotBePostponed": "Ne peut pas être reporté",
+    "restartSourcePatchJob": "Demandé par une installation de correctifs",
+    "restartSourceMaintenanceWindow": "Demandé par une fenêtre de maintenance",
+    "restartSourceManual": "Demandé par un technicien",
+    "restartSourceUnknown": "Redémarrage programmé",
     "agentV": "Agent c",
     "uptime": "Disponibilité",
     "lastSeen": "Dernière apparition",
@@ -1061,6 +1093,7 @@
     "of": "de",
     "devices": "Dispositifs",
     "advancedFilterActive": "Filtre actif avancé",
+    "advancedFilterFailed": "Échec du chargement du filtre — aucun appareil affiché",
     "filterByDeviceClass": "Filtrer par classe de dispositif",
     "filterByVpn": "Filtrer par VPN",
     "allVpn": "Tous VPN",
@@ -1763,6 +1796,7 @@
     "title": "Dispositifs",
     "toasts": {
       "actionFailed": "Échec de {{action}} sur {{hostname}}",
+      "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",

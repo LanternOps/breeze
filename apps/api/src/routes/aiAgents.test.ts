@@ -26,6 +26,7 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 const {
   selectMock,
   hasPermMock,
+  authOkMock,
   mfaOkMock,
   getAgentMock,
   resolveEffectiveAgentMock,
@@ -48,6 +49,11 @@ const {
   // impl, and `tsc` (not vitest) then rejects both the two-arg call inside the
   // requirePermission mock and the two-arg assertion below.
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
+  // The router-level `aiAgentsRoutes.use('*', authMiddleware)` gate, made
+  // refusable. Every handler here sits behind it, so a route registered
+  // OUTSIDE that gate (or on a second, ungated router) is observable as a
+  // request that reaches its handler while this returns false.
+  authOkMock: vi.fn(() => true),
   mfaOkMock: vi.fn(() => true),
   getAgentMock: vi.fn(),
   resolveEffectiveAgentMock: vi.fn(),
@@ -87,7 +93,10 @@ vi.mock('../middleware/auth', async (importOriginal) => {
   // shape authMiddleware installs, not a test-only approximation of it.
   const actual = await importOriginal<typeof import('../middleware/auth')>();
   return {
-    authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
+    authMiddleware: async (
+      c: { json: (body: unknown, status: number) => Response },
+      next: () => Promise<void>,
+    ) => (authOkMock() ? next() : c.json({ error: 'Unauthorized' }, 401)),
     requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
     requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
       mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
@@ -248,6 +257,18 @@ vi.mock('../services/aiAgents/graduationService', () => ({
   loadActOpReliability: loadActOpReliabilityMock,
 }));
 
+// POST /graduation/revoke — `demoteSupervisedKey` is the SAME executor the
+// intent-release worker and the fix-watch verdict path already drive, and it
+// has full unit coverage of its own (supervisedKeyDemote.test.ts: the partner
+// re-pin, the advisory lock, the org-row CAS, the graduation upsert). Mocked
+// here so these tests exercise only routing, RBAC, the promoted-grant
+// precondition and the argument the route hands it — the same convention as
+// createActionIntent above.
+const demoteSupervisedKeyMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
+  demoteSupervisedKey: demoteSupervisedKeyMock,
+}));
+
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
@@ -335,6 +356,7 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 beforeEach(() => {
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
+  authOkMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
   verifyDeviceAccessMock.mockResolvedValue({
@@ -1074,7 +1096,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         approvalScope: 'auto', decidedVia: 'ticket_autonomy',
       }])) // intents (sessionId is null, so the ledger read is skipped)
       .mockReturnValueOnce(selectChain(
-        [{ id: DRAFT_ID, kind: 'reply' }],
+        [{ id: DRAFT_ID, kind: 'reply', content: 'Hi — please try restarting your computer.', state: 'active' }],
         (predicate) => { draftWhere = predicate; },
       )); // draft rows
 
@@ -1085,6 +1107,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
 
     expect(parsed.data.ticketProposal?.intentIds).toEqual([TRIAGE_INTENT_ID]);
     expect(parsed.data.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: DRAFT_ID }]);
+    // Issue #4467 — draftReply is sourced live off the same draft-rows read,
+    // never disagreeing with the draftsWritten entry it corresponds to.
+    expect(parsed.data.ticketProposal?.draftReply).toBe('Hi — please try restarting your computer.');
 
     // run row, intents, draft rows — no ledger (sessionId null), no sweep
     // hostname read, no narrative artifact read (reportRunId null).
@@ -2435,6 +2460,234 @@ describe('POST /ai-agents/graduation/promote', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'org_argument_mismatch' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /graduation/revoke — the operator-facing mirror of promote.
+// ---------------------------------------------------------------------------
+
+describe('POST /ai-agents/graduation/revoke', () => {
+  const OP_KEY = 'manage_services:restart';
+  const ORG_AGENT_ID = '99999999-9999-4999-8999-999999999999';
+  const OTHER_AGENT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const body = { orgId: ORG_ID, opKey: OP_KEY };
+
+  /** One `ai_agent_graduation` row as the route's precondition read sees it. */
+  function gradRow(overrides: Record<string, unknown> = {}) {
+    return { agentId: AGENT_ID, state: 'promoted', ...overrides };
+  }
+
+  function revoke(app: Hono, payload: unknown = body) {
+    return app.request('/ai-agents/graduation/revoke', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  beforeEach(() => {
+    selectMock.mockReturnValue(selectChain([gradRow()]));
+    demoteSupervisedKeyMock.mockResolvedValue({ revoked: true, orgAgentId: ORG_AGENT_ID });
+  });
+
+  it('is refused unauthenticated by the router-level auth gate', async () => {
+    authOkMock.mockReturnValue(false);
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(401);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a read-only token (ai_agents:write is required)', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'write')
+    ));
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(403);
+    // The literal is the public permission contract: revoking must sit behind
+    // the SAME write capability that promoting does, never ai_agents:read.
+    expect(hasPermMock).toHaveBeenCalledWith('ai_agents', 'write');
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("denies another partner's org, the same way promote does", async () => {
+    const app = buildApp(false, {
+      scope: 'partner',
+      orgId: null,
+      partnerId: PARTNER_ID,
+      canAccessOrg: (id: string) => id === ORG_ID,
+    });
+
+    const res = await revoke(app, { ...body, orgId: OTHER_ORG_ID });
+
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('is 404 when no graduation row exists for the key', async () => {
+    selectMock.mockReturnValue(selectChain([]));
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'no_promoted_grant' }));
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('is 404 when the key is tracked but was never promoted', async () => {
+    selectMock.mockReturnValue(selectChain([gradRow({ state: 'eligible' })]));
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'no_promoted_grant' }));
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('is 409 when the grant is already demoted', async () => {
+    selectMock.mockReturnValue(selectChain([gradRow({ state: 'demoted' })]));
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'already_demoted' }));
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes the grant and audits the accountable human actor', async () => {
+    const res = await revoke(buildApp(), { ...body, reason: 'Customer asked us to stop' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      revoked: true,
+      orgAgentId: ORG_AGENT_ID,
+      state: 'demoted',
+    });
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      opKey: OP_KEY,
+      reason: 'operator',
+      runId: null,
+      watchId: null,
+      intentId: null,
+    });
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'ai_agent.graduation.revoke',
+        resourceType: 'ai_agent',
+        resourceId: ORG_AGENT_ID,
+        result: 'success',
+        details: {
+          agentId: AGENT_ID,
+          orgAgentId: ORG_AGENT_ID,
+          opKey: OP_KEY,
+          reason: 'Customer asked us to stop',
+        },
+      }),
+    );
+  });
+
+  it('pins the precondition read to the named org and op key', async () => {
+    const predicates: unknown[] = [];
+    selectMock.mockReturnValue(selectChain([gradRow()], (p) => predicates.push(p)));
+
+    // The REAL closure builder, not a stand-in: this proves the tenancy pin
+    // the route stacks on top of RLS is the same eq/inArray shape
+    // authMiddleware installs.
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID]);
+    const res = await revoke(buildApp(false, { orgCondition }));
+
+    expect(res.status).toBe(200);
+    expect(predicates).toHaveLength(1);
+    expect(sqlParams(predicates[0])).toEqual(expect.arrayContaining([ORG_ID, OP_KEY]));
+  });
+
+  it('records a null reason when the operator supplied none', async () => {
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ reason: null }) }),
+    );
+  });
+
+  it('revokes while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off', async () => {
+    // The mirror of promote's 409: turning the flag off must stop new grants,
+    // never strand a live one. supervisedKeyDemote.ts is always-on for the
+    // same reason, and this route must not re-introduce the gate.
+    envMock.policyDecideEnabled.mockReturnValue(false);
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(200);
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('is 409, not a false success, when the key was already off the org row', async () => {
+    demoteSupervisedKeyMock.mockResolvedValue({ revoked: false, orgAgentId: ORG_AGENT_ID });
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'already_revoked' }));
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to guess when two agents hold the same key', async () => {
+    selectMock.mockReturnValue(selectChain([gradRow(), gradRow({ agentId: OTHER_AGENT_ID })]));
+
+    const res = await revoke(buildApp());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'ambiguous_op_key' }));
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('disambiguates two holders through the resolved agent for `kind`', async () => {
+    selectMock.mockReturnValue(selectChain([gradRow(), gradRow({ agentId: OTHER_AGENT_ID })]));
+    resolveEffectiveAgentSystemMock.mockResolvedValue({ agentId: OTHER_AGENT_ID, kind: 'patch' });
+
+    const res = await revoke(buildApp(), { ...body, kind: 'patch' });
+
+    expect(res.status).toBe(200);
+    expect(resolveEffectiveAgentSystemMock).toHaveBeenCalledWith(ORG_ID, 'patch');
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: OTHER_AGENT_ID }),
+    );
+  });
+
+  it('is 404 when `kind` names no active agent policy', async () => {
+    resolveEffectiveAgentSystemMock.mockResolvedValue(null);
+
+    const res = await revoke(buildApp(), { ...body, kind: 'patch' });
+
+    expect(res.status).toBe(404);
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a dot-form act-op key (only colon keys are ever granted)', async () => {
+    const res = await revoke(buildApp(), { ...body, opKey: 'manage_services.restart' });
+
+    expect(res.status).toBe(400);
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reason longer than 500 characters', async () => {
+    const res = await revoke(buildApp(), { ...body, reason: 'x'.repeat(501) });
+
+    expect(res.status).toBe(400);
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
   });
 });
 

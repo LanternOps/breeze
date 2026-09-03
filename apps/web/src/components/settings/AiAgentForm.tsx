@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
+import { AlertTriangle } from 'lucide-react';
 import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
@@ -105,6 +114,18 @@ const ACT_PREREQUISITE_COPY: Record<string, (t: (key: string) => string) => stri
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
+
+/**
+ * Mode is the only field on this form that decides whether the agent may
+ * touch a customer machine, so it is a three-card radiogroup rather than one
+ * more `<select>` of the same weight as Name — and it is the FIRST decision,
+ * above Kind and Name, because every field below it is read differently
+ * depending on the answer.
+ *
+ * The order is the privilege ladder (`AI_AGENT_MODE_RANK`), which is also the
+ * arrow-key order.
+ */
+const MODE_ORDER: readonly AiAgentMode[] = ['off', 'shadow', 'act'];
 
 /** Newline-separated textarea → trimmed, de-duplicated list. */
 function lines(value: string): string[] {
@@ -257,8 +278,128 @@ export default function AiAgentForm({
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
+  /**
+   * Riley bug (#4187 UI critique): leaving act mode used to only HIDE the
+   * supervised-keys fieldset, so Save still submitted keys the operator
+   * could no longer see. The first fix over-corrected by CLEARING
+   * `draft.supervisedActionKeys` on the way out of act, which meant an
+   * act -> shadow -> act round trip silently lost a persisted grant list the
+   * operator never touched (P2 review finding).
+   *
+   * The keys now stay in the draft for the whole life of the form —
+   * `selectMode` below never touches them — and are omitted only from the
+   * SAVE PAYLOAD while `draft.mode !== 'act'` (see `save()`'s `actAssets`).
+   * This derived flag drives the announcement of that omission; it is not
+   * separate state, so it can never drift from what Save will actually send.
+   */
+  const actKeysWillBeOmitted = draft.mode !== 'act' && draft.supervisedActionKeys.length > 0;
 
   const patch = (values: Partial<Draft>) => setDraft((current) => ({ ...current, ...values }));
+
+  const permissionsHeadingId = useId();
+  const limitsBudgetId = useId();
+  const limitsTimingId = useId();
+  const toolSuggestInputId = useId();
+  const toolSuggestListId = useId();
+  const [toolSuggestion, setToolSuggestion] = useState('');
+
+  /**
+   * Autocomplete source for the tool allowlist. There is no tool-name
+   * registry endpoint: `ACT_ELIGIBLE_TOOL_NAMES` is API-only and the
+   * allowlist's own validator accepts any `TOOL_REF`-shaped string, so the
+   * closest thing the client can source is the policy-decidable registry it
+   * already fetched — offered as BOTH the bare tool name and the scoped
+   * `tool:action` form, the two shapes `checkAgentGuardrails` admits.
+   */
+  const toolSuggestions = useMemo(() => {
+    const names = new Set<string>();
+    for (const entry of policyKeys) {
+      names.add(entry.toolName);
+      names.add(entry.key);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [policyKeys]);
+
+  const addSuggestedTool = () => {
+    const value = toolSuggestion.trim();
+    if (value === '') return;
+    // `lines()` is the same de-duplicating reader the save body uses, so an
+    // entry already present (however the operator typed it) never doubles.
+    const next = [...new Set([...lines(draft.toolAllowlist), value])];
+    patch({ toolAllowlist: next.join('\n') });
+    setToolSuggestion('');
+  };
+
+  // ---- Mode: the privileged choice --------------------------------------
+  const modeHeadingId = useId();
+  const modeRefs = useRef<Partial<Record<AiAgentMode, HTMLButtonElement | null>>>({});
+  // The CREATE path has no `agent` DTO yet, so the fallback must be the shared
+  // constant and never `[]` — see the long note this file already carries on
+  // the old `<option disabled>`; the reasoning survived the control change.
+  const actSupported = (agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act');
+  const modeUnavailable = (mode: AiAgentMode) => mode === 'act' && !actSupported;
+
+  // Literal keys rather than a dynamic `t()` on the token: the closed
+  // three-member union is worth spelling out so the keyUsage guard verifies
+  // every label statically (same reason as AiAgentSchedulesSection's
+  // `scheduleKindLabel`).
+  const MODE_LABEL: Record<AiAgentMode, string> = {
+    off: t('aiAgentsPage.modeChoice.off'),
+    shadow: t('aiAgentsPage.modeChoice.shadow'),
+    act: t('aiAgentsPage.modeChoice.act'),
+  };
+  const MODE_CONSEQUENCE: Record<AiAgentMode, string> = {
+    off: t('aiAgentsPage.modeChoice.offConsequence'),
+    shadow: t('aiAgentsPage.modeChoice.shadowConsequence'),
+    act: t('aiAgentsPage.modeChoice.actConsequence'),
+  };
+
+  const selectMode = (next: AiAgentMode) => {
+    if (modeUnavailable(next) || next === draft.mode) return;
+    if (next === 'act') {
+      patch({ mode: next });
+      return;
+    }
+    // Leaving act: only the acknowledgement belongs to act mode alone — a
+    // genuine re-entry must ask again. `supervisedActionKeys` is NOT
+    // cleared: it stays in the draft so a later return to act restores the
+    // operator's selection, and `save()`'s payload is what keeps them out of
+    // effect while the mode isn't act (see `actKeysWillBeOmitted` above).
+    setActAck(false);
+    patch({ mode: next });
+  };
+
+  /** Roving-tabindex arrow navigation, per the radiogroup pattern: the group
+   *  holds one tab stop and the arrows move BOTH focus and selection. */
+  const onModeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const selectable = MODE_ORDER.filter((mode) => !modeUnavailable(mode));
+    if (selectable.length === 0) return;
+    const current = Math.max(0, selectable.indexOf(draft.mode));
+    let target: number;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        target = (current + 1) % selectable.length;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        target = (current - 1 + selectable.length) % selectable.length;
+        break;
+      case 'Home':
+        target = 0;
+        break;
+      case 'End':
+        target = selectable.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const next = selectable[target];
+    if (!next) return;
+    selectMode(next);
+    modeRefs.current[next]?.focus();
+  };
 
   // Recipients are role IDs, never role names: `roles` is a tenant-scoped table
   // with partner-defined names, so the picker has to show the real rows.
@@ -363,7 +504,14 @@ export default function AiAgentForm({
       // scriptIds value survives a save that only ever touches
       // supervisedActionKeys. On create, the server's createAiAgentSchema
       // defaults the omitted scriptIds to [].
-      actAssets: { supervisedActionKeys: draft.supervisedActionKeys },
+      //
+      // P2 review fix: the draft KEEPS its supervisedActionKeys selection
+      // across a mode change (see `selectMode`'s doc), but a non-act mode
+      // can never use them — sent as [] rather than the draft's live value
+      // so leaving act genuinely revokes them server-side, not just in the
+      // UI, while still letting the operator's selection reappear if they
+      // return to act before saving.
+      actAssets: { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [] },
     };
 
     let saved = false;
@@ -514,398 +662,545 @@ export default function AiAgentForm({
     </label>
   );
 
-  return (
-    <section className="rounded-lg border bg-muted/20 p-4" data-testid="ai-agent-editor">
-      <h2 className="mb-3 text-sm font-semibold">
-        {isCreate ? t('aiAgentsPage.editor.newTitle') : t('aiAgentsPage.editor.editTitle')}
-      </h2>
+  // Roving-tabindex tab stop. Normally the checked option, but a stale row
+  // can have `draft.mode` set to an option that is now disabled (an agent
+  // saved while `act` was supported, whose partner later lost act
+  // eligibility, still stores `mode: 'act'`) — falling back to the first
+  // ENABLED option keeps the group reachable by Tab at all, rather than
+  // leaving every radio at tabIndex -1.
+  const tabStopMode = modeUnavailable(draft.mode)
+    ? MODE_ORDER.find((mode) => !modeUnavailable(mode))
+    : draft.mode;
 
-      {issues.length > 0 && (
-        <ul
-          className="mb-3 list-disc space-y-1 rounded-md border border-destructive/40 bg-destructive/10 px-6 py-2 text-sm text-destructive"
-          data-testid="ai-agent-issues"
+  /** The mode radiogroup. Rendered as the first block of the form, before
+   *  Kind and Name: it is the only choice here that can reach a device. */
+  const modeChoice = (
+    <div className="md:col-span-2" data-testid="ai-agent-mode-field">
+      <h3 id={modeHeadingId} className="text-sm font-semibold">
+        {t('aiAgentsPage.modeChoice.legend')}
+      </h3>
+      <div
+        role="radiogroup"
+        aria-labelledby={modeHeadingId}
+        onKeyDown={onModeKeyDown}
+        className="mt-2 grid gap-2 sm:grid-cols-3"
+        data-testid="ai-agent-mode"
+      >
+        {MODE_ORDER.map((mode) => {
+          const selected = draft.mode === mode;
+          const unavailable = modeUnavailable(mode);
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={unavailable}
+              tabIndex={mode === tabStopMode ? 0 : -1}
+              ref={(node) => {
+                modeRefs.current[mode] = node;
+              }}
+              onClick={() => selectMode(mode)}
+              className={`rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
+                selected
+                  ? 'border-primary bg-primary/10 ring-1 ring-primary'
+                  : 'bg-background hover:border-primary/50 hover:bg-muted/40'
+              }`}
+              data-testid={`ai-agent-mode-${mode}`}
+            >
+              <span className="flex items-center gap-2">
+                {/* Selection is encoded by SHAPE (a filled ring) as well as by
+                    colour, so the choice survives a colourblind read. */}
+                <span
+                  aria-hidden="true"
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                    selected ? 'border-primary' : 'border-muted-foreground/50'
+                  }`}
+                >
+                  {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
+                </span>
+                <span className="text-sm font-medium">{MODE_LABEL[mode]}</span>
+                {mode === 'act' && (
+                  <AlertTriangle className="ml-auto h-4 w-4 shrink-0 text-warning-strong" aria-hidden="true" />
+                )}
+              </span>
+              <span className="mt-1.5 block text-xs text-muted-foreground">
+                {MODE_CONSEQUENCE[mode]}
+              </span>
+              {unavailable && (
+                <span
+                  className="mt-1.5 block text-xs text-muted-foreground"
+                  data-testid="ai-agent-mode-act-unavailable"
+                >
+                  {t('aiAgentsPage.modeChoice.actUnavailable')}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Attached to the choice, not floated below the rest of the fields:
+          the warning and its acknowledgement are what the act card MEANS. */}
+      {draft.mode === 'act' && (
+        <div
+          className="mt-2 space-y-2 rounded-lg border border-warning-strong/50 bg-warning/10 p-3 text-sm"
+          data-testid="ai-agent-act-warning"
         >
-          {issues.map((issue) => (
-            <li key={issue}>{issue}</li>
-          ))}
-        </ul>
+          <p className="flex items-start gap-2 font-medium">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-strong" aria-hidden="true" />
+            <span>{t('aiAgentsPage.actWarning.title')}</span>
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+            <li>{t('aiAgentsPage.actWarning.unattended')}</li>
+            <li>{t('aiAgentsPage.actWarning.verification')}</li>
+            <li>{t('aiAgentsPage.actWarning.noRollback')}</li>
+            <li>{t('aiAgentsPage.actWarning.singleDevice')}</li>
+            <li>{t('aiAgentsPage.actWarning.actionCap')}</li>
+          </ul>
+          {enteringActMode && (
+            <label className="flex items-start gap-2 pt-1 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={actAck}
+                onChange={(e) => setActAck(e.target.checked)}
+                data-testid="ai-agent-act-ack"
+              />
+              <span>{t('aiAgentsPage.actWarning.ack')}</span>
+            </label>
+          )}
+        </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-2">
-        {isCreate && showOwnerScope && (
-          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-ownerscope">
-            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-              {t('aiAgentsPage.editor.scopeLegend')}
-            </legend>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="ai-agent-owner"
-                value="partner"
-                checked={draft.ownerScope === 'partner'}
-                onChange={() => patch({ ownerScope: 'partner', kind: firstFreeKind(agents, 'partner', orgScope.orgId) ?? draft.kind })}
-                data-testid="ai-agent-owner-partner"
-              />
-              {t('aiAgentsPage.editor.allOrgs')}{' '}
-              <span className="text-muted-foreground">{t('aiAgentsPage.editor.allOrgsHint')}</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="ai-agent-owner"
-                value="organization"
-                checked={draft.ownerScope === 'organization'}
-                onChange={() => patch({ ownerScope: 'organization', kind: firstFreeKind(agents, 'organization', orgScope.orgId) ?? draft.kind })}
-                data-testid="ai-agent-owner-org"
-              />
-              {t('aiAgentsPage.editor.thisOrg')}
-            </label>
-          </fieldset>
-        )}
+      {/* Mounted UNCONDITIONALLY — only the text toggles. An aria-live
+          region (`role="status"`) only announces changes to content that was
+          already present in the accessibility tree; mounting it on demand
+          meant the FIRST thing it ever had to say was never announced. */}
+      <p
+        className="mt-2 text-xs text-muted-foreground"
+        role="status"
+        data-testid="ai-agent-act-keys-cleared"
+      >
+        {actKeysWillBeOmitted ? t('aiAgentsPage.fields.actKeysCleared') : ''}
+      </p>
+    </div>
+  );
 
-        {isCreate && availableKinds.length === 0 && (
-          <p className="text-sm text-muted-foreground md:col-span-2" data-testid="ai-agent-kinds-exhausted">
-            {t('aiAgentsPage.issues.allKindsTaken')}
-          </p>
-        )}
-
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">{t('aiAgentsPage.fields.kind')}</span>
-          <select
-            className={inputCls}
-            value={draft.kind}
-            disabled={!isCreate}
-            onChange={(e) => patch({ kind: e.target.value as AiAgentKind })}
-            data-testid="ai-agent-kind"
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+        {issues.length > 0 && (
+          <ul
+            className="list-disc space-y-1 rounded-md border border-destructive/40 bg-destructive/10 px-6 py-2 text-sm text-destructive"
+            data-testid="ai-agent-issues"
           >
-            {(isCreate ? availableKinds : AI_AGENT_KINDS).map((kind) => (
-              <option key={kind} value={kind}>
-                {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${kind}`)}
-              </option>
+            {issues.map((issue) => (
+              <li key={issue}>{issue}</li>
             ))}
-          </select>
-          {!isCreate && (
-            <span className="block text-xs text-muted-foreground">
-              {t('aiAgentsPage.fields.kindImmutable')}
-            </span>
-          )}
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">{t('aiAgentsPage.fields.name')}</span>
-          <input
-            className={inputCls}
-            maxLength={120}
-            value={draft.name}
-            onChange={(e) => patch({ name: e.target.value })}
-            data-testid="ai-agent-name"
-          />
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">{t('aiAgentsPage.fields.mode')}</span>
-          <select
-            className={inputCls}
-            value={draft.mode}
-            onChange={(e) => patch({ mode: e.target.value as AiAgentMode })}
-            data-testid="ai-agent-mode"
-          >
-            <option value="off">{t('aiAgentsPage.modes.off')}</option>
-            <option value="shadow">{t('aiAgentsPage.modes.shadow')}</option>
-            {/* Not merely hidden: an operator needs to see that acting is a
-                real, deliberate next step rather than a missing feature.
-                Gated on the API's supportedModes (Task 6, #3826) — the
-                server's create/update prerequisites (recipient +
-                act-eligible surface) are the authoritative gate; the warning
-                banner and acknowledgement below are this form's contribution
-                on top of that. Review fix (#3826 final-review): the CREATE
-                path has no `agent` DTO yet (it is null until the first save),
-                so the fallback must be the shared `SUPPORTED_AGENT_MODES`
-                constant — not `[]` — or the option is permanently disabled on
-                every create form regardless of what the API actually
-                supports, which is exactly the drift the constant's own
-                docstring exists to prevent. */}
-            <option
-              value="act"
-              disabled={!(agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act')}
-              data-testid="ai-agent-mode-act"
-            >
-              {t('aiAgentsPage.modes.act')}
-            </option>
-          </select>
-        </label>
-
-        <label className="flex items-center gap-2 self-end text-sm">
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(e) => patch({ enabled: e.target.checked })}
-            data-testid="ai-agent-enabled"
-          />
-          <span>{t('aiAgentsPage.fields.enabled')}</span>
-        </label>
-
-        {draft.mode === 'act' && (
-          <div
-            className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm md:col-span-2"
-            data-testid="ai-agent-act-warning"
-          >
-            <p className="font-medium">{t('aiAgentsPage.actWarning.title')}</p>
-            <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-              <li>{t('aiAgentsPage.actWarning.unattended')}</li>
-              <li>{t('aiAgentsPage.actWarning.verification')}</li>
-              <li>{t('aiAgentsPage.actWarning.noRollback')}</li>
-              <li>{t('aiAgentsPage.actWarning.singleDevice')}</li>
-              <li>{t('aiAgentsPage.actWarning.actionCap')}</li>
-            </ul>
-            {enteringActMode && (
-              <label className="flex items-start gap-2 pt-1 text-sm font-medium">
-                <input
-                  type="checkbox"
-                  checked={actAck}
-                  onChange={(e) => setActAck(e.target.checked)}
-                  data-testid="ai-agent-act-ack"
-                />
-                <span>{t('aiAgentsPage.actWarning.ack')}</span>
-              </label>
-            )}
-          </div>
+          </ul>
         )}
 
-        {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
-            above (draft.mode === 'act' only) for ORG rows — the "act
-            acknowledgement pattern": this is additional unattended authority
-            an operator is opting into only once they are already looking at
-            the act-mode warning, never offered for shadow/off.
-            PARTNER rows are the exception (#4583): per P2-5 (#4192) a
-            partner row's keys are a CEILING on org grants, not authority the
-            partner row exercises itself — ticking a key here authorizes
-            nothing on its own regardless of the partner row's own mode, so
-            gating the editor (and its ceiling hint) behind the partner row's
-            act mode hid the warning precisely when it mattered: while
-            editing a Shadow-mode baseline. */}
-        {(draft.mode === 'act' || draft.ownerScope === 'partner') && (
-          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
-            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-              {t('aiAgentsPage.sections.policyDecide')}
-            </legend>
-            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
-            {/* P2-5 (#4192). A partner row's keys are a CEILING, not an
-                inherited grant: with no org row the effective key set is empty,
-                so ticking a key here authorizes nothing on its own. Said only
-                on the partner form, because that is where the misreading is
-                possible — an org-owned agent's keys really are the live set. */}
-            {draft.ownerScope === 'partner' && (
-              <p
-                className="text-xs text-muted-foreground"
-                data-testid="ai-agent-supervised-keys-ceiling-hint"
-              >
-                {t('aiAgentsPage.graduation.ceilingHint')}
-              </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          {modeChoice}
+
+          {isCreate && showOwnerScope && (
+            <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-ownerscope">
+              <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+                {t('aiAgentsPage.editor.scopeLegend')}
+              </legend>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="ai-agent-owner"
+                  value="partner"
+                  checked={draft.ownerScope === 'partner'}
+                  onChange={() => patch({ ownerScope: 'partner', kind: firstFreeKind(agents, 'partner', orgScope.orgId) ?? draft.kind })}
+                  data-testid="ai-agent-owner-partner"
+                />
+                {t('aiAgentsPage.editor.allOrgs')}{' '}
+                <span className="text-muted-foreground">{t('aiAgentsPage.editor.allOrgsHint')}</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="ai-agent-owner"
+                  value="organization"
+                  checked={draft.ownerScope === 'organization'}
+                  onChange={() => patch({ ownerScope: 'organization', kind: firstFreeKind(agents, 'organization', orgScope.orgId) ?? draft.kind })}
+                  data-testid="ai-agent-owner-org"
+                />
+                {t('aiAgentsPage.editor.thisOrg')}
+              </label>
+            </fieldset>
+          )}
+
+          {isCreate && availableKinds.length === 0 && (
+            <p className="text-sm text-muted-foreground md:col-span-2" data-testid="ai-agent-kinds-exhausted">
+              {t('aiAgentsPage.issues.allKindsTaken')}
+            </p>
+          )}
+
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">{t('aiAgentsPage.fields.kind')}</span>
+            <select
+              className={inputCls}
+              value={draft.kind}
+              disabled={!isCreate}
+              onChange={(e) => patch({ kind: e.target.value as AiAgentKind })}
+              data-testid="ai-agent-kind"
+            >
+              {(isCreate ? availableKinds : AI_AGENT_KINDS).map((kind) => (
+                <option key={kind} value={kind}>
+                  {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${kind}`)}
+                </option>
+              ))}
+            </select>
+            {!isCreate && (
+              <span className="block text-xs text-muted-foreground">
+                {t('aiAgentsPage.fields.kindImmutable')}
+              </span>
             )}
-            {policyKeysFailed ? (
-              <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
-                {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
+          </label>
+
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">{t('aiAgentsPage.fields.name')}</span>
+            <input
+              className={inputCls}
+              maxLength={120}
+              value={draft.name}
+              onChange={(e) => patch({ name: e.target.value })}
+              data-testid="ai-agent-name"
+            />
+          </label>
+
+          {/* `enabled` and `mode` are two independent gates, and BOTH have to
+              pass: runService's admission skips `agent_disabled` before it ever
+              looks at the mode, and skips `mode_off` right after. Representable
+              nonsense (`enabled: true, mode: 'off'`) is therefore real, and the
+              helper below is the only place the form says so. */}
+          <div className="space-y-1 self-end text-sm md:col-span-2">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(e) => patch({ enabled: e.target.checked })}
+                data-testid="ai-agent-enabled"
+              />
+              <span className="font-medium">{t('aiAgentsPage.fields.enabled')}</span>
+            </label>
+            <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-hint">
+              {t('aiAgentsPage.fields.enabledHint')}
+            </p>
+          </div>
+
+          {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
+              above (draft.mode === 'act' only) for ORG rows — the "act
+              acknowledgement pattern": this is additional unattended authority
+              an operator is opting into only once they are already looking at
+              the act-mode warning, never offered for shadow/off.
+              PARTNER rows are the exception (#4583): per P2-5 (#4192) a
+              partner row's keys are a CEILING on org grants, not authority the
+              partner row exercises itself — ticking a key here authorizes
+              nothing on its own regardless of the partner row's own mode, so
+              gating the editor (and its ceiling hint) behind the partner row's
+              act mode hid the warning precisely when it mattered: while
+              editing a Shadow-mode baseline. */}
+          {(draft.mode === 'act' || draft.ownerScope === 'partner') && (
+            <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
+              <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+                {t('aiAgentsPage.sections.policyDecide')}
+              </legend>
+              <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
+              {/* P2-5 (#4192). A partner row's keys are a CEILING, not an
+                  inherited grant: with no org row the effective key set is empty,
+                  so ticking a key here authorizes nothing on its own. Said only
+                  on the partner form, because that is where the misreading is
+                  possible — an org-owned agent's keys really are the live set. */}
+              {draft.ownerScope === 'partner' && (
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="ai-agent-supervised-keys-ceiling-hint"
+                >
+                  {t('aiAgentsPage.graduation.ceilingHint')}
+                </p>
+              )}
+              {policyKeysFailed ? (
+                <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
+                  {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
+                </p>
+              ) : policyKeys.length === 0 ? (
+                <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+                  {t('aiAgentsPage.fields.supervisedActionKeysEmpty')}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {[...groupByTool(policyKeys).entries()].map(([toolName, entries]) => (
+                    <div key={toolName}>
+                      <p className="text-xs font-semibold">{toolName}</p>
+                      <div className="flex flex-wrap gap-3">
+                        {entries.map((entry) => (
+                          <label key={entry.key} className="flex items-center gap-1 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={draft.supervisedActionKeys.includes(entry.key)}
+                              onChange={() =>
+                                patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
+                              data-testid={`ai-agent-supervised-key-${entry.key}`}
+                            />
+                            {entry.action ?? entry.toolName}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </fieldset>
+          )}
+
+          {/* Graduation evidence (P2-5, #4192). Edit-only, for the same reason
+              the schedules section is: the evidence ledger is keyed to a
+              persisted agent that does not exist until the first save. NOT gated
+              on `draft.mode === 'act'` — evidence an agent already earned is a
+              fact about the past, so toggling an unsaved draft back to shadow
+              must not make it disappear. The panel is read-only-useful with
+              `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` off; see its module doc.
+              `agent.kind` (stored), not `draft.kind`, since kind is create-only.
+              An org-owned agent always reads its OWN org's evidence; a partner
+              baseline follows the org switcher, and falls through to the
+              partner-wide grouping when it is on "all organizations". */}
+          {!isCreate && (
+            <AiAgentGraduationPanel
+              orgId={agent.orgId ?? orgScope.orgId}
+              kind={agent.kind}
+              isPartnerScope={isPartnerScope}
+            />
+          )}
+
+          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t('aiAgentsPage.sections.scope')}
+            </legend>
+            <div className="flex flex-wrap gap-3">
+              {SEVERITIES.map((severity) => (
+                <label key={severity} className="flex items-center gap-1 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={draft.severities.includes(severity)}
+                    onChange={() => patch({ severities: toggle(draft.severities, severity) })}
+                    data-testid={`ai-agent-severity-${severity}`}
+                  />
+                  {t(/* i18n-dynamic */ `aiAgentsPage.severities.${severity}`)}
+                </label>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={draft.respectMaintenanceWindows}
+                onChange={(e) => patch({ respectMaintenanceWindows: e.target.checked })}
+                data-testid="ai-agent-respect-maintenance"
+              />
+              {t('aiAgentsPage.fields.respectMaintenanceWindows')}
+            </label>
+
+            {/* P2-4 (#4191) review fix — ticket-triggered runs are admitted
+                with `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's
+                `admitTriageRun`: `createAndEnqueueAgentRun({ kind: 'helpdesk',
+                triggerKind: 'ticket', profile: 'triage', ... })`), and
+                runService.ts's `resolveEffectiveAgentSystem(orgId, kind)`
+                resolves the effective policy off THAT `kind` field — never
+                `triage`, which is a different agent kind entirely (the
+                scheduled-sweeps gate a few lines below IS genuinely
+                triage-only; do not copy this gate from that one again).
+                Disabled — never hidden — on a partner-wide row: the merge
+                reads ONLY the org's own override (effectivePolicy.ts), so a
+                partner baseline value can never take effect; hiding it
+                outright would look like the field vanished rather than
+                explain why it cannot be set here. */}
+            {draft.kind === 'helpdesk' && (
+              <div className="space-y-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={draft.ticketAutonomousWrites}
+                    disabled={draft.ownerScope !== 'organization'}
+                    onChange={(e) => patch({ ticketAutonomousWrites: e.target.checked })}
+                    data-testid="ai-agent-ticket-autonomous-writes"
+                  />
+                  {t('aiAgentsPage.fields.ticketAutonomousWrites')}
+                </label>
+                <p className="pl-6 text-xs text-muted-foreground">
+                  {t('aiAgentsPage.fields.ticketAutonomousWritesHint')}
+                </p>
+              </div>
+            )}
+          </fieldset>
+
+          {/* Permissions carries the widest blast radius of the remaining
+              sections, so it gets a real heading rather than one more 12px
+              uppercase legend of the same weight as "Limits". A <section> and
+              not a <fieldset>: <legend>'s content model is phrasing content, so
+              an <h3> cannot live inside one. */}
+          <section
+            className="space-y-2 rounded-md border p-3 md:col-span-2"
+            aria-labelledby={permissionsHeadingId}
+            data-testid="ai-agent-permissions"
+          >
+            <div>
+              <h3 id={permissionsHeadingId} className="text-sm font-semibold">
+                {t('aiAgentsPage.sections.permissions')}
+              </h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t('aiAgentsPage.sections.permissionsDescription')}
               </p>
-            ) : policyKeys.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
-                {t('aiAgentsPage.fields.supervisedActionKeysEmpty')}
+            </div>
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
+            {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
+            {/* No tool-name registry endpoint exists (the API's
+                ACT_ELIGIBLE_TOOL_NAMES / the MCP tool set are server-only), so
+                this is autocomplete over the ONE name source the client already
+                holds — the policy-decidable registry this form fetches for the
+                act-mode section. Deliberately labelled as a partial list rather
+                than presented as the closed set of tools. */}
+            {toolSuggestions.length > 0 && (
+              <div className="space-y-1">
+                <label className="block text-xs font-medium" htmlFor={toolSuggestInputId}>
+                  {t('aiAgentsPage.fields.toolSuggestLabel')}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    id={toolSuggestInputId}
+                    className={`${inputCls} font-mono sm:w-64`}
+                    list={toolSuggestListId}
+                    value={toolSuggestion}
+                    onChange={(e) => setToolSuggestion(e.target.value)}
+                    data-testid="ai-agent-toolallowlist-suggest"
+                  />
+                  <datalist id={toolSuggestListId} data-testid="ai-agent-toolallowlist-suggestions">
+                    {toolSuggestions.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
+                  <button
+                    type="button"
+                    onClick={addSuggestedTool}
+                    disabled={toolSuggestion.trim() === ''}
+                    className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+                    data-testid="ai-agent-toolallowlist-add"
+                  >
+                    {t('aiAgentsPage.fields.toolSuggestAdd')}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolSuggestHint')}</p>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.protectedHint')}</p>
+            <div className="grid gap-3 md:grid-cols-3">
+              {listField('ai-agent-services', t('aiAgentsPage.fields.protectedServices'), draft.services, (v) => patch({ services: v }), 2)}
+              {listField('ai-agent-paths', t('aiAgentsPage.fields.protectedPaths'), draft.paths, (v) => patch({ paths: v }), 2)}
+              {listField('ai-agent-registrykeys', t('aiAgentsPage.fields.protectedRegistryKeys'), draft.registryKeys, (v) => patch({ registryKeys: v }), 2)}
+            </div>
+          </section>
+
+          {/* Six unlabelled number inputs in one 3-column grid read as one
+              undifferentiated wall. Split into the two questions they actually
+              answer — how much may it spend and reach, and how long may it take
+              — with every control and every test id unchanged. */}
+          <fieldset className="space-y-3 rounded-md border p-3 md:col-span-2">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t('aiAgentsPage.sections.limits')}
+            </legend>
+            <div role="group" aria-labelledby={limitsBudgetId} className="space-y-1.5">
+              <p id={limitsBudgetId} className="text-xs font-medium">
+                {t('aiAgentsPage.sections.limitsBudget')}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {numberField('ai-agent-limit-devices', t('aiAgentsPage.fields.maxDevicesPerRun'), draft.limits.maxDevicesPerRun, 1, 50, (v) => patch({ limits: { ...draft.limits, maxDevicesPerRun: v } }))}
+                {numberField('ai-agent-limit-runs', t('aiAgentsPage.fields.maxRunsPerHour'), draft.limits.maxRunsPerHour, 1, 500, (v) => patch({ limits: { ...draft.limits, maxRunsPerHour: v } }))}
+                {numberField('ai-agent-limit-budget', t('aiAgentsPage.fields.maxBudgetCentsPerDay'), draft.limits.maxBudgetCentsPerDay, 1, 100000, (v) => patch({ limits: { ...draft.limits, maxBudgetCentsPerDay: v } }))}
+                {numberField('ai-agent-limit-fleet', t('aiAgentsPage.fields.maxFleetPercentPerDay'), draft.limits.maxFleetPercentPerDay, 1, 100, (v) => patch({ limits: { ...draft.limits, maxFleetPercentPerDay: v } }))}
+              </div>
+            </div>
+            <div role="group" aria-labelledby={limitsTimingId} className="space-y-1.5">
+              <p id={limitsTimingId} className="text-xs font-medium">
+                {t('aiAgentsPage.sections.limitsTiming')}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {numberField('ai-agent-limit-wallclock', t('aiAgentsPage.fields.wallClockSeconds'), draft.limits.wallClockSeconds, 30, 1800, (v) => patch({ limits: { ...draft.limits, wallClockSeconds: v } }))}
+                {numberField('ai-agent-cooldown', t('aiAgentsPage.fields.cooldownSeconds'), draft.cooldownSeconds, 0, 86400, (v) => patch({ cooldownSeconds: v }))}
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t('aiAgentsPage.sections.notifications')}
+            </legend>
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.recipientRolesHint')}</p>
+            {rolesFailed ? (
+              <p className="text-sm text-destructive" data-testid="ai-agent-roles-failed">
+                {t('aiAgentsPage.fields.recipientRolesFailed')}
+              </p>
+            ) : roles.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="ai-agent-roles-empty">
+                {t('aiAgentsPage.fields.recipientRolesEmpty')}
               </p>
             ) : (
-              <div className="space-y-2">
-                {[...groupByTool(policyKeys).entries()].map(([toolName, entries]) => (
-                  <div key={toolName}>
-                    <p className="text-xs font-semibold">{toolName}</p>
-                    <div className="flex flex-wrap gap-3">
-                      {entries.map((entry) => (
-                        <label key={entry.key} className="flex items-center gap-1 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={draft.supervisedActionKeys.includes(entry.key)}
-                            onChange={() =>
-                              patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
-                            data-testid={`ai-agent-supervised-key-${entry.key}`}
-                          />
-                          {entry.action ?? entry.toolName}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+              <div className="flex flex-wrap gap-3">
+                {roles.map((role) => (
+                  <label key={role.id} className="flex items-center gap-1 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={draft.roleIds.includes(role.id)}
+                      onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
+                      data-testid={`ai-agent-role-${role.id}`}
+                    />
+                    {role.name}
+                  </label>
                 ))}
               </div>
             )}
           </fieldset>
-        )}
 
-        {/* Graduation evidence (P2-5, #4192). Edit-only, for the same reason
-            the schedules section is: the evidence ledger is keyed to a
-            persisted agent that does not exist until the first save. NOT gated
-            on `draft.mode === 'act'` — evidence an agent already earned is a
-            fact about the past, so toggling an unsaved draft back to shadow
-            must not make it disappear. The panel is read-only-useful with
-            `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` off; see its module doc.
-            `agent.kind` (stored), not `draft.kind`, since kind is create-only.
-            An org-owned agent always reads its OWN org's evidence; a partner
-            baseline follows the org switcher, and falls through to the
-            partner-wide grouping when it is on "all organizations". */}
-        {!isCreate && (
-          <AiAgentGraduationPanel
-            orgId={agent.orgId ?? orgScope.orgId}
-            kind={agent.kind}
-            isPartnerScope={isPartnerScope}
-          />
-        )}
-
-        <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-            {t('aiAgentsPage.sections.scope')}
-          </legend>
-          <div className="flex flex-wrap gap-3">
-            {SEVERITIES.map((severity) => (
-              <label key={severity} className="flex items-center gap-1 text-sm">
-                <input
-                  type="checkbox"
-                  checked={draft.severities.includes(severity)}
-                  onChange={() => patch({ severities: toggle(draft.severities, severity) })}
-                  data-testid={`ai-agent-severity-${severity}`}
-                />
-                {t(/* i18n-dynamic */ `aiAgentsPage.severities.${severity}`)}
-              </label>
-            ))}
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={draft.respectMaintenanceWindows}
-              onChange={(e) => patch({ respectMaintenanceWindows: e.target.checked })}
-              data-testid="ai-agent-respect-maintenance"
+          {/* Scheduled sweeps (P2-2, #4189). Edit-only, because a schedule row
+              references a persisted agent id that does not exist until the first
+              save; triage-only, because the API refuses every other kind
+              (`agent_kind_not_triage`). Gated on the STORED kind, not the draft:
+              kind is create-only, so the two cannot diverge on this form. */}
+          {!isCreate && agent.kind === 'triage' && (
+            <AiAgentSchedulesSection
+              agentId={agent.id}
+              agentOwnerScope={agent.ownerScope}
+              isPartnerScope={isPartnerScope}
+              orgId={orgScope.orgId}
             />
-            {t('aiAgentsPage.fields.respectMaintenanceWindows')}
-          </label>
-
-          {/* P2-4 (#4191) review fix — ticket-triggered runs are admitted
-              with `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's
-              `admitTriageRun`: `createAndEnqueueAgentRun({ kind: 'helpdesk',
-              triggerKind: 'ticket', profile: 'triage', ... })`), and
-              runService.ts's `resolveEffectiveAgentSystem(orgId, kind)`
-              resolves the effective policy off THAT `kind` field — never
-              `triage`, which is a different agent kind entirely (the
-              scheduled-sweeps gate a few lines below IS genuinely
-              triage-only; do not copy this gate from that one again).
-              Disabled — never hidden — on a partner-wide row: the merge
-              reads ONLY the org's own override (effectivePolicy.ts), so a
-              partner baseline value can never take effect; hiding it
-              outright would look like the field vanished rather than
-              explain why it cannot be set here. */}
-          {draft.kind === 'helpdesk' && (
-            <div className="space-y-1">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={draft.ticketAutonomousWrites}
-                  disabled={draft.ownerScope !== 'organization'}
-                  onChange={(e) => patch({ ticketAutonomousWrites: e.target.checked })}
-                  data-testid="ai-agent-ticket-autonomous-writes"
-                />
-                {t('aiAgentsPage.fields.ticketAutonomousWrites')}
-              </label>
-              <p className="pl-6 text-xs text-muted-foreground">
-                {t('aiAgentsPage.fields.ticketAutonomousWritesHint')}
-              </p>
-            </div>
           )}
-        </fieldset>
 
-        <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-            {t('aiAgentsPage.sections.permissions')}
-          </legend>
-          <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
-          {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
-          <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.protectedHint')}</p>
-          <div className="grid gap-3 md:grid-cols-3">
-            {listField('ai-agent-services', t('aiAgentsPage.fields.protectedServices'), draft.services, (v) => patch({ services: v }), 2)}
-            {listField('ai-agent-paths', t('aiAgentsPage.fields.protectedPaths'), draft.paths, (v) => patch({ paths: v }), 2)}
-            {listField('ai-agent-registrykeys', t('aiAgentsPage.fields.protectedRegistryKeys'), draft.registryKeys, (v) => patch({ registryKeys: v }), 2)}
-          </div>
-        </fieldset>
-
-        <fieldset className="grid gap-3 rounded-md border p-3 md:col-span-2 md:grid-cols-3">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-            {t('aiAgentsPage.sections.limits')}
-          </legend>
-          {numberField('ai-agent-limit-devices', t('aiAgentsPage.fields.maxDevicesPerRun'), draft.limits.maxDevicesPerRun, 1, 50, (v) => patch({ limits: { ...draft.limits, maxDevicesPerRun: v } }))}
-          {numberField('ai-agent-limit-runs', t('aiAgentsPage.fields.maxRunsPerHour'), draft.limits.maxRunsPerHour, 1, 500, (v) => patch({ limits: { ...draft.limits, maxRunsPerHour: v } }))}
-          {numberField('ai-agent-limit-budget', t('aiAgentsPage.fields.maxBudgetCentsPerDay'), draft.limits.maxBudgetCentsPerDay, 1, 100000, (v) => patch({ limits: { ...draft.limits, maxBudgetCentsPerDay: v } }))}
-          {numberField('ai-agent-limit-wallclock', t('aiAgentsPage.fields.wallClockSeconds'), draft.limits.wallClockSeconds, 30, 1800, (v) => patch({ limits: { ...draft.limits, wallClockSeconds: v } }))}
-          {numberField('ai-agent-limit-fleet', t('aiAgentsPage.fields.maxFleetPercentPerDay'), draft.limits.maxFleetPercentPerDay, 1, 100, (v) => patch({ limits: { ...draft.limits, maxFleetPercentPerDay: v } }))}
-          {numberField('ai-agent-cooldown', t('aiAgentsPage.fields.cooldownSeconds'), draft.cooldownSeconds, 0, 86400, (v) => patch({ cooldownSeconds: v }))}
-        </fieldset>
-
-        <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-            {t('aiAgentsPage.sections.notifications')}
-          </legend>
-          <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.recipientRolesHint')}</p>
-          {rolesFailed ? (
-            <p className="text-sm text-destructive" data-testid="ai-agent-roles-failed">
-              {t('aiAgentsPage.fields.recipientRolesFailed')}
+          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t('aiAgentsPage.sections.instructions')}
+            </legend>
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.instructionsHint')}</p>
+            <textarea
+              className={inputCls}
+              rows={5}
+              maxLength={INSTRUCTIONS_MAX}
+              value={draft.instructions}
+              onChange={(e) => patch({ instructions: e.target.value })}
+              data-testid="ai-agent-instructions"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('aiAgentsPage.fields.charactersLeft', { count: INSTRUCTIONS_MAX - draft.instructions.length })}
             </p>
-          ) : roles.length === 0 ? (
-            <p className="text-sm text-muted-foreground" data-testid="ai-agent-roles-empty">
-              {t('aiAgentsPage.fields.recipientRolesEmpty')}
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-3">
-              {roles.map((role) => (
-                <label key={role.id} className="flex items-center gap-1 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={draft.roleIds.includes(role.id)}
-                    onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
-                    data-testid={`ai-agent-role-${role.id}`}
-                  />
-                  {role.name}
-                </label>
-              ))}
-            </div>
-          )}
-        </fieldset>
-
-        {/* Scheduled sweeps (P2-2, #4189). Edit-only, because a schedule row
-            references a persisted agent id that does not exist until the first
-            save; triage-only, because the API refuses every other kind
-            (`agent_kind_not_triage`). Gated on the STORED kind, not the draft:
-            kind is create-only, so the two cannot diverge on this form. */}
-        {!isCreate && agent.kind === 'triage' && (
-          <AiAgentSchedulesSection
-            agentId={agent.id}
-            agentOwnerScope={agent.ownerScope}
-            isPartnerScope={isPartnerScope}
-            orgId={orgScope.orgId}
-          />
-        )}
-
-        <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-            {t('aiAgentsPage.sections.instructions')}
-          </legend>
-          <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.instructionsHint')}</p>
-          <textarea
-            className={inputCls}
-            rows={5}
-            maxLength={INSTRUCTIONS_MAX}
-            value={draft.instructions}
-            onChange={(e) => patch({ instructions: e.target.value })}
-            data-testid="ai-agent-instructions"
-          />
-          <p className="text-xs text-muted-foreground">
-            {t('aiAgentsPage.fields.charactersLeft', { count: INSTRUCTIONS_MAX - draft.instructions.length })}
-          </p>
-        </fieldset>
+          </fieldset>
+        </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
+      {/* Outside the scroll area: in the drawer the form now opens in, Save
+          must stay reachable without scrolling past the schedules section and
+          two graduation tables. */}
+      <div className="flex flex-wrap items-center gap-2 border-t bg-card px-5 py-4">
         <button
           type="button"
           onClick={() => void save()}
@@ -934,6 +1229,6 @@ export default function AiAgentForm({
           </button>
         )}
       </div>
-    </section>
+    </div>
   );
 }
