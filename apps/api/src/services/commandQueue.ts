@@ -13,6 +13,7 @@ import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
   agentBinaryUpdateDispatchRefusal,
 } from './agentEditionCompat';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { recordCommandDispatch } from './anomalyMetrics';
 import {
   decryptCommandForDelivery,
@@ -217,6 +218,7 @@ export interface CommandResult {
   error?: string;
   durationMs?: number;
   data?: unknown;
+  trust?: { capability: 'device_execute'; reason: string };
   /**
    * The device_commands row id, attached by executeCommand once a command row
    * exists (success or failure). Lets callers point at the persisted result
@@ -275,6 +277,7 @@ const runOutsideDbContextSafe = runOutsideDbContext;
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
+  trust?: { capability: 'device_execute'; reason: string };
 }
 
 export type RearmIdempotentCommandResult =
@@ -624,6 +627,8 @@ export async function queueCommand(
     );
   }
 
+  await assertDeviceExecuteAllowed(deviceId, type, userId);
+
   // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
   // `users` row, which would fail the created_by FK with 23503 (#3978).
   const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
@@ -842,6 +847,18 @@ export async function queueCommandForExecution(
     return { error: `Device is ${device.status}, cannot execute command` };
   }
 
+  try {
+    await assertDeviceExecuteAllowed(deviceId, type, userId);
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return {
+        error: e.code,
+        trust: { capability: e.capability, reason: e.reason },
+      };
+    }
+    throw e;
+  }
+
   const command = await queueCommand(deviceId, type, payload, userId);
 
   if (device.agentId && !preferHeartbeat) {
@@ -979,6 +996,19 @@ export async function executeCommand(
 
   if (!device) {
     return { status: 'failed', error: 'Device not found' };
+  }
+
+  try {
+    await assertDeviceExecuteAllowed(deviceId, type, userId);
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return {
+        status: 'failed',
+        error: e.code,
+        trust: { capability: e.capability, reason: e.reason },
+      };
+    }
+    throw e;
   }
 
   // #4093 — artifact-edition gate for agent-binary updates, at the dispatch

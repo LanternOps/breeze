@@ -87,6 +87,7 @@ function app(orgId: string) {
       // do not read it, so the null (contact-less login) case is stated.
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod: 'bearer',
+      timezone: 'UTC',
     });
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) return next();
     return withDbAccessContext(portalCtx(orgId), () => next());
