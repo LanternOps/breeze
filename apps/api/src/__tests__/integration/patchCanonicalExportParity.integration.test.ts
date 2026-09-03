@@ -235,6 +235,52 @@ const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: str
     mirror: { ...meaningfulMirror, rebootDelayMinutes: 1441 },
   },
   {
+    name: 'rebootMaxDeferrals must be numeric',
+    mirror: { ...meaningfulMirror, rebootMaxDeferrals: '3' },
+  },
+  {
+    name: 'rebootMaxDeferrals must be integral',
+    mirror: { ...meaningfulMirror, rebootMaxDeferrals: 2.5 },
+  },
+  {
+    name: 'rebootMaxDeferrals rejects values below zero',
+    mirror: { ...meaningfulMirror, rebootMaxDeferrals: -1 },
+  },
+  {
+    name: 'rebootMaxDeferrals rejects values above ten',
+    mirror: { ...meaningfulMirror, rebootMaxDeferrals: 11 },
+  },
+  {
+    name: 'rebootDeferralMinutes rejects values below five',
+    mirror: { ...meaningfulMirror, rebootDeferralMinutes: 4 },
+  },
+  {
+    name: 'rebootDeferralMinutes rejects values above fourteen forty',
+    mirror: { ...meaningfulMirror, rebootDeferralMinutes: 1441 },
+  },
+  {
+    name: 'rebootAllowDeferral must be boolean',
+    mirror: { ...meaningfulMirror, rebootAllowDeferral: 'yes' },
+  },
+  {
+    name: 'deferral enabled with a zero budget fails whole-document refinement',
+    mirror: { ...meaningfulMirror, rebootAllowDeferral: true, rebootMaxDeferrals: 0 },
+  },
+  {
+    name: 'a deferral budget past the seven-day agent ceiling fails whole-document refinement',
+    mirror: {
+      ...meaningfulMirror,
+      rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1440,
+    },
+  },
+  {
+    name: 'a deferral budget inside the ceiling stays valid',
+    mirror: {
+      ...meaningfulMirror,
+      rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
+    },
+  },
+  {
     name: 'exact duplicate app identities fail whole-document refinement',
     mirror: { ...meaningfulMirror, apps: [appRule, appRule] },
   },
@@ -447,6 +493,61 @@ runDb('existing reserved-marker collisions and incomplete patch material fail cl
   }).returning();
   if (!incompleteLink) throw new Error('incomplete patch link insert failed');
   await expectBlocked();
+});
+
+// #3207. config_policy_patch_settings has no org_id and no partner_id: its
+// tenancy is transitive (feature_link_id -> config_policy_feature_links ->
+// configuration_policies, which carries org_id XOR partner_id). "Partner-wide
+// works by inheritance" is therefore an assertion about a join, and the only
+// way to know it holds is to export a partner-owned policy and look.
+runDb('a partner-wide patch policy round-trips the reboot deferral settings', async () => {
+  const db = getTestDb();
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const [policy] = await db.insert(configurationPolicies).values({
+    // org_id NULL + partner_id set == partner-wide (#1724 dual ownership).
+    orgId: null,
+    partnerId: partner.id,
+    name: 'Partner-wide patch policy with deferral',
+    status: 'active',
+  }).returning();
+  if (!policy) throw new Error('partner-wide policy insert failed');
+  const [link] = await db.insert(configPolicyFeatureLinks).values({
+    configPolicyId: policy.id,
+    featureType: 'patch',
+    inlineSettings: {},
+  }).returning();
+  if (!link) throw new Error('partner-wide patch link insert failed');
+  await db.insert(configPolicyAssignments).values({
+    configPolicyId: policy.id,
+    level: 'organization',
+    targetId: org.id,
+  });
+  await db.execute(sql`
+    INSERT INTO public.config_policy_patch_settings
+      (feature_link_id, reboot_allow_deferral, reboot_max_deferrals, reboot_deferral_minutes)
+    VALUES (${link.id}::uuid, true, 2, 45)
+  `);
+
+  const response = await configurationExportApp(partner.id, org.id).request('/configuration-policies');
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = await response.json() as {
+    data: Array<{ sourceScope?: string; features: Array<{ type: string; settings: Record<string, unknown> }> }>;
+    blocked?: unknown[];
+  };
+  // A settings/allowlist mismatch fails CLOSED, so an empty `data` with a
+  // populated `blocked` is the shape a missed PATCH_NORMALIZED_MATERIAL_KEYS
+  // entry would produce — assert it did not happen rather than only checking
+  // the keys of a row that never arrived.
+  expect(body.blocked ?? []).toEqual([]);
+  expect(body.data).toHaveLength(1);
+  expect(body.data[0]!.sourceScope).toBe('partner');
+  const patch = body.data[0]!.features.find((feature) => feature.type === 'patch')?.settings;
+  expect(patch).toMatchObject({
+    rebootAllowDeferral: true,
+    rebootMaxDeferrals: 2,
+    rebootDeferralMinutes: 45,
+  });
 });
 
 function configurationExportApp(partnerId: string, orgId: string): Hono {
