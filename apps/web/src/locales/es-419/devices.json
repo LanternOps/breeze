@@ -1073,6 +1073,7 @@
     "of": "de",
     "devices": "dispositivos",
     "advancedFilterActive": "Filtro avanzado activo",
+    "advancedFilterFailed": "No se pudo cargar el filtro; no se muestra ningún dispositivo",
     "filterByDeviceClass": "Filtrar por clase de dispositivo",
     "filterByVpn": "Filtrar por VPN",
     "allVpn": "Todo VPN",
@@ -1775,6 +1776,7 @@
     "title": "Dispositivos",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
+      "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",

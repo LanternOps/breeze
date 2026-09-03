@@ -211,7 +211,7 @@ export default function DevicesPage() {
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.
-  const { ids: advancedFilterIds, loading: advancedFilterLoading } = useAdvancedFilterIds(advancedFilter);
+  const { ids: advancedFilterIds, loading: advancedFilterLoading, error: advancedFilterError } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -670,6 +670,19 @@ export default function DevicesPage() {
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
   }, [subscribe]);
+
+  // A failed advanced-filter preview (403 on a pinned orgId the caller can't
+  // access, 500, network error) must never render as a silently unfiltered
+  // list (#4732) — useAdvancedFilterIds already fails CLOSED (empty id set),
+  // so both the list and grid view already render zero rows; this toast is
+  // what tells the user WHY, since the grid view has no DeviceList toolbar to
+  // show the inline pill. Effect fires only on the false→true transition (the
+  // hook doesn't flip error back to true while the failing filter is
+  // unchanged), so this can't spam repeat toasts on unrelated re-renders.
+  useEffect(() => {
+    if (!advancedFilterError) return;
+    showToast({ type: 'error', message: t('devicesPage.toasts.advancedFilterFailed') });
+  }, [advancedFilterError, t]);
 
   // Mirror the chip-bar filter into the URL hash so the view is shareable.
   // Only active under v2; the legacy bar doesn't expect hash interop.
@@ -1471,6 +1484,7 @@ export default function DevicesPage() {
           onBulkAction={handleBulkAction}
           serverFilterIds={advancedFilterIds}
           serverFilterLoading={advancedFilterLoading}
+          serverFilterError={advancedFilterError}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}
           listFilters={listFilters}
@@ -1482,6 +1496,23 @@ export default function DevicesPage() {
         />
       ) : (
         <div className="space-y-3">
+          {/* Grid view has no filter toolbar to host DeviceList's inline
+              pill, and the toast fired above is transient (auto-dismisses)
+              and one-shot (only fires on the false→true transition) — a user
+              who missed it, or who switched into grid view after the error
+              already landed, would otherwise see an unexplained empty grid.
+              This persistent banner is grid view's equivalent of DeviceList's
+              `device-filter-error` pill (#4732). */}
+          {advancedFilterError && (
+            <div
+              className="flex items-center gap-2 rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive w-fit"
+              data-testid="device-filter-error-grid"
+              role="alert"
+            >
+              <AlertCircle className="h-3.5 w-3.5" />
+              {t('devicesPage.toasts.advancedFilterFailed')}
+            </div>
+          )}
           {hiddenDecommissionedCount > 0 && (
             <p>
               <DecommissionedHiddenHint

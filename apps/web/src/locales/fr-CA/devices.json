@@ -1073,6 +1073,7 @@
     "of": "de",
     "devices": "Dispositifs",
     "advancedFilterActive": "Filtre actif avancé",
+    "advancedFilterFailed": "Échec du chargement du filtre — aucun appareil affiché",
     "filterByDeviceClass": "Filtrer par classe de dispositif",
     "filterByVpn": "Filtrer par VPN",
     "allVpn": "Tous VPN",
@@ -1775,6 +1776,7 @@
     "title": "Dispositifs",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
+      "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",

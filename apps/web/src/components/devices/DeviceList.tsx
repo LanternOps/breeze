@@ -317,6 +317,12 @@ type DeviceListProps = {
   // grid views filter against the same complete, uncapped id set.
   serverFilterIds?: Set<string> | null;
   serverFilterLoading?: boolean;
+  // True when the last /filters/preview resolution failed (403 on a pinned
+  // orgId the caller can't access, 500, network error, …). `serverFilterIds`
+  // is an EMPTY set in this case (never null — see useAdvancedFilterIds), so
+  // the table already renders zero rows; this only drives the inline error
+  // message that explains why (#4732).
+  serverFilterError?: boolean;
   // When false (default), decommissioned devices are hidden — matching the old
   // default view (status='all' implicitly excluded them). DevicesPage sets this
   // true only when the active filter group explicitly targets the
@@ -565,6 +571,7 @@ export default function DeviceList({
   onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
+  serverFilterError = false,
   networkDevicesEnabled = false,
   listFilters,
 }: DeviceListProps) {
@@ -1880,14 +1887,25 @@ export default function DeviceList({
             {filteredDevices.length} {t("deviceList.of")}{" "}
             {devices.length - hiddenDecommissionedCount}{" "}
             {t("deviceList.devices")}{" "}
-            {serverFilterIds !== null && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            {serverFilterError ? (
+              <span
+                className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
+                data-testid="device-filter-error"
+                role="alert"
+              >
                 <Filter className="h-3 w-3" />
-                {t("deviceList.advancedFilterActive")}{" "}
-                {serverFilterLoading && (
-                  <span className="ml-1 animate-pulse">...</span>
-                )}
+                {t("deviceList.advancedFilterFailed")}
               </span>
+            ) : (
+              serverFilterIds !== null && (
+                <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  <Filter className="h-3 w-3" />
+                  {t("deviceList.advancedFilterActive")}{" "}
+                  {serverFilterLoading && (
+                    <span className="ml-1 animate-pulse">...</span>
+                  )}
+                </span>
+              )
             )}
             {onShowDecommissioned && hiddenDecommissionedCount > 0 && (
               <span className="ml-2">

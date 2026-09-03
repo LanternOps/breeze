@@ -1073,6 +1073,7 @@
     "of": "von",
     "devices": "Geräte",
     "advancedFilterActive": "Erweiterter Filter aktiv",
+    "advancedFilterFailed": "Filter konnte nicht geladen werden – es werden keine Geräte angezeigt",
     "filterByDeviceClass": "Nach Geräteklasse filtern",
     "filterByVpn": "Filtern Sie nach VPN",
     "allVpn": "Alles VPN",
@@ -1775,6 +1776,7 @@
     "title": "Geräte",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
+      "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
