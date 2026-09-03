@@ -41,6 +41,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "grupo excluído"
+      },
+      "lineScope": {
+        "site": "Site: {{name}}"
       }
     },
     "contractDetail": {
@@ -153,13 +156,22 @@
         "addLine": "Não foi possível adicionar a linha.",
         "removeLine": "Não foi possível remover a linha.",
         "activateContract": "Não foi possível ativar o contrato.",
-        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo."
+        "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou limpe o vínculo do catálogo.",
+        "updateLine": "Não foi possível atualizar a linha.",
+        "lineNotFound": "Essa linha não existe mais. Atualize o contrato.",
+        "contractNotEditable": "As linhas só podem ser editadas em contratos em rascunho ou ativos.",
+        "siteNotInOrg": "Esse site pertence a outra organização.",
+        "groupNotInOrg": "Esse grupo de dispositivos pertence a outra organização.",
+        "invalidLinePatch": "Essas alterações não são válidas para este tipo de linha.",
+        "priceNotRepresentable": "Esse preço tem casas decimais demais para {{currency}}.",
+        "catalogItemNotFound": "Esse item do catálogo não está disponível neste contrato."
       },
       "toast": {
         "contractCreated": "Contrato criado",
         "lineAdded": "Linha adicionada",
         "lineRemoved": "Linha removida",
-        "contractActivated": "Contrato ativado"
+        "contractActivated": "Contrato ativado",
+        "lineUpdated": "Linha atualizada"
       },
       "schedule": {
         "title": "Agenda",
@@ -190,7 +202,8 @@
         "unitPrice": "Preço unitário",
         "qty": "Qtd.",
         "tax": "Imposto",
-        "empty": "Ainda não há linhas. Adicione uma linha recorrente abaixo."
+        "empty": "Ainda não há linhas. Adicione uma linha recorrente abaixo.",
+        "edit": "Editar"
       },
       "addLine": {
         "integrationHint": "Adicione de uma integração — ela preenche uma linha.",
@@ -223,6 +236,15 @@
         "priceLookupFailed": "Não foi possível consultar o preço em {{currency}}.",
         "priceNotRepresentable": "O preço em {{currency}} salvo para este item não é válido em {{currency}} — corrija-o no catálogo ou remova o vínculo com o catálogo e informe uma linha manual.",
         "priceSourceOrgOverride": "Preço específico da organização {{org}}"
+      },
+      "editLine": {
+        "save": "Salvar linha",
+        "cancel": "Cancelar",
+        "typeLocked": "O tipo de linha não pode ser alterado. Remova a linha e adicione uma nova.",
+        "priceFromCatalog": "O preço vem do catálogo. Remova o vínculo com o catálogo para defini-lo manualmente.",
+        "refreshPrice": "Atualizar preço do catálogo",
+        "unlinkNeedsPrice": "Informe um preço unitário e a configuração de imposto para remover o vínculo com o catálogo.",
+        "noChanges": "Ainda não há nada para salvar."
       },
       "estimate": {
         "title": "Estimado neste período",
