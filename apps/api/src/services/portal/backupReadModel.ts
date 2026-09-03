@@ -251,15 +251,16 @@ export async function backupDevicesPage(
     estimatedRtoMinutes: row.estimatedRtoMinutes,
     estimatedRpoMinutes: row.estimatedRpoMinutes,
   }));
+  const total = Number(countRows[0]?.count ?? 0);
 
   return {
-    dataStatus: data.length === 0 ? 'no_data' : 'ok',
+    dataStatus: total === 0 ? 'no_data' : 'ok',
     asOf: args.now.toISOString(),
     data,
     pagination: {
       page: args.page,
       limit: args.limit,
-      total: Number(countRows[0]?.count ?? 0),
+      total,
     },
   };
 }

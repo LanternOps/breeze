@@ -6,11 +6,13 @@ import type { SQL } from 'drizzle-orm';
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
   wheres: [] as unknown[],
+  selections: [] as Record<string, unknown>[],
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((selection: Record<string, unknown>) => {
+      state.selections.push(selection);
       const chain: Record<string, unknown> = {};
       for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'offset']) {
         chain[method] = vi.fn((arg: unknown) => {
@@ -33,6 +35,7 @@ describe('backupTile', () => {
   beforeEach(() => {
     state.rows.length = 0;
     state.wheres.length = 0;
+    state.selections.length = 0;
   });
 
   it('returns latest passed verification and configured-device counts', async () => {
@@ -88,6 +91,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.rows.length = 0;
   state.wheres.length = 0;
+  state.selections.length = 0;
 });
 
 it('returns overview verification, restore, breach, and readiness evidence', async () => {
@@ -180,6 +184,40 @@ it('returns every enrolled device, including not configured', async () => {
   );
   expect(compiled.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
   for (const query of compiled) expect(query.params).toContain(ORG_ID);
+
+  const deviceSelection = state.selections.find((selection) => 'configured' in selection);
+  expect(deviceSelection).toBeDefined();
+  const expectedOrgPredicates = {
+    configured: 2,
+    lastBackupAt: 1,
+    lastBackupStatus: 1,
+    testRestoreStatus: 1,
+    testRestoreAt: 1,
+    restoreTimeSeconds: 1,
+    openBreaches: 1,
+  } as const;
+  for (const [field, expectedCount] of Object.entries(expectedOrgPredicates)) {
+    const query = new PgDialect().sqlToQuery(deviceSelection?.[field] as SQL);
+    expect(
+      query.params.filter((param) => param === ORG_ID),
+      `${field} must retain every organization predicate`,
+    ).toHaveLength(expectedCount);
+  }
+});
+
+it('reports ok when an out-of-range page is empty but the org has devices', async () => {
+  state.rows.push([{ count: 2 }], []);
+
+  await expect(backupDevicesPage(ORG_ID, {
+    page: 2,
+    limit: 25,
+    timezone: 'America/Denver',
+    now: new Date('2026-09-02T12:00:00Z'),
+  })).resolves.toMatchObject({
+    dataStatus: 'ok',
+    data: [],
+    pagination: { page: 2, limit: 25, total: 2 },
+  });
 });
 
 it('returns null breach counts when backups are not configured', async () => {
