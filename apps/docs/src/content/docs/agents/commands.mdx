@@ -581,7 +581,7 @@ Schedule, cancel, and check the status of managed reboots (separate from the imm
 
 | Action | Description | Key Payload Fields |
 |---|---|---|
-| `schedule_reboot` | Schedule a deferred reboot | `delayMinutes`, `reason`, `source`, `deadline` |
+| `schedule_reboot` | Schedule a deferred reboot | `delayMinutes`, `reason`, `source`, `deadline`, `allowDeferral`, `maxDeferrals`, `deferralMinutes` |
 | `cancel_reboot` | Cancel a scheduled reboot | -- |
 | `get_reboot_status` | Get current reboot schedule state | -- |
 
@@ -592,7 +592,10 @@ Schedule, cancel, and check the status of managed reboots (separate from the imm
 | `delayMinutes` | int | `60` | Minutes until reboot (1-10080, i.e. up to 7 days) |
 | `reason` | string | `"Scheduled by administrator"` | Reboot reason for logging and user notification |
 | `source` | string | `"manual"` | Initiator: `"manual"`, `"patch"`, `"policy"`, etc. |
-| `deadline` | string | -- | Optional RFC 3339 timestamp to override calculated deadline |
+| `deadline` | string | `now + delayMinutes` | RFC 3339 hard stop. The API always sends it; a payload without it falls back to the calculated reboot time |
+| `allowDeferral` | bool | `false` | Whether the signed-in user may postpone this restart. Absent means `false` -- a restart is never postponable by default |
+| `maxDeferrals` | int | `0` | How many postponements this restart allows |
+| `deferralMinutes` | int | `0` | How far each postponement pushes the restart out |
 
 Supported on Windows, Linux and macOS. The agent warns the logged-in user
 immediately when the reboot is scheduled, follows up with reminders at 60, 15 and
@@ -606,6 +609,14 @@ For post-patch reboots the API does not choose the delay itself: it resolves
 `rebootDelayMinutes` from the device's effective patch Configuration Policy
 (default 15 minutes, range 1-1440), and the maintenance-window reboot path reads
 the same setting.
+
+The deferral fields come from the same policy (`rebootAllowDeferral`,
+`rebootMaxDeferrals`, `rebootDeferralMinutes`) and are resolved once, when the
+restart is scheduled -- editing the policy mid-countdown does not shrink a user's
+remaining postponements. They are **off by default**, and an agent that predates
+them ignores them, so the restart behaves exactly as it always has. A restart
+issued inside a maintenance window has its `deadline` capped at the close of that
+window.
 
 ### `cancel_reboot`
 

@@ -53,6 +53,29 @@ delete once done:
       against the production keys and the Production redirect URIs
       (registered 2026-09-02) — watch that callback.
 
+## Contract lines billed by device role (#3205)
+
+**Self-Hosting / Upgrade Notes**
+
+- Migration `2026-10-05-100100-contract-lines-device-roles.sql` replaces the
+  `contract_lines.site_id` foreign key with a composite one to `sites(id, org_id)`.
+  Before adding it, it **clears `site_id` on any contract line whose site belongs
+  to a different organization** (such lines silently counted zero devices before).
+  The count is logged as a Postgres `WARNING` (`cleaned N contract_lines rows whose
+  site belonged to another org`); if N > 0, re-scope those lines in the contract
+  editor before the next billing run.
+- Adding a contract line with a site from another organization now returns
+  `400 SITE_NOT_IN_ORG` instead of being accepted.
+- New billing-worker log line
+  `[contract-billing] uncovered devices: contract <id> has N billable device(s) no line bills — {...}`
+  fires on every sweep for role-billed contracts that have unclassified (`unknown`)
+  devices or roles no line covers. Informational: classify the devices or add a line.
+
+**Behaviour**
+
+- New contract line type **Per device role** bills a set of device roles (e.g.
+  switch + router + firewall). `unknown` is never billable. Contract estimates and
+  generated invoices now report how many devices no line bills, by role.
 ## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
 
 Only fold this in once the whole chain above is merged. It is one feature in

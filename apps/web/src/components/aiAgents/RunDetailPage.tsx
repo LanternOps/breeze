@@ -566,13 +566,21 @@ function TicketProposalSection({
                   <span className="text-xs text-muted-foreground">
                     {intent?.status ?? t('aiAgentsPage.runs.triage.intentUnknown')}
                   </span>
-                  <a href="/approvals" className="text-primary hover:underline">
-                    {t('aiAgentsPage.runs.detail.intents.viewAll')}
-                  </a>
                 </li>
               );
             })}
           </ul>
+          {/* #4468: every intentId above resolves to the SAME /approvals
+              inbox — a link repeated once per row added nothing over a
+              single link for the whole batchable set, and read as N
+              separate destinations rather than one. */}
+          <a
+            href="/approvals"
+            data-testid="ai-agent-run-triage-intents-approvals-link"
+            className="mt-1 inline-block text-primary hover:underline"
+          >
+            {t('aiAgentsPage.runs.detail.intents.viewAll')}
+          </a>
         </div>
       )}
 

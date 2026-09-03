@@ -1973,6 +1973,12 @@ export interface MaintenanceWindowStatus {
   suppressAutomations: boolean;
   suppressScripts: boolean;
   rebootIfPending: boolean;
+  /**
+   * When the active window closes, as a real instant. Null whenever the window
+   * is not active. #3207 uses it as the ceiling on a reboot deadline: a user
+   * may not postpone a maintenance-window reboot past the end of the window.
+   */
+  windowEndsAt: Date | null;
 }
 
 /** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
@@ -2054,6 +2060,7 @@ export function isInMaintenanceWindow(
     suppressAutomations: false,
     suppressScripts: false,
     rebootIfPending: false,
+    windowEndsAt: null,
   };
 
   const currentTime = now ?? new Date();
@@ -2175,6 +2182,11 @@ export function isInMaintenanceWindow(
     suppressAutomations: settings.suppressAutomations,
     suppressScripts: settings.suppressScripts,
     rebootIfPending: settings.rebootIfPending,
+    // windowStart/windowEnd/localNow all live in the same "wall clock rendered
+    // as UTC" space, so their difference is a real duration even though none of
+    // them is a real instant. Projecting the remaining time off `currentTime`
+    // is what turns it back into one.
+    windowEndsAt: new Date(currentTime.getTime() + (windowEnd.getTime() - localNow.getTime())),
   };
 }
 
@@ -2185,7 +2197,7 @@ export function isInMaintenanceWindow(
 export async function checkDeviceMaintenanceWindow(deviceId: string): Promise<MaintenanceWindowStatus> {
   const settings = await resolveMaintenanceConfigForDevice(deviceId);
   if (!settings) {
-    return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
+    return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, windowEndsAt: null };
   }
   return isInMaintenanceWindow(settings);
 }

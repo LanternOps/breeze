@@ -26,7 +26,8 @@ export type IntentBatchOutcome =
   | { outcome: 'decided'; results: BatchRowResult[] }
   | { outcome: 'needs_device' }
   | { outcome: 'batch_step_up' }
-  | { outcome: 'batch_not_homogeneous'; offending: string[] };
+  | { outcome: 'batch_not_homogeneous'; offending: string[] }
+  | { outcome: 'batch_too_large' };
 
 /**
  * Wraps any failure of the WebAuthn (Touch ID / Windows Hello) ceremony.
@@ -106,6 +107,15 @@ export function isBatchNotHomogeneous(err: unknown): boolean {
   return errorToken(err) === 'batch_not_homogeneous';
 }
 
+/** The server's 400 `batch_too_large` (services/approvals/batchDecide.ts's
+ *  `BATCH_MAX`). The client mirrors this cap in `ApprovalsInbox` (#4460) so
+ *  the request is normally never sent, but a stale client bundle or a second
+ *  tab that grew a group past the cap between renders can still reach the
+ *  server — this is that defense-in-depth path, not the primary one. */
+export function isBatchTooLarge(err: unknown): boolean {
+  return errorToken(err) === 'batch_too_large';
+}
+
 /**
  * The batch route's 401 `reauth_required`. On the SINGLE-card path this is a
  * WebAuthn proof rejection ("your scan failed, try again"); on the batch path
@@ -134,6 +144,7 @@ export function batchDecideErrorCopy(token: string): string | undefined {
     return i18n.t('approvals:errors.batchStepUp');
   }
   if (token === 'batch_not_homogeneous') return i18n.t('approvals:errors.batchNotHomogeneous');
+  if (token === 'batch_too_large') return i18n.t('approvals:errors.batchTooLarge');
   return decideErrorCopy(token);
 }
 
@@ -238,7 +249,7 @@ export async function decideIntentApproval(
  * and answers 422 for the whole set rather than partially deciding one the
  * approver may have misread.
  *
- * Returns per-row outcomes on a 200; the three refusal variants mean NOTHING
+ * Returns per-row outcomes on a 200; the four refusal variants mean NOTHING
  * was decided:
  *   - `needs_device`      — no registered approver device (no POST happened)
  *   - `batch_step_up`     — 403 `step_up_required` OR 401 `reauth_required`:
@@ -249,6 +260,11 @@ export async function decideIntentApproval(
  *   - `batch_not_homogeneous` — 422: the set drifted (a row was decided
  *                           elsewhere, an intent settled); the cards remain
  *                           individually decidable
+ *   - `batch_too_large`   — 400: the set exceeds `BATCH_MAX`. The caller
+ *                           (`ApprovalsInbox`) mirrors this cap client-side
+ *                           (#4460) and refuses before calling in, so this
+ *                           only fires on a stale bundle or a drifted group —
+ *                           the cards remain individually decidable
  *
  * Deny skips the ceremony (no proof required) and carries the ONE reason the
  * group collected. Throws CeremonyError on a cancelled/failed ceremony (nothing
@@ -291,6 +307,11 @@ export async function decideIntentApprovalBatch(
           return { outcome: 'batch_not_homogeneous', offending: err.offending ?? [] };
         }
         if (err.token === 'step_up_required') return { outcome: 'batch_step_up' };
+        // Same BATCH_MAX check the decide call would hit (loadHomogeneousBatch
+        // runs it before minting a challenge too) — reported here rather than
+        // falling through to CeremonyError below, which would tell the
+        // approver their fingerprint scan failed when no ceremony ran at all.
+        if (err.token === 'batch_too_large') return { outcome: 'batch_too_large' };
       }
       throw new CeremonyError(err);
     }
@@ -344,6 +365,9 @@ export async function decideIntentApprovalBatch(
     }
     if (isStepUpRequired(err) || isBatchReauthRequired(err)) {
       return { outcome: 'batch_step_up' };
+    }
+    if (isBatchTooLarge(err)) {
+      return { outcome: 'batch_too_large' };
     }
     throw err;
   }

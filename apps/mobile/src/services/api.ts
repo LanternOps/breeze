@@ -73,6 +73,9 @@ export interface Alert {
   message: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   type: string;
+  /** Rule-template category (e.g. "Security", "Performance"); absent for
+   * alerts created without a rule. */
+  category?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -268,6 +271,12 @@ type MobileAlertRecord = {
   acknowledgedBy?: string | null;
   resolvedAt?: string | null;
   type?: string;
+  /**
+   * The rule's alert-template category, joined server-side (#4535). Alerts
+   * created without a rule carry no category, hence nullable rather than
+   * always-present.
+   */
+  category?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -575,6 +584,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     message: alert.message,
     severity: normalizedSeverity,
     type: alert.type || 'alert',
+    category: alert.category ?? undefined,
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),

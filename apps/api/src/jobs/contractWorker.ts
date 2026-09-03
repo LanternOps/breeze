@@ -82,6 +82,14 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           row.id, gap.contractLineId, gap.catalogItemId, gap.currencyCode
         );
       }
+      // #3205: a role-billed contract with devices no line covers (unclassified
+      // 'unknown' devices, or roles with no line) still bills — but never silently.
+      if (res.uncoveredDevices && res.uncoveredDevices.total > 0) {
+        console.warn(
+          '[contract-billing] uncovered devices: contract %s has %d billable device(s) no line bills — %s',
+          row.id, res.uncoveredDevices.total, JSON.stringify(res.uncoveredDevices.byRole)
+        );
+      }
     } catch (err) {
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);

@@ -40,6 +40,7 @@
     "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
     "batchStepUp": "Ce lot nécessite une connexion plus forte. Approuvez les demandes une par une.",
     "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble.",
+    "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits.",
     "driftedFromBatch": "Cette demande a changé et doit être décidée séparément."
   },
   "registerDevice": "Enregistrer l’appareil",

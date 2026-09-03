@@ -536,6 +536,28 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
+  // #4460: the server hard-caps one batch at BATCH_MAX (50,
+  // services/approvals/batchDecide.ts) and previously that was the ONLY
+  // place enforcing it — a group larger than 50 would round-trip to the
+  // server just to learn that. Mirrors it client-side via the shared
+  // `APPROVAL_BATCH_MAX` constant so an oversized group is refused locally,
+  // with the same "whole batch" inline messaging as the other refusal
+  // kinds, and never reaches the network.
+  it('refuses to submit a group larger than the batch max without calling the server', async () => {
+    const oversizedGroup = Array.from({ length: 51 }, (_, i) => agentCard(`ap-${i}`));
+    routeFetch(oversizedGroup);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    const error = await screen.findByTestId(`approval-group-error-${GROUP_KEY}`);
+    expect(error).toHaveTextContent(/too many/i);
+    expect(batchCalls()).toHaveLength(0);
+    expect(authenticatorMock.getBatchApprovalAssertion).not.toHaveBeenCalled();
+    expect(screen.getByTestId('approval-row-ap-0')).toBeInTheDocument();
+  });
+
   // Issue #4459: a `batch_not_homogeneous` 422 now uses the server's
   // `offending` ids to deselect just those cards, rather than freezing the
   // whole group behind one banner and forcing the approver to redo the

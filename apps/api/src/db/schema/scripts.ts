@@ -118,6 +118,16 @@ export const scriptTemplates = pgTable('script_templates', {
   nameIdx: index('script_templates_name_idx').on(table.name)
 }));
 
+/**
+ * #2698: what the script custom-field write-back did for one execution.
+ * `rejected.reason` is one of the CustomFieldWriteRejection values in
+ * services/customFields/scriptWriteBack.ts. Keys only — never values.
+ */
+export interface ScriptCustomFieldWriteSummary {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+}
+
 export const scriptExecutions = pgTable('script_executions', {
   id: uuid('id').primaryKey().defaultRandom(),
   scriptId: uuid('script_id').notNull().references(() => scripts.id),
@@ -143,6 +153,8 @@ export const scriptExecutions = pgTable('script_executions', {
   stdout: text('stdout'),
   stderr: text('stderr'),
   errorMessage: text('error_message'),
+  // #2698: per-run summary of the script custom-field write-back.
+  customFieldResult: jsonb('custom_field_result').$type<ScriptCustomFieldWriteSummary>(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   automationRunIdIdx: index('script_executions_automation_run_id_idx')

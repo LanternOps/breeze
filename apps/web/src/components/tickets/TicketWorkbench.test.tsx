@@ -935,6 +935,54 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
     resolveTk2Drafts(makeJsonResponse({ data: [resolutionDraft] }));
     await screen.findByTestId('ticket-ai-draft-resolution_note');
   });
+
+  // #4469 — the two draft cards are independent operations (different draft
+  // ids); acting on one must not block the other. Holds the reply's send
+  // request open (never resolved during the assertion) so the resolution_note
+  // card's discard click happens while sendingDraftId is still set to the
+  // OTHER draft's id — a regression that guards on "any in-flight action"
+  // rather than "this draft's own in-flight action" would silently swallow
+  // the discard click here (the button isn't visually disabled, but the
+  // handler's guard clause no-ops before the fetch fires).
+  it('#4469: discarding one draft while the other is mid-send still fires the discard request', async () => {
+    let resolveSend!: (value: Response) => void;
+    const sendPromise = new Promise<Response>((resolve) => { resolveSend = resolve; });
+
+    mockDraftsApi([replyDraft, resolutionDraft], (url, init) => {
+      if (url === '/tickets/tk-1/ai-drafts/draft-reply-1/send' && init?.method === 'POST') {
+        return sendPromise as unknown as Response;
+      }
+      return null;
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-ai-draft-reply');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-reply-send'));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // Reply's send is still in flight (sendPromise unresolved) when the
+    // resolution_note card is discarded.
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-resolution_note-discard'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-note-1/discard',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    resolveSend(makeJsonResponse({ success: true }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull(); // send completed, card removed
+    });
+  });
 });
 
 describe('TicketWorkbench pending/on_hold prompt', () => {
