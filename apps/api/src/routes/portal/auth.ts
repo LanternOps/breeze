@@ -11,6 +11,7 @@ import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { rateLimitIpKey } from '../../services/clientIp';
+import { resolveOrgTimezone } from '../../services/portal/timezone';
 import {
   loginSchema,
   forgotPasswordSchema,
@@ -120,8 +121,8 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // but the portal_users row lives behind org-forced RLS. Run this lookup
   // under system scope so it resolves under the unprivileged breeze_app pool —
   // the same pattern authMiddleware uses for its pre-auth users lookup.
-  const [user] = await withSystemDbAccessContext(() =>
-    db
+  const { user, timezone } = await withSystemDbAccessContext(async () => {
+    const [user] = await db
       .select({
         id: portalUsers.id,
         orgId: portalUsers.orgId,
@@ -138,8 +139,18 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       })
       .from(portalUsers)
       .where(and(eq(portalUsers.id, sessionData.portalUserId), eq(portalUsers.orgId, sessionData.orgId)))
-      .limit(1)
-  );
+      .limit(1);
+
+    return {
+      user,
+      // Resolved here (not per-route/per-read-model) so every portal read
+      // model can consume `auth.timezone` without its own DB round trip —
+      // see services/portal/timezone.ts.
+      timezone: user
+        ? await resolveOrgTimezone(sessionData.orgId)
+        : null,
+    };
+  });
 
   if (!user) {
     if (PORTAL_USE_REDIS) {
@@ -214,7 +225,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     setPortalSessionCookies(c, token);
   }
 
-  c.set('portalAuth', { user, token, authMethod });
+  c.set('portalAuth', { user, token, authMethod, timezone: timezone ?? 'UTC' });
 
   // #1448 — a small set of routes (the Stripe pay route) opt OUT of the auto
   // request-transaction so a slow outbound HTTP call (Checkout sessions.create)

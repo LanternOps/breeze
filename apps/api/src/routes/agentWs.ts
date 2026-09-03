@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import type Redis from 'ioredis';
 import { z } from 'zod';
 import { eq, and, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
@@ -18,7 +19,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
-import { isRedisAvailable } from '../services/redis';
+import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 import { processBackupVerificationResult } from './backup/verificationService';
@@ -77,6 +78,14 @@ import { redactResultAgainstCommandSecrets } from '../services/commandSecretReda
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
 import { breezeRole } from '../config/env';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import type { PartnerTrustState } from '../db/schema/orgs';
+import {
+  evaluateCapability,
+  isLifecycleCommand,
+  loadTrustState,
+  partnerIdForDevice,
+} from '../services/partnerTrust';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -187,9 +196,72 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
   'restore',
 ]);
 
-// Store active WebSocket connections by agentId
-// Map<agentId, WSContext>
-const activeConnections = new Map<string, WSContext>();
+interface ActiveAgentConnection {
+  ws: WSContext;
+  partnerId: string | null;
+  trustState: PartnerTrustState;
+}
+
+// Store active WebSocket connections and their connect-time trust snapshot by agentId.
+const activeConnections = new Map<string, ActiveAgentConnection>();
+
+const PARTNER_TRUST_CHANGED_CHANNEL = 'partner-trust:changed';
+let partnerTrustSubscriber: Redis | null = null;
+let partnerTrustSubscriptionPromise: Promise<void> | null = null;
+
+export async function handleTrustChanged(msg: unknown): Promise<void> {
+  let parsed: unknown = msg;
+  if (typeof msg === 'string') {
+    try {
+      parsed = JSON.parse(msg);
+    } catch {
+      return;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return;
+
+  const { partnerId, trustState } = parsed as {
+    partnerId?: unknown;
+    trustState?: unknown;
+  };
+  if (
+    typeof partnerId !== 'string'
+    || !['probation', 'trusted', 'restricted'].includes(String(trustState))
+  ) {
+    return;
+  }
+
+  for (const connection of activeConnections.values()) {
+    if (connection.partnerId === partnerId) {
+      connection.trustState = trustState as PartnerTrustState;
+    }
+  }
+}
+
+function initializePartnerTrustSubscription(): Promise<void> {
+  if (partnerTrustSubscriptionPromise) return partnerTrustSubscriptionPromise;
+  const redis = getRedis();
+  if (!redis || typeof redis.duplicate !== 'function') return Promise.resolve();
+
+  const subscriber = redis.duplicate({ connectionName: 'breeze:agent-ws:partner-trust' });
+  partnerTrustSubscriber = subscriber;
+  subscriber.on('message', (channel: string, message: string) => {
+    if (channel === PARTNER_TRUST_CHANGED_CHANNEL) {
+      void handleTrustChanged(message);
+    }
+  });
+  subscriber.on('error', (error: Error) => {
+    console.error('[AgentWs] Partner-trust Redis subscriber error:', error.message);
+  });
+  partnerTrustSubscriptionPromise = subscriber.subscribe(PARTNER_TRUST_CHANGED_CHANNEL)
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      console.error('[AgentWs] Failed to subscribe to partner-trust changes:', error);
+      partnerTrustSubscriber = null;
+      partnerTrustSubscriptionPromise = null;
+    });
+  return partnerTrustSubscriptionPromise;
+}
 
 // Delivery epoch, monotonic per agent. Bumped every time a socket is installed
 // in `activeConnections`, so every command is dispatched on a known epoch.
@@ -216,7 +288,7 @@ function installAgentSocketEpoch(agentId: string): number {
  * identity rules out a socket that was never installed at all.
  */
 function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): boolean {
-  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId) === ws;
+  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId)?.ws === ws;
 }
 
 /**
@@ -1911,6 +1983,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
+      const trustMode = partnerTrustMode();
+      if (trustMode !== 'off') {
+        await initializePartnerTrustSubscription();
+      }
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
       // for the same agentId would otherwise overwrite the map entry WITHOUT
       // closing the previous socket, leaving an orphaned-but-authorized socket
@@ -1918,7 +1994,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // revocation/disconnect (which only act on the mapped socket) miss it.
       // Close the previous socket before replacing it so `activeConnections`
       // stays authoritative and disconnectAgent can never miss a live socket.
-      const previousWs = activeConnections.get(agentId);
+      const previousWs = activeConnections.get(agentId)?.ws;
       if (previousWs && previousWs !== ws) {
         try {
           previousWs.close(4002, 'Superseded by newer connection');
@@ -1934,8 +2010,33 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
+      // Trust mode off preserves the pre-gate connection path without trust DB reads.
+      // Shadow/enforce keep the socket open but fail closed in the cached snapshot
+      // whenever partner or trust resolution is missing or unavailable.
+      let partnerId: string | null = null;
+      let trustState: PartnerTrustState = 'trusted';
+      if (trustMode !== 'off') {
+        try {
+          partnerId = await partnerIdForDevice(agentDb.deviceId);
+          const trust = partnerId ? await loadTrustState(partnerId) : null;
+          if (!trust) {
+            trustState = 'restricted';
+            console.warn(`[AgentWs] Partner trust unresolved for device ${agentDb.deviceId}; restricting connection`);
+          } else {
+            trustState = trust.trustState;
+          }
+        } catch {
+          trustState = 'restricted';
+          console.warn(`[AgentWs] Partner trust resolution failed for device ${agentDb.deviceId}; restricting connection`);
+        }
+      }
+
       // Store connection and stamp this socket's delivery epoch.
-      activeConnections.set(agentId, ws);
+      activeConnections.set(agentId, {
+        ws,
+        partnerId,
+        trustState,
+      });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
@@ -2099,7 +2200,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
               // Self-heal: an evict-path unconditional delete may have raced a
               // reconnect; if we are still the live socket, re-establish the lease.
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2113,7 +2214,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (state) {
             state.lastPongAt = Date.now();
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2663,7 +2764,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
       // Only remove from active connections if this ws is still the current one.
       // A reconnecting agent may have already replaced us in the map — deleting
       // the new connection's entry would make the agent unreachable.
-      if (activeConnections.get(agentId) === ws) {
+      if (activeConnections.get(agentId)?.ws === ws) {
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2724,7 +2825,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
-if (activeConnections.get(agentId) === ws) {
+if (activeConnections.get(agentId)?.ws === ws) {
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2994,7 +3095,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     }
 
     // Close any active WS for this agent so it has to re-auth (and fail).
-    const activeWs = activeConnections.get(agentId);
+    const activeWs = activeConnections.get(agentId)?.ws;
     if (activeWs) {
       try {
         activeWs.close(4001, 'Token suspended');
@@ -3034,12 +3135,23 @@ export function __resetCrossTenantDropsForTest() {
 // wave 3.5b (#4084) relay integration suite, which needs a "locally connected"
 // agent on ONE simulated process while dispatching from another. Never usable
 // in production — a real socket must come through createAgentWsHandlers.
-export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+export function registerConnection(
+  agentId: string,
+  ws: { send(data: string): void },
+  trust: { partnerId: string; trustState: PartnerTrustState } = {
+    partnerId: 'test-partner',
+    trustState: 'trusted',
+  },
+): void {
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('__installAgentSocketForTest is test-only');
+    throw new Error('registerConnection is test-only');
   }
-  activeConnections.set(agentId, ws as never);
+  activeConnections.set(agentId, { ws: ws as never, ...trust });
   installAgentSocketEpoch(agentId);
+}
+
+export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+  registerConnection(agentId, ws);
 }
 
 /**
@@ -3132,15 +3244,27 @@ function assertSocketLocalDispatchAllowed(fn: string): void {
  */
 export function sendCommandToAgent(agentId: string, command: AgentCommand): boolean {
   assertSocketLocalDispatchAllowed('sendCommandToAgent');
-  const ws = activeConnections.get(agentId);
-  if (!ws) {
+  const conn = activeConnections.get(agentId);
+  if (!conn) {
     return false;
+  }
+
+  const mode = partnerTrustMode();
+  if (mode !== 'off' && conn.trustState !== 'trusted' && !isLifecycleCommand(command.type)) {
+    if (mode === 'enforce') return false;
+    if (conn.partnerId) {
+      void evaluateCapability('device_execute', {
+        partnerId: conn.partnerId,
+        commandType: command.type,
+        detail: { via: 'ws_fast_path' },
+      });
+    }
   }
 
   try {
     const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
-    ws.send(json);
+    conn.ws.send(json);
     recordOrphanedResultExpectation(agentId, command);
     return true;
   } catch (error) {
@@ -3171,10 +3295,10 @@ export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected
  * a live-but-orphaned socket.
  */
 export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
-  const ws = activeConnections.get(agentId);
-  if (!ws) return 'not-connected';
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
   try {
-    ws.close(code, reason);
+    conn.ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -3217,13 +3341,13 @@ export function broadcastToAgents(
   let sent = 0;
   const payload = JSON.stringify(message);
 
-  for (const [agentId, ws] of activeConnections) {
+  for (const [agentId, conn] of activeConnections) {
     if (filter && !filter(agentId)) {
       continue;
     }
 
     try {
-      ws.send(payload);
+      conn.ws.send(payload);
       sent++;
     } catch (error) {
       console.error(`Failed to broadcast to agent ${agentId}:`, error);
