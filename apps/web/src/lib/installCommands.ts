@@ -68,9 +68,18 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `$b=[IO.File]::ReadAllBytes("$pwd\\breeze-agent.exe"); ` +
     `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
     `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
+  // Older Windows PowerShell 5.1 hosts (e.g. Windows Server 2016) can default
+  // SecurityProtocol to Ssl3, Tls with no Tls12, which makes
+  // Invoke-WebRequest fail before the agent is even downloaded ("Could not
+  // create SSL/TLS secure channel", #4586). OR the flag into the existing
+  // value rather than replacing it, so Tls13 stays enabled where present.
+  const winTlsCheck =
+    `[Net.ServicePointManager]::SecurityProtocol = ` +
+    `[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
     `${winOsFloorCheck}; ` +
+    `${winTlsCheck}; ` +
     `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile breeze-agent.exe; ` +
     `${winMzCheck}; ` +
     `.\\breeze-agent.exe service install; ${winThrow('service install')}; ` +

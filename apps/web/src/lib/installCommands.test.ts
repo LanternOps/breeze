@@ -64,6 +64,20 @@ describe('buildInstallCommands', () => {
       expect(windows).toContain('Invoke-WebRequest');
     });
 
+    it('forces TLS 1.2 before the download for older PowerShell/.NET defaults (#4586)', () => {
+      // Windows Server 2016 / PS 5.1 hosts can default SecurityProtocol to
+      // Ssl3, Tls (no Tls12), which makes Invoke-WebRequest fail outright
+      // with "Could not create SSL/TLS secure channel." Bitwise-OR the flag
+      // in rather than replacing the value, so Tls13 (where present) stays
+      // enabled alongside it.
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain(
+        '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12'
+      );
+      // Must run before the download, not after.
+      expect(windows.indexOf('SecurityProtocol')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
+    });
+
     it('downloads the agent from the server, not GitHub (#4441)', () => {
       // The server's download route is what serves BYO / self-hosted signed
       // binaries (BINARY_SOURCE=local, or a custom BINARY_GITHUB_REPOSITORY).
