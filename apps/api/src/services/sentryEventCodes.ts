@@ -111,6 +111,17 @@ export const SENTRY_EVENT_CODES = [
   /** An AI budget alert event never became visible before its retries ran out. */
   'ai_budget_alert_event_not_visible',
 
+  // --- ai agent tool registry ---------------------------------------------
+  /**
+   * `createBreezeMcpServer`'s `onlyTools` (verdict/sweep tool pinning)
+   * contained a name that matched no registered tool — always a programming
+   * error (a typo in a hardcoded profile allowlist, or a tool renamed
+   * without updating it), never request input (#4447). Thrown in test/dev;
+   * in production the run degrades to the matched subset rather than
+   * failing, so this is the only signal an operator gets.
+   */
+  'ai_agent_onlytools_unknown_name',
+
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
   'backup_result_job_not_found',

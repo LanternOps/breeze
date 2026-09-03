@@ -309,5 +309,77 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
       ]));
       expect(names.length).toBeGreaterThan(50);
     });
+
+    // #4447: onlyTools is populated internally from hardcoded profile
+    // allowlists (see runLoop.ts) — never from request input — so an
+    // unmatched name is always a programming error (a typo, or a tool
+    // renamed in the registry without updating the allowlist). The old
+    // `.filter()` swallowed that error silently, quietly narrowing (or
+    // emptying) the exposed tool set with no signal to the developer.
+    describe('onlyTools containing a name that matches no registered tool (#4447)', () => {
+      it('all-known names: registers exactly that set, unchanged, and does not throw', () => {
+        const onlyTools = new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']);
+
+        expect(() => createBreezeMcpServer(
+          () => ({}) as never, undefined, undefined, undefined, [], { onlyTools },
+        )).not.toThrow();
+
+        const server = createBreezeMcpServer(
+          () => ({}) as never, undefined, undefined, undefined, [], { onlyTools },
+        );
+        expect(new Set(registeredToolNames(server))).toEqual(onlyTools);
+      });
+
+      it('one unknown name: throws (NODE_ENV=test) naming the unknown name', () => {
+        const onlyTools = new Set(['manage_alerts', 'manage_alertz']);
+
+        expect(() => createBreezeMcpServer(
+          () => ({}) as never, undefined, undefined, undefined, [], { onlyTools },
+        )).toThrow(/manage_alertz/);
+      });
+
+      it('the error message lists the unknown name', () => {
+        const onlyTools = new Set(['this_tool_does_not_exist']);
+
+        let caught: unknown;
+        try {
+          createBreezeMcpServer(() => ({}) as never, undefined, undefined, undefined, [], { onlyTools });
+        } catch (err) {
+          caught = err;
+        }
+
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toContain('this_tool_does_not_exist');
+      });
+
+      it('production: does not throw, still narrows to matched names, logs + Sentry-captures', async () => {
+        const originalEnv = process.env.NODE_ENV;
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const sentry = await import('./sentry');
+        const captureSpy = vi.spyOn(sentry, 'captureMessage').mockImplementation(() => {});
+        try {
+          process.env.NODE_ENV = 'production';
+          const onlyTools = new Set(['manage_alerts', 'this_tool_does_not_exist']);
+
+          let server: ReturnType<typeof createBreezeMcpServer> | undefined;
+          expect(() => {
+            server = createBreezeMcpServer(
+              () => ({}) as never, undefined, undefined, undefined, [], { onlyTools },
+            );
+          }).not.toThrow();
+
+          expect(registeredToolNames(server!)).toEqual(['manage_alerts']);
+          expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('this_tool_does_not_exist'));
+          expect(captureSpy).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ eventCode: 'ai_agent_onlytools_unknown_name' }),
+          );
+        } finally {
+          process.env.NODE_ENV = originalEnv;
+          errorSpy.mockRestore();
+          captureSpy.mockRestore();
+        }
+      });
+    });
   });
 });
