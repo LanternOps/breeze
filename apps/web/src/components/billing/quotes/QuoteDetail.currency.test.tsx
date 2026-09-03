@@ -150,7 +150,33 @@ describe('QuoteDetail — draft currency change (#4416)', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
-  it('clears a previous inline error when the operator retries', async () => {
+  it('replaces a stale inline error with the new one on a second failed retry', async () => {
+    // Two DIFFERENT failures back to back: if the component ever stopped
+    // resetting currencyError before the retry request, the first message
+    // could linger (e.g. a stale closure, or a guard that only sets the error
+    // when it was previously null) and this would still show "first lock
+    // reason" after the second attempt.
+    (quotesApi.changeQuoteCurrency as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      resp({ error: 'first lock reason', code: 'CURRENCY_LOCKED' }, 409),
+    );
+    render(<QuoteDetail detail={detail('draft')} onChanged={vi.fn()} />);
+    await openDialog();
+    await confirmWith('clear');
+    expect(await screen.findByTestId('quote-currency-error')).toHaveTextContent('first lock reason');
+
+    (quotesApi.changeQuoteCurrency as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      resp({ error: 'second lock reason', code: 'CURRENCY_LOCKED' }, 409),
+    );
+    fireEvent.click(screen.getByTestId('quote-currency-submit'));
+    await waitFor(() => {
+      const error = screen.getByTestId('quote-currency-error');
+      expect(error).toHaveTextContent('second lock reason');
+      expect(error).not.toHaveTextContent('first lock reason');
+    });
+    expect(screen.getByTestId('quote-currency-dialog')).toBeInTheDocument();
+  });
+
+  it('clears a previous inline error and reloads the quote on a successful retry', async () => {
     (quotesApi.changeQuoteCurrency as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       resp({ error: 'locked', code: 'CURRENCY_LOCKED' }, 409),
     );
@@ -161,6 +187,28 @@ describe('QuoteDetail — draft currency change (#4416)', () => {
 
     (quotesApi.changeQuoteCurrency as ReturnType<typeof vi.fn>).mockResolvedValue(resp({ data: { id: 'q-1' } }));
     fireEvent.click(screen.getByTestId('quote-currency-submit'));
+    await waitFor(() => expect(screen.queryByTestId('quote-currency-dialog')).not.toBeInTheDocument());
+  });
+
+  it('disables submit while the change-currency request is in flight (busy cue)', async () => {
+    // Mirrors the InvoiceEditor "disables the notes textarea while its own
+    // save is in flight" pattern: hold the request open with a deferred
+    // Promise so the busy window is actually observable, not just inferred
+    // from the eventual settled state.
+    let releaseRequest: (v: Response) => void = () => {};
+    (quotesApi.changeQuoteCurrency as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<Response>((resolve) => { releaseRequest = resolve; }),
+    );
+
+    render(<QuoteDetail detail={detail('draft')} onChanged={vi.fn()} />);
+    await openDialog();
+    fireEvent.change(screen.getByTestId('quote-currency-select'), { target: { value: 'EUR' } });
+    fireEvent.click(screen.getByTestId('quote-currency-mode-clear'));
+    fireEvent.click(screen.getByTestId('quote-currency-confirm-check'));
+    fireEvent.click(screen.getByTestId('quote-currency-submit'));
+
+    await waitFor(() => expect(screen.getByTestId('quote-currency-submit')).toBeDisabled());
+    releaseRequest(resp({ data: { id: 'q-1' } }));
     await waitFor(() => expect(screen.queryByTestId('quote-currency-dialog')).not.toBeInTheDocument());
   });
 });

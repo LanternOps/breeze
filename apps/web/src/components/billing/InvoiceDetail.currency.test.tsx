@@ -154,7 +154,38 @@ describe('InvoiceDetail — draft currency change (#4416)', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
-  it('clears a previous inline error when the operator retries', async () => {
+  it('replaces a stale inline error with the new one on a second failed retry', async () => {
+    // Two DIFFERENT failures back to back: if the component ever stopped
+    // resetting currencyError before the retry request, the first message
+    // could linger (e.g. a stale closure, or a guard that only sets the error
+    // when it was previously null) and this would still show "first lock
+    // reason" after the second attempt.
+    let attempt = 0;
+    fetchMock.mockImplementation(async (input: string) => {
+      if (typeof input === 'string' && input.endsWith('/payments')) return resp({ data: [] });
+      if (typeof input === 'string' && input.endsWith('/currency')) {
+        attempt += 1;
+        const message = attempt === 1 ? 'first lock reason' : 'second lock reason';
+        return resp({ error: message, code: 'CURRENCY_LOCKED' }, 409);
+      }
+      return resp({ data: null });
+    });
+
+    render(<InvoiceDetail detail={detail('draft')} onChanged={vi.fn()} />);
+    await openDialog();
+    await confirmWith('clear');
+    expect(await screen.findByTestId('invoice-currency-error')).toHaveTextContent('first lock reason');
+
+    fireEvent.click(screen.getByTestId('invoice-currency-submit'));
+    await waitFor(() => {
+      const error = screen.getByTestId('invoice-currency-error');
+      expect(error).toHaveTextContent('second lock reason');
+      expect(error).not.toHaveTextContent('first lock reason');
+    });
+    expect(screen.getByTestId('invoice-currency-dialog')).toBeInTheDocument();
+  });
+
+  it('clears a previous inline error and reloads the invoice on a successful retry', async () => {
     let first = true;
     fetchMock.mockImplementation(async (input: string) => {
       if (typeof input === 'string' && input.endsWith('/payments')) return resp({ data: [] });
@@ -171,6 +202,32 @@ describe('InvoiceDetail — draft currency change (#4416)', () => {
     await screen.findByTestId('invoice-currency-error');
 
     fireEvent.click(screen.getByTestId('invoice-currency-submit'));
+    await waitFor(() => expect(screen.queryByTestId('invoice-currency-dialog')).not.toBeInTheDocument());
+  });
+
+  it('disables submit while the change-currency request is in flight (busy cue)', async () => {
+    // Mirrors the InvoiceEditor "disables the notes textarea while its own
+    // save is in flight" pattern: hold the request open with a deferred
+    // Promise so the busy window is actually observable, not just inferred
+    // from the eventual settled state.
+    let releaseRequest: (v: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string) => {
+      if (typeof input === 'string' && input.endsWith('/payments')) return resp({ data: [] });
+      if (typeof input === 'string' && input.endsWith('/currency')) {
+        return new Promise<Response>((resolve) => { releaseRequest = resolve; });
+      }
+      return resp({ data: null });
+    });
+
+    render(<InvoiceDetail detail={detail('draft')} onChanged={vi.fn()} />);
+    await openDialog();
+    fireEvent.change(screen.getByTestId('invoice-currency-select'), { target: { value: 'EUR' } });
+    fireEvent.click(screen.getByTestId('invoice-currency-mode-clear'));
+    fireEvent.click(screen.getByTestId('invoice-currency-confirm-check'));
+    fireEvent.click(screen.getByTestId('invoice-currency-submit'));
+
+    await waitFor(() => expect(screen.getByTestId('invoice-currency-submit')).toBeDisabled());
+    releaseRequest(resp({ data: { id: 'inv-1' } }));
     await waitFor(() => expect(screen.queryByTestId('invoice-currency-dialog')).not.toBeInTheDocument());
   });
 });
