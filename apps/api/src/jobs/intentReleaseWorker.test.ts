@@ -3059,6 +3059,25 @@ describe('processIntentReleaseJob', () => {
     expect(notifyMock.createNotification).toHaveBeenCalled();
   });
 
+  // #4798: cancelActionIntent now writes its own intent_cancelled outbox row
+  // (mirrors intent_rejected/intent_expired — outcome-only, no release).
+  it('notifies the requester on intent_cancelled without releasing anything', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'cancelled' }]);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_cancelled' });
+
+    expect(result).toEqual({ released: false });
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'requester-1',
+        type: 'approval',
+        link: '/approvals',
+        dedupeKey: 'intent-outcome:intent-1:cancelled',
+      }),
+    );
+  });
+
   it('stays silent for a SUPERVISED intent — the requester watched it in chat', async () => {
     // Otherwise every abandoned 5-minute chat intent rings the bell, which is
     // the highest-volume producer of this type and trains people to ignore it.
@@ -3197,6 +3216,32 @@ describe('agent-originated outcome notifications', () => {
     // The run/agent load AND each cross-user insert must escape any ambient
     // context first — a bare system wrapper inside one is a passthrough.
     expect(vi.mocked(mockedRunOutside).mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  // #4798 review finding: cancelActionIntent explicitly permits an
+  // approvals:decide holder to dismiss an agent-originated proposal with no
+  // human requester (owner decision 2026-08-23, wave 3b) — the agent-
+  // recipient fanout branch above must fire for a cancel exactly as it does
+  // for a reject, and this is the only test in the file that drives
+  // eventType: 'intent_cancelled' through it.
+  it('notifies agent recipients on a cancelled agent-originated intent', async () => {
+    dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT, status: 'cancelled' }]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([AGENT_ROW]);
+    recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce(['user-a', 'user-b']);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_cancelled' });
+
+    expect(result).toEqual({ released: false });
+    expect(notifyMock.createNotification).toHaveBeenCalledTimes(2);
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-a',
+        title: 'Agent proposal cancelled',
+        message: 'Patch triage: run_script(deviceId=d-1) was cancelled and will not run.',
+        dedupeKey: 'agent-intent-outcome:intent-1:cancelled',
+      }),
+    );
   });
 
   it('derives agent copy from the re-read status, never the event type', async () => {
@@ -3448,6 +3493,23 @@ describe('outcome notification dedupe identity (#4465)', () => {
 
       expect(rows).toHaveLength(2);
       expect(rows[1]!.dedupeKey).toBe('intent-outcome:intent-1:rejected');
+    });
+
+    // #4798 — the reported gap: a requester told "approved and is now
+    // running" was never told a later cancel happened, because
+    // cancelActionIntent wrote no outbox row at all. Now it does, and this is
+    // exactly one "cancelled" notification landing after the "running" one.
+    it('a granted bell followed by an intent_cancelled delivery still corrects the record', async () => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving('approved');
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'cancelled' }]);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_cancelled' });
+
+      expect(rows).toHaveLength(2);
+      expect(rows[0]!.dedupeKey).toBe('intent-outcome:intent-1:granted');
+      expect(rows[1]!.dedupeKey).toBe('intent-outcome:intent-1:cancelled');
+      expect(rows[1]!.title).toBe('Request cancelled');
     });
   });
 
