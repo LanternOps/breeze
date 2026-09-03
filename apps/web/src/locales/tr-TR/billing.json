@@ -575,7 +575,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "iş istasyonları", "server": "sunucular", "printer": "yazıcılar", "router": "yönlendiriciler", "switch": "ağ anahtarları", "firewall": "güvenlik duvarları",
+        "access_point": "erişim noktaları", "phone": "telefonlar", "iot": "IoT cihazları", "camera": "kameralar", "nas": "NAS cihazları"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Cihaz grubuna göre faturala", "typeLabel": "Cihaz grubu",
+        "types": { "per_device": "Cihaz başına", "per_device_role": "Cihaz rolü başına", "per_device_group": "Cihaz grubu başına", "per_seat": "Kullanıcı başına" },
+        "rolesLabel": "Cihaz rolleri", "groupLabel": "Cihaz grubu", "siteLabel": "Konum (isteğe bağlı)", "allSites": "Tüm konumlar",
+        "quantityAuto": "Miktar otomatik olarak sayılır", "autoSummary": "Otomatik miktar · {{count}} {{set}} · tahmini",
+        "driftChip": "sayı değişti: {{stored}} → {{live}}", "refresh": "Sayıları yenile", "estimateError": "Güncel cihaz sayısı denetlenemedi.",
+        "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin", "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
+        "typeLocked": "Cihaz grubu, satır oluşturulduktan sonra değiştirilemez — satırı kaldırıp yeniden ekleyin.",
+        "includedLabel": "Dahil miktar", "overageModeLabel": "Dahil miktarın üstü", "overageBill": "Her ek birimi faturala", "overageFlag": "İnceleme için raporla", "overagePriceLabel": "Aşım fiyatı",
+        "driftToast": "{{count}} satır artık güncel cihaz sayısıyla eşleşmiyor: {{lines}}",
+        "retargetToast": "{{count}} satır için bu kuruluşa ait cihaz grubu veya konum yeniden seçilmeli"
+      },
       "actions": {
         "addImage": "Resim ekle",
         "addLine": "Satır ekle",
@@ -1255,6 +1273,12 @@
       "warehouses": "Depolar: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Tah.", "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
+        "setDevices": "cihazlar", "setSeats": "kullanıcılar", "setGroup": "“{{name}}” içindeki cihazlar", "atSite": "{{site}} konumundaki {{set}}",
+        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
+        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+      },
       "additionalItems": "Ek öğeler",
       "contract": {
         "download": "Sözleşmeyi indirin",

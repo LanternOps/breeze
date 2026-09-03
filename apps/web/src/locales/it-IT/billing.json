@@ -575,7 +575,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "postazioni di lavoro", "server": "server", "printer": "stampanti", "router": "router", "switch": "switch", "firewall": "firewall",
+        "access_point": "punti di accesso", "phone": "telefoni", "iot": "dispositivi IoT", "camera": "telecamere", "nas": "dispositivi NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Fattura per insieme di dispositivi", "typeLabel": "Insieme di dispositivi",
+        "types": { "per_device": "Per dispositivo", "per_device_role": "Per ruolo dispositivo", "per_device_group": "Per gruppo di dispositivi", "per_seat": "Per postazione" },
+        "rolesLabel": "Ruoli dispositivo", "groupLabel": "Gruppo di dispositivi", "siteLabel": "Sede (facoltativa)", "allSites": "Tutte le sedi",
+        "quantityAuto": "La quantità viene conteggiata automaticamente", "autoSummary": "Quantità automatica · {{count}} {{set}} · stimata",
+        "driftChip": "conteggio cambiato: {{stored}} → {{live}}", "refresh": "Aggiorna conteggi", "estimateError": "Impossibile verificare il conteggio attuale dei dispositivi.",
+        "groupDeleted": "Il gruppo di dispositivi “{{name}}” è stato eliminato — scegline un altro", "siteDeleted": "La sede “{{name}}” è stata eliminata — scegline un'altra",
+        "typeLocked": "Un insieme di dispositivi non può essere modificato dopo la creazione della riga — rimuovi la riga e aggiungila di nuovo.",
+        "includedLabel": "Quantità inclusa", "overageModeLabel": "Oltre la soglia inclusa", "overageBill": "Fattura ogni unità aggiuntiva", "overageFlag": "Segnala per revisione", "overagePriceLabel": "Prezzo eccedenza",
+        "driftToast": "{{count}} riga/righe non corrispondono più al conteggio dispositivi attuale: {{lines}}",
+        "retargetToast": "{{count}} riga/righe richiedono di riselezionare un gruppo di dispositivi o una sede per questa organizzazione"
+      },
       "actions": {
         "addImage": "Aggiungi immagine",
         "addLine": "Aggiungi riga",
@@ -1255,6 +1273,12 @@
       "warehouses": "Magazzini: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Stima", "estimate": "Quantità stimata — fatturata in base al numero effettivo di {{set}} in ogni periodo di fatturazione.",
+        "setDevices": "dispositivi", "setSeats": "postazioni", "setGroup": "dispositivi in “{{name}}”", "atSite": "{{set}} presso {{site}}",
+        "allowanceBill": "Include {{included}}; le unità aggiuntive sono fatturate a {{price}} ciascuna.",
+        "allowanceFlag": "Include {{included}}; le unità aggiuntive sono segnalate per revisione, non fatturate automaticamente."
+      },
       "additionalItems": "Elementi aggiuntivi",
       "contract": {
         "download": "Scarica contratto",

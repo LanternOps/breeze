@@ -309,6 +309,39 @@ describe('renderQuotePdf', () => {
     expect(recurringText).toContain('Annual');
   });
 
+  it('renders every recurring surface and the estimate sentence for a zero-count device set', async () => {
+    const pdf = await renderQuotePdf(
+      {
+        id: 'q-zero', quoteNumber: 'Q-ZERO', currencyCode: 'USD', subtotal: '100.00', taxTotal: '0.00',
+        oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '100.00', total: '100.00', categoryBreakdown: [
+          { category: 'hardware', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'other', oneTimeTotal: '0.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { showSubtotal: true } }],
+      [
+        { id: 'setup', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' },
+        {
+          id: 'servers', blockId: 'b1', name: 'Servers', description: null, quantity: '0', unitPrice: '40',
+          lineTotal: '0.00', recurrence: 'monthly', contractLineType: 'per_device_role', deviceRoles: ['iot', 'nas'],
+          deviceGroupName: null, siteName: null, includedQuantity: null, overageMode: null, overageUnitPrice: null,
+        },
+      ],
+      async () => null,
+      {},
+    );
+    const text = extractPdfText(pdf);
+    expect(text).toContain('Monthly');
+    expect(text).toContain('First-period total');
+    expect(text).toContain('Subtotal');
+    expect(text).toContain('$0.00/mo');
+    expect(text).toContain('Other');
+    expect(text).toContain('Estimated quantity');
+    expect(text).toContain('each billing period');
+    expect(text).toContain('IoT devices, NAS devices');
+  });
+
   it('produces a PDF buffer (heading + line_items block)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },

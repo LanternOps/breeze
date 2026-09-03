@@ -575,7 +575,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "Arbeitsstationen", "server": "Server", "printer": "Drucker", "router": "Router", "switch": "Netzwerk-Switches", "firewall": "Firewalls",
+        "access_point": "Zugangspunkte", "phone": "Telefone", "iot": "IoT-Geräte", "camera": "Kameras", "nas": "NAS-Geräte"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Nach Gerätesatz abrechnen", "typeLabel": "Gerätesatz",
+        "types": { "per_device": "Pro Gerät", "per_device_role": "Pro Geräterolle", "per_device_group": "Pro Gerätegruppe", "per_seat": "Pro Benutzerplatz" },
+        "rolesLabel": "Geräterollen", "groupLabel": "Gerätegruppe", "siteLabel": "Standort (optional)", "allSites": "Alle Standorte",
+        "quantityAuto": "Menge wird automatisch gezählt", "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
+        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.",
+        "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
+        "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
+        "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",
+        "driftToast": "{{count}} Position(en) entsprechen nicht mehr der aktuellen Geräteanzahl: {{lines}}",
+        "retargetToast": "{{count}} Position(en) benötigen eine neu gewählte Gerätegruppe oder einen Standort für diese Organisation"
+      },
       "actions": {
         "addImage": "Bild hinzufügen",
         "addLine": "Position hinzufügen",
@@ -1255,6 +1273,12 @@
       "warehouses": "Lager: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Gesch.", "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
+        "setDevices": "Geräte", "setSeats": "Benutzerplätze", "setGroup": "Geräte in „{{name}}“", "atSite": "{{set}} am Standort {{site}}",
+        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
+        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+      },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
         "download": "Vertrag herunterladen",

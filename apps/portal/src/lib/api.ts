@@ -562,6 +562,16 @@ export interface QuoteLine {
   recurrence: string;
   customerVisible: boolean;
   sortOrder: number;
+  contractLineType?: 'per_device' | 'per_device_role' | 'per_device_group' | 'per_seat' | null;
+  deviceRoles?: string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
+  descriptorUnresolved?: boolean;
   /** Server-built relative path to this line's product thumbnail (uploaded image
    *  or its catalog item's), or null when the line has no image. Resolve via
    *  buildPortalApiUrl before use. */

@@ -48,7 +48,8 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 59, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 60, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -128,7 +129,8 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -216,7 +218,8 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -307,7 +310,8 @@ const namespaceDuplicateBaselines = {
     // this locale already renders the parallel `viaStripe` as "via Stripe",
     // so "via QuickBooks" is the correct wording here, not an untranslated
     // string.
-    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
+    'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats

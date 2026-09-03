@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteActions from './QuoteActions';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
+import { cancelScheduledSend, sendQuote } from '../../../lib/api/quotes';
 
 // The post-send success toast should tell the seller "what happens next" — that
 // the proposal will move to Viewed and Accepted on its own as the customer opens
@@ -58,6 +59,37 @@ function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
 beforeEach(() => vi.clearAllMocks());
 
 describe('QuoteActions — post-send success copy', () => {
+  it('warns once with every device-set count drift returned by Send now', async () => {
+    vi.mocked(cancelScheduledSend).mockResolvedValue({ data: { canceled: true } } as never);
+    vi.mocked(sendQuote).mockResolvedValue({
+      data: {
+        deviceSetDrift: [
+          { lineId: 'l-1', description: 'Servers', storedQuantity: '12.00', liveQuantity: 15 },
+          { lineId: 'l-2', description: 'VIP laptops', storedQuantity: '8.00', liveQuantity: null, error: 'GROUP_EVALUATION_FAILED' },
+        ],
+      },
+    } as never);
+    const onChanged = vi.fn();
+    const view = render(<QuoteActions detail={draft()} onChanged={onChanged} variant="rail" />);
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-to')).toHaveValue('ap@customer.example'));
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+
+    view.rerender(<QuoteActions
+      detail={draft({ sendScheduledAt: '2099-01-01T00:00:00Z' })}
+      onChanged={onChanged}
+      variant="rail"
+    />);
+    fireEvent.click(await screen.findByTestId('quote-send-now'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+      type: 'warning',
+      message: '2 line(s) no longer match the live device count: Servers: 12.00 → 15; VIP laptops: GROUP_EVALUATION_FAILED',
+    }));
+  });
+
   it('confirm shows the undo-window toast with the customer name', async () => {
     render(<QuoteActions detail={draft()} onChanged={vi.fn()} variant="rail" />);
     fireEvent.click(screen.getByTestId('quote-send'));
