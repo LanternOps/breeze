@@ -76,10 +76,11 @@ import {
 import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
+import { captureException } from '../sentry';
 import { createAuditLogAsync } from '../auditService';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { createNotification } from '../userNotifications';
-import { normalizeAgentPolicy } from './effectivePolicy';
+import { mergeAgentPolicies, normalizeAgentPolicy } from './effectivePolicy';
 import { withGraduationLock } from './graduationService';
 import { resolveRecipientUserIds } from './recipients';
 
@@ -310,49 +311,149 @@ const DEMOTE_REASON_CLAUSE: Record<AiAgentDemoteReason, string> = {
  * cannot distinguish from a real one. Callers wrap it: a failure here is
  * logged, never allowed to unwind a committed revoke.
  *
- * With no readable run there is no correct recipient set, so nothing is sent
- * — the same stand-down `sendRecurrenceNotifications` takes, and the reason
- * `runId` is part of the input rather than re-derived here.
+ * **An unreadable run no longer suppresses the notice (#4582, spec §4.5 /
+ * P2-5 Task 16).** The run's snapshot is the PREFERRED recipient source, not a
+ * precondition: it is the policy the run actually executed under, so it names
+ * exactly the people who were on the hook for the operation being graded. When
+ * it cannot be read the fallback is the org's EFFECTIVE recipients — the
+ * partner baseline's `recipients` merged with the org override's, through the
+ * canonical `mergeAgentPolicies` so the union rule can never drift from the one
+ * every other reader sees. The baseline row's own column alone would NOT do: it
+ * is the PARTNER's list and silently drops everyone the organization added.
+ *
+ * The previous stand-down was the bug: the demote transaction has already
+ * COMMITTED by the time this runs, so returning early leaves an organization
+ * stripped of unattended authority with nobody told. An empty recipient set is
+ * still a legitimate outcome; an unattempted resolution is not.
+ *
+ * Reachability, stated precisely because the dropped branch was justified as
+ * unreachable once already: `runId === null` cannot be produced by either
+ * caller today (`ai_agent_fix_watches.run_id` is NOT NULL, and the release
+ * worker returns before building an input when `requesting_agent_run_id` is
+ * absent), so that arm is a contract guarantee for this function's exported
+ * `string | null` signature. The arm that IS reachable is a run row that no
+ * longer resolves — `ai_agent_runs` is org-cascade registered, so an erasure
+ * racing a fix-watch phase-2 job hits exactly this path.
+ *
+ * `resolveRecipientUserIds` re-derives live membership against THIS org in
+ * either case, so the fallback cannot widen the audience beyond people who
+ * currently have access to the org the notice describes.
+ *
+ * The three ways this can still end without a page — no agent row, no
+ * resolvable recipient, a throw — are all Sentry-captured rather than logged
+ * to a console nobody reads in production. A committed revoke that notifies
+ * nobody must be visible however it happens; only the ROUTE differs from the
+ * bug this closed.
  */
 export async function notifyDemotion(input: NotifyDemotionInput): Promise<void> {
   const { orgId, agentId, orgAgentId, opKey, reason, runId, watchId } = input;
 
   await inSystemDbContext(async () => {
+    // The FULL baseline row, not just its name: `kind` pairs it with the org
+    // override (there is no FK between them), and its policy columns are the
+    // partner half of the run-less fallback below. One read either way.
     const [agentRow] = await db
-      .select({ name: aiAgents.name, orgId: aiAgents.orgId, partnerId: aiAgents.partnerId })
+      .select()
       .from(aiAgents)
       .where(eq(aiAgents.id, agentId))
       .limit(1);
     if (!agentRow) {
-      console.warn('[supervisedKeyDemote] agent no longer exists — skipping demote notify', {
-        orgId, agentId, orgAgentId, opKey,
-      });
+      // Nothing to build a notice FROM — no name, no recipients — so this one
+      // really cannot notify. It is read by primary key, the same id the
+      // caller resolved moments earlier, so a miss is a genuine anomaly and
+      // gets a Sentry report rather than the console line it used to get.
+      // Identifiers only, per this module's leak rules.
+      captureException(
+        new Error(
+          `[supervisedKeyDemote] agent ${agentId} no longer exists; the revoke of "${opKey}" `
+          + `on org agent ${orgAgentId} notified NOBODY`,
+        ),
+        undefined,
+        { org_id: orgId },
+      );
       return;
     }
 
-    if (!runId) {
-      console.warn('[supervisedKeyDemote] no run to resolve recipients from — skipping demote notify', {
-        orgId, agentId, orgAgentId, opKey, watchId,
-      });
-      return;
-    }
-    const [runRow] = await db
-      .select({ policySnapshot: aiAgentRuns.policySnapshot })
-      .from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
-      .limit(1);
-    if (!runRow) {
-      console.warn('[supervisedKeyDemote] run no longer exists — skipping demote notify', {
-        orgId, agentId, orgAgentId, opKey, runId,
-      });
-      return;
+    const runSnapshot = runId
+      ? (await db
+        .select({ policySnapshot: aiAgentRuns.policySnapshot })
+        .from(aiAgentRuns)
+        .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
+        .limit(1))[0]
+      : undefined;
+
+    let recipients: Partial<AiAgentRecipients>;
+    if (runSnapshot) {
+      recipients = runSnapshot.policySnapshot?.effective?.recipients ?? {};
+    } else {
+      // NOT a skip (#4582). The org override row is read by `(org_id, kind)`
+      // — the same pairing the demote executor used to find the row it
+      // revoked from — and merged through the canonical tighten-only merge,
+      // whose `recipients` rule is a UNION of both layers. A missing override
+      // degrades to the partner's own list rather than to silence.
+      const [orgAgentRow] = await db
+        .select()
+        .from(aiAgents)
+        .where(and(
+          eq(aiAgents.orgId, orgId),
+          eq(aiAgents.kind, agentRow.kind),
+          isNull(aiAgents.disabledAt),
+        ))
+        .limit(1);
+      recipients = mergeAgentPolicies(
+        normalizeAgentPolicy(agentRow),
+        orgAgentRow ? normalizeAgentPolicy(orgAgentRow) : null,
+        { allowedModels: null },
+      ).effective.recipients;
+      // Not a failure — the notice still goes out — but the recipient list
+      // just came from the live policy rather than the run's immutable
+      // snapshot, and the missing run row is itself worth a look.
+      captureException(
+        new Error(
+          `[supervisedKeyDemote] no readable run (run ${runId ?? 'none'}, watch ${watchId ?? 'none'}) `
+          + `for the revoke of "${opKey}" on org agent ${orgAgentId}; `
+          + 'used the effective-policy recipients instead',
+        ),
+        undefined,
+        { org_id: orgId },
+      );
     }
 
-    const recipients: Partial<AiAgentRecipients> = runRow.policySnapshot?.effective?.recipients ?? {};
     const userIds = await resolveRecipientUserIds(
       { orgId: agentRow.orgId, partnerId: agentRow.partnerId, recipients },
       orgId,
     );
+    if (userIds.length === 0) {
+      // The outcome #4582 is ultimately about, reached by the one route this
+      // function cannot fix: the recipients resolved to nobody. Legitimate on
+      // its face (memberships lapse), but an act-mode agent is only allowed to
+      // start with a resolvable recipient (`hasResolvableAgentRecipient`), so
+      // a granted-then-revoked key with zero is worth an operator's attention.
+      captureException(
+        new Error(
+          `[supervisedKeyDemote] the revoke of "${opKey}" on org agent ${orgAgentId} `
+          + 'resolved to ZERO recipients; nobody was notified',
+        ),
+        undefined,
+        { org_id: orgId },
+      );
+    }
+
+    // One notice per (org row, key, episode). N sibling watches of one run
+    // that all revoke the same key collapse into one page; a second, genuinely
+    // distinct episode carries a different run id. `<runId ?? watchId>` is
+    // what the P2-5 plan specified: with no run the WATCH is the episode.
+    //
+    // Null — no dedupe key at all — when neither identifies the episode. A
+    // literal placeholder would be worse than nothing: `(user_id, dedupe_key)`
+    // is a partial unique index with no time bound, so a fixed suffix would
+    // collapse every FUTURE demotion of this tuple into the first one. With no
+    // episode there are no siblings to collapse. `runId`/`watchId` ride in
+    // `metadata` either way, so the notice stays traceable.
+    const episodeId = runId ?? watchId;
+    // The run page would 404 without a readable run, so the link degrades with
+    // the recipient source, to the page whose state actually changed.
+    const link = runSnapshot ? `/ai-agents/runs/${runId}` : '/settings/ai-agents';
 
     for (const userId of userIds) {
       await createNotification({
@@ -363,19 +464,10 @@ export async function notifyDemotion(input: NotifyDemotionInput): Promise<void> 
         message:
           `${agentRow.name} no longer runs "${opKey}" without approval — `
           + DEMOTE_REASON_CLAUSE[reason],
-        link: `/ai-agents/runs/${runId}`,
+        link,
         priority: 'high',
         metadata: { agentId, orgAgentId, opKey, reason, runId, watchId },
-        // One notice per (org row, key, episode). N sibling watches of one run
-        // that all revoke the same key collapse into one page; a second,
-        // genuinely distinct episode carries a different run id.
-        //
-        // The plan spells this `<runId ?? watchId>`. The fallback is dropped
-        // rather than carried as an unreachable branch: the recipient set
-        // itself comes from the RUN's snapshot, so a demotion with no run
-        // sends nothing at all and could never reach this line. `watchId`
-        // still rides in `metadata`, so the episode stays identifiable.
-        dedupeKey: `graduation-demote-${orgAgentId}-${opKey}-${runId}`,
+        dedupeKey: episodeId ? `graduation-demote-${orgAgentId}-${opKey}-${episodeId}` : null,
       });
     }
   });
