@@ -17,6 +17,7 @@ import {
   mintExtensionAssetToken,
   verifyExtensionAssetToken,
   EXTENSION_ASSET_TOKEN_PATTERN,
+  __resetExtensionAssetTokenReportThrottleForTests,
   type ExtensionAssetTokenClaims,
 } from './extensionAssetToken';
 
@@ -49,9 +50,11 @@ describe('extension web-asset tokens', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(T0));
+    __resetExtensionAssetTokenReportThrottleForTests();
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('round-trips a valid token bound to the requested name + digest', () => {
@@ -229,6 +232,79 @@ describe('extension web-asset tokens', () => {
     expect(verified).not.toBeNull();
     expect(verified!.claims.partnerId).toBeNull();
     expect(verified!.claims.orgId).toBeNull();
+  });
+
+  // ---- operator-facing canaries ------------------------------------------
+  //
+  // Verification tells an ATTACKER nothing (every failure is the same null, so
+  // the route can answer the same bare 404). It must still tell an OPERATOR
+  // when the failure is systemic, or a signing-key rotation that drops a live
+  // key silently blanks every extension UI — #4164 all over again.
+
+  it('warns when a token that looks exactly like ours verifies under no retained key', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const payload = mintExtensionAssetToken(BINDING, SCOPE).split('.')[1]!;
+    const foreignSig = createHmac('sha256', Buffer.alloc(32, 0x99))
+      .update(`extension-web-asset-token:v1:${payload}`)
+      .digest()
+      .toString('base64url');
+
+    expect(verifyExtensionAssetToken(`v1.${payload}.${foreignSig}`, BINDING)).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('retained signing key');
+  });
+
+  it('cannot be used to inject forged lines into the operator log', () => {
+    // The reported name comes from an UNVERIFIED payload, so it is entirely
+    // attacker-chosen text.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const hostile = 'x\n[extensionAssetToken] all clear, nothing to see here';
+    const claims = {
+      v: 1, aud: 'breeze.extensions.web-asset', name: hostile, digest: DIGEST,
+      partnerId: SCOPE.partnerId, orgId: SCOPE.orgId, iat: T0 / 1000, exp: T0 / 1000 + 3600,
+    };
+    const payload = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
+
+    expect(verifyExtensionAssetToken(`v1.${payload}.${'A'.repeat(43)}`, { name: hostile, digest: DIGEST })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).not.toContain('\n');
+  });
+
+  it('stays silent for ordinary junk, and throttles a repeated real signal', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Junk that could never be one of ours: no warning at all, or an anonymous
+    // flood would drown the signal it exists to carry.
+    expect(verifyExtensionAssetToken('v1.bm90anNvbg.c2ln', BINDING)).toBeNull();
+    expect(verifyExtensionAssetToken('garbage', BINDING)).toBeNull();
+    // An EXPIRED token that fails signature check is also not a key problem.
+    const stale = mintExtensionAssetToken(BINDING, SCOPE).split('.')[1]!;
+    vi.setSystemTime(new Date(T0 + 2 * 60 * 60 * 1000));
+    expect(verifyExtensionAssetToken(`v1.${stale}.${'A'.repeat(43)}`, BINDING)).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+
+    // The real signal, twice in the same window: reported once.
+    vi.setSystemTime(new Date(T0));
+    const payload = mintExtensionAssetToken(BINDING, SCOPE).split('.')[1]!;
+    const foreignSig = createHmac('sha256', Buffer.alloc(32, 0x99))
+      .update(`extension-web-asset-token:v1:${payload}`)
+      .digest()
+      .toString('base64url');
+    verifyExtensionAssetToken(`v1.${payload}.${foreignSig}`, BINDING);
+    verifyExtensionAssetToken(`v1.${payload}.${foreignSig}`, BINDING);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns when it discards a malformed tenant id rather than normalising in silence', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mintExtensionAssetToken(BINDING, { partnerId: 'not-a-uuid', orgId: null });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('malformed partnerId');
+
+    // A legitimately absent scope is not a fault and must not warn.
+    warn.mockClear();
+    mintExtensionAssetToken(BINDING, { partnerId: null, orgId: undefined });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('produces a DIFFERENT token per tenant scope', () => {

@@ -12,12 +12,16 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { Hono } from 'hono';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
-import { createExtensionsWebRoutes, type ExtensionsWebDeps } from './extensionsWeb';
+import {
+  createExtensionsWebRoutes,
+  __resetExtensionAssetServeThrottleForTests,
+  type ExtensionsWebDeps,
+} from './extensionsWeb';
 import { mintExtensionAssetToken, verifyExtensionAssetToken } from '../services/extensionAssetToken';
 import type { StagedExtensionContributions } from '../extensions/contributionRegistry';
 import type { ExtensionWebAsset } from '../extensions/webAssets';
@@ -158,6 +162,50 @@ describe('GET /api/v1/extensions/registry', () => {
     expect(verified!.claims.orgId).toBe(SCOPE.orgId);
   });
 
+  it('holds the revision stable across a mint bucket and rotates it at the boundary', async () => {
+    // Both halves of this property are unit-tested with the other half stubbed
+    // (bucket quantization in extensionAssetToken.test.ts, revision sensitivity
+    // in webRegistry.test.ts). Only this test wires the REAL minter into the
+    // REAL route, which is what a refactor swapping the bucketed `iat` for a
+    // bare `now` would break: the revision would then churn on every poll, and
+    // a client behind a load balancer would see the document flap forever.
+    const { app } = buildHarness({
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const revisionAt = async () => (await (await app.request('/api/v1/extensions/registry')).json()).revision;
+
+    vi.useFakeTimers();
+    try {
+      // A whole 15-minute bucket boundary.
+      vi.setSystemTime(new Date(1_798_761_600_000));
+      const first = await revisionAt();
+
+      vi.setSystemTime(new Date(1_798_761_600_000 + 14 * 60 * 1000 + 59_000));
+      expect(await revisionAt()).toBe(first);
+
+      vi.setSystemTime(new Date(1_798_761_600_000 + 15 * 60 * 1000));
+      expect(await revisionAt()).not.toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still serves a usable registry when the principal carries no tenant scope', async () => {
+    // A system-scoped or otherwise unusual session must not 500 the registry:
+    // that would blank every extension page, which is the outage #4164 was.
+    // `normalizeTenantClaim` degrades the binding to null instead of throwing.
+    const { app } = buildHarness({
+      auth: { user: { id: 'u1', email: 'u@breeze.test', name: 'U' }, partnerId: undefined, orgId: undefined },
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const res = await app.request('/api/v1/extensions/registry');
+    expect(res.status).toBe(200);
+    const moduleUrl: string = (await res.json()).extensions[0].moduleUrl;
+    const verified = verifyExtensionAssetToken(moduleUrl.split('/')[6]!, { name: 'demo', digest: DIGEST_A });
+    expect(verified).not.toBeNull();
+    expect(verified!.claims.partnerId).toBeNull();
+  });
+
   it('is never stored by a cache — the response carries live credentials', async () => {
     const { app } = buildHarness({
       webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
@@ -220,6 +268,7 @@ describe('GET /api/v1/extensions/assets/t/:token/:name/:digest/*', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'breeze-ext-web-asset-'));
+    __resetExtensionAssetServeThrottleForTests();
   });
 
   afterEach(() => {
@@ -252,6 +301,15 @@ describe('GET /api/v1/extensions/assets/t/:token/:name/:digest/*', () => {
     // ...and the body must not echo the request path back (the app-level 404
     // handler does; this router's own bare 404 must win, or a presented token
     // would be reflected into the response).
+    expect(await res.json()).toEqual({ error: 'not found' });
+  });
+
+  it.each(['POST', 'PUT', 'DELETE'])('%ss to a validly-signed asset URL get this router\'s bare 404', async (method) => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const res = await app.request(assetUrl('web/index.js'), { method });
+    expect(res.status).toBe(404);
+    // Not the app-level handler, which echoes `c.req.path` — and the path now
+    // carries a live token.
     expect(await res.json()).toEqual({ error: 'not found' });
   });
 
@@ -325,6 +383,39 @@ describe('GET /api/v1/extensions/assets/t/:token/:name/:digest/*', () => {
     const foreign = mintExtensionAssetToken({ name: 'other-ext', digest: DIGEST }, SCOPE);
     const res = await app.request(assetUrl('web/index.js', { token: foreign }));
     expect(res.status).toBe(404);
+  });
+
+  it('warns the operator when a VERIFIED request fails to resolve on disk', async () => {
+    // A 404 from an anonymous prober and a 404 from a deleted extraction root
+    // look identical to the caller by design. They must NOT look identical to
+    // an operator: the second one means the extension's UI is broken for every
+    // user. The token having verified is what separates the two.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+      unlinkSync(join(root, 'web/index.js'));
+
+      const res = await app.request(assetUrl('web/index.js'));
+      expect(res.status).toBe(404);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('VERIFIED extension asset');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when an UNVERIFIED request 404s — anonymous probing is not a fault', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+      unlinkSync(join(root, 'web/index.js'));
+
+      const res = await app.request(assetUrl('web/index.js', { token: 'not-a-token' }));
+      expect(res.status).toBe(404);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('rejects a bad token BEFORE touching the state store or the filesystem', async () => {

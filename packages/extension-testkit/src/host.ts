@@ -194,12 +194,23 @@ export async function probeStockHost(options: StockHostProbeOptions): Promise<Ho
   const authedInit: RequestInit = { headers: authedHeaders };
   const member = options.assetMember ?? 'index.html';
 
-  // Never let ANY supplied secret — cookie or header value — escape into a
-  // detail string or error message.
+  // The asset route is no longer bearer-gated: it takes the short-lived signed
+  // token that the AUTHENTICATED registry response embeds in `moduleUrl`
+  // (issue #4164 — a browser's dynamic `import()` cannot send an Authorization
+  // header). The registry probe harvests that token for the asset probe below.
+  // It is a live credential, so it is declared HERE, ahead of `redact`, and
+  // folded into the redaction set: the success paths never put it in a detail
+  // string, but a `fetchImpl` rejection can carry the request URL in its
+  // message, and that message goes through `redact` in the `probe()` wrapper.
+  let assetToken: string | null = null;
+
+  // Never let ANY supplied secret — cookie or header value, or the harvested
+  // asset token — escape into a detail string or error message.
   const secrets = collectProbeSecrets(options.auth);
   const redact = (text: string): string => {
     let out = text;
     for (const secret of secrets) out = out.split(secret).join('[redacted]');
+    if (assetToken) out = out.split(assetToken).join('[redacted]');
     return out;
   };
 
@@ -234,14 +245,6 @@ export async function probeStockHost(options: StockHostProbeOptions): Promise<Ho
       detail: redact(`GET /api/v1/admin/extensions -> ${res.status}${listed ? `, lists "${options.extensionName}"` : ', extension not listed'}`),
     };
   });
-
-  // The asset route is no longer bearer-gated: it takes the short-lived signed
-  // token that the AUTHENTICATED registry response embeds in `moduleUrl`
-  // (issue #4164 — a browser's dynamic `import()` cannot send an
-  // Authorization header). The registry probe therefore also harvests that
-  // token for the asset probe below. The token is a live credential, so it is
-  // never placed in an observation `detail`.
-  let assetToken: string | null = null;
 
   await probe('registry', async () => {
     const res = await fetchImpl(`${base}/api/v1/extensions/registry`, authedInit);

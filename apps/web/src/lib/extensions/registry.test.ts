@@ -197,6 +197,22 @@ describe('loadExtensionModule — trust boundary', () => {
     expect(p1).toBe(p2);
   });
 
+  it('does NOT strip a `t` segment that is not a real token (cache-key collision guard)', async () => {
+    // A path whose first segment merely happens to be `t` must keep its own
+    // identity. If it collapsed onto the tokened form's key, two different
+    // assets could share one memo entry and one extension's module would be
+    // handed out under the other's identity — the loader is the trust boundary
+    // for running extension code, so it must not depend on the manifest
+    // schema in another package to keep those apart.
+    const importer = vi.fn().mockResolvedValue({ ok: true });
+    __setExtensionModuleImporterForTests(importer);
+
+    await loadExtensionModule('/api/v1/extensions/assets/t/v1.cGF5bG9hZA.c2ln/demo/abc123/index.js');
+    await loadExtensionModule('/api/v1/extensions/assets/t/not-a-token/demo/abc123/index.js');
+
+    expect(importer).toHaveBeenCalledTimes(2);
+  });
+
   it('propagates a rejected module promise to the caller', async () => {
     const importer = vi.fn().mockRejectedValue(new Error('network error'));
     __setExtensionModuleImporterForTests(importer);
@@ -288,11 +304,11 @@ describe('loadExtensionModule — asset token handling (#4164)', () => {
     const importer = vi.fn().mockResolvedValue({ ok: true });
     __setExtensionModuleImporterForTests(importer);
 
-    await loadExtensionModule('/api/v1/extensions/assets/t/tok-abc/demo/abc123/index.js');
+    await loadExtensionModule('/api/v1/extensions/assets/t/v1.cGF5bG9hZA.c2ln/demo/abc123/index.js');
 
     expect(importer).toHaveBeenCalledTimes(1);
     expect(importer).toHaveBeenCalledWith(
-      'http://localhost:3000/api/v1/extensions/assets/t/tok-abc/demo/abc123/index.js',
+      'http://localhost:3000/api/v1/extensions/assets/t/v1.cGF5bG9hZA.c2ln/demo/abc123/index.js',
     );
   });
 
@@ -300,8 +316,8 @@ describe('loadExtensionModule — asset token handling (#4164)', () => {
     const importer = vi.fn().mockResolvedValue({ ok: true });
     __setExtensionModuleImporterForTests(importer);
 
-    const p1 = loadExtensionModule('/api/v1/extensions/assets/t/tok-original/demo/abc123/index.js');
-    const p2 = loadExtensionModule('/api/v1/extensions/assets/t/tok-rotated-later/demo/abc123/index.js');
+    const p1 = loadExtensionModule('/api/v1/extensions/assets/t/v1.b3JpZ2luYWw.c2ln/demo/abc123/index.js');
+    const p2 = loadExtensionModule('/api/v1/extensions/assets/t/v1.cm90YXRlZA.c2ln/demo/abc123/index.js');
     await Promise.all([p1, p2]);
 
     expect(importer).toHaveBeenCalledTimes(1);

@@ -210,6 +210,19 @@ const ASSET_PATH_PREFIX = '/api/v1/extensions/assets/';
  *  redacted out of error text. */
 const ASSET_TOKEN_SEGMENT = 't';
 
+/** The shape a token value must have to be treated as one: `v1.<payload>.<sig>`,
+ *  all base64url. Mirrors `EXTENSION_ASSET_TOKEN_PATTERN` in
+ *  apps/api/src/services/extensionAssetToken.ts (a cross-app import is not
+ *  available). This module calls itself the trust boundary for running
+ *  extension code, so it must not lean on an invariant enforced only in
+ *  `@breeze/extension-sdk`'s manifest schema: a URL is treated as tokened only
+ *  when it genuinely looks tokened, never on the strength of a bare `t` first
+ *  segment that some other path shape could also produce. */
+const ASSET_TOKEN_VALUE_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/** `t` + token + name + digest + at least one member segment. */
+const MIN_TOKENED_SEGMENTS = 5;
+
 const ALLOWED_MODULE_PROTOCOLS = new Set(['http:', 'https:']);
 
 /** Encoded slash/backslash variants that could smuggle an extra path
@@ -241,10 +254,27 @@ export function redactExtensionAssetTokens(text: string): string {
  * rolls over) does not fragment the cache into repeated imports of the very
  * same digest-addressed module. The digest is still in the retained path, so
  * this key remains content-addressed and never needs invalidating.
+ *
+ * Stripping is deliberately conservative: it fires only for a path that has
+ * the FULL tokened shape — the `t` marker, a value that actually parses as a
+ * token, and enough segments left for a name/digest/member. Anything else is
+ * left whole. A looser rule (strip whenever the first segment is `t`) would
+ * let a path that merely happens to start with a `t` segment collapse onto the
+ * same key as a real tokened asset, and two different extensions sharing a
+ * memo key means one extension's module could be handed out under the other's
+ * identity. Nothing can currently produce such a path — the manifest schema's
+ * `isSafeRelativePath` rejects the `..` segments it would take, and the server
+ * binds both name and digest into the token — but this module is the loader's
+ * trust boundary and should not depend on an invariant enforced in a different
+ * package that it never references.
  */
 function assetIdentityKey(resolved: URL): string {
   const segments = resolved.pathname.slice(ASSET_PATH_PREFIX.length).split('/');
-  if (segments[0] === ASSET_TOKEN_SEGMENT && segments.length > 2) {
+  if (
+    segments.length >= MIN_TOKENED_SEGMENTS
+    && segments[0] === ASSET_TOKEN_SEGMENT
+    && ASSET_TOKEN_VALUE_PATTERN.test(segments[1] ?? '')
+  ) {
     segments.splice(0, 2);
   }
   return `${resolved.origin}${ASSET_PATH_PREFIX}${segments.join('/')}`;

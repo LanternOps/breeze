@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getSecretDerivedKeyMaterials } from './secretCrypto';
+import { createReportThrottle } from '../utils/reportThrottle';
 
 /**
  * Short-lived, HMAC-signed capability for one extension's digest-addressed
@@ -81,6 +82,23 @@ const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 /** A token is one path segment: base64url payload/signature joined by dots. */
 export const EXTENSION_ASSET_TOKEN_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
+/**
+ * Verification answers every failure with the same `null` so the asset route
+ * can answer every rejection with the same bare 404 — an attacker gets no
+ * oracle. Giving OPERATORS no oracle is a different thing, and would be a
+ * repeat of #4164: a signing-key rotation that drops a key while tokens minted
+ * under it are still live silently 404s every extension UI in the fleet, and
+ * nobody finds out until a support ticket arrives. These throttled warnings are
+ * the internal-only signal; nothing about them reaches the HTTP response.
+ */
+const REPORT_THROTTLE = createReportThrottle(5 * 60_000);
+
+/** Test seam — the throttle is module-global, so a suite that asserts on the
+ *  warning must be able to clear the window between cases. */
+export function __resetExtensionAssetTokenReportThrottleForTests(): void {
+  REPORT_THROTTLE.reset();
+}
+
 export type ExtensionAssetTokenScope = Readonly<{
   partnerId: string | null | undefined;
   orgId: string | null | undefined;
@@ -127,8 +145,25 @@ function validTenantClaim(value: unknown): value is string | null {
  * registry for that user and take every extension page down with it, which is
  * strictly worse than minting a token with a null scope.
  */
-function normalizeTenantClaim(value: string | null | undefined): string | null {
-  return typeof value === 'string' && UUID_PATTERN.test(value) ? value : null;
+function normalizeTenantClaim(
+  field: 'partnerId' | 'orgId',
+  value: string | null | undefined,
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && UUID_PATTERN.test(value)) return value;
+  // A present-but-malformed tenant id is a "should never happen" upstream bug,
+  // not a shape we should quietly normalise away without trace: the claim is
+  // carried precisely so a future org-scoped enablement check has something to
+  // compare against, and that check would then be comparing against a null we
+  // manufactured. Warn (throttled — one broken principal must not flood), keep
+  // serving.
+  if (REPORT_THROTTLE.shouldReport(`extension-asset-token:bad-scope:${field}`)) {
+    console.warn(
+      `[extensionAssetToken] discarding a malformed ${field} on an asset-token mint; `
+      + 'the token will carry a null tenant binding. This indicates an upstream auth bug.',
+    );
+  }
+  return null;
 }
 
 function validClaims(value: unknown): value is ExtensionAssetTokenClaims {
@@ -167,6 +202,43 @@ function canonicalClaims(claims: ExtensionAssetTokenClaims): string {
   });
 }
 
+/**
+ * Called only when NO retained key verified a token. Decodes the (unsigned,
+ * attacker-controllable) payload to ask one question: does this token look
+ * exactly like one we would have minted — right audience, bound to the asset
+ * actually being requested, not yet expired — and yet verify under no key we
+ * hold? That is the fingerprint of a signing-key rotation that dropped a key
+ * too early, which would blank every extension UI in the fleet.
+ *
+ * An attacker CAN synthesise that shape (the claims are plaintext), so this is
+ * a canary, not proof — hence the throttle, and hence a `console.warn` rather
+ * than a Sentry exception: it belongs in the operator's log stream where a
+ * sustained rate is the actual signal, not in an alerting channel a single
+ * scanner could trip. Nothing here changes the response.
+ */
+function reportIfIndistinguishableFromOurOwn(payload: string, binding: ExtensionAssetTokenBinding): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch {
+    return;
+  }
+  if (!validClaims(parsed)) return;
+  if (parsed.name !== binding.name || parsed.digest !== binding.digest) return;
+  if (parsed.exp <= nowSeconds()) return;
+  if (!REPORT_THROTTLE.shouldReport('extension-asset-token:unverifiable')) return;
+  // `parsed` came out of an UNVERIFIED payload, so `name` is attacker-chosen
+  // text — `validClaims` only requires a non-empty string. Quote and truncate
+  // it so a crafted name cannot inject newlines and forge log lines.
+  const reportedName = JSON.stringify(parsed.name).slice(0, 120);
+  console.warn(
+    `[extensionAssetToken] a well-formed, unexpired asset token for ${reportedName} `
+    + 'verified under NO retained signing key. If this is sustained, a signing-key '
+    + 'rotation has dropped a key while tokens minted under it are still live — '
+    + 'every extension web UI will 404 until those tokens expire (issue #4164).',
+  );
+}
+
 function signature(payload: string, key: Buffer): Buffer {
   return createHmac('sha256', key)
     .update(`${TOKEN_SIGNATURE_DOMAIN}${payload}`)
@@ -188,8 +260,8 @@ export function mintExtensionAssetToken(
     aud: TOKEN_AUDIENCE,
     name: binding.name,
     digest: binding.digest,
-    partnerId: normalizeTenantClaim(scope.partnerId),
-    orgId: normalizeTenantClaim(scope.orgId),
+    partnerId: normalizeTenantClaim('partnerId', scope.partnerId),
+    orgId: normalizeTenantClaim('orgId', scope.orgId),
     iat,
     exp: iat + TOKEN_TTL_SECONDS,
   };
@@ -245,7 +317,10 @@ export function verifyExtensionAssetToken(
     const expected = signature(payload, material.key);
     return supplied.length === expected.length && timingSafeEqual(supplied, expected);
   });
-  if (matches.length !== 1) return null;
+  if (matches.length !== 1) {
+    reportIfIndistinguishableFromOurOwn(payload, binding);
+    return null;
+  }
 
   const decodedPayload = Buffer.from(payload, 'base64url');
   if (decodedPayload.toString('base64url') !== payload) return null;

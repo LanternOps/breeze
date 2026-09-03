@@ -58,6 +58,7 @@ import {
   verifyExtensionAssetToken,
   type ExtensionAssetTokenScope,
 } from '../services/extensionAssetToken';
+import { createReportThrottle } from '../utils/reportThrottle';
 
 /** The state-store surface this router needs (injectable for tests). */
 export type ExtensionsWebStore = Pick<ExtensionStateStore, 'isEnabled'>;
@@ -103,6 +104,34 @@ const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
 
 function notFound(c: Context): Response {
   return c.json({ error: 'not found' }, 404);
+}
+
+/**
+ * Serving failures on this route used to be reachable only by authenticated
+ * users; now that the bearer gate is gone, anonymous scanning traffic 404s
+ * through the same code. That would bury a REAL fault — a deleted extraction
+ * root, a permissions change, an unreadable mount — in noise, so the two are
+ * separated by WHEN they happen: anything failing after the token verified is
+ * by construction a legitimate request hitting an infrastructure problem, and
+ * that is the only subset worth reporting. Throttled, because one broken
+ * bundle fails on every page load of every user.
+ */
+const ASSET_SERVE_THROTTLE = createReportThrottle(5 * 60_000);
+
+/** Test seam — the throttle is module-global, so a suite asserting on the
+ *  warning must clear the window between cases or the assertions become
+ *  order-dependent. */
+export function __resetExtensionAssetServeThrottleForTests(): void {
+  ASSET_SERVE_THROTTLE.reset();
+}
+
+function reportVerifiedServeFailure(name: string, member: string, phase: 'resolve' | 'read'): void {
+  if (!ASSET_SERVE_THROTTLE.shouldReport(`extension-asset-serve:${phase}:${name}`)) return;
+  console.warn(
+    `[extensionsWeb] failed to ${phase} a VERIFIED extension asset (${name} :: ${member}). `
+    + 'The caller held a valid capability, so this is a serving fault, not a probe — '
+    + "the extension's UI is broken for every user until it is resolved.",
+  );
 }
 
 /** Narrow a live, enabled snapshot + its retained digest to the registry projection's input shape. */
@@ -246,7 +275,9 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
       ]);
     } catch {
       // Missing file, broken symlink, permission error — none of these are
-      // distinguishable from "not found" to the caller.
+      // distinguishable from "not found" to the caller. They ARE distinguishable
+      // to us: the token already verified, so this is a real serving fault.
+      reportVerifiedServeFailure(name, member, 'resolve');
       return notFound(c);
     }
     const realRootWithSep = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
@@ -265,6 +296,10 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
       bytes = await readFile(realMemberPath);
       assertVerifiedMemberBytes(member, bytes, inventoryEntry.sha256);
     } catch {
+      // Same reasoning as the realpath catch above — and a hash mismatch here
+      // is the loudest case of all: the bytes on disk no longer match the
+      // verified inventory.
+      reportVerifiedServeFailure(name, member, 'read');
       return notFound(c);
     }
 

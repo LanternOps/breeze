@@ -373,6 +373,26 @@ describe('probeStockHost', () => {
       expect(asset?.detail).toBe('skipped: the registry advertised no signed asset URL to derive a token from');
     });
 
+    it('redacts the harvested token out of a failing asset fetch\'s error message', async () => {
+      // The success paths never put the token in a detail string, but a fetch
+      // rejection can carry the request URL in its message, and that message
+      // goes through `redact` in the probe wrapper. The token is a live
+      // credential — it must not survive into a probe result a caller may log.
+      const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : String(input);
+        if (url.includes('/api/v1/extensions/assets/')) {
+          throw new Error(`connect ECONNREFUSED fetching ${url}`);
+        }
+        return goodFetch()(input as never, init as never);
+      }) as typeof fetch;
+
+      const result = await probeStockHost(baseOptions(fetchImpl));
+      const asset = result.observations.find((o) => o.name === 'assetImmutable');
+      expect(asset?.ok).toBe(false);
+      expect(asset?.detail).toContain('[redacted]');
+      expect(JSON.stringify(result)).not.toContain(ASSET_TOKEN);
+    });
+
     it('issues the asset request with NO auth headers at all, even though credentials were supplied', async () => {
       // The signed token in the URL IS the credential — a browser's dynamic
       // import() cannot send an Authorization header, so the asset route
