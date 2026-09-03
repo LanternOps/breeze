@@ -507,14 +507,14 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'server-1', role: 'server', siteId: null },
-      { id: 'server-2', role: 'server', siteId: null },
-      { id: 'workstation-1', role: 'workstation', siteId: null },
-      { id: 'workstation-2', role: 'workstation', siteId: null },
-      { id: 'workstation-3', role: 'workstation', siteId: null },
-      { id: 'workstation-4', role: 'workstation', siteId: null },
-      { id: 'workstation-5', role: 'workstation', siteId: null },
-      { id: 'unknown-1', role: 'unknown', siteId: null },
+      { id: 'server-1', hostname: 'server-1', role: 'server', siteId: null },
+      { id: 'server-2', hostname: 'server-2', role: 'server', siteId: null },
+      { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
+      { id: 'workstation-3', hostname: 'workstation-3', role: 'workstation', siteId: null },
+      { id: 'workstation-4', hostname: 'workstation-4', role: 'workstation', siteId: null },
+      { id: 'workstation-5', hostname: 'workstation-5', role: 'workstation', siteId: null },
+      { id: 'unknown-1', hostname: 'unknown-1', role: 'unknown', siteId: null },
     ]);
     queueRun([
       { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'], ...noAllowance },
@@ -910,8 +910,8 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
 
   it('batches device counts: one snapshot per org across all orgs', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'workstation-1', role: 'workstation', siteId: null },
-      { id: 'workstation-2', role: 'workstation', siteId: null },
+      { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+      { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
     ]);
     queueResult(['org1', 'org2', 'org3'].map((orgId, i) => contract({ id: `c${i}`, orgId })));
     queueResult(['c0', 'c1', 'c2'].flatMap((contractId) => [
@@ -944,7 +944,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
 
   it('uses the catalog base price plus the stamped billed-overage rate', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue(
-      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null })),
     );
     queueResult([contract({ currencyCode: 'USD', intervalMonths: 3 })]);
     queueResult([line({
@@ -1001,12 +1001,12 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
   const snapshot = [
-    { id: 'workstation-1', role: 'workstation', siteId: null },
-    { id: 'workstation-2', role: 'workstation', siteId: null },
-    { id: 'workstation-3', role: 'workstation', siteId: null },
-    { id: 'server-1', role: 'server', siteId: null },
-    { id: 'server-2', role: 'server', siteId: null },
-    { id: 'unknown-1', role: 'unknown', siteId: null },
+    { id: 'workstation-1', hostname: 'workstation-1', role: 'workstation', siteId: null },
+    { id: 'workstation-2', hostname: 'workstation-2', role: 'workstation', siteId: null },
+    { id: 'workstation-3', hostname: 'workstation-3', role: 'workstation', siteId: null },
+    { id: 'server-1', hostname: 'server-1', role: 'server', siteId: null },
+    { id: 'server-2', hostname: 'server-2', role: 'server', siteId: null },
+    { id: 'unknown-1', hostname: 'unknown-1', role: 'unknown', siteId: null },
   ];
 
   it('bills the role set from the snapshot and reports uncovered devices by role', async () => {
@@ -1051,7 +1051,7 @@ describe('computeContractEstimate — allowance and overage (#3205 W04)', () => 
     deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
     includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
-  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null }));
+  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null }));
 
   async function estimateWith(line: Record<string, unknown>, deviceCount: number) {
     vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(deviceCount));
@@ -1157,7 +1157,7 @@ describe('listContracts estimatedPeriodValue with allowances (#3205 W04)', () =>
 
   it('includes a billed overage and excludes a flagged one', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue(
-      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, hostname: `d${i}`, role: 'workstation', siteId: null })),
     );
     const rows = [
       { id: 'cb', orgId: 'org1', currencyCode: 'USD' },
@@ -1184,8 +1184,8 @@ describe('per_device_group quantities (#3205 W02)', () => {
     results.length = 0;
     vi.clearAllMocks();
     vi.mocked(snapshotContractDevices).mockResolvedValue([
-      { id: 'device-1', role: 'server', siteId: 'site-1' },
-      { id: 'device-2', role: 'workstation', siteId: 'site-1' },
+      { id: 'device-1', hostname: 'device-1', role: 'server', siteId: 'site-1' },
+      { id: 'device-2', hostname: 'device-2', role: 'workstation', siteId: 'site-1' },
     ]);
   });
 
