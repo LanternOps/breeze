@@ -12,6 +12,7 @@ import { submitInstalledPatchesSchema, submitPatchesSchema, submitPendingPatches
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
 import { admitPatchBatch, mergeRejectionReasons, type AdmittedPatch, type PatchAdmission } from './patchIngestIdentity';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
+import { compareBuilds } from '../../services/versionCompare';
 
 type PendingPatchData = z.infer<typeof submitPendingPatchesSchema>['patches'][number];
 type InstalledPatchData = z.infer<typeof submitInstalledPatchesSchema>['installed'][number];
@@ -381,15 +382,30 @@ async function upsertInstalledPatches(
     // mapper and postgres.js cannot serialize it (TypeError at query time) —
     // bind the ISO string with an explicit cast instead.
     const installedAtParam = installedAt ? sql`${installedAt.toISOString()}::timestamp` : sql`NULL::timestamp`;
-    // Installed inventory must not downgrade an actionable 'pending' row.
-    // Package managers report a pending upgrade and the installed package under
-    // the SAME (source, externalId) — `winget list` covers every package the
-    // paired `winget upgrade` scan reports — so an unconditional flip would
-    // clobber every pending third-party row in the same scan cycle.
-    // installedVersion still updates: it's the currently-installed version
-    // either way. A row whose upgrade completed self-heals within one scan
-    // cycle: the pending sweep flips it to 'missing', then the paired
-    // installed submit lands in this upsert's ELSE branch as 'installed'.
+    // Installed inventory must not downgrade an actionable 'pending' row on the
+    // normal paired-submit flow. Package managers report a pending upgrade and
+    // the installed package under the SAME (source, externalId) — `winget list`
+    // covers every package the paired `winget upgrade` scan reports — so an
+    // unconditional flip would clobber every pending third-party row in the
+    // same scan cycle. installedVersion still updates: it's the
+    // currently-installed version either way. A row whose upgrade completed
+    // self-heals within one scan cycle: the pending sweep flips it to
+    // 'missing', then the paired installed submit lands in the ELSE branch
+    // below as 'installed'.
+    //
+    // That sweep, though, only runs for sources whose pending Scan() actually
+    // ran this cycle (#2217) — a source whose pending scan chronically errors
+    // (e.g. winget upgrade flaking) never gets swept, so a row can stay
+    // 'pending' forever even after the upgrade genuinely lands, with the
+    // installed inventory (winget list) succeeding the whole time (#2736).
+    // Bound that: if the reported installed version already meets or exceeds
+    // the patch's known target version (`patches.version`, filled once via
+    // fillIfNull and stable thereafter), flip out of 'pending' regardless of
+    // sweep coverage — the installed inventory itself proves the upgrade
+    // completed, so there is nothing left to preserve.
+    const installedMeetsTarget =
+      version !== null && patch.version !== null && compareBuilds(version, patch.version) >= 0;
+
     await executor
       .insert(devicePatches)
       .values({
@@ -404,8 +420,12 @@ async function upsertInstalledPatches(
       .onConflictDoUpdate({
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
-          status: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
-          installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
+          status: installedMeetsTarget
+            ? 'installed'
+            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
+          installedAt: installedMeetsTarget
+            ? installedAtParam
+            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
           installedVersion: version,
           lastCheckedAt: new Date(),
           updatedAt: new Date()

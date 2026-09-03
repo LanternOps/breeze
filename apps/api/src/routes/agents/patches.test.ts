@@ -957,7 +957,12 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     mockDeviceLookup('windows');
   });
 
-  function mockTxCapturingDevicePatchUpserts() {
+  // `patchVersionOverride` simulates the stable, fillIfNull-frozen
+  // `patches.version` (the target version the row went pending for) diverging
+  // from whatever version THIS scan happens to report — without it, the mock
+  // would just echo back the current call's own insert values, which can never
+  // exercise the version-aware flip/no-flip branches.
+  function mockTxCapturingDevicePatchUpserts(patchVersionOverride?: string | null) {
     const devicePatchUpserts: Array<{ values: Record<string, unknown>; set: Record<string, unknown> }> = [];
     const tx = {
       update: vi.fn(() => ({
@@ -969,7 +974,12 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
         values: vi.fn((values) => ({
           onConflictDoUpdate: vi.fn(({ set }) => {
             if (table === patches) {
-              return { returning: vi.fn().mockResolvedValue([{ id: PATCH_ID, ...values }]) };
+              const row = {
+                id: PATCH_ID,
+                ...values,
+                ...(patchVersionOverride !== undefined ? { version: patchVersionOverride } : {}),
+              };
+              return { returning: vi.fn().mockResolvedValue([row]) };
             }
             devicePatchUpserts.push({ values, set });
             return { returning: vi.fn().mockResolvedValue([]) };
@@ -980,12 +990,14 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     return { tx, devicePatchUpserts };
   }
 
-  it('conflict update keeps a pending row pending instead of flipping it to installed', async () => {
-    // winget reports a pending upgrade and the installed package under the same
+  it('conflict update keeps a pending row pending when the reported version is older than the target (#2736)', async () => {
+    // winget reports a pending upgrade (target 2.52.0.0, recorded on patches.version
+    // by the earlier pending upsert) and the installed package under the same
     // (source, externalId): `winget list` includes every package that
-    // `winget upgrade` just reported. The installed upsert must not downgrade
-    // a pending row written earlier in the same scan cycle.
-    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts();
+    // `winget upgrade` just reported. Here the currently-installed version
+    // (2.51.0.2) has NOT yet reached the target, so the installed upsert must
+    // not downgrade the pending row written earlier in the same scan cycle.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.52.0.0');
     vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
 
     const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
@@ -1028,6 +1040,76 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // installedVersion still updates — it reports the currently-installed
     // version whether or not an upgrade is pending.
     expect(set.installedVersion).toBe('2.51.0.2');
+  });
+
+  it('flips a stranded pending row to installed once the reported version meets the target, even without a sweep (#2736)', async () => {
+    // The source's pending Scan() chronically errors (e.g. winget upgrade
+    // flaking), so `markPendingDevicePatchesMissing` never sweeps this source
+    // and the row never gets a chance to transition through 'missing'. But
+    // `winget list` (installed inventory) keeps succeeding and now reports a
+    // version that meets or exceeds the recorded target (patches.version) —
+    // proof the upgrade actually landed, so the row must not stay pending
+    // forever just because the sweep never ran.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.51.0.2');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(devicePatchUpserts).toHaveLength(1);
+
+    const { set } = devicePatchUpserts[0]!;
+    // The version-aware flip bypasses the pending-preserving CASE entirely:
+    // it writes the plain 'installed' literal, not a conditional expression.
+    expect(set.status).toBe('installed');
+    expect(set.installedAt).not.toEqual(
+      expect.objectContaining({ values: expect.arrayContaining([tables.devicePatches.installedAt]) }),
+    );
+    expect(set.installedVersion).toBe('2.51.0.2');
+  });
+
+  it('does not force a flip when the reported version is newer but no target version is on record', async () => {
+    // patches.version is null (e.g. this is the very first scan ever seen for
+    // this package via the installed path, with no prior pending upsert). With
+    // no target to compare against, fall back to the pending-preserving CASE
+    // rather than treating "no data" as "meets target".
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(null);
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const { set } = devicePatchUpserts[0]!;
+    expect(set.status).not.toBe('installed');
+    expect((set.status as { values: unknown[] }).values).toContain(tables.devicePatches.status);
   });
 });
 
