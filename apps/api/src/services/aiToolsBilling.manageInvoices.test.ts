@@ -86,6 +86,7 @@ function contractLineRow(
     unitPrice: '12.50',
     manualQuantity: null,
     siteId: null,
+    siteName: null,
     site: null,
     deviceRoles: null,
     deviceGroupId: null,

@@ -1528,8 +1528,8 @@ describe('updateContractLine (#3205 W03)', () => {
   // lockContract and the line read each use .limit(1); assertSiteInOrg would be
   // a third. Counting limit() calls is what distinguishes "checked" from "not".
   it('does NOT re-check the site when the patch does not move it', async () => {
-    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B })]);
-    queueResult([line({ siteId: SITE_B, description: 'Renamed' })]);
+    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B, siteName: 'Site B' })]);
+    queueResult([line({ siteId: SITE_B, siteName: 'Site B', description: 'Renamed' })]);
     queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);        // withLineRefs sites
     await svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor);
     expect((db as unknown as Chain).limit.mock.calls).toHaveLength(2);
@@ -1538,7 +1538,7 @@ describe('updateContractLine (#3205 W03)', () => {
   it('re-checks the site when the patch moves it', async () => {
     queueResult([CONTRACT]); queueResult([line()]);
     queueResult([{ id: SITE_B }]);                                   // assertSiteInOrg
-    queueResult([line({ siteId: SITE_B })]);
+    queueResult([line({ siteId: SITE_B, siteName: 'Site B' })]);
     queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);        // withLineRefs sites
     await svc.updateContractLine('c1', 'l1', { siteId: SITE_B } as never, actor);
     expect((db as unknown as Chain).limit.mock.calls).toHaveLength(3);
@@ -1603,8 +1603,8 @@ describe('updateContractLine (#3205 W03)', () => {
   });
 
   it('returns the line decorated with site and deviceGroup', async () => {
-    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B })]);
-    queueResult([line({ siteId: SITE_B, description: 'Renamed' })]);
+    queueResult([CONTRACT]); queueResult([line({ siteId: SITE_B, siteName: 'Site B' })]);
+    queueResult([line({ siteId: SITE_B, siteName: 'Site B', description: 'Renamed' })]);
     queueResult([{ id: SITE_B, orgId: 'org1', name: 'HQ' }]);   // withLineRefs sites
     const { line: decorated } = await svc.updateContractLine('c1', 'l1', { description: 'Renamed' } as never, actor);
     expect(decorated).toMatchObject({ site: { id: SITE_B, name: 'HQ' }, deviceGroup: null });

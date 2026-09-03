@@ -381,8 +381,8 @@ describe('contractLineInvariantIssues (#3205 W03)', () => {
   // flat / manual / per_seat the helper is the ONLY guard.
   it('allows siteId only on per_device and per_device_role, in both modes', () => {
     for (const mode of ['create', 'persisted'] as const) {
-      expect(paths({ lineType: 'per_device', siteId: GUID }, mode)).toEqual([]);
-      expect(paths({ lineType: 'per_device_role', siteId: GUID, deviceRoles: ['server'] }, mode)).toEqual([]);
+      expect(paths({ lineType: 'per_device', siteId: GUID, siteName: 'HQ' }, mode)).toEqual([]);
+      expect(paths({ lineType: 'per_device_role', siteId: GUID, siteName: 'HQ', deviceRoles: ['server'] }, mode)).toEqual([]);
       for (const lineType of ['flat', 'per_seat'] as const) {
         expect(paths({ lineType, siteId: GUID }, mode)).toEqual(['siteId']);
       }
@@ -443,7 +443,7 @@ describe('mergeContractLinePatch (#3205 W03)', () => {
   const GUID_B = '44444444-4444-4444-8444-444444444444';
   const current: PersistedContractLine = {
     lineType: 'per_device', description: 'Managed device', unitPrice: '10.00', taxable: true,
-    catalogItemId: null, manualQuantity: null, siteId: GUID_A, deviceRoles: null,
+    catalogItemId: null, manualQuantity: null, siteId: GUID_A, siteName: 'HQ', deviceRoles: null,
     deviceGroupId: null, deviceGroupName: null, sortOrder: 3,
     includedQuantity: null, overageMode: null, overageUnitPrice: null,
   };
@@ -639,5 +639,82 @@ describe('mergeContractLinePatch carries the allowance columns (#3205 W04)', () 
   it('clearing only includedQuantity leaves a row the persisted rules reject', () => {
     const merged = mergeContractLinePatch(current, { includedQuantity: null } as never);
     expect(contractLineInvariantIssues(merged, { mode: 'persisted' }).map((i) => i.path)).toContain('overageMode');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4693 (shipped in #3205 W05): the site stamp.
+//
+// contract_lines_site_org_fk is ON DELETE SET NULL (site_id) with no stamp
+// today, so deleting a site turns a site-scoped per_device line into an
+// ORG-WIDE one and resolveLineQty bills every device in the org, silently and
+// forever. The stamp is what makes "the site you priced was deleted"
+// distinguishable from "never had a site".
+//
+// The rules are PERSISTED-ONLY on purpose. contractLineInputSchema has no
+// siteName field — a caller names a site by id and the server resolves the name,
+// exactly as it already does for deviceGroupName. `create` describes what a
+// caller may send; `persisted` describes what a stored row may be.
+// ---------------------------------------------------------------------------
+describe('contract line site stamp (#4693)', () => {
+  const SITE = '22222222-2222-4222-8222-222222222222';
+  const GROUP = '33333333-3333-4333-8333-333333333333';
+  const paths = (l: Parameters<typeof contractLineInvariantIssues>[0], mode: 'create' | 'persisted') =>
+    contractLineInvariantIssues(l, { mode }).map((i) => i.path);
+
+  it('persisted requires siteName whenever siteId is set', () => {
+    expect(paths({ lineType: 'per_device', siteId: SITE }, 'persisted')).toEqual(['siteName']);
+    expect(paths({ lineType: 'per_device', siteId: SITE, siteName: 'Dallas' }, 'persisted')).toEqual([]);
+    expect(paths({ lineType: 'per_device_role', deviceRoles: ['server'], siteId: SITE, siteName: 'Dallas' }, 'persisted')).toEqual([]);
+  });
+
+  // THE WHOLE POINT: id NULL + stamp present is the DELETED state, and it is
+  // legal on a stored row. id NULL + stamp NULL means "never had a site" and is
+  // equally legal — resolveLineQty reads exactly that difference.
+  it('persisted allows a stamped name with a NULL id, and no stamp at all', () => {
+    expect(paths({ lineType: 'per_device', siteId: null, siteName: 'Dallas' }, 'persisted')).toEqual([]);
+    expect(paths({ lineType: 'per_device', siteId: null, siteName: null }, 'persisted')).toEqual([]);
+  });
+
+  it('persisted rejects a site stamp on a type that cannot be site-scoped', () => {
+    expect(paths({ lineType: 'flat', siteName: 'Dallas' }, 'persisted')).toEqual(['siteName']);
+    expect(paths({ lineType: 'per_seat', siteName: 'Dallas' }, 'persisted')).toEqual(['siteName']);
+    expect(paths({ lineType: 'manual', manualQuantity: '2', siteName: 'Dallas' }, 'persisted')).toEqual(['siteName']);
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: GROUP, deviceGroupName: 'VIP', siteName: 'Dallas' }, 'persisted')).toEqual(['siteName']);
+  });
+
+  it('create ignores both rules — siteName is not an input field', () => {
+    expect(paths({ lineType: 'per_device', siteId: SITE }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'per_seat', siteName: 'Dallas' }, 'create')).toEqual([]);
+  });
+});
+
+describe('mergeContractLinePatch carries the site stamp (#4693)', () => {
+  const current = {
+    lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: '22222222-2222-4222-8222-222222222222',
+    siteName: 'Dallas', deviceRoles: null, deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null,
+  } as never;
+
+  it('an omitted siteId leaves the stamp alone', () => {
+    expect(mergeContractLinePatch(current, { description: 'x' } as never)).toMatchObject({ siteId: '22222222-2222-4222-8222-222222222222', siteName: 'Dallas' });
+  });
+
+  // Clearing the site widens the line to the whole org DELIBERATELY, so the
+  // stamp must go with it — otherwise the row reads as "site deleted".
+  it('siteId: null clears the stamp, and the merged row is valid', () => {
+    const merged = mergeContractLinePatch(current, { siteId: null } as never);
+    expect(merged).toMatchObject({ siteId: null, siteName: null });
+    expect(contractLineInvariantIssues(merged, { mode: 'persisted' })).toEqual([]);
+  });
+
+  // Re-pointing keeps the OLD stamp in the merged row; the service re-stamps
+  // from the resolved site after the invariants run, exactly as it does for
+  // deviceGroupName (W03 decision 7).
+  it('a new siteId keeps the old stamp for the invariant pass', () => {
+    const merged = mergeContractLinePatch(current, { siteId: '44444444-4444-4444-8444-444444444444' } as never);
+    expect(merged).toMatchObject({ siteId: '44444444-4444-4444-8444-444444444444', siteName: 'Dallas' });
+    expect(contractLineInvariantIssues(merged, { mode: 'persisted' })).toEqual([]);
   });
 });

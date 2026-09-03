@@ -31,8 +31,8 @@ async function seed() {
 
 function insertLine(f: { orgA: string; contractId: string }, lineType: string, rolesSql: ReturnType<typeof sql>, siteId: string | null = null) {
   return withSystemDbAccessContext(() => db.execute(sql`
-    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_roles, site_id)
-    VALUES (${f.contractId}::uuid, ${f.orgA}::uuid, ${lineType}::contract_line_type, 'k', 1.00, false, ${rolesSql}, ${siteId}::uuid)
+    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_roles, site_id, site_name)
+    VALUES (${f.contractId}::uuid, ${f.orgA}::uuid, ${lineType}::contract_line_type, 'k', 1.00, false, ${rolesSql}, ${siteId}::uuid, ${siteId === null ? null : 'Site'})
   `));
 }
 
