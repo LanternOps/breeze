@@ -27,7 +27,7 @@ export interface QuoteLineForContract {
 }
 
 export interface NewContractLineSpec {
-  lineType: 'flat' | 'per_device' | 'per_device_role' | 'per_seat' | 'manual';
+  lineType: 'flat' | 'per_device' | 'per_device_role' | 'per_device_group' | 'per_seat' | 'manual';
   description: string;
   unitPrice: string;
   taxable: boolean;
@@ -36,6 +36,8 @@ export interface NewContractLineSpec {
   siteId?: string | null;
   /** #3205: required (non-empty) when lineType is per_device_role, otherwise absent. */
   deviceRoles?: DeviceRole[] | null;
+  /** #3205 W02: required when lineType is per_device_group, otherwise absent. Name is stamped by the writer. */
+  deviceGroupId?: string | null;
   sortOrder?: number;
   /** In-memory Phase 4 → Phase 5 correlation only; never persisted. */
   sourceQuoteLineId?: string | null;
