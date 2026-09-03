@@ -155,10 +155,24 @@ export type LoginResult =
   | { kind: 'mfaRequired'; challenge: MfaChallenge }
   | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
-export interface ApiError {
-  message: string;
+/**
+ * A real `Error` subclass (mirrors `TimeEntryError` in `./timeEntries`) so
+ * `err instanceof Error` narrowing at call sites actually matches. Before
+ * #4747 this was a plain `interface` and every throw site threw an object
+ * literal cast `as ApiError`, so `instanceof Error` was always false and the
+ * server's message never reached the user (ChangePasswordSheet,
+ * errorReporting) — it silently fell back to a generic string instead.
+ */
+export class ApiError extends Error {
   code?: string;
   statusCode?: number;
+
+  constructor(params: { message: string; code?: string; statusCode?: number }) {
+    super(params.message);
+    this.name = 'ApiError';
+    this.code = params.code;
+    this.statusCode = params.statusCode;
+  }
 }
 
 interface ListResponse<T> {
@@ -529,8 +543,7 @@ async function requestWithPrefix<T>(
         assertCurrentSession(capturedGeneration);
       }
 
-      const error: ApiError = { message, code, statusCode: response.status };
-      throw error;
+      throw new ApiError({ message, code, statusCode: response.status });
     }
 
     const text = await response.text();
@@ -543,10 +556,10 @@ async function requestWithPrefix<T>(
 
 function assertCurrentSession(capturedGeneration: number): void {
   if (capturedGeneration === currentSessionGeneration()) return;
-  throw {
+  throw new ApiError({
     message: 'Response belongs to a superseded session',
     code: 'session_superseded',
-  } as ApiError;
+  });
 }
 
 async function request<T>(
@@ -645,14 +658,14 @@ export async function login(email: string, password: string): Promise<LoginResul
   if (response.mfaRequired) {
     const challenge = parseMfaChallengePayload(response);
     if (!challenge) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+      throw new ApiError({ message: 'Invalid MFA challenge from server' });
     }
     return { kind: 'mfaRequired', challenge };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid login response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid login response' });
   }
 
   return {
@@ -675,7 +688,7 @@ export async function verifyMfa(
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid MFA response' });
   }
 
   return { token, user: response.user, registerGrant: response.authenticatorRegisterGrantId ?? null };
@@ -747,16 +760,16 @@ export async function refreshToken(): Promise<{ token: string }> {
     });
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
-    throw { message: 'Failed to refresh token' } as ApiError;
+    throw new ApiError({ message: 'Failed to refresh token' });
   }
   // Callers such as aiChat persist the returned token. Refuse to hand them a
   // response that began before logout advanced the generation, otherwise the
   // caller could reinstall access authority after local teardown completed.
   if (generation !== currentSessionGeneration()) {
-    throw {
+    throw new ApiError({
       message: 'Refresh response belongs to a superseded session',
       code: 'session_superseded',
-    } as ApiError;
+    });
   }
   return { token };
 }
