@@ -189,6 +189,9 @@ export interface BackupOverviewDto {
   openRpoBreaches: number | null;
   openRtoBreaches: number | null;
   meanReadinessScore: number | null;
+  lastTestRestoreStatus: string | null;
+  readinessScoredDevices: number | null;
+  readinessTotalDevices: number | null;
 }
 
 export interface BackupDevicesDto {
