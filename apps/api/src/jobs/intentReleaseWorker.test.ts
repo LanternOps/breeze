@@ -2965,10 +2965,12 @@ describe('processIntentReleaseJob', () => {
     expect(arg.title).toBe('Action failed');
   });
 
-  it('scopes the dedupe key to the STATUS so a later truth can still land', async () => {
+  it('scopes the dedupe key to the OUTCOME CLASS so a later truth can still land', async () => {
     // A per-intent key meant that once a premature "is now running" had been
     // written, the corrected notification deduped to null and the person was
-    // never told.
+    // never told. The class (not the raw status) is what draws that line —
+    // see the truth table on outcomeNotificationClass, and the #4465 block at
+    // the bottom of this file for the other half of the property.
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
 
@@ -3132,8 +3134,8 @@ describe('agent-originated outcome notifications', () => {
         title: 'Agent proposal denied',
         message: 'Patch triage: run_script(deviceId=d-1) was denied and will not run.',
         metadata: { intentId: 'intent-1', agentId: 'agent-1', agentRunId: 'run-1', status: 'rejected' },
-        // Status-scoped: a later, MORE ACCURATE status must not be suppressed
-        // by the earlier notification's dedupe row.
+        // Outcome-CLASS scoped: a later, materially different outcome must
+        // not be suppressed by the earlier notification's dedupe row (#4465).
         dedupeKey: 'agent-intent-outcome:intent-1:rejected',
       }),
     );
@@ -3206,5 +3208,255 @@ describe('agent-originated outcome notifications', () => {
 
     expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
     expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Outcome-notification dedupe identity (#4465)
+// ---------------------------------------------------------------------------
+
+/**
+ * The bug: an autonomy intent gets TWO outbox rows (`intent_created` and
+ * `intent_approved`, both written by `createActionIntent`), so
+ * `releaseAndNotify` runs twice for one intent by design — the second is a
+ * backstop for the first. `releaseApprovedIntent` is CAS-guarded, so the
+ * duplicate release is a safe no-op; the notification's dedupe key is the
+ * only thing that makes the duplicate NOTIFICATION a no-op too. Keying it on
+ * the raw `status` broke that: the loser of the CAS reads `approved` while
+ * the winner is still executing and the winner then reads `completed`, so the
+ * two sends carry different keys and the requester's bell rings twice for one
+ * outcome.
+ *
+ * These tests assert the property the requester actually experiences — how
+ * many notification ROWS survive — so they model the real partial unique
+ * index (`user_notifications_user_dedupe_key_uq` on `(user_id, dedupe_key)`
+ * WHERE `dedupe_key IS NOT NULL`) rather than counting mock calls.
+ */
+describe('outcome notification dedupe identity (#4465)', () => {
+  type NotificationRow = { userId: string; dedupeKey: string | null; title: string };
+
+  /** Stands in for the partial unique index: a second insert on the same
+   *  (user_id, dedupe_key) hits ON CONFLICT DO NOTHING and returns null. */
+  function installNotificationStore(): NotificationRow[] {
+    const rows: NotificationRow[] = [];
+    notifyMock.createNotification.mockImplementation(async (input: Record<string, unknown>) => {
+      const row: NotificationRow = {
+        userId: input.userId as string,
+        dedupeKey: (input.dedupeKey as string | null) ?? null,
+        title: input.title as string,
+      };
+      if (row.dedupeKey !== null
+        && rows.some((r) => r.userId === row.userId && r.dedupeKey === row.dedupeKey)) {
+        return null;
+      }
+      rows.push(row);
+      return `notif-${rows.length}`;
+    });
+    return rows;
+  }
+
+  /** One `intent_approved` delivery whose release loses the CAS (the
+   *  duplicate-delivery case), observing the intent at `status`. */
+  async function deliverApprovedObserving(status: string): Promise<void> {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+  });
+
+  afterEach(() => {
+    // clearAllMocks does NOT drop implementations — restore the file default.
+    notifyMock.createNotification.mockImplementation(async () => 'notif-1');
+  });
+
+  describe('requester path (four_eyes)', () => {
+    it.each([
+      ['approved', 'completed'],
+      ['approved', 'executing'],
+      ['executing', 'completed'],
+    ])('two deliveries that observe %s then %s notify the requester exactly once', async (first, second) => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving(first);
+      await deliverApprovedObserving(second);
+
+      // Same outcome ("approved, and it ran") seen at two moments — one bell.
+      expect(rows).toHaveLength(1);
+      expect(notifyMock.createNotification).toHaveBeenCalledTimes(2);
+      const keys = notifyMock.createNotification.mock.calls.map(
+        (c) => (c[0] as { dedupeKey: string }).dedupeKey,
+      );
+      expect(new Set(keys).size).toBe(1);
+      expect(keys[0]).toBe('intent-outcome:intent-1:granted');
+    });
+
+    it('a genuinely different second outcome (approved -> failed) still notifies once each', async () => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving('approved');
+      await deliverApprovedObserving('failed');
+
+      expect(rows).toHaveLength(2);
+      expect(rows[0]!.title).toBe('Approval granted');
+      expect(rows[1]!.title).toBe('Action failed');
+      expect(rows[1]!.dedupeKey).toBe('intent-outcome:intent-1:failed');
+    });
+
+    it('repeating the SAME terminal outcome notifies once', async () => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving('failed');
+      await deliverApprovedObserving('failed');
+
+      expect(rows).toHaveLength(1);
+    });
+
+    it.each([
+      ['approved', 'intent-outcome:intent-1:granted'],
+      ['executing', 'intent-outcome:intent-1:granted'],
+      ['completed', 'intent-outcome:intent-1:granted'],
+      ['failed', 'intent-outcome:intent-1:failed'],
+      ['rejected', 'intent-outcome:intent-1:rejected'],
+      ['cancelled', 'intent-outcome:intent-1:cancelled'],
+      ['expired', 'intent-outcome:intent-1:expired'],
+      ['pending_approval', 'intent-outcome:intent-1:update'],
+      // Runtime fallback for a value the DB holds that ActionIntentStatus does
+      // not (drift, or a rollback across a status-adding deploy). The Record in
+      // the worker is exhaustive, so a REAL new status is a compile error there
+      // rather than a silent arrival here.
+      ['some_status_added_later', 'intent-outcome:intent-1:update'],
+    ])('status %s keys the notification as %s', async (status, expected) => {
+      await deliverApprovedObserving(status);
+
+      const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { dedupeKey: string };
+      expect(arg.dedupeKey).toBe(expected);
+    });
+  });
+
+  // The literal shape reported in #4465: an autonomy intent carries BOTH
+  // outbox rows, so these two deliveries are the pair that used to double-ring.
+  describe('the ticket_autonomy delivery pair (the reported shape)', () => {
+    /** `intent_created` on a ticket_autonomy row routes straight to
+     *  releaseAndNotify — it first reads decidedVia, THEN the intent. */
+    async function deliverCreatedObserving(status: string): Promise<void> {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+      dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+    }
+
+    it('intent_created then intent_approved across a status advance notifies once', async () => {
+      const rows = installNotificationStore();
+
+      // The created-row recovery wins the race and starts executing...
+      await deliverCreatedObserving('executing');
+      // ...and the sibling approved row lands after it settled.
+      await deliverApprovedObserving('completed');
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.dedupeKey).toBe('intent-outcome:intent-1:granted');
+    });
+
+    it('the same pair still delivers the correction when the release actually failed', async () => {
+      const rows = installNotificationStore();
+
+      await deliverCreatedObserving('approved');
+      await deliverApprovedObserving('failed');
+
+      expect(rows).toHaveLength(2);
+      expect(rows[1]!.title).toBe('Action failed');
+    });
+  });
+
+  describe('across DIFFERENT event types', () => {
+    it('an intent_approved and an intent_expired observing the same status notify once', async () => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving('expired');
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+      // The key is keyed off the observed STATUS, never the event that
+      // carried it, so two event types reporting one outcome stay one bell.
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.dedupeKey).toBe('intent-outcome:intent-1:expired');
+    });
+
+    it('a granted bell followed by an intent_rejected delivery still corrects the record', async () => {
+      const rows = installNotificationStore();
+
+      await deliverApprovedObserving('approved');
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+      expect(rows).toHaveLength(2);
+      expect(rows[1]!.dedupeKey).toBe('intent-outcome:intent-1:rejected');
+    });
+  });
+
+  it('collapses only the KEY — metadata still carries the raw status', async () => {
+    // The class exists for dedupe identity. Anything reading the row (the
+    // bell UI, support) must still see which status was actually observed.
+    await deliverApprovedObserving('completed');
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as {
+      dedupeKey: string; metadata: { status: string };
+    };
+    expect(arg.dedupeKey).toBe('intent-outcome:intent-1:granted');
+    expect(arg.metadata.status).toBe('completed');
+  });
+
+  describe('agent-originated path', () => {
+    const AGENT_INTENT_4465 = {
+      id: 'intent-1',
+      orgId: 'org-1',
+      requestedByUserId: null,
+      requestingAgentRunId: 'run-1',
+      requestingClientLabel: 'Patch triage',
+      targetSummary: 'run_script(deviceId=d-1)',
+      status: 'approved',
+      approvalScope: 'supervised',
+    };
+    const RUN_ROW_4465 = {
+      id: 'run-1',
+      agentId: 'agent-1',
+      policySnapshot: { effective: { recipients: { userIds: ['user-a'], roleIds: [] } } },
+    };
+    const AGENT_ROW_4465 = { id: 'agent-1', orgId: 'org-1', partnerId: null, recipients: { userIds: ['user-a'] } };
+
+    async function deliverAgentApprovedObserving(status: string): Promise<void> {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+      dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT_4465, status }]);
+      dbState.selectAgentRunsResults.push([RUN_ROW_4465]);
+      dbState.selectAgentsResults.push([AGENT_ROW_4465]);
+      recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce(['user-a']);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+    }
+
+    it('two deliveries across a status advance notify each recipient exactly once', async () => {
+      const rows = installNotificationStore();
+
+      await deliverAgentApprovedObserving('approved');
+      await deliverAgentApprovedObserving('completed');
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.dedupeKey).toBe('agent-intent-outcome:intent-1:granted');
+    });
+
+    it('a genuinely different second outcome (approved -> failed) still notifies once each', async () => {
+      const rows = installNotificationStore();
+
+      await deliverAgentApprovedObserving('approved');
+      await deliverAgentApprovedObserving('failed');
+
+      expect(rows).toHaveLength(2);
+      expect(rows[1]!.dedupeKey).toBe('agent-intent-outcome:intent-1:failed');
+      expect(rows[1]!.title).toBe('Agent action failed');
+    });
   });
 });
