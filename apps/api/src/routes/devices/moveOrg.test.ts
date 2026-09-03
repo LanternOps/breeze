@@ -634,6 +634,28 @@ describe('POST /devices/:id/move-org', () => {
       expect(detachIdx).toBeLessThan(ticketsIdx);
     });
 
+    it('#3205 W07: severs the billing-evidence device pointer', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      const stmts = statements.map((s) => s.replace(/\s+/g, ' ').trim());
+      expect(stmts.some((s) => /UPDATE invoice_line_devices SET device_id = NULL/.test(s))).toBe(true);
+    });
+
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({

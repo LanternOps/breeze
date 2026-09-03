@@ -151,8 +151,13 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // detaches: it's an operator corpus that must survive device hard-delete so
 // cross-partner endpoint correlation still works after the originating
 // device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+// invoice_line_devices (#3205 W07) also detaches: the row is billing evidence
+// that must outlive the device it names — a past invoice still says which
+// devices it charged for, by hostname, after a hard delete. Its device_id FK is
+// declared ON DELETE SET NULL to match, and the table is deliberately NOT
+// append-only so this generic UPDATE loop can run as breeze_app.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -201,6 +206,17 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * story across two orgs; (b) the same (org_id, partner_id) composite FK
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
+ * org_id and device_id, but its org_id belongs to the INVOICE, which does not
+ * move. Re-stamping it would break the (invoice_line_id, org_id) and
+ * (invoice_id, org_id) composite FKs. It is additionally excluded from
+ * breeze_device_child_orgid_tables() by migration
+ * 2026-10-08-100500-device-move-exclude-billing-evidence.sql, because that
+ * trigger would otherwise restamp it mid-UPDATE and raise 23503 before any
+ * route code runs. moveOrg detaches device_id instead — an explicit,
+ * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',

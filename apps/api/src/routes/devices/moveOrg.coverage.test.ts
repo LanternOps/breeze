@@ -46,6 +46,13 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // which itself never follows a device move (ai_agent_runs above) — see
   // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_fix_watches',
+  // Has org_id AND device_id, but org_id belongs to the INVOICE and the invoice
+  // does not move (#3205 W07). Re-stamping would break the composite FKs to
+  // invoice_lines/invoices; the table is also excluded from
+  // breeze_device_child_orgid_tables() so the devices-UPDATE trigger cannot
+  // restamp it either — see the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in
+  // core.ts.
+  'invoice_line_devices',
   // Durable PAM ownership history is frozen in its source org. A device with
   // any actuation is non-transferable, so neither table participates in an
   // organization-move rewrite.
@@ -301,6 +308,10 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
       const name = getTableName(table);
       // Skip the devices table itself — it owns site_id, doesn't denormalize it.
       if (name === 'devices') continue;
+      // A table whose org attribution deliberately stays with its source
+      // record must retain its site snapshot too; invoice_line_devices is the
+      // only such table that currently carries site_id.
+      if (INTENTIONALLY_NO_ORG_ID.has(name)) continue;
 
       const cols = getColumns(table);
       const hasDeviceId = cols.some((c) => c.name === 'device_id');
