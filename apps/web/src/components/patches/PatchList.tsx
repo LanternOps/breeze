@@ -409,6 +409,7 @@ export default function PatchList({
             <option value="important">{t('patchList.severity.important')}</option>
             <option value="moderate">{t('patchList.severity.moderate')}</option>
             <option value="low">{t('patchList.severity.low')}</option>
+            <option value="unrated">{t('patchList.severity.unrated')}</option>
           </select>
           <select
             value={statusFilter}

@@ -52,6 +52,16 @@ describe('normalizePatch severity (#3758)', () => {
     expect(patch.severity).toBe('unrated');
   });
 
+  it('maps "unknown" case-insensitively (e.g. "UNKNOWN") to "unrated"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: 'UNKNOWN' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('maps any other unrecognized severity string to "unrated", not "low"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: 'urgent' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
   it('still maps recognized severities correctly', () => {
     expect(normalizePatch({ id: 'p1', title: 't', severity: 'critical' }, 0).severity).toBe('critical');
     expect(normalizePatch({ id: 'p1', title: 't', severity: 'high' }, 0).severity).toBe('important');
