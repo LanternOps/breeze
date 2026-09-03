@@ -3472,6 +3472,8 @@
     "archived": {
       "banner": "This organization is archived and read-only. Restore it to make changes.",
       "bannerWithDate": "This organization is archived — purge scheduled for {{date}}. Restore it to make changes.",
+      "drainBanner": "This organization is being archived — its agents are being removed and it stays read-only until the drain finishes.",
+      "drainBannerWithDate": "This organization is being archived — its agents are being removed, and a purge is scheduled for {{date}}.",
       "restoreLink": "Restore this organization",
       "saveBlocked": "This organization is archived and cannot be edited. Restore it first."
     },
@@ -4011,12 +4013,14 @@
       "empty": "No archived organizations.",
       "noMatches": "No archived organizations match your search.",
       "badge": "Archived",
+      "archivingBadge": "Archiving…",
       "keptIndefinitely": "Kept indefinitely",
       "purgeToday": "Purges today",
       "purgeCountdown_one": "Purges in {{count}} day",
       "purgeCountdown_other": "Purges in {{count}} days",
       "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
       "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
+      "drainNotice": "This organization is being archived — its agents are being removed, and it stays read-only until the drain finishes. Restore it to cancel and bring it back.",
       "errors": {
         "fetch": "Failed to load archived organizations"
       }

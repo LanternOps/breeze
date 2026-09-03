@@ -51,7 +51,12 @@ vi.mock('../db', () => {
 });
 
 import { db } from '../db';
-import { listArchivedOrgs, loadArchivedOrg, type ArchivedOrgScope } from './archivedOrgReads';
+import {
+  isArchiveLifecycleRow,
+  listArchivedOrgs,
+  loadArchivedOrg,
+  type ArchivedOrgScope,
+} from './archivedOrgReads';
 
 const dialect = new PgDialect();
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -149,4 +154,93 @@ describe('loadArchivedOrg scope check', () => {
 
     expect(row).toMatchObject({ id: ORG_OUT, archived: true });
   });
+});
+
+// ── #4166: which lifecycle states the door admits ─────────────────────────────
+// Clicking Archive parks the org in `offboarding` (`offboarding_target =
+// 'archive'`) for the whole agent-drain window. It matched neither
+// `computeAccessibleOrgIds` (active|trial) nor this door's old
+// `status = 'archived'`, so it vanished from every list and Restore became
+// unreachable — even though `restoreOrgFromArchive` accepts exactly that state
+// as its abort edge.
+//
+// Pinned as COMPILED SQL because the discriminating detail is not "does
+// offboarding appear" but "is it CONJOINED with offboarding_target = 'archive'".
+// A churn drain ends at `churned`, which is deliberately invisible; admitting
+// it here would offer a Restore that always 409s.
+describe('archive-lifecycle predicate (#4166)', () => {
+  /**
+   * `archived` OR (`offboarding` AND `offboarding_target` = ?). The `and`
+   * between the second and third comparison is the whole assertion: widening to
+   * `status IN ('archived','offboarding')` would drop it and admit churn drains.
+   */
+  const LIFECYCLE_ARM =
+    /"organizations"\."status" = \$\d+ or \("organizations"\."status" = \$\d+ and "organizations"\."offboarding_target" = \$\d+\)/;
+
+  const compiledWhere = (index: number) => {
+    const whereArg = (db as unknown as { where: Mock }).where.mock.calls[index]![0] as SQL;
+    return dialect.sqlToQuery(whereArg);
+  };
+
+  it('admits an archive DRAIN as well as an archived org, in discovery', async () => {
+    await listArchivedOrgs({ scope: { kind: 'partner', partnerId: PARTNER_ID }, limit: 10 });
+
+    const { sql, params } = compiledWhere(0);
+    expect(sql).toMatch(LIFECYCLE_ARM);
+    expect(params).toEqual(expect.arrayContaining(['archived', 'offboarding', 'archive']));
+  });
+
+  // Discovery and serving are two separate transactions, and the gap between
+  // them is exactly when these rows flip state (the drain reaper finalizes
+  // offboarding → archived; Restore aborts back to a live status). A serving
+  // read keyed on id alone would hand back a now-live row flagged
+  // `archived: true`.
+  it('re-asserts eligibility in the READ ONLY serving read, not just discovery', async () => {
+    discoveryRows.push({ id: ORG_IN });
+    servedRows.push([{ id: ORG_IN, name: 'Acme' }]);
+    servedRows.push([]);
+
+    await listArchivedOrgs({ scope: { kind: 'partner', partnerId: PARTNER_ID }, limit: 10 });
+
+    const { sql, params } = compiledWhere(1);
+    expect(sql).toContain('"organizations"."id" in');
+    expect(sql).toMatch(LIFECYCLE_ARM);
+    expect(sql).toContain('"organizations"."deleted_at" is null');
+    expect(params).toEqual(expect.arrayContaining(['archived', 'offboarding', 'archive']));
+  });
+
+  it('applies the same predicate to loadArchivedOrg, in both its reads', async () => {
+    discoveryRows.push({ id: ORG_IN, partnerId: PARTNER_ID });
+    servedRows.push([{ id: ORG_IN, name: 'Acme' }]);
+
+    const row = await loadArchivedOrg({
+      orgId: ORG_IN,
+      scope: { kind: 'partner', partnerId: PARTNER_ID },
+    });
+
+    expect(row).toMatchObject({ id: ORG_IN, archived: true });
+    for (const index of [0, 1]) {
+      const { sql } = compiledWhere(index);
+      expect(sql).toMatch(LIFECYCLE_ARM);
+      expect(sql).toContain('"organizations"."deleted_at" is null');
+      expect(sql).toContain('"organizations"."type" <>');
+    }
+  });
+
+  // Row-level twin used by the detail route's system-scope branch. Kept here,
+  // beside the compiled-SQL pin, so the two cannot drift unnoticed.
+  it.each([
+    ['archived', 'churn', true],
+    ['archived', 'archive', true],
+    ['offboarding', 'archive', true],
+    ['offboarding', 'churn', false],
+    ['active', 'archive', false],
+    ['churned', 'archive', false],
+    ['purging', 'archive', false],
+  ] as const)(
+    'isArchiveLifecycleRow(%s, target=%s) === %s',
+    (status, offboardingTarget, expected) => {
+      expect(isArchiveLifecycleRow({ status, offboardingTarget })).toBe(expected);
+    },
+  );
 });

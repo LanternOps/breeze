@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 // Imported from the CONCRETE schema module, not the '../db/schema' barrel:
@@ -34,6 +34,8 @@ import {
 import { sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { buildOrganizationListQuery } from './orgs.listQuery';
 import {
+  archiveLifecycleCondition,
+  isArchiveLifecycleRow,
   listArchivedOrgs,
   loadArchivedOrg,
   type ArchivedOrgScope,
@@ -1405,9 +1407,30 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
       ? sql`false`
       : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   } else {
+    // #4166 — system scope short-circuits every RLS predicate and this branch
+    // carries NO status filter, so archive-lifecycle orgs already come back
+    // from the live query. Once the caller opts into the archived block they
+    // would be returned TWICE: once unflagged here, once flagged
+    // `archived: true` from the READ ONLY door. Exclude them from the live
+    // side — from the COUNT as well as the rows, and on every page, because
+    // the append happens only on the last page while the duplicate would sit
+    // on whichever page the live query put it.
+    //
+    // Without `includeArchived` nothing changes: a platform admin still sees
+    // them (unflagged) in the live list, exactly as before.
+    //
+    // The partner branch above needs no equivalent — `accessibleOrgIds` never
+    // contains an archive-lifecycle org in the first place.
+    //
+    // `not(...)` is free of the NULL trap that usually makes a negated
+    // predicate drop rows: both columns it reads are NOT NULL (`status` is
+    // `NOT NULL DEFAULT 'active'`, `offboarding_target` `NOT NULL DEFAULT
+    // 'churn'`), so the inner expression is never NULL and `NOT` never yields
+    // UNKNOWN.
+    const notArchiveLifecycle = archivedScope ? not(archiveLifecycleCondition()) : undefined;
     conditions = queryPartnerId
-      ? and(eq(organizations.partnerId, queryPartnerId), notQuickSupport, isNull(organizations.deletedAt), searchCondition)
-      : and(notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+      ? and(eq(organizations.partnerId, queryPartnerId), notQuickSupport, isNull(organizations.deletedAt), notArchiveLifecycle, searchCondition)
+      : and(notQuickSupport, isNull(organizations.deletedAt), notArchiveLifecycle, searchCondition);
   }
 
   if (noLiveOrgs && archivedScope === null) {
@@ -1789,7 +1812,8 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  // An archived org is absent from `accessibleOrgIds` by design, so it fails
+  // An archive-lifecycle org (`archived`, or mid-archive-drain `offboarding` —
+  // #4166) is absent from `accessibleOrgIds` by design, so it fails
   // `canAccessOrg` and would 404 here. Serve it read-only instead — the archive
   // detail view (Restore + purge countdown) is the whole point of keeping the
   // tenant around. `loadArchivedOrg` re-checks the partner itself and collapses
@@ -1816,11 +1840,13 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  // System scope never fails `canAccessOrg`, so an archived org reaches it
-  // through the normal read (system scope short-circuits every RLS predicate).
-  // Flag it the same way the partner branch above does, so clients get one
-  // shape regardless of who asked.
-  if (organization.status === 'archived') {
+  // System scope never fails `canAccessOrg`, so an archive-lifecycle org
+  // reaches it through the normal read (system scope short-circuits every RLS
+  // predicate). Flag it the same way the partner branch above does, so clients
+  // get one shape regardless of who asked — including the `offboarding` half of
+  // an archive drain (#4166), which the list route now serves flagged for both
+  // scopes.
+  if (isArchiveLifecycleRow(organization)) {
     return c.json({ ...organization, archived: true as const });
   }
 

@@ -3467,6 +3467,8 @@
     "archived": {
       "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour effectuer des modifications.",
       "bannerWithDate": "Cette organisation est archivée ; la purge est prévue pour le {{date}}. Restaurez-la pour effectuer des modifications.",
+      "drainBanner": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés et elle reste en lecture seule jusqu'à la fin du processus.",
+      "drainBannerWithDate": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et la purge est prévue pour le {{date}}.",
       "restoreLink": "Restaurer cette organisation",
       "saveBlocked": "Cette organisation est archivée et ne peut pas être modifiée. Restaurez-la d’abord."
     },
@@ -4006,12 +4008,14 @@
       "empty": "Aucune organisation archivée.",
       "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
       "badge": "Archivée",
+      "archivingBadge": "Archivage en cours…",
       "keptIndefinitely": "Conservée indéfiniment",
       "purgeToday": "Suppression définitive aujourd'hui",
       "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
       "purgeCountdown_other": "Suppression définitive dans {{count}} jours",
       "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
       "readOnlyNotice": "Cette organisation est archivée et en lecture seule. Restaurez-la pour reprendre un accès normal.",
+      "drainNotice": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et elle reste en lecture seule jusqu'à la fin du processus. Restaurez-la pour annuler et la ramener.",
       "errors": {
         "fetch": "Échec du chargement des organisations archivées"
       }

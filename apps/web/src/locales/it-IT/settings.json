@@ -3467,6 +3467,8 @@
     "archived": {
       "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
       "bannerWithDate": "Questa organizzazione è archiviata: l'eliminazione è prevista per il {{date}}. Ripristinala per apportare modifiche.",
+      "drainBanner": "Questa organizzazione è in fase di archiviazione — i suoi agenti sono in corso di disinstallazione e rimane in sola lettura finché il processo non sarà completato.",
+      "drainBannerWithDate": "Questa organizzazione è in fase di archiviazione — i suoi agenti sono in corso di disinstallazione, e l'eliminazione è prevista per il {{date}}.",
       "restoreLink": "Ripristina questa organizzazione",
       "saveBlocked": "Questa organizzazione è archiviata e non può essere modificata. Ripristinala prima."
     },
@@ -4006,12 +4008,14 @@
       "empty": "Nessuna organizzazione archiviata.",
       "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
       "badge": "Archiviata",
+      "archivingBadge": "Archiviazione in corso…",
       "keptIndefinitely": "Conservata indefinitamente",
       "purgeToday": "Eliminata definitivamente oggi",
       "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
       "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
       "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
       "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
+      "drainNotice": "Questa organizzazione è in fase di archiviazione — i suoi agenti sono in corso di disinstallazione, e rimane in sola lettura finché il processo non sarà completato. Ripristinala per annullare l'operazione e farla tornare.",
       "errors": {
         "fetch": "Impossibile caricare le organizzazioni archiviate"
       }

@@ -3419,6 +3419,8 @@
     "archived": {
       "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",
       "bannerWithDate": "Esta organización está archivada; la eliminación está programada para el {{date}}. Restáurela para realizar cambios.",
+      "drainBanner": "Esta organización se está archivando — se están desinstalando sus agentes y permanecerá de solo lectura hasta que finalice el proceso.",
+      "drainBannerWithDate": "Esta organización se está archivando — se están desinstalando sus agentes, y la eliminación está programada para el {{date}}.",
       "restoreLink": "Restaurar esta organización",
       "saveBlocked": "Esta organización está archivada y no se puede editar. Restáurela primero."
     },
@@ -3958,12 +3960,14 @@
       "empty": "No hay organizaciones archivadas.",
       "noMatches": "Ninguna organización archivada coincide con su búsqueda.",
       "badge": "Archivada",
+      "archivingBadge": "Archivando…",
       "keptIndefinitely": "Se conserva indefinidamente",
       "purgeToday": "Se elimina hoy",
       "purgeCountdown_one": "Se elimina en {{count}} día",
       "purgeCountdown_other": "Se elimina en {{count}} días",
       "truncatedNote": "Mostrando las primeras {{count}} organizaciones archivadas. Busque para acotar la lista.",
       "readOnlyNotice": "Esta organización está archivada y es de solo lectura. Restáurela para reanudar el acceso normal.",
+      "drainNotice": "Esta organización se está archivando — se están desinstalando sus agentes, y permanecerá de solo lectura hasta que finalice el proceso. Restáurela para cancelar esto y recuperarla.",
       "errors": {
         "fetch": "No se pudieron cargar las organizaciones archivadas"
       }
