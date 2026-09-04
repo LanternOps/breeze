@@ -73,7 +73,7 @@ export const auditRetentionPolicies = pgTable('audit_retention_policies', {
   // Unique per org (migration 2026-10-08-100700) so upsertOrgAuditRetentionPolicy
   // can use a real ON CONFLICT — see that service for why the earlier
   // SELECT...FOR UPDATE approach was not actually race-safe.
-  orgId: uuid('org_id').notNull().unique().references(() => organizations.id),
+  orgId: uuid('org_id').notNull().unique().references(() => organizations.id, { onDelete: 'cascade' }),
   retentionDays: integer('retention_days').notNull().default(365),
   archiveToS3: boolean('archive_to_s3').notNull().default(false),
   lastCleanupAt: timestamp('last_cleanup_at'),

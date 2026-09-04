@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/__tests__/integration/**/*.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
       // convention). It uses the shared integration setup via setupFiles plus an
