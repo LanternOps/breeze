@@ -17,6 +17,21 @@ export const BILLABLE_DEVICE_ROLES = [
 ] as const;
 export type BillableDeviceRole = typeof BILLABLE_DEVICE_ROLES[number];
 
+/** Canonical English plural nouns for billing/customer documents. */
+export const DEVICE_ROLE_NOUNS: Readonly<Record<BillableDeviceRole, string>> = {
+  workstation: 'workstations',
+  server: 'servers',
+  printer: 'printers',
+  router: 'routers',
+  switch: 'switches',
+  firewall: 'firewalls',
+  access_point: 'access points',
+  phone: 'phones',
+  iot: 'IoT devices',
+  camera: 'cameras',
+  nas: 'NAS devices',
+};
+
 /** `unknown` is the enrollment default: a classification gap, never a rate. */
 export const DEVICE_ROLES = [...BILLABLE_DEVICE_ROLES, 'unknown'] as const;
 export type DeviceRole = typeof DEVICE_ROLES[number];

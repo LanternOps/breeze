@@ -190,7 +190,7 @@ Ends an active elevation early.
 | `matchUser` | string | Narrow by requesting user |
 | `matchAdGroup` | string | Narrow by AD group |
 | `matchToolName` | string | AI tool name (tool-action rule) |
-| `matchRiskTier` | int | Risk tier 0–4 (tool-action rule) |
+| `matchRiskTier` | int | Risk tier 0–4, matched by **exact equality** (tool-action rule). See [Risk-tier drift](#risk-tier-drift) |
 | `matchNegate` | string[] \| null | Criterion keys the engine inverts ("does not match"). Valid keys: `signer`, `signerGroup`, `hash`, `pathGlob`, `parentImage`, `commandLine`, `user`, `adGroup`, `toolName`, `riskTier` |
 | `timeWindow` | object | `{ start, end, days?, timezone? }`, `HH:MM` 24h, days 0–6 (Sun–Sat) |
 | `approvalDurationMinutes` | int | 1–1440; null falls back to the org default |
@@ -202,8 +202,23 @@ Rule-shape validation (enforced on create and on the merged result of an update)
 - `matchSigner` and `matchSignerGroupId` are **mutually exclusive** -- a rule references a single signer *or* a signer group, not both.
 - A negated criterion never turns missing data into a match: if the observation didn't report the value a negated criterion checks, the rule does not match.
 - `verdict: "ignore"` is not valid for tool-action rules -- a tool action must be decided.
+- `matchRiskTier` must be a tier the rule's tool selector can actually resolve to. A rule pinned to a tier no tool produces can never match, so create and update reject it with `400` and a body carrying `code: "pam_rule_risk_tier_unreachable"` plus a `validTiers` array of the tiers that selector currently resolves to. A rule naming a tool the API doesn't recognise (an extension tool, for example) is **not** rejected -- the check fails open rather than blocking a legitimate write.
 
 Create returns `201` with the full rule; update returns `200`.
+
+### Risk-tier drift
+
+`matchRiskTier` is compared with **exact equality**, and a tool's risk tier is decided by the API build, not by the rule. So when a release re-classifies a tool -- as one did when three read-only `execute_command` command types moved from Tier 3 to Tier 2 -- a stored rule written against the old tier silently stops covering those calls.
+
+The failure direction is safe: an unmatched tool action falls through to the org's default (pending / require approval) rather than auto-approving. But it is invisible, so the API surfaces it three ways:
+
+- **On write** -- create and update reject a tier the selector can never resolve to (above).
+- **At boot** -- the API scans enabled, tier-pinned rules on startup and logs a `[pam-rule-tier-drift]` warning naming every rule that can no longer match, alongside a Sentry event tagged `pam_rule_risk_tier_unreachable`. A deploy is the only moment a stored rule can go stale, so this runs once per start rather than on a schedule.
+- **In the list** -- every row from `GET /pam/rules` carries `matchRiskTierStale` (bool) and `matchRiskTierValidTiers` (`number[] | null`), which the console renders as a warning badge on the rule.
+
+A rule that merely **narrowed** is deliberately not flagged. A rule matching `execute_command` at Tier 3 still covers `file_read` and `kill_process` after the re-classification -- it lost some coverage but is not dead, and many tools legitimately span several tiers. Only a tier the selector can *never* produce is reported.
+
+Matching is not widened to "this tier or higher" on purpose: that would move the auto-approval boundary of every existing rule, which is a policy change rather than a bug fix.
 
 ### Preview a rule
 

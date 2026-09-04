@@ -2,7 +2,7 @@ import './setup';
 import { describe, it, expect } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, sites, devices, deviceGroups, deviceGroupMemberships, groupMembershipLog, contracts, contractLines } from '../../db/schema';
+import { partners, organizations, sites, devices, deviceGroups, deviceGroupMemberships, groupMembershipLog, contracts, contractLines, quotes, quoteLines } from '../../db/schema';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
 async function seed() {
@@ -24,6 +24,32 @@ async function contractWithGroupLine(f: Awaited<ReturnType<typeof seed>>, status
     const [c] = await db.insert(contracts).values({ partnerId: f.partnerId, orgId: f.orgId, name: `C-${status}`, status: status as never, intervalMonths: 1, startDate: '2026-07-01', currencyCode: 'USD' }).returning({ id: contracts.id });
     await db.insert(contractLines).values({ contractId: c!.id, orgId: f.orgId, lineType: 'per_device_group', description: 'g', unitPrice: '1.00', taxable: false, deviceGroupId: f.group.id, deviceGroupName: f.group.name });
     return c!.id;
+  });
+}
+
+async function quoteWithGroupLine(f: Awaited<ReturnType<typeof seed>>, status: string) {
+  return withSystemDbAccessContext(async () => {
+    const [q] = await db.insert(quotes).values({
+      partnerId: f.partnerId,
+      orgId: f.orgId,
+      quoteNumber: `Q-${status}-${Math.random().toString(36).slice(2, 8)}`,
+      status: status as never,
+      currencyCode: 'USD',
+    }).returning({ id: quotes.id });
+    await db.insert(quoteLines).values({
+      quoteId: q!.id,
+      orgId: f.orgId,
+      sourceType: 'manual',
+      name: 'VIP',
+      quantity: '1',
+      unitPrice: '1.00',
+      taxable: false,
+      recurrence: 'monthly',
+      contractLineType: 'per_device_group',
+      deviceGroupId: f.group.id,
+      deviceGroupName: f.group.name,
+    });
+    return q!.id;
   });
 }
 
@@ -59,5 +85,39 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
     const other = await seed();
     await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, other.orgId))).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(new DeviceGroupDeleteError('NOT_FOUND', 'x')).toBeInstanceOf(Error);
+  });
+});
+
+describe('deleteDeviceGroup — quoted groups (#3205 W05)', () => {
+  // A live quote prices this group; the operator's only fix is to edit the quote.
+  runDb.each(['draft', 'sent', 'viewed'])('refuses while a %s quote prices the group', async (status) => {
+    const f = await seed();
+    const quoteId = await quoteWithGroupLine(f, status);
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId))).rejects.toMatchObject({
+      name: 'DeviceGroupDeleteError', code: 'QUOTED_BY_QUOTES', quoteCount: 1,
+      quotes: [expect.objectContaining({ id: quoteId, status })],
+    });
+  });
+
+  // Terminal quotes are HISTORY: their lines keep the stamp when the FK nulls
+  // the id, and a converted quote's contract line is already guarded by W02.
+  runDb.each(['accepted', 'declined', 'expired', 'converted', 'superseded'])(
+    'deletes when only a %s quote references it, and the line keeps its stamp', async (status) => {
+      const f = await seed();
+      const quoteId = await quoteWithGroupLine(f, status);
+      await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
+      const [line] = await withSystemDbAccessContext(() =>
+        db.select().from(quoteLines).where(eq(quoteLines.quoteId, quoteId)));
+      expect(line).toMatchObject({ deviceGroupId: null, deviceGroupName: 'VIP' });
+    });
+
+  // The operator has to visit two different places, so the two counts are never
+  // collapsed into one number.
+  runDb('reports BOTH refusals when a contract and a quote each hold the group', async () => {
+    const f = await seed();
+    await contractWithGroupLine(f, 'active');
+    await quoteWithGroupLine(f, 'sent');
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId)))
+      .rejects.toMatchObject({ code: 'BILLED_BY_CONTRACTS', contractCount: 1, quoteCount: 1 });
   });
 });

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
@@ -17,7 +17,6 @@ import {
   sites,
   enrollmentKeys,
   organizations,
-  partners,
   users,
 } from '../../db/schema';
 import {
@@ -60,8 +59,9 @@ import {
   type RemoteAccessLaunchAvailability,
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
+import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
 import { captureException } from '../../services/sentry';
-import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
+import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
@@ -151,8 +151,13 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // detaches: it's an operator corpus that must survive device hard-delete so
 // cross-partner endpoint correlation still works after the originating
 // device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+// invoice_line_devices (#3205 W07) also detaches: the row is billing evidence
+// that must outlive the device it names — a past invoice still says which
+// devices it charged for, by hostname, after a hard delete. Its device_id FK is
+// declared ON DELETE SET NULL to match, and the table is deliberately NOT
+// append-only so this generic UPDATE loop can run as breeze_app.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -201,6 +206,17 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * story across two orgs; (b) the same (org_id, partner_id) composite FK
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
+ * org_id and device_id, but its org_id belongs to the INVOICE, which does not
+ * move. Re-stamping it would break the (invoice_line_id, org_id) and
+ * (invoice_id, org_id) composite FKs. It is additionally excluded from
+ * breeze_device_child_orgid_tables() by migration
+ * 2026-10-08-101300-device-move-exclude-billing-evidence.sql, because that
+ * trigger would otherwise restamp it mid-UPDATE and raise 23503 before any
+ * route code runs. moveOrg detaches device_id instead — an explicit,
+ * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
@@ -1271,35 +1287,45 @@ async function readPreferredProviderId(auth: AuthContext): Promise<string | null
  * path (POST) so they evaluate the exact same provider selection; see the
  * skew case called out in issue #3402.
  *
- * The partners table has partner-axis RLS, and the request scope is the
- * user's (organization or partner), not the partner whose settings we need.
- * We wrap the lookup in a system-scope DB context so the policy engine
- * doesn't filter the row out. This mirrors how remoteAccessPolicy.ts uses
- * systemAuth for the same reason.
+ * The partner read is DELEGATED to `readPartnerRemoteAccessSettings`
+ * (services/remoteAccessProviders.ts), which is the one place that owns the
+ * privilege escalation `partners`' partner-axis RLS requires. It is not
+ * merely deduplication: this function used to run its own copy of that join
+ * wrapped in a BARE `withSystemDbAccessContext`, which does not escalate
+ * inside a request. `withDbAccessContext` early-returns when a context store
+ * already exists (db/index.ts) and authMiddleware has already opened one, so
+ * the wrapper silently retained the CALLER's scope. For an
+ * organization-scoped caller `computeAccessiblePartnerIds` returns `[]`
+ * (middleware/auth.ts), so `breeze_has_partner_access(id)` denied every
+ * `partners` row, the join returned zero rows without raising, and both the
+ * `hasRemoteAccessLauncher` flag on GET /devices/:id and
+ * POST /:id/remote-access-launch degraded to 'no_provider_configured' for a
+ * tenant that had a provider configured (#3419).
+ *
+ * Do NOT reintroduce a local copy of this read, and do not "simplify" the
+ * delegate's `runOutsideDbContext` away — see partnerAxisRead.ts.
  */
 async function loadRemoteAccessLauncherContext(
   orgId: string,
   auth?: AuthContext,
 ): Promise<{ providers: InheritableRemoteAccessSettings | undefined; preferredProviderId: string | null }> {
-  const partnerSettings = await withSystemDbAccessContext(async () => {
-    const [partnerRow] = await db
-      .select({ settings: partners.settings })
-      .from(partners)
-      .innerJoin(organizations, eq(organizations.partnerId, partners.id))
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    return (partnerRow?.settings ?? {}) as PartnerSettings;
-  });
+  const providers = await readPartnerRemoteAccessSettings(orgId);
   const preferredProviderId = auth ? await readPreferredProviderId(auth) : null;
-  return { providers: partnerSettings.remoteAccessProviders, preferredProviderId };
+  return { providers, preferredProviderId };
 }
 
 /**
  * Availability-only check: would a launch URL resolve for this device? Never
  * decrypts the provider password or substitutes the template. This is the
  * ONLY launcher entry point GET /devices/:id should call.
+ *
+ * Exported for `remoteAccessLauncherPartnerVisibility.integration.test.ts`,
+ * which drives it against real Postgres from inside an org-scoped RLS
+ * context. That is the only kind of test that can catch #3419: every mocked
+ * suite hands the resolver whatever partner row it staged, with no RLS
+ * evaluation at all, so the pre-fix code passed all of them.
  */
-async function checkRemoteAccessLauncherAvailabilityForDevice(
+export async function checkRemoteAccessLauncherAvailabilityForDevice(
   orgId: string,
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,

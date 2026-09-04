@@ -84,7 +84,7 @@ export interface ContractEstimateLine {
   overage: number;
   overageMode: OverageMode | null;
   overageValue: string;
-  unresolved?: 'group_deleted';
+  unresolved?: 'group_deleted' | 'site_deleted';
 }
 export interface ContractEstimate {
   currencyCode: string;
@@ -104,6 +104,7 @@ export interface ContractLine {
   unitPrice: string;
   manualQuantity: string | null;
   siteId: string | null;
+  siteName: string | null;
   deviceRoles: string[] | null;
   /** #3205 W03: resolved server-side so the detail page needs no site lookup. */
   site: { id: string; name: string } | null;
@@ -125,6 +126,22 @@ export interface ContractBillingPeriod {
   periodStart: string;
   periodEnd: string;
   invoiceId: string | null;
+  generatedAt: string;
+  snapshotDeviceTotal: number | null;
+  uncoveredTotal: number | null;
+  flaggedTotal: number | null;
+  billedOverageTotal: number | null;
+}
+
+export interface PeriodOutcome {
+  contractBillingPeriodId: string;
+  invoiceId: string | null;
+  snapshotDeviceTotal: number;
+  uncoveredTotal: number;
+  flaggedTotal: number;
+  billedOverageTotal: number;
+  uncoveredByRole: Record<string, number>;
+  overages: OverageSummary[];
   generatedAt: string;
 }
 
@@ -205,6 +222,16 @@ export function listContractCurrencyMismatches(
 
 export function getContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`);
+}
+
+export async function fetchPeriodOutcome(
+  contractId: string,
+  periodId: string,
+): Promise<{ recorded: boolean; outcome: PeriodOutcome | null }> {
+  const res = await fetchWithAuth(`/contracts/${contractId}/periods/${periodId}/outcome`);
+  if (!res.ok) throw new Error(`Contract period outcome request failed (${res.status})`);
+  const body = (await res.json()) as { data: { recorded: boolean; outcome: PeriodOutcome | null } };
+  return body.data;
 }
 
 export function getContractEstimate(id: string): Promise<Response> {

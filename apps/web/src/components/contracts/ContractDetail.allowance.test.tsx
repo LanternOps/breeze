@@ -80,7 +80,7 @@ describe('ContractDetail — allowance block (#3205 W04)', () => {
     } }));
     renderDetail([{
       id: 'l1', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Endpoints',
-      catalogItemId: null, unitPrice: '10.00', manualQuantity: null, siteId: null, deviceRoles: null,
+      catalogItemId: null, unitPrice: '10.00', manualQuantity: null, siteId: null, siteName: null, deviceRoles: null,
       deviceGroupId: null, deviceGroupName: null, deviceGroup: null, site: null,
       includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00',
       taxable: true, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',

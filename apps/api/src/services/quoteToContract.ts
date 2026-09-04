@@ -24,6 +24,15 @@ export interface QuoteLineForContract {
   taxable: boolean;
   catalogItemId: string | null;
   termMonths: number | null;
+  contractLineType: 'per_device' | 'per_device_role' | 'per_device_group' | 'per_seat' | null;
+  deviceRoles: DeviceRole[] | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  siteId: string | null;
+  siteName: string | null;
+  includedQuantity: string | null;
+  overageMode: 'bill' | 'flag' | null;
+  overageUnitPrice: string | null;
 }
 
 export interface NewContractLineSpec {
@@ -34,6 +43,8 @@ export interface NewContractLineSpec {
   catalogItemId?: string | null;
   manualQuantity?: string | null;
   siteId?: string | null;
+  /** #4693: Task 9 populates this from the accepted quote. */
+  siteName?: string | null;
   /** #3205: required (non-empty) when lineType is per_device_role, otherwise absent. */
   deviceRoles?: DeviceRole[] | null;
   /** #3205 W02: required when lineType is per_device_group, otherwise absent. Name is stamped by the writer. */
@@ -111,22 +122,39 @@ export function buildContractSpecsFromQuote(
       notes: `Auto-created from accepted quote ${quote.quoteNumber}`,
       terms: quote.terms ?? null,
       createdBy,
-      lines: group.map((l, i) => ({
-        lineType: 'manual' as const,
-        // Contract lines carry a single label; combine the title and blurb so
-        // neither is lost when the quote line splits them.
-        description: (l.name && l.description ? `${l.name} — ${l.description}` : (l.name ?? l.description ?? '')),
-        unitPrice: l.unitPrice,
-        manualQuantity: l.quantity,
-        taxable: l.taxable,
-        // Deliberately drop the catalog link: generated invoices treat linked
-        // contract lines as live catalog pricing. The accepted quote price is
-        // frozen and must never be re-resolved later.
-        catalogItemId: null,
-        // Non-persisted correlation consumed immediately by acceptQuote Phase 5.
-        sourceQuoteLineId: l.sourceQuoteLineId,
-        sortOrder: i,
-      })),
+      lines: group.map((l, i) => {
+        const base = {
+          description: (l.name && l.description ? `${l.name} — ${l.description}` : (l.name ?? l.description ?? '')),
+          unitPrice: l.unitPrice,
+          taxable: l.taxable,
+          // Deliberately drop the catalog link: the accepted price is frozen
+          // and must never be re-resolved later. Unchanged by W05.
+          catalogItemId: null,
+          sourceQuoteLineId: l.sourceQuoteLineId,
+          sortOrder: i,
+        };
+        if (!l.contractLineType) {
+          return { ...base, lineType: 'manual' as const, manualQuantity: l.quantity };
+        }
+        // #3205 W05: the descriptor becomes the contract line's own quantity
+        // resolver. The quote's estimated `quantity` is deliberately dropped —
+        // the contract counts afresh every period, which is the point.
+        const siteScopable = l.contractLineType === 'per_device' || l.contractLineType === 'per_device_role';
+        return {
+          ...base,
+          lineType: l.contractLineType,
+          manualQuantity: null,
+          deviceRoles: l.contractLineType === 'per_device_role' ? l.deviceRoles : null,
+          deviceGroupId: l.contractLineType === 'per_device_group' ? l.deviceGroupId : null,
+          siteId: siteScopable ? l.siteId : null,
+          // #4693: the contract line inherits the string the customer SIGNED,
+          // not a fresh read of a site that may have been renamed since.
+          siteName: siteScopable ? l.siteName : null,
+          includedQuantity: l.includedQuantity,
+          overageMode: l.overageMode,
+          overageUnitPrice: l.overageUnitPrice,
+        };
+      }),
     });
   }
 

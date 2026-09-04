@@ -212,7 +212,7 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/custom-field-values` | `custom-fields:read` | Export custom field values |
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
-| `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. |
+| `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, `issueEnrollmentSecret?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. `issueEnrollmentSecret: true` additionally mints a per-key `enrollmentSecret`, returned once; omitted, the key enrolls with the global `AGENT_ENROLLMENT_SECRET`. Supports `X-Idempotency-Key`. |
 
 Provisioning is deliberately **create-only**: there are no `DELETE` routes on
 this surface, and organization deletion remains a human, MFA-gated action on

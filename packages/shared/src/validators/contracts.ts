@@ -33,12 +33,18 @@ const ALLOWANCE_LINE_TYPE_SET: ReadonlySet<string> = new Set(ALLOWANCE_LINE_TYPE
  *  note on deviceRoles below). One predicate set has to serve both. */
 const present = (v: unknown): boolean => v !== undefined && v !== null;
 
-const SITE_SCOPABLE_LINE_TYPES = new Set<ContractLineType>(['per_device', 'per_device_role']);
+export const SITE_SCOPABLE_LINE_TYPES = new Set<ContractLineType>(['per_device', 'per_device_role']);
 
 export interface ContractLineShape {
   lineType: ContractLineType;
   manualQuantity?: string | null;
   siteId?: string | null;
+  // #4693 (W05): the site's name, stamped at write. The composite site FK is
+  // ON DELETE SET NULL (site_id), so the stamp OUTLIVES the id — that is the
+  // whole mechanism: `id NULL + stamp` means DELETED, `id NULL + no stamp`
+  // means the line was never site-scoped. Display and history only; billing
+  // always reaches the live sites row by id (spec decision 22).
+  siteName?: string | null;
   deviceRoles?: readonly string[] | null;
   deviceGroupId?: string | null;
   deviceGroupName?: string | null;
@@ -47,6 +53,18 @@ export interface ContractLineShape {
   includedQuantity?: string | null;
   overageMode?: OverageMode | null;
   overageUnitPrice?: string | null;
+}
+
+/** A persisted site-scopable line whose referenced site was deleted. The
+ * composite FK clears siteId but deliberately preserves the stamped siteName. */
+export function isSiteDeletedLine(l: {
+  lineType: string;
+  siteId: string | null | undefined;
+  siteName: string | null | undefined;
+}): boolean {
+  return SITE_SCOPABLE_LINE_TYPES.has(l.lineType as ContractLineType)
+    && l.siteId === null
+    && l.siteName != null;
 }
 
 export interface ContractLineInvariantIssue {
@@ -120,6 +138,16 @@ export function contractLineInvariantIssues(
     }
     if (isGroupLine !== present(l.deviceGroupName)) {
       issues.push({ path: 'deviceGroupName', message: 'deviceGroupName is required on per_device_group lines and not allowed on other line types' });
+    }
+    // #4693: a stored site-scoped line always carries its stamp. `create`
+    // ignores both rules because contractLineInputSchema has no siteName field —
+    // the writer resolves it from the site row, the same asymmetry
+    // deviceGroupName already has.
+    if (present(l.siteId) && SITE_SCOPABLE_LINE_TYPES.has(l.lineType) && !present(l.siteName)) {
+      issues.push({ path: 'siteName', message: 'siteName must be stamped alongside siteId' });
+    }
+    if (present(l.siteName) && !SITE_SCOPABLE_LINE_TYPES.has(l.lineType)) {
+      issues.push({ path: 'siteName', message: 'siteName is only valid on per_device and per_device_role lines' });
     }
   }
 
@@ -261,6 +289,7 @@ export interface PersistedContractLine extends ContractLineShape {
   catalogItemId: string | null;
   manualQuantity: string | null;
   siteId: string | null;
+  siteName: string | null;
   deviceRoles: readonly string[] | null;
   deviceGroupId: string | null;
   deviceGroupName: string | null;
@@ -304,6 +333,12 @@ export function mergeContractLinePatch(
     catalogItemId,
     manualQuantity: patch.manualQuantity ?? current.manualQuantity,
     siteId: patchHasKey(patch, 'siteId') ? (patch.siteId ?? null) : current.siteId,
+    // #4693: the stamp follows its id. Clearing siteId clears the stamp (the
+    // line is deliberately org-wide now, NOT "site deleted"); re-pointing keeps
+    // the old stamp so the invariants pass, and the service re-stamps from the
+    // resolved site afterwards — deviceGroupName's rule, applied to sites.
+    // Never read from the patch: siteName is not a patch field.
+    siteName: patchHasKey(patch, 'siteId') ? (patch.siteId ? current.siteName : null) : current.siteName,
     deviceRoles: patch.deviceRoles ?? current.deviceRoles,
     deviceGroupId: patch.deviceGroupId ?? current.deviceGroupId,
     deviceGroupName: current.deviceGroupName,

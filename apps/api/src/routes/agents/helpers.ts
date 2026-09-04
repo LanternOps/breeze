@@ -1920,13 +1920,65 @@ export async function buildEventLogConfigUpdate(deviceId: string): Promise<{
 }
 
 /**
- * Org-level retention lookup for the retention worker.
- * Returns the retention days from the highest-priority org-level event_log policy,
- * or 30 days if none is configured.
+ * Org-scoped retention lookup for the event-log retention worker.
+ *
+ * Resolves the winning event_log policy for an org across BOTH assignment levels
+ * that can reach it — its own `level='organization'` assignment and its
+ * partner's `level='partner'` assignment — with the closer (org) level winning,
+ * matching `resolveDeviceEventLogSettings`'s precedence. Falls back to
+ * `EVENT_LOG_DEFAULTS.retentionDays` when no active policy applies.
+ *
+ * Before #3963 this filtered on `level='organization'` alone, so an MSP that set
+ * fleet-wide retention with one partner-wide policy silently got the 30-day
+ * default on every org — no error, no log line, because a partner-wide row is
+ * `org_id NULL` and an org-axis-only predicate returns zero rows rather than
+ * failing (CLAUDE.md, "Partner-Wide First"). Same shape as #3954/#3962.
+ *
+ * Two axes are in play and both had to be fixed:
+ *  - ASSIGNMENT: `config_policy_assignments.targetId` is polymorphic, so a
+ *    `level='partner'` row targets `partners.id` and can never equal an org id.
+ *  - OWNERSHIP: a partner-wide policy carries `org_id NULL` + `partner_id`, so
+ *    `policyOwnershipCondition` (#2930) is needed to admit it.
+ *
+ * RLS: the caller must be able to see partner-owned rows. Under a system context
+ * every branch short-circuits true; under an org-scoped context the
+ * `configuration_policies_partner_wide_select` branch (#4673 W01) grants it, but
+ * only when the context carries `currentPartnerId`.
  */
 export async function getOrgEventLogRetentionDays(orgId: string): Promise<number> {
-  const [row] = await db
-    .select({ retentionDays: configPolicyEventLogSettings.retentionDays })
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  // Not reachable by the schema (`organizations.partner_id` is NOT NULL and the
+  // caller read this org id out of `organizations` moments earlier), so an empty
+  // result means the invariant broke. Say it out loud: falling through quietly
+  // would silently resolve org-only — the exact #3963 failure, one join upstream
+  // — and this decides how long a customer's event logs are kept.
+  if (!org) {
+    console.error(
+      `[eventlog] organizations row missing for org ${orgId}; partner-wide retention policies cannot apply, falling back to org-level resolution`
+    );
+    captureException(new Error(`eventLogRetention: organizations row missing for org ${orgId}`));
+  }
+
+  const targetConditions = [
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, orgId))!,
+  ];
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
+
+  const rows = await db
+    .select({
+      level: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      retentionDays: configPolicyEventLogSettings.retentionDays,
+    })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
     .innerJoin(configPolicyFeatureLinks, and(
@@ -1935,14 +1987,24 @@ export async function getOrgEventLogRetentionDays(orgId: string): Promise<number
     ))
     .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
     .where(and(
-      eq(configPolicyAssignments.level, 'organization'),
-      eq(configPolicyAssignments.targetId, orgId),
       eq(configurationPolicies.status, 'active'),
-    ))
-    .orderBy(configPolicyAssignments.priority)
-    .limit(1);
+      policyOwnershipCondition({ orgId, partnerId: org?.partnerId ?? null }),
+      or(...targetConditions),
+    ));
 
-  return row?.retentionDays ?? 30;
+  if (rows.length === 0) return EVENT_LOG_DEFAULTS.retentionDays;
+
+  // Same precedence as resolveDeviceEventLogSettings: level priority DESC
+  // (organization beats partner), then assignment priority ASC — which is what
+  // the previous single-level `.orderBy(priority).limit(1)` did, so the
+  // org-only case is unchanged.
+  rows.sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+
+  return rows[0]!.retentionDays;
 }
 
 // ============================================
@@ -2060,8 +2122,14 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     ))
     .orderBy(configPolicyMonitoringWatches.sortOrder);
 
-  if (watches.length === 0) return null;
-
+  // A winning policy row with zero enabled watches is a valid resolution — it
+  // means "clear whatever watches were previously delivered", not "no policy
+  // matched" (that case already returned null above at the empty-rows check).
+  // Collapsing both to null used to make heartbeat.ts omit monitoring_settings
+  // from the payload, so the agent (which handles an empty array fine — see
+  // agent/internal/monitoring/monitor.go ApplyConfig) could never be told to
+  // stop watching something it was configured to watch on a prior heartbeat
+  // (#2949).
   return {
     check_interval_seconds: winner.checkIntervalSeconds,
     watches: watches.map((w) => {

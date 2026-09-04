@@ -590,6 +590,14 @@ type Heartbeat struct {
 	untrustedReleaseVer string
 	untrustedReleaseAt  time.Time
 
+	// Cooldown state for an upgrade target whose staged binary failed macOS
+	// code-signature verification (updater.ErrCodeSignatureInvalid). Same
+	// shape and rationale as the untrustedRelease trio above — terminal for
+	// that version, recoverable once a good artifact is published. Issue #3458.
+	badSignatureMu  sync.Mutex
+	badSignatureVer string
+	badSignatureAt  time.Time
+
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
 	pamLifetimeManager          pamlifetime.Manager
@@ -6897,6 +6905,35 @@ func (h *Heartbeat) noteUntrustedRelease(targetVersion string) {
 	h.untrustedReleaseAt = time.Now()
 }
 
+// codeSignatureRetryCooldown bounds how often an upgrade target whose staged
+// binary failed macOS code-signature verification is retried. Like
+// untrustedReleaseRetryCooldown this is terminal-per-version but not permanent:
+// the artifact is already checksum-verified against the signed manifest, so
+// re-downloading it on the device can only reproduce the same failure, yet a
+// re-published (correctly signed) build must recover automatically. Without the
+// cooldown every macOS device in a fleet would re-download the same doomed
+// binary every ~60s — the exact storm #3544 fixed for untrusted releases.
+// Issue #3458.
+const codeSignatureRetryCooldown = 30 * time.Minute
+
+// codeSignatureBackoffActive reports whether targetVersion already failed
+// signature verification within the cooldown window. Tracked per version so a
+// NEW upgrade target is always attempted immediately.
+func (h *Heartbeat) codeSignatureBackoffActive(targetVersion string) bool {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	return h.badSignatureVer == targetVersion &&
+		time.Since(h.badSignatureAt) < codeSignatureRetryCooldown
+}
+
+// noteCodeSignatureFailure starts (or restarts) the cooldown for targetVersion.
+func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	h.badSignatureVer = targetVersion
+	h.badSignatureAt = time.Now()
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// Checked before sendUpdateStatus and before any download work: the server
@@ -6906,6 +6943,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// refuse again.
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+	// Same reason as above: the server re-sends the same upgradeTo every
+	// heartbeat, so without this gate a version whose binary cannot pass
+	// macOS code-signature verification is re-downloaded in full every cycle.
+	if h.codeSignatureBackoffActive(targetVersion) {
+		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
 		return
 	}
@@ -7024,6 +7069,20 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"targetVersion", targetVersion,
 				"error", err.Error(),
 				"retryAfter", untrustedReleaseRetryCooldown.String())
+			return
+		}
+		// macOS refused to install the staged binary because it fails
+		// `codesign --verify`. The installed binary was never touched (the
+		// gate runs before any write), so the device keeps running the build
+		// its TCC grants are keyed to. Terminal for this target until a
+		// correctly signed artifact is published, so back off rather than
+		// re-download it every heartbeat. Issue #3458.
+		if errors.Is(err, updater.ErrCodeSignatureInvalid) {
+			h.noteCodeSignatureFailure(targetVersion)
+			log.Error("auto-update blocked: the binary published for this version fails macOS code signature verification — republish a Developer ID signed, notarized build; the agent is still running its previous, correctly signed binary",
+				"targetVersion", targetVersion,
+				"error", err.Error(),
+				"retryAfter", codeSignatureRetryCooldown.String())
 			return
 		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a

@@ -265,6 +265,11 @@ export default function DeviceEventLogViewer({
     page: 1,
     limit: 50,
     total: 0,
+    // Stop-gap for #4834: past FEED_TOTAL_CAP (10,000) matching rows the API
+    // stops counting and reports a lower bound instead of an exact total.
+    // This view always sends withTotal=true, so the field is always present
+    // on a real response.
+    totalIsLowerBound: false,
   });
 
   const effectiveTimezone =
@@ -335,6 +340,28 @@ export default function DeviceEventLogViewer({
     Math.ceil(pagination.total / pagination.limit),
   );
 
+  // #4834: past FEED_TOTAL_CAP the API clamps `total` and sets
+  // totalIsLowerBound, so render "10,000+" instead of a number that looks
+  // precise but isn't.
+  const formattedTotal = pagination.totalIsLowerBound
+    ? t("deviceEventLogViewer.totalAtLeast", {
+        count: formatNumber(pagination.total),
+      })
+    : formatNumber(pagination.total);
+
+  // A page is short (fewer than `limit` rows) only when it is genuinely the
+  // last one — the API always fills a page to `limit` until the underlying
+  // result set runs out (mergeFeedPage slices a top-N union). That holds
+  // whether or not a total was even requested, so it's a more reliable "is
+  // there more" signal than comparing `page` to `totalPages`, which is
+  // derived from a total that's clamped past FEED_TOTAL_CAP (#4834) — a
+  // page<totalPages check would misfire exactly when the true count lands on
+  // a page-size boundary above the cap (e.g. true total 10,050 with a 50-row
+  // page: the last full page still reports totalIsLowerBound, so Next must
+  // stay enabled there and only disable once the following, empty page comes
+  // back).
+  const canGoNext = activities.length === pagination.limit;
+
   if (error) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -362,8 +389,11 @@ export default function DeviceEventLogViewer({
               {t("deviceEventLogViewer.activities")}
             </h3>
             {!loading && (
-              <span className="ml-1 text-sm text-muted-foreground">
-                ({formatNumber(pagination.total)}{" "}
+              <span
+                className="ml-1 text-sm text-muted-foreground"
+                data-testid="event-log-total"
+              >
+                ({formattedTotal}{" "}
                 {t("deviceEventLogViewer.total")}{" "}
               </span>
             )}
@@ -693,12 +723,26 @@ export default function DeviceEventLogViewer({
         {/* Pagination */}
         {!loading && pagination.total > pagination.limit && (
           <div className="flex items-center justify-between border-t px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              {t("deviceEventLogViewer.showing")}{" "}
-              {(page - 1) * pagination.limit + 1}
-              {t("deviceEventLogViewer.text")}
-              {Math.min(page * pagination.limit, pagination.total)}{" "}
-              {t("deviceEventLogViewer.of")} {formatNumber(pagination.total)}
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="event-log-pagination-status"
+            >
+              {/* Past FEED_TOTAL_CAP (#4834) the true total is unknown, so
+                  paging can overshoot the real end by one page — that page
+                  comes back empty. Compute the range from the rows actually
+                  returned rather than from `limit`, or the trailing page
+                  renders an inverted "10051–10050" range. */}
+              {activities.length === 0 ? (
+                t("deviceEventLogViewer.noMoreActivity")
+              ) : (
+                <>
+                  {t("deviceEventLogViewer.showing")}{" "}
+                  {(page - 1) * pagination.limit + 1}
+                  {t("deviceEventLogViewer.text")}
+                  {(page - 1) * pagination.limit + activities.length}{" "}
+                  {t("deviceEventLogViewer.of")} {formattedTotal}
+                </>
+              )}
             </p>
             <div className="flex items-center gap-1">
               <button
@@ -710,12 +754,13 @@ export default function DeviceEventLogViewer({
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="px-2 text-xs text-muted-foreground">
-                {page} / {totalPages}
+                {page} / {Math.max(totalPages, page)}
               </span>
               <button
                 type="button"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
+                data-testid="event-log-next-page"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={!canGoNext}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-muted disabled:opacity-40"
               >
                 <ChevronRight className="h-4 w-4" />

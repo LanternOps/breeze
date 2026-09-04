@@ -664,6 +664,7 @@
     "retry": "Riprova",
     "activities": "Attività",
     "total": "in totale)",
+    "totalAtLeast": "{{count}} o più",
     "searchActivities": "Cerca attività...",
     "all": "Tutte",
     "success": "Riuscito",
@@ -683,7 +684,8 @@
     "details": "Dettagli",
     "showing": "Visualizzati",
     "text": "–",
-    "of": "di"
+    "of": "di",
+    "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Impossibile eliminare il gruppo",
     "billedByContracts": "Questo gruppo è fatturato da {{count}} contratto/i: {{names}}. Rimuovi prima le relative righe contrattuali.",
     "billedByContractsCount": "Questo gruppo è fatturato da {{count}} contratto/i. Rimuovi prima le relative righe contrattuali.",
+    "quotedByQuotes": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i: {{names}}. Rimuovi prima quelle righe di preventivo.",
+    "quotedByQuotesCount": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i. Rimuovi prima quelle righe di preventivo.",
     "failedToRunScriptOnGroups": "Impossibile eseguire lo script sui gruppi",
     "failedToApplyPolicyToGroups": "Impossibile applicare il criterio ai gruppi",
     "failedToMoveDevice": "Impossibile spostare il dispositivo",

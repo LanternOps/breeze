@@ -31,6 +31,13 @@ import { alerts } from '../../db/schema/alerts';
 import type { ActAssetPin } from './actRevalidation';
 import type { ActTarget } from './actManifest';
 
+/**
+ * Short system context for this module's own DB writes. Deliberately NOT used
+ * around the verification reads: those await a device-command round-trip, and
+ * holding a context across one pins a pooled connection idle-in-transaction
+ * (#1105/#4150). `commandQueue.executeCommandWithSystemPrecheck` owns the
+ * context those reads actually need.
+ */
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -110,11 +117,16 @@ async function verifyServiceRunning(
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
-  const { executeCommand } = await getCommandQueue();
-  const result = await inSystemDbContext(() =>
-    executeCommand(run.deviceId, 'list_services', { search: target.serviceName }, {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  // NO DB context held across this call (#4150): it is a device round-trip
+  // bounded at VERIFY_READ_TIMEOUT_MS, and `executeCommandWithSystemPrecheck`
+  // opens the system context its own RLS-gated precheck needs and closes it
+  // before the wait. Wrapping this in `inSystemDbContext` — as it used to be —
+  // pinned a pooled connection idle-in-transaction for the whole read (#1105).
+  const result = await executeCommandWithSystemPrecheck(
+    run.deviceId, 'list_services', { search: target.serviceName }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
-    }));
+    });
 
   if (result.status !== 'completed') {
     return { verification: 'inconclusive', detail: `service status read did not complete (${result.status})` };
@@ -137,11 +149,12 @@ async function verifyProcessAbsent(
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
-  const { executeCommand } = await getCommandQueue();
-  const result = await inSystemDbContext(() =>
-    executeCommand(run.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  // No DB context held across the round-trip — see `verifyServiceRunning`.
+  const result = await executeCommandWithSystemPrecheck(
+    run.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
-    }));
+    });
 
   if (result.status !== 'completed') {
     return { verification: 'inconclusive', detail: `process list read did not complete (${result.status})` };
