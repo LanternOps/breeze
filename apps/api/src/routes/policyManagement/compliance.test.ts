@@ -160,6 +160,33 @@ describe('GET /policies/compliance/summary site isolation (#4880)', () => {
     expect(conditions.get('policies')!.params).toContain(ORG);
   });
 
+  it('counts a feature link once per config policy, not once per compliance rule', async () => {
+    query('policies', []);
+    query('policyCount', [{ total: 0, enabled: 0 }]);
+    query('configCount', [{ total: 1, active: 1 }]);
+    query('enforcement', []);
+    const rule = {
+      configPolicyId: CONFIG, configPolicyName: 'Config', featureLinkId: LINK,
+      complianceRuleName: 'Rule', enforcementLevel: 'monitor',
+    };
+    query('rules', [
+      { ...rule, complianceRuleId: POLICY },
+      { ...rule, complianceRuleId: DEVICE, enforcementLevel: 'enforce' },
+      { ...rule, complianceRuleId: SITE, enforcementLevel: 'warn' },
+    ]);
+    query('configTotals', [{ configPolicyId: LINK, status: 'non_compliant', count: 1 }]);
+    query('configDevices', []);
+    const response = await request();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.policies).toHaveLength(1);
+    expect(body.policies[0]).toMatchObject({
+      policyId: CONFIG, enforcementLevel: 'enforce',
+      compliance: { total: 1, nonCompliant: 1 },
+    });
+    expect(body.overall).toEqual({ total: 1, compliant: 0, nonCompliant: 1, unknown: 0 });
+  });
+
   it('preserves unrestricted compliance reads', async () => {
     prepare();
     const response = await request();

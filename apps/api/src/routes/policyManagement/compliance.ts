@@ -283,36 +283,41 @@ complianceRoutes.get(
       compliance: { total: number; compliant: number; nonCompliant: number; unknown: number };
     }>();
 
+    const enforcementRank = { monitor: 0, warn: 1, enforce: 2 } as Record<string, number>;
+    const stricter = (a: string, b: string) =>
+      (enforcementRank[b] ?? 0) > (enforcementRank[a] ?? 0) ? b : a;
+
     for (const [featureLinkId, ruleInfos] of configRuleInfoMap.entries()) {
+      const first = ruleInfos[0];
+      if (!first) continue;
       const featureLinkCompliance = configComplianceResult.byFeatureLink.get(featureLinkId)
         ?? buildComplianceSummary([]);
+      // Compliance rows are keyed by feature link, and every rule under a link
+      // shares its config policy, so the link's totals are added exactly once.
+      // Rules only contribute their enforcement level (strictest wins).
+      const linkEnforcement = ruleInfos
+        .map((rule) => rule.enforcementLevel)
+        .reduce(stricter, 'monitor');
 
-      for (const ruleInfo of ruleInfos) {
-        const existing = configPolicyGrouped.get(ruleInfo.configPolicyId);
-        if (existing) {
-          existing.compliance.total += featureLinkCompliance.total;
-          existing.compliance.compliant += featureLinkCompliance.compliant;
-          existing.compliance.nonCompliant += featureLinkCompliance.nonCompliant;
-          existing.compliance.unknown += featureLinkCompliance.unknown;
-          // Use the strictest enforcement level
-          if (ruleInfo.enforcementLevel === 'enforce') {
-            existing.enforcementLevel = 'enforce';
-          } else if (ruleInfo.enforcementLevel === 'warn' && existing.enforcementLevel !== 'enforce') {
-            existing.enforcementLevel = 'warn';
-          }
-        } else {
-          configPolicyGrouped.set(ruleInfo.configPolicyId, {
-            configPolicyId: ruleInfo.configPolicyId,
-            configPolicyName: ruleInfo.configPolicyName,
-            enforcementLevel: ruleInfo.enforcementLevel,
-            compliance: {
-              total: featureLinkCompliance.total,
-              compliant: featureLinkCompliance.compliant,
-              nonCompliant: featureLinkCompliance.nonCompliant,
-              unknown: featureLinkCompliance.unknown,
-            },
-          });
-        }
+      const existing = configPolicyGrouped.get(first.configPolicyId);
+      if (existing) {
+        existing.compliance.total += featureLinkCompliance.total;
+        existing.compliance.compliant += featureLinkCompliance.compliant;
+        existing.compliance.nonCompliant += featureLinkCompliance.nonCompliant;
+        existing.compliance.unknown += featureLinkCompliance.unknown;
+        existing.enforcementLevel = stricter(existing.enforcementLevel, linkEnforcement);
+      } else {
+        configPolicyGrouped.set(first.configPolicyId, {
+          configPolicyId: first.configPolicyId,
+          configPolicyName: first.configPolicyName,
+          enforcementLevel: linkEnforcement,
+          compliance: {
+            total: featureLinkCompliance.total,
+            compliant: featureLinkCompliance.compliant,
+            nonCompliant: featureLinkCompliance.nonCompliant,
+            unknown: featureLinkCompliance.unknown,
+          },
+        });
       }
     }
 
