@@ -747,4 +747,612 @@ describe('maintenance routes', () => {
       });
     });
   });
+
+  // ==========================================================================
+  // Site-scope enforcement (#3654)
+  //
+  // `allowedSiteIds` is an app-layer authz axis that Postgres RLS does NOT
+  // defend. Before this suite, every maintenance-window write gated on org +
+  // partner-wide capability only, so a technician restricted to Site A could
+  // re-time or delete a window that another site's software deployment was
+  // bound to (`softwareDeploymentScheduler.isMaintenanceWindowOpen`).
+  // ==========================================================================
+  describe('site-scope enforcement (#3654)', () => {
+    const SITE_A = '11111111-1111-4111-8111-111111111111';
+    const SITE_B = '22222222-2222-4222-8222-222222222222';
+    const DEV_A = '33333333-3333-4333-8333-333333333333';
+    const DEV_B = '44444444-4444-4444-8444-444444444444';
+    const GRP_1 = '55555555-5555-4555-8555-555555555555';
+    const UNBOUNDED_DENIED =
+      'Site-restricted users cannot manage a maintenance window that targets all devices in the organization';
+    const TARGET_DENIED = 'Access to one or more target sites denied';
+    const UNRESOLVED_DENIED =
+      'A site-restricted user must target at least one site they can access';
+    const PARTNER_WIDE_DENIED =
+      'Site-restricted users cannot manage partner-wide maintenance windows';
+
+    /**
+     * Chainable thenable that answers any Drizzle select shape used by these
+     * routes (`.from().where()`, `.innerJoin()`, `.limit()`, `.orderBy()`) with
+     * the same row batch.
+     */
+    function selectChain(rows: unknown[]): any {
+      const chain: any = Promise.resolve(rows);
+      chain.from = () => selectChain(rows);
+      chain.innerJoin = () => selectChain(rows);
+      chain.leftJoin = () => selectChain(rows);
+      chain.where = () => selectChain(rows);
+      chain.orderBy = () => selectChain(rows);
+      chain.limit = () => Promise.resolve(rows);
+      return chain;
+    }
+
+    /** Answer successive `db.select()` calls with successive row batches. */
+    function queueSelects(...batches: unknown[][]) {
+      let i = 0;
+      vi.mocked(db.select).mockImplementation(((..._a: unknown[]) =>
+        selectChain(batches[i++] ?? [])) as any);
+    }
+
+    /** Auth as an org user restricted to `siteIds` (undefined = unrestricted). */
+    function authAsSiteRestricted(siteIds: string[] | undefined) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-123',
+          token: { sub: 'user-123' },
+          canAccessOrg: (orgId: string) => orgId === 'org-123'
+        });
+        // requirePermission is mocked to a pass-through in this file, so stand
+        // in for the `c.set('permissions', ...)` it normally performs.
+        c.set('permissions', {
+          permissions: [],
+          partnerId: null,
+          orgId: 'org-123',
+          roleId: 'role-1',
+          scope: 'organization',
+          allowedSiteIds: siteIds
+        });
+        return next();
+      });
+    }
+
+    const baseWindowBody = {
+      name: 'Weekly Maintenance',
+      startTime: '2024-01-01T10:00:00.000Z',
+      endTime: '2024-01-01T12:00:00.000Z',
+      timezone: 'UTC',
+      recurrence: 'once',
+      suppressAlerts: true,
+      suppressPatches: true,
+      suppressAutomations: false
+    };
+
+    function post(body: Record<string, unknown>) {
+      return app.request('/maintenance/windows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ ...baseWindowBody, ...body })
+      });
+    }
+
+    function mockCreateSucceeds() {
+      const created = { id: 'win-new', orgId: 'org-123', name: 'Weekly Maintenance', status: 'scheduled' };
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([created]) })
+        } as any)
+        .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) } as any);
+      return created;
+    }
+
+    // ---- POST /windows ----------------------------------------------------
+
+    it('rejects a site-restricted create that targets ALL devices', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects();
+
+      const res = await post({ targetType: 'all' });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(UNBOUNDED_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a site-restricted create that names an out-of-scope site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects();
+
+      const res = await post({ targetType: 'site', siteIds: [SITE_A, SITE_B] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a site-restricted create whose devices live in an out-of-scope site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      // device lookup for the gate
+      queueSelects([{ id: DEV_B, siteId: SITE_B }]);
+
+      const res = await post({ targetType: 'device', deviceIds: [DEV_B] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a site-restricted create whose group spans the whole org (null siteId)', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([{ id: GRP_1, siteId: null }]);
+
+      const res = await post({ targetType: 'group', groupIds: [GRP_1] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a site-restricted create that resolves to no site at all', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects();
+
+      const res = await post({ targetType: 'site', siteIds: [] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(UNRESOLVED_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('allows a site-restricted create confined to an in-scope site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects();
+      mockCreateSucceeds();
+
+      const res = await post({ targetType: 'site', siteIds: [SITE_A] });
+
+      expect(res.status).toBe(201);
+      expect((await res.json()).id).toBe('win-new');
+    });
+
+    it('allows a site-restricted create whose devices are all in scope', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([{ id: DEV_A, siteId: SITE_A }]);
+      mockCreateSucceeds();
+
+      const res = await post({ targetType: 'device', deviceIds: [DEV_A] });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('leaves an unrestricted caller free to create an all-devices window', async () => {
+      authAsSiteRestricted(undefined);
+      queueSelects();
+      mockCreateSucceeds();
+
+      const res = await post({ targetType: 'all' });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('denies a site-restricted caller with an empty site allowlist', async () => {
+      // `organization_users.site_ids = '{}'` means "no sites", not "all sites".
+      authAsSiteRestricted([]);
+      queueSelects();
+
+      const res = await post({ targetType: 'site', siteIds: [SITE_A] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // ---- PATCH /windows/:id (the headline exploit) ------------------------
+
+    const siteBWindow = {
+      id: 'win-b',
+      orgId: 'org-123',
+      partnerId: null,
+      name: 'Site B patch night',
+      status: 'scheduled',
+      targetType: 'site',
+      siteIds: [SITE_B],
+      groupIds: null,
+      deviceIds: null
+    };
+    const siteAWindow = { ...siteBWindow, id: 'win-a', name: 'Site A patch night', siteIds: [SITE_A] };
+    const allWindow = { ...siteBWindow, id: 'win-all', name: 'Org-wide', targetType: 'all', siteIds: null };
+
+    it('rejects re-timing another site’s window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/windows/win-b', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ startTime: '2024-06-01T09:00:00.000Z' })
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects widening an in-scope window onto an out-of-scope site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteAWindow]);
+
+      const res = await app.request('/maintenance/windows/win-a', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ siteIds: [SITE_A, SITE_B] })
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects escalating an in-scope window to targetType all', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteAWindow]);
+
+      const res = await app.request('/maintenance/windows/win-a', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ targetType: 'all' })
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(UNBOUNDED_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows editing a window confined to the caller’s own site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteAWindow]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...siteAWindow, name: 'Renamed' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/maintenance/windows/win-a', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).name).toBe('Renamed');
+    });
+
+    // ---- DELETE / cancel --------------------------------------------------
+
+    it('rejects deleting another site’s window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/windows/win-b', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects deleting an org-wide window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([allWindow]);
+
+      const res = await app.request('/maintenance/windows/win-all', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(UNBOUNDED_DENIED);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects cancelling another site’s window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/windows/win-b/cancel', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects mutating a partner-wide window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-p', email: 'p@example.com', name: 'P' },
+          scope: 'partner',
+          partnerId: PARTNER_ID,
+          orgId: 'org-123',
+          partnerOrgAccess: 'all',
+          token: { sub: 'user-p' },
+          canAccessOrg: () => true
+        });
+        c.set('permissions', {
+          permissions: [], partnerId: PARTNER_ID, orgId: 'org-123',
+          roleId: 'role-1', scope: 'organization', allowedSiteIds: [SITE_A]
+        });
+        return next();
+      });
+      queueSelects([{ ...siteAWindow, id: 'win-pw', orgId: null, partnerId: PARTNER_ID }]);
+
+      const res = await app.request('/maintenance/windows/win-pw', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(PARTNER_WIDE_DENIED);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    // ---- occurrence mutations --------------------------------------------
+
+    const siteBOccurrence = {
+      occurrence: { id: 'occ-b', windowId: 'win-b', status: 'scheduled', overrides: {} },
+      window: siteBWindow
+    };
+
+    it('rejects re-timing an occurrence of another site’s window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBOccurrence]);
+
+      const res = await app.request('/maintenance/occurrences/occ-b', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ startTime: '2024-06-01T09:00:00.000Z' })
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects starting an occurrence of another site’s window early', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBOccurrence]);
+
+      const res = await app.request('/maintenance/occurrences/occ-b/start', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects ending an occurrence of another site’s window early', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([{ ...siteBOccurrence, occurrence: { ...siteBOccurrence.occurrence, status: 'active' } }]);
+
+      const res = await app.request('/maintenance/occurrences/occ-b/end', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // ---- reads ------------------------------------------------------------
+
+    it('hides out-of-scope windows from GET /windows but keeps org-wide ones', async () => {
+      authAsSiteRestricted([SITE_A]);
+      // 1: the window list. No group/device ids present, so no follow-up query.
+      queueSelects([siteAWindow, siteBWindow, allWindow]);
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const ids = (await res.json()).data.map((w: { id: string }) => w.id);
+      // `all` windows genuinely suppress the caller's own devices, so they stay
+      // visible (read = intersection) even though they are not mutable.
+      expect(ids).toEqual(['win-a', 'win-all']);
+    });
+
+    it('404s a single out-of-scope window on GET /windows/:id', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/windows/win-b', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('leaves the window list untouched for an unrestricted caller', async () => {
+      authAsSiteRestricted(undefined);
+      queueSelects([siteAWindow, siteBWindow, allWindow]);
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toHaveLength(3);
+    });
+
+    // ---- batched group/device resolution on the read path -----------------
+
+    it('resolves group and device targets when deciding list visibility', async () => {
+      authAsSiteRestricted([SITE_A]);
+      const groupTargeted = {
+        ...siteAWindow, id: 'win-grp', targetType: 'group',
+        siteIds: null, groupIds: [GRP_1], deviceIds: null,
+      };
+      const deviceTargeted = {
+        ...siteAWindow, id: 'win-dev', targetType: 'device',
+        siteIds: null, groupIds: null, deviceIds: [DEV_A],
+      };
+      // 1: window list. 2: batched group lookup. 3: batched device lookup.
+      queueSelects(
+        [groupTargeted, deviceTargeted],
+        [{ id: GRP_1, siteId: SITE_B }],
+        [{ id: DEV_A, siteId: SITE_A }],
+      );
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      // The group lives in Site B, the device in Site A.
+      expect((await res.json()).data.map((w: { id: string }) => w.id)).toEqual(['win-dev']);
+    });
+
+    // ---- redaction of a window that spans beyond the caller ---------------
+
+    it('narrows a spanning window’s target arrays to the caller’s own sites', async () => {
+      authAsSiteRestricted([SITE_A]);
+      const spanning = { ...siteAWindow, id: 'win-span', siteIds: [SITE_A, SITE_B] };
+      queueSelects([spanning], []);
+
+      const res = await app.request('/maintenance/windows/win-span', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Visible (it really does suppress the caller's own fleet) but Site B's
+      // id must not come back with it.
+      expect(body.siteIds).toEqual([SITE_A]);
+      expect(JSON.stringify(body)).not.toContain(SITE_B);
+      // targetType is NOT rewritten — the window is not pretended to be theirs.
+      expect(body.targetType).toBe('site');
+    });
+
+    it('leaves a spanning window intact for an unrestricted caller', async () => {
+      authAsSiteRestricted(undefined);
+      queueSelects([{ ...siteAWindow, id: 'win-span', siteIds: [SITE_A, SITE_B] }], []);
+
+      const res = await app.request('/maintenance/windows/win-span', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect((await res.json()).siteIds).toEqual([SITE_A, SITE_B]);
+    });
+
+    // ---- siteless DEVICE (the group variant is covered above) -------------
+
+    it('rejects a site-restricted create whose device carries no site', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([{ id: DEV_A, siteId: null }]);
+
+      const res = await post({ targetType: 'device', deviceIds: [DEV_A] });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(TARGET_DENIED);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('ignores a stale target id as long as one in-scope site remains', async () => {
+      authAsSiteRestricted([SITE_A]);
+      // DEV_B resolves to no row (decommissioned): unreachable by the matcher,
+      // so it must not lock the caller out of their own window.
+      queueSelects([{ id: DEV_A, siteId: SITE_A }]);
+      mockCreateSucceeds();
+
+      const res = await post({ targetType: 'device', deviceIds: [DEV_A, DEV_B] });
+
+      expect(res.status).toBe(201);
+    });
+
+    // ---- the remaining gated read routes ----------------------------------
+
+    it('404s occurrences of an out-of-scope window', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/windows/win-b/occurrences', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(404);
+      // The occurrence query must never run — it would disclose the window.
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('excludes out-of-scope windows from the occurrence calendar', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/occurrences', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+      // Window set narrowed to empty, so the occurrence query is skipped.
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('excludes out-of-scope windows from GET /active', async () => {
+      authAsSiteRestricted([SITE_A]);
+      queueSelects([siteBWindow]);
+
+      const res = await app.request('/maintenance/active', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    // ---- unrestricted-caller regression on a WRITE route ------------------
+
+    it('leaves an unrestricted caller free to edit any window', async () => {
+      authAsSiteRestricted(undefined);
+      queueSelects([siteBWindow]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...siteBWindow, name: 'Renamed' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/maintenance/windows/win-b', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+  });
 });
