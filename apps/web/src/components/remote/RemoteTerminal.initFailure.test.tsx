@@ -17,18 +17,23 @@ import { fetchWithAuth } from '@/stores/auth';
 //     so their `new Terminal(...)` lands during a later test. Sharing that file
 //     would let a leaked construction consume this file's injected failure.
 //
-// What is reproduced: Vite compiles the component's dynamic CSS import into a
+// What is reproduced: before the fix the component did a bare
+// `await import('@xterm/xterm/css/xterm.css')`, which Vite compiles into a
 // `<link rel=stylesheet>` injection that resolves on `load` and REJECTS on
 // `error`. After an upgrade a stale hashed asset URL comes back as the SPA's
-// index.html, which `nosniff` refuses to treat as a stylesheet — so the
-// promise rejects on a cold mount. Before the fix that single rejection
-// unwound the whole of initTerminal: no terminal instance, no `terminalReady`,
-// therefore no auto-connect and — because the retry overlay is gated on
+// index.html, which `nosniff` refuses to treat as a stylesheet, so the promise
+// rejected on a cold mount. That single rejection unwound the whole of
+// initTerminal: no terminal instance, no `terminalReady`, therefore no
+// auto-connect and — because the retry overlay is gated on
 // `autoConnectAttempted`, which only the auto-connect sets — nothing to click.
 // The pane sat on "Disconnected" until a tab round-trip remounted it.
+//
+// The stylesheet is now inlined into the component's own chunk (`?inline`), so
+// that `<link>` no longer exists. These cases hold the line behind that: the
+// module still has to be unable to take the session down with it.
 const cssImport = { evaluations: 0, threw: false };
 
-vi.mock('@xterm/xterm/css/xterm.css', () => {
+vi.mock('@xterm/xterm/css/xterm.css?inline', () => {
   cssImport.evaluations += 1;
   // Only the first evaluation fails, so the stylesheet-specific case below can
   // prove the rejection reached the component. Vitest caches the outcome
@@ -39,7 +44,7 @@ vi.mock('@xterm/xterm/css/xterm.css', () => {
       "Unable to preload CSS for /assets/xterm-abc123.css (MIME type 'text/html' is not a supported stylesheet MIME type)",
     );
   }
-  return {};
+  return { default: '.xterm { position: relative; }' };
 });
 
 const terminalLifecycle = {
@@ -213,9 +218,44 @@ describe('RemoteTerminal init failure is visible and retryable in place (#4152)'
     // Init succeeding hands off to the ordinary auto-connect path.
     await waitFor(() => expect(sessionPostCount()).toBe(1), { timeout: 3000 });
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 3000 });
+    // And the 'failed' status set by the dead init must not outlive it —
+    // otherwise the overlay would sit on top of a live session.
+    await waitFor(
+      () => expect(screen.queryByTestId('terminal-disconnect-overlay')).not.toBeInTheDocument(),
+      { timeout: 3000 },
+    );
   });
 
-  it('reports the failure to the caller through onError', async () => {
+  it('stays retryable when the retry itself fails', async () => {
+    // The guard that makes a retry possible at all is `initStartedRef` being
+    // released in the catch. It has to be released on EVERY failure, not just
+    // the first, or a second bad attempt wedges the pane exactly as #4152 did.
+    terminalLifecycle.failNextConstructs = 2;
+
+    render(<RemoteTerminal deviceId="device-1" deviceHostname="host-1" />);
+    await screen.findByTestId('terminal-disconnect-overlay', undefined, { timeout: 3000 });
+
+    await userEvent.click(screen.getByTestId('terminal-overlay-reconnect'));
+    await waitFor(() => expect(terminalLifecycle.constructCount).toBe(2), { timeout: 3000 });
+
+    // Still offering a way out, and still no session for a terminal that does
+    // not exist.
+    expect(await screen.findByTestId('terminal-disconnect-overlay', undefined, { timeout: 3000 })).
+      toBeInTheDocument();
+    expect(sessionPostCount()).toBe(0);
+
+    // Third attempt succeeds, proving the guard never latched.
+    await userEvent.click(screen.getByTestId('terminal-overlay-reconnect'));
+    await waitFor(() => expect(terminalLifecycle.constructCount).toBe(3), { timeout: 3000 });
+    await waitFor(() => expect(sessionPostCount()).toBe(1), { timeout: 3000 });
+  });
+
+  // NOT new coverage for #4152 — the catch has always called onError. This
+  // pins that contract because RemoteToolsPage now depends on it to raise a
+  // toast (see RemoteToolsPage.test.tsx); before, the one caller that mattered
+  // passed no handler, so the call had no observable effect and could have
+  // been dropped by a refactor without anything failing.
+  it('reports the failure to the caller through onError (pre-existing contract)', async () => {
     terminalLifecycle.failNextConstructs = 1;
     const onError = vi.fn();
 

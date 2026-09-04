@@ -60,6 +60,12 @@ export type RemoteTerminalProps = {
 // server's 40s deadline, and SERVER_SILENCE_TIMEOUT_MS must stay above the
 // server's ping interval — otherwise healthy idle sessions get killed on
 // whichever side drifted.
+// Identifies the single <style> element carrying xterm's stylesheet. The CSS
+// is inlined into this component's chunk (see initTerminal), so it has to be
+// attached to the document exactly once no matter how many times the terminal
+// mounts.
+const XTERM_STYLE_ELEMENT_ID = 'xterm-css';
+
 const CLIENT_PING_INTERVAL_MS = 20_000;
 const SERVER_SILENCE_TIMEOUT_MS = 45_000;
 const LIVENESS_CHECK_INTERVAL_MS = 5_000;
@@ -151,20 +157,46 @@ export default function RemoteTerminal({
       const { FitAddon } = await import('@xterm/addon-fit');
       const { WebLinksAddon } = await import('@xterm/addon-web-links');
 
-      // The stylesheet is cosmetic, so its load must never be able to fail
-      // the terminal (#4152). Vite compiles this dynamic import into a
-      // `<link rel=stylesheet>` injection that resolves on `load` and REJECTS
-      // on `error` — and it does reject in the field: after an upgrade a stale
-      // hashed asset URL comes back as the SPA's index.html, which `nosniff`
-      // refuses to treat as CSS. Awaited bare, that one rejection unwound the
-      // whole of init, leaving a permanently dead pane. Degrade to an
-      // unstyled terminal instead.
-      await import('@xterm/xterm/css/xterm.css').catch((cssError) => {
+      // xterm's stylesheet ships INSIDE this lazy chunk (`?inline` hands us
+      // the CSS as a string) instead of as a separate hashed .css asset, and
+      // that is the actual fix for #4152.
+      //
+      // A plain `import '@xterm/xterm/css/xterm.css'` compiles to Vite's
+      // preload helper injecting a `<link rel=stylesheet>` and awaiting its
+      // `load` event — a promise that REJECTS on `error`. It does reject in
+      // the field: after an upgrade a stale hashed URL returns the SPA's
+      // index.html, which `nosniff` refuses to treat as CSS. Awaited bare,
+      // that lone rejection unwound the rest of init and left a permanently
+      // dead pane. Worse, the helper memoises attempted deps in a
+      // module-level `seen` map, so the remount that appeared to "fix" it
+      // (a tab round-trip) merely SKIPPED the stylesheet — the terminal came
+      // back styleless, and xterm.css is not decorative: it positions
+      // `.xterm-viewport`, absolutely stacks the `.xterm-screen` canvases and
+      // hides `.xterm-helper-textarea`, the offscreen textarea that captures
+      // keyboard/IME input.
+      //
+      // Inlining removes the whole failure class: there is no second asset to
+      // go stale, and the CSS cannot arrive without the JS that needs it. The
+      // catch is defence in depth only — a styling problem must never again be
+      // able to take the session down with it.
+      try {
+        const { default: xtermCss } = await import('@xterm/xterm/css/xterm.css?inline');
+        // Idempotent: remounts (every Remote Tools tab switch is one) and the
+        // second terminal on a split view must not stack duplicate <style>
+        // elements. Injecting a <style> is CSP-legal here — apps/web already
+        // carries style-src 'unsafe-inline' for xterm's runtime inline styles.
+        if (xtermCss && !document.getElementById(XTERM_STYLE_ELEMENT_ID)) {
+          const style = document.createElement('style');
+          style.id = XTERM_STYLE_ELEMENT_ID;
+          style.textContent = xtermCss;
+          document.head.appendChild(style);
+        }
+      } catch (cssError) {
         console.warn(
           'Terminal stylesheet failed to load; continuing with an unstyled terminal:',
           cssError
         );
-      });
+      }
 
       const fitAddon = new FitAddon();
       const webLinksAddon = new WebLinksAddon();
