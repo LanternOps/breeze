@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, History } from 'lucide-react';
+import { ArrowLeft, History, Copy } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
 import { mappingToRows } from './ScriptFormSchema';
 import { fetchWithAuth } from '../../stores/auth';
@@ -9,6 +9,8 @@ import { ScopeBadge } from '../shared/ScopeBadge';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims } from '@/lib/authScope';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { cloneScript } from '@/lib/api/scripts';
 import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -32,6 +34,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   const [loading, setLoading] = useState(!!scriptId);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
 
   const isNew = !scriptId;
   const { organizations } = useOrgStore();
@@ -163,6 +166,25 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     void navigateTo('/scripts');
   };
 
+  // #4887: duplicate the script being edited and land on the new copy — the
+  // point of duplicating is to edit it now, not to return to the list.
+  const handleDuplicate = async () => {
+    if (!scriptId || duplicating) return;
+    setDuplicating(true);
+    try {
+      const cloned = await runAction<{ id: string }>({
+        request: () => cloneScript(scriptId),
+        errorFallback: t('scriptEditPage.errors.duplicate'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+    } catch (err) {
+      handleActionError(err, t('scriptEditPage.errors.duplicate'));
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -224,13 +246,24 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           )}
         </div>
         {!isNew && (
-          <a
-            href={`/scripts/${scriptId}/executions`}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
-          >
-            <History className="h-4 w-4" />
-            {t('scriptEditPage.actions.executionHistory')}
-          </a>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleDuplicate()}
+              disabled={duplicating}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Copy className="h-4 w-4" />
+              {t('scriptEditPage.actions.duplicate')}
+            </button>
+            <a
+              href={`/scripts/${scriptId}/executions`}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            >
+              <History className="h-4 w-4" />
+              {t('scriptEditPage.actions.executionHistory')}
+            </a>
+          </div>
         )}
       </div>
 

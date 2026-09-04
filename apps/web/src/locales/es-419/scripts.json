@@ -804,7 +804,8 @@
     "errors": {
       "fetch": "No se pudo recuperar el script",
       "generic": "Se produjo un error",
-      "save": "No se pudo guardar el script"
+      "save": "No se pudo guardar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "created": "Script creado",
@@ -814,6 +815,7 @@
     "actions": {
       "backToScripts": "Volver a scripts",
       "executionHistory": "Historial de ejecución",
+      "duplicate": "Duplicar",
       "create": "Crear script",
       "saveChanges": "Guardar cambios"
     },
@@ -1124,6 +1126,7 @@
     "actions": {
       "runTitle": "Ejecutar script",
       "editTitle": "Editar script",
+      "duplicateTitle": "Duplicar script",
       "deleteTitle": "Eliminar script"
     },
     "pagination": {
@@ -1244,7 +1247,8 @@
       "delete": "No se pudo eliminar el script",
       "deleteTryAgain": "No se pudo eliminar el script. Inténtelo de nuevo.",
       "alreadyInLibrary": "\"{{name}}\" ya está en su biblioteca",
-      "import": "No se pudo importar el script"
+      "import": "No se pudo importar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "deleting": "Eliminando \"{{name}}\"...",

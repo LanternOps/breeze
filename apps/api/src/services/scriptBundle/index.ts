@@ -336,7 +336,7 @@ export type BundleTargetOptions = {
 
 type ScriptRow = typeof scripts.$inferSelect;
 
-function canReadScript(auth: BundleAuth, script: ScriptRow): boolean {
+export function canReadScript(auth: BundleAuth, script: ScriptRow): boolean {
   if (auth.scope === 'system') return true;
   if (script.isSystem) return true;
   if (script.orgId && auth.canAccessOrg(script.orgId)) return true;
@@ -585,7 +585,7 @@ export async function previewBundle(
 }
 
 /** Resolve tag names to ids within the target scope, creating what's missing. */
-async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<string[]> {
+export async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<string[]> {
   if (names.length === 0) return [];
   const unique = [...new Set(names)];
 
@@ -611,7 +611,7 @@ async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<
   return unique.map((n) => byName.get(n)).filter((id): id is string => typeof id === 'string');
 }
 
-async function linkTags(scriptId: string, tagIds: string[], isExistingScript: boolean) {
+export async function linkTags(scriptId: string, tagIds: string[], isExistingScript: boolean) {
   if (tagIds.length === 0) return;
   let toLink = tagIds;
   if (isExistingScript) {

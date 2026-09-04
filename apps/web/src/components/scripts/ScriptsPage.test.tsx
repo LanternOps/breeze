@@ -4,11 +4,14 @@ import '@/lib/i18n';
 
 import ScriptsPage from './ScriptsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
@@ -17,13 +20,24 @@ vi.mock('../../stores/orgStore', () => ({
 }));
 
 vi.mock('./ScriptList', () => ({
-  default: ({ scripts, onRun }: { scripts: Array<{ id: string; name: string; lastRun?: string }>; onRun?: (script: { id: string; name: string; lastRun?: string }) => void }) => (
+  default: ({
+    scripts,
+    onRun,
+    onDuplicate
+  }: {
+    scripts: Array<{ id: string; name: string; lastRun?: string }>;
+    onRun?: (script: { id: string; name: string; lastRun?: string }) => void;
+    onDuplicate?: (script: { id: string; name: string; lastRun?: string }) => void;
+  }) => (
     <div>
       {scripts.map(script => (
         <div key={script.id}>
           <span data-testid={`last-run-${script.id}`}>{script.lastRun ?? 'Never'}</span>
           <button type="button" onClick={() => onRun?.(script)}>
             Run {script.name}
+          </button>
+          <button type="button" onClick={() => onDuplicate?.(script)}>
+            Duplicate {script.name}
           </button>
         </div>
       ))}
@@ -153,5 +167,58 @@ describe('ScriptsPage admission refresh', () => {
 
     await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/execute')).toBe(true));
     expect(scriptsFetchCount).toBe(1);
+  });
+});
+
+describe('ScriptsPage duplicate action (#4887)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clones the script and navigates to the new script on success', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) {
+        return makeJsonResponse({ data: [baseScript] });
+      }
+      if (url === '/orgs/sites') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/scripts/script-1/clone' && init?.method === 'POST') {
+        return makeJsonResponse({ id: 'script-2', name: 'Cleanup Temp Files (copy)' }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptsPage />);
+
+    await screen.findByText('Run Cleanup Temp Files');
+    fireEvent.click(screen.getByText('Duplicate Cleanup Temp Files'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/scripts/script-2'));
+  });
+
+  it('does not navigate when the clone request fails', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) {
+        return makeJsonResponse({ data: [baseScript] });
+      }
+      if (url === '/orgs/sites') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/scripts/script-1/clone' && init?.method === 'POST') {
+        return makeJsonResponse({ error: 'Script not found' }, false, 404);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptsPage />);
+
+    await screen.findByText('Run Cleanup Temp Files');
+    fireEvent.click(screen.getByText('Duplicate Cleanup Temp Files'));
+
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/clone')).toBe(true));
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 });
