@@ -59,7 +59,14 @@ No additional configuration needed.
 
 ## Nginx (Alternative)
 
-If you prefer nginx, here's an equivalent configuration:
+If you prefer nginx, here's an equivalent configuration.
+
+<Aside type="caution" title="The upstream ports below are not published by default">
+  The shipped `docker-compose.yml` publishes host ports for **Caddy only** (`80` and `443`). The `api` (3001), `web` (4321) and `portal` (4322) containers are reachable on the compose network but not from the host, so an nginx (or Nginx Proxy Manager) upstream of `127.0.0.1:4322` returns **502** until you either:
+
+  - **Front Caddy instead** (recommended) — point nginx at `http://127.0.0.1:80` as a single upstream with WebSocket support, and set `CADDY_SITE_ADDRESS=:80` in `.env` so Caddy stays in plain-HTTP mode behind your TLS terminator. Caddy already routes `/api/*`, `/portal/*` and the dashboard, and it is the configuration tested every release. This is the same arrangement as [Cloudflare Tunnel, Option A](/deploy/cloudflare-tunnel/).
+  - **Publish the ports** — add a `docker-compose.override.yml` with `ports:` entries for `api` (`3001:3001`), `web` (`4321:4321`) **and** `portal` (`4322:4322`), then use the per-path config below. If you publish only api and web, everything works except `/portal`, which 502s.
+</Aside>
 
 <Tabs>
   <TabItem label="nginx + certbot">
