@@ -4,23 +4,39 @@ import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
 import { prefixDevAssetUrls, shouldPrefixDevAssetUrls } from './lib/devAssetBase';
+import { loadPortalBranding } from './lib/server';
+import { portalLandingPath } from './lib/landing';
 
 // Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
 // rendered server-side for an unauthenticated visitor and only failed at the API
 // call — the 401 branch inside each page. Guarding them in the middleware keeps
 // the deep-link redirect (below) consistent across every protected route.
-const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile', '/quotes', '/invoices'];
+const protectedPrefixes = [
+  '/devices',
+  '/tickets',
+  '/assets',
+  '/profile',
+  '/quotes',
+  '/invoices',
+  '/dashboard',
+  '/security',
+  '/backups',
+  '/reports'
+];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
-
-/** Where a signed-in customer belongs. They come to read a proposal or pay a
- *  bill; `/devices` is a technician's inventory and was the old landing page. */
-const DEFAULT_LANDING = '/quotes';
 
 /** Build `/login?next=<path>` so an emailed deep link survives the auth wall. */
 function loginWithNext(pathname: string, search: string): string {
   const target = `${pathname}${search}`;
-  if (pathname === '/' || pathname === DEFAULT_LANDING) return withBase('/login');
+  if (pathname === '/') return withBase('/login');
   return withBase(`/login?next=${encodeURIComponent(target)}`);
+}
+
+/** Where a signed-in customer belongs, per their org's visibility flags. They
+ *  come to read a proposal or pay a bill; `/dashboard` only leads when the
+ *  org has explicitly turned it on (fail-closed, #4562). */
+async function authenticatedLanding(request: Request): Promise<'/dashboard' | '/quotes'> {
+  return portalLandingPath(await loadPortalBranding(request));
 }
 
 function isProtectedPath(pathname: string): boolean {
@@ -64,7 +80,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
   context.locals.cspNonce = randomBytes(16).toString('base64');
 
   if (pathname === '/') {
-    return context.redirect(withBase(hasSession ? DEFAULT_LANDING : '/login'), 302);
+    if (!hasSession) {
+      return context.redirect(withBase('/login'), 302);
+    }
+    return context.redirect(
+      withBase(await authenticatedLanding(context.request)),
+      302
+    );
   }
 
   if (isProtectedPath(pathname) && !hasSession) {
@@ -72,7 +94,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
   }
 
   if (hasSession && authOnlyPaths.has(pathname)) {
-    return context.redirect(withBase(DEFAULT_LANDING), 302);
+    return context.redirect(
+      withBase(await authenticatedLanding(context.request)),
+      302
+    );
   }
 
   const response = await next();

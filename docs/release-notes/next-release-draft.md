@@ -76,6 +76,36 @@ delete once done:
 - New contract line type **Per device role** bills a set of device roles (e.g.
   switch + router + firewall). `unknown` is never billable. Contract estimates and
   generated invoices now report how many devices no line bills, by role.
+- New contract line type **Per device group** bills the members of a device group. Dynamic groups are evaluated live at estimate and invoice time; a group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
+
+### Contract line editing (W03)
+
+**Behaviour**
+
+- Contract lines are now **editable in place** on draft and active contracts
+  (`PATCH /api/v1/contracts/:id/lines/:lineId`, and the AI `manage_contracts`
+  action `update_line`). The line keeps its id, so an already-generated draft
+  invoice stays linked to it — deleting and re-adding a line used to wedge that
+  invoice with `SOURCE_NOT_FOUND` on issue. The **line type** cannot be changed;
+  remove the line and add a new one.
+- All three line mutations now write audit events: `contract.line.added`,
+  `contract.line.updated`, `contract.line.removed` (resource type `contract`,
+  resource id the contract). The payload carries the line id, the line type, the
+  names of the changed columns and, for a price change, the old and new unit
+  price — no descriptions, site names or group names.
+
+**Self-Hosting / Upgrade Notes** — four deliberate behaviour changes, no migration:
+
+- Generated invoice lines now use deterministic `(sortOrder, createdAt, id)` ordering; lines tied on `sortOrder` may appear in a different order.
+- `DELETE /api/v1/contracts/:id/lines/:lineId` now returns **404
+  `LINE_NOT_FOUND`** for a line that does not exist (previously a silent 200),
+  and its success body is `{"data":{"ok":true}}` (previously `{}`).
+- `unitPrice`, `manualQuantity` (max 10 digits before the decimal point) and
+  `sortOrder` (max 2147483647) bounds now apply on line **create** as well as
+  update. Input that previously reached Postgres and returned a 500 is now a 400.
+- A stale or foreign `catalogItemId` when **adding** a line is now
+  `400 CATALOG_ITEM_NOT_FOUND` instead of a 500.
+
 ## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
 
 Only fold this in once the whole chain above is merged. It is one feature in
@@ -138,6 +168,26 @@ auto-suspended.
   `GET /internal/partners/:id/settled-card-charge` and
   `…/fraudulent-refund-match`; one new idempotent index on `billing_events`.
 
+## Device billing coverage and coverage-notice deep links (#3205 W06)
+
+**Self-Hosting / Upgrade Notes**
+
+- No migration, no schema change, no new env var, no feature flag.
+- New route `GET /api/v1/devices/:id/billing`, gated on **partner or system**
+  scope plus **both** `devices:read` and `contracts:read`. API keys cannot reach
+  it: there is no `contracts:read` API-key scope.
+
+**Behaviour worth naming so it is not read as a bug**
+
+- The device Overview **Billing** card needs Contracts read access and a
+  partner-scoped login; organization-scoped users do not see it, matching every
+  other contracts screen.
+- The card counts **active** contracts only, so a device covered by a *draft*
+  contract still reads "no active contract line bills this device" until the
+  contract is activated.
+- A deep link from a contract's coverage warning carries its organization, so a
+  pasted link switches the recipient's org scope to the contract's org.
+
 **Hosted rollout TODO (one-off, delete once done)**
 
 - [ ] Deploy billing first (both regions), then the API/web images.
@@ -155,3 +205,22 @@ auto-suspended.
 - [ ] Optional: set `IP_CLASSIFY_PROVIDER`/`IP_CLASSIFY_API_KEY` so
       auto-promotion can run; without them signups classify as `unknown` and
       promotion is manual only.
+
+## Contract line included quantity and overage (#3205 W04)
+
+**Contracts: included quantity and overage.** A per-device, per-device-role, per-device-group or per-seat contract line can now include a fixed quantity (for example "up to 25 devices included") and either bill the extras at a second rate or flag them for review. A billed overage becomes its own line on the invoice, directly under the line it belongs to, so the customer sees the count and the rate. A flagged overage is never invoiced silently: it shows on the contract estimate, on the result of Generate now, and in the nightly billing log.
+
+## Device-set quote lines (#3205 W05, #4693)
+
+**Billing by a device set on quotes.** A recurring quote line can now price every device, selected device roles, one device group, or active users. Breeze supplies the quantity, including zero for a new customer with nothing enrolled. The customer document labels the number as an estimate and explains that billing uses the actual count each period. Accepting the quote creates the matching auto-quantity contract line and freezes the unit price the customer accepted.
+
+Counts update when a line is added or its device-set or allowance settings are edited, or when an operator refreshes a draft. The estimate endpoint is read-only. Sending reports count drift but does not change the approved quote, and acceptance does not refresh the estimate. A device group priced by a draft, sent, or viewed quote cannot be deleted until the quote line is removed.
+
+**Site deletion now fails loudly (#4693).** From this release, deleting a site used by a site-scoped contract line makes invoice generation refuse with 409 `SITE_DELETED` instead of silently billing every device in the organization. This is intentionally louder than the old behavior. An operator who deletes a site under an active contract now gets a failed generation and a Sentry report where an inflated invoice could previously go unnoticed. Re-scope or remove the affected line before generating again.
+
+There is one accepted residual. A line whose site was deleted before this release has no recoverable site name, so it remains ambiguous and continues billing organization-wide until a technician re-scopes it. Operators who suspect an affected contract can look for a `per_device` line with no site on a contract that used to have one. The migration's `RAISE WARNING` row count records how many existing lines were protected by the site-name backfill.
+
+**Direct API and AI clients.** `PATCH /quotes/:id/lines/:lineId` now returns 400 for an unrecognized key instead of accepting the request while changing nothing.
+
+There is no feature flag and no acceptance-hash backfill. `quote_acceptances.hash_version` defaults to `1`, so every signature already on file continues to verify with the exact algorithm that produced it. New acceptances use hash version 2.
+- **Billing evidence per invoice.** Contract-generated invoices now record the exact devices behind every auto-counted line, at generation time, and each billed period records what it did *not* bill (uncovered devices by role, flagged and billed overage totals). Expand any counted line on the invoice detail to see the devices; a device deleted or moved later still appears by hostname. An optional "Billed devices" appendix can be printed on the invoice PDF -- off by default, set per partner or per draft invoice, and frozen once the invoice is issued. Invoices generated before this release have no device detail and say so; there is no backfill, because the device set was never stored to backfill from.

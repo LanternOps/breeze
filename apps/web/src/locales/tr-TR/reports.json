@@ -319,6 +319,7 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "visibleInPortal": "Müşteri portalında görünür",
       "newReport": "Yeni Rapor",
       "nextOccurrence": "Sonraki: {{next}}",
       "reportTypes": {
@@ -700,6 +701,7 @@
         "templateName": "Üç Aylık Uyumluluk Paketi",
         "value": "Değer"
       },
+      "recipients": { "contacts": "Kuruluş kişileri", "legacy": "Eski e-posta adresleri", "convert": "Kişiye dönüştür", "added": "Rapor alıcısı eklendi", "removed": "Rapor alıcısı kaldırıldı", "converted": "E-posta adresi kişiye dönüştürüldü", "updateFailed": "Rapor alıcıları güncellenemedi", "convertFailed": "Bu e-posta adresi dönüştürülemedi", "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.", "loadFailed": "Rapor alıcıları yüklenemedi" },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
       },

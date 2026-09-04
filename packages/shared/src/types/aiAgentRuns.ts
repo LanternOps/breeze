@@ -65,6 +65,15 @@ export const AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS = ['args', 'toolInput', 'toolOutput
 export const AI_AGENT_RUN_DTO_SCHEMA_VERSION = 1 as const;
 
 /**
+ * Hard ceiling on `AiAgentRunListItemDto.summaryExcerpt`, INCLUDING the
+ * single-character ellipsis the API appends when it had to truncate. Shared
+ * rather than duplicated so a consumer sizing a column (or asserting the cap)
+ * reads the same number the API enforces — see `summaryExcerpt` in
+ * `apps/api/src/services/aiAgents/runFindings.ts`.
+ */
+export const AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS = 160;
+
+/**
  * One row of `GET /ai/agents/runs` — org-wide, keyset-paginated. Deliberately
  * carries NO outcome payload (no trace, no ledger, no intents) — that is the
  * whole point of a list endpoint versus the detail one; a caller that needs
@@ -109,6 +118,43 @@ export interface AiAgentRunListItemDto {
   profile: AiAgentRunProfile;
   /** Absent until `finishRun` computes it (services/aiAgents/runLoop.ts); null for any run that hasn't reached a terminal rollup yet. */
   runVerdict: AgentRunVerdict | null;
+  /**
+   * How many things this run left for a human to look at: its sweep findings
+   * plus the tool calls it PROPOSED but could not run. A `denied` action is
+   * deliberately NOT counted — for a read-only profile that is the guardrail
+   * working as intended, logged for every mutating tool the model merely
+   * attempted, and counting it would inflate the badge with denials nobody
+   * needs to act on.
+   *
+   * Exists because `runVerdict` alone understates a run: a sweep that found
+   * six problems and was allowed to execute none of them still rolls up as
+   * `no_action`. The run DETAIL page already overrides the verdict badge off
+   * this number; without it on the list item the runs list and the agents
+   * list could not, and rendered "No action" over six unread findings.
+   *
+   * Derived by ONE helper shared with the detail route
+   * (`countFindingsToReview` / `findingsToReviewSql`,
+   * apps/api/src/services/aiAgents/runFindings.ts) so the list and the detail
+   * page can never badge the same run with different numbers. Always a
+   * number (0, never null) — a run with nothing to review is a real answer,
+   * not a missing one.
+   *
+   * Additive and always present, so it does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`: no field was removed, renamed, or
+   * changed type/semantics (see the bump rule above).
+   */
+  findingsToReview: number;
+  /**
+   * First sentence of the run's `summary`, markdown emphasis stripped and
+   * capped at `AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS` (an ellipsis is
+   * appended, within the cap, only when the cap actually truncated).
+   *
+   * `null` when the run has no summary yet (still running, or it failed
+   * before writing one) or when the summary is whitespace-only. The FULL
+   * summary is deliberately still detail-only — this is a one-line list
+   * affordance, not the narrative.
+   */
+  summaryExcerpt: string | null;
   queuedAt: string;
   finishedAt: string | null;
   costCents: number;
@@ -253,16 +299,77 @@ export interface ExposureBudgetDto {
  * `finishRun` created (`intentIds`) and which `ticket_drafts` rows it wrote
  * (`draftsWritten`). Still text/identifier-only — no `args`/`input`/`output`
  * blob, nothing a raw tool payload could carry.
+ *
+ * Issue #4467 — `draftReply`/`draftResolutionNote` (inherited below from
+ * `TicketTriageProposal`) are no longer always the proposal's own frozen
+ * text: once a `ticket_drafts` row exists for that kind (i.e. once
+ * `draftsWritten` names it), the API sources the text live from that SAME
+ * row instead, so a later edit on the ticket's "AI draft" surface can't
+ * leave this DTO showing stale content next to a `draftsWritten` entry that
+ * still points at the (now different) row. Pre-write — before a draft
+ * intent has released — there is no live row yet, so the proposal's own
+ * text is the only preview available and is used as-is. See
+ * `pickDraftText` in `services/aiAgents/runTrace.ts` for the derivation.
  */
 export interface AiAgentRunTicketProposalDto extends TicketTriageProposal {
   /** Tier-2 `manage_tickets` intent ids `finishRun` created from this
    *  proposal's `fields`/`device`/`comment` writes (act + autonomousWrites,
    *  or an inbox card — either way an intent id, never the raw args). */
   intentIds?: string[];
-  /** `ticket_drafts` rows `finishRun` wrote from `draftReply`/
-   *  `draftResolutionNote` — never the draft's own content, which lives on
-   *  the ticket UI's "AI draft" surface, not this run-trace DTO. */
+  /** `ticket_drafts` rows `finishRun` wrote — id + kind only. The row's own
+   *  `content` never appears on THESE entries (it would duplicate
+   *  `draftReply`/`draftResolutionNote` above, which is exactly the
+   *  duplication issue #4467 removed) — see this interface's own docstring
+   *  for how the two are now kept from disagreeing. */
   draftsWritten?: Array<{ kind: 'reply' | 'resolution_note'; draftId: string }>;
+  /** Follow-up to #4191/#4301 (issue #4462) — why a slot this proposal named
+   *  did NOT become a write, e.g. a field proposed below
+   *  `TICKET_TRIAGE_CONFIDENCE_FLOOR` or a device already linked. Previously
+   *  computed by `persistTicketTriage`
+   *  (services/aiAgents/ticketTriageFindings.ts) and only `console.info`'d —
+   *  never reached this DTO. `undefined` (not `[]`) when nothing was skipped,
+   *  matching `intentIds`/`draftsWritten`'s undefined-when-empty convention. */
+  skipped?: TicketTriageSkip[];
+}
+
+/**
+ * Phase 2 wave P2-4 (#4191) follow-up (#4462) — the five deterministic
+ * proposal->intent slots `persistTicketTriage` considers, and why one did not
+ * become a write. Shared between the API's internal
+ * `AgentRunOutcome.ticketTriageSkipped` (services/aiAgents/ticketTriageFindings.ts
+ * / runLoop.ts) and this DTO so the two can never drift apart — same pattern
+ * as `AlertVerdictSuggestionReason` above.
+ */
+export type TicketTriageSlot = 'fields' | 'link' | 'note' | 'draft-reply' | 'draft-resolution';
+
+/**
+ * Display strings only — never a raw `Error.message` (same posture as
+ * `SweepProposalReason`/`AlertVerdictSuggestionReason`).
+ *
+ * `no_fields_proposed` / `below_confidence_floor` / `human_set` are the three
+ * (mutually exclusive) reasons the `fields` slot can end up empty: nothing
+ * was proposed at all, something was proposed but none of it met
+ * `TICKET_TRIAGE_CONFIDENCE_FLOOR`, or everything proposed was already
+ * human-provenanced. A run mixing a floor-drop with a human-set drop is
+ * reported as `below_confidence_floor` — the coarser of the two, since either
+ * alone would already have emptied the slot.
+ */
+export type TicketTriageSkipReason =
+  | 'no_fields_proposed'
+  | 'below_confidence_floor'
+  | 'human_set'
+  | 'no_device_proposed'
+  | 'device_already_linked'
+  | 'no_draft_reply'
+  | 'no_draft_resolution'
+  | 'resolution_note_exists'
+  | 'max_actions_per_run'
+  | 'intent_error'
+  | 'ticket_not_found';
+
+export interface TicketTriageSkip {
+  item: TicketTriageSlot;
+  reason: TicketTriageSkipReason;
 }
 
 /**
@@ -387,6 +494,22 @@ export interface AiAgentRunDetailDto {
   /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
   summary: string | null;
   runVerdict: AgentRunVerdict | null;
+  /**
+   * The same count `AiAgentRunListItemDto.findingsToReview` carries, from the
+   * SAME helper (`countFindingsToReview`,
+   * apps/api/src/services/aiAgents/runFindings.ts) — see that field's
+   * docstring for the rule and why `denied` entries are excluded.
+   *
+   * Carried on the detail DTO too so the two surfaces cannot drift: the run
+   * detail page derives this number itself today (`sweep.findings.length` +
+   * `trace` entries of kind `proposed`), which is fine only for as long as
+   * the client rule and the server rule stay identical. This field is the
+   * server's own answer, and the client is expected to move onto it.
+   *
+   * Additive and always present — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  findingsToReview: number;
   turnCount: number;
   costCents: number;
   errorCode: string | null;
@@ -469,6 +592,25 @@ export interface AlertAiVerdictSummaryDto {
   rationale: string;
   patternKind: AiAlertVerdictPattern['kind'] | null;
   feedback: 'up' | 'down' | null;
+  /**
+   * User id that recorded `feedback` (the CAS-guarded write in
+   * `recordVerdictFeedback`), or null before anyone has voted. Mirrored
+   * verbatim from the row — always a raw id, never a display name. #4445.
+   */
+  feedbackBy: string | null;
+  /**
+   * Display name for `feedbackBy`, resolved the same way
+   * `acknowledgedByName`/`resolvedByName` are (`routes/alerts/actorNames.ts`,
+   * #3966) so the verdict badge can show WHO already voted instead of a raw
+   * uuid, and so a same-org tech gets a clear "taken by X" instead of a bare
+   * 409. Optional (not just nullable): only the alerts list/detail routes
+   * resolve it today — `projectAlertAiVerdictSummary` itself never sets this
+   * key, since it has no join to `users` available. Other callers (e.g. the
+   * correlation group detail route) omit the key entirely; that surface
+   * doesn't render the badge yet (#4187 P2-1 follow-up "group-detail
+   * badge"), so there is nothing to enrich. #4445.
+   */
+  feedbackByName?: string | null;
   suggestedIntentId: string | null;
   createdAt: string;
 }

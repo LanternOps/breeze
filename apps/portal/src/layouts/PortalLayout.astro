@@ -77,6 +77,7 @@ const isActive = (href: string) => {
           {navItems.map((item) => (
             <a
               href={withBase(item.href)}
+              data-testid={`portal-nav-${item.href.slice(1) || 'home'}`}
               aria-current={isActive(item.href) ? 'page' : undefined}
               class:list={[
                 'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',

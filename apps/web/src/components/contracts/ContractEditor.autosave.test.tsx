@@ -50,7 +50,10 @@ const draftDetail: ContractDetail = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed services',
-      catalogItemId: null, unitPrice: '500.00', manualQuantity: null, siteId: null, deviceRoles: null, taxable: false,
+      catalogItemId: null, unitPrice: '500.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      siteId: null, siteName: null, site: null, deviceRoles: null,
+      deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: false,
       sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
   ],
@@ -64,7 +67,7 @@ beforeEach(() => {
     if (url.startsWith('/orgs/sites')) return resp({ data: [] });
     return resp({ data: {} });
   });
-  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null } }));
+  (api.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'USD', periodTotal: '500.00', lines: [], uncoveredDevices: null, overages: [] } }));
   (api.updateContract as any).mockResolvedValue(resp({ data: {} }));
   (api.removeContractLine as any).mockResolvedValue(resp({ data: { ok: true } }));
 });

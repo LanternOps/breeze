@@ -30,15 +30,23 @@ a process cannot read the row, it behaves as killed.
 Each write increments `epoch` (monotonic, audit-traceable). The admin `GET`
 below bypasses the cache and always shows database truth.
 
-## Path 1 — Admin API (preferred)
+## Path 1 — Admin console UI (preferred)
 
-Requires a **platform admin** session; **MFA is additionally required for the
-POST** (the GET is readable without it).
+Platform admins can flip the switch from **Administration → AI Kill Switch**
+in the web console (`/admin/ai-kill-switch`), backed by the same API as Path
+1a below. The page shows the current state, epoch, and last reason/provenance,
+and requires a reason on every flip (surfaced as a friendly prompt if MFA
+step-up is needed).
 
 > **Production caveat (flagged 2026-08-26): production currently has ZERO
 > platform admins in both regions**, so all `/admin/*` surfaces — including
 > this one — are unreachable there today. Until a platform admin exists, the
 > SQL fallback below is the only usable production path.
+
+## Path 1a — Admin API
+
+Requires a **platform admin** session; **MFA is additionally required for the
+POST** (the GET is readable without it).
 
 ```bash
 # Inspect current state (killed, epoch, reason, provenance)

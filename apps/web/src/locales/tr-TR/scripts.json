@@ -281,7 +281,8 @@
       "partial": "Kısmi",
       "running": "Koşuyor",
       "pending": "Beklemede",
-      "skipped": "Atlandı"
+      "skipped": "Atlandı",
+      "cancelled": "İptal Edildi"
     },
     "empty": "Çalıştırma geçmişi yok.",
     "triggeredBy": {
@@ -618,6 +619,30 @@
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"
     },
+    "customFields": {
+      "title": "Özel alan yazmaları",
+      "applied": "Uygulanan",
+      "rejected": "Reddedilen",
+      "none": "Yok",
+      "reasons": {
+        "unknown_field": "Eşleşen alan tanımı yok",
+        "not_script_writable": "Alan betikle yazılabilir değil",
+        "not_applicable_to_device": "Alan bu cihaz türü için geçerli değil",
+        "device_not_found": "Cihaz bulunamadı",
+        "invalid_type": "Değer yanlış türde",
+        "out_of_range": "Değer izin verilen aralığın dışında",
+        "not_a_choice": "Değer, alanın izin verilen seçeneklerinden biri değil",
+        "too_long": "Değer çok uzun",
+        "invalid_date": "Değer geçerli bir tarih değil",
+        "marker_unparseable": "İşaretleyici JSON olarak ayrıştırılamadı",
+        "too_many_lines": "Bu çalıştırmada çok fazla işaretleyici satırı var",
+        "too_many_keys": "İşaretleyicide çok fazla anahtar var",
+        "marker_too_large": "İşaretleyici boyut sınırını aştı",
+        "forbidden_key": "Anahtara izin verilmiyor",
+        "envelope_unparseable": "Yapılandırılmış sonuç ayrıştırılamadı",
+        "envelope_unsupported_version": "Yapılandırılmış sonuç desteklenmeyen bir sürüm kullandı"
+      }
+    },
     "actions": {
       "copyToClipboard": "Panoya kopyala"
     },
@@ -627,7 +652,10 @@
       "completed": "Komut dosyası başarıyla tamamlandı",
       "failed": "Komut dosyası yürütme başarısız oldu",
       "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
-      "pending": "Komut dosyası çalıştırılmayı bekliyor"
+      "pending": "Komut dosyası çalıştırılmayı bekliyor",
+      "queued": "Komut dosyası cihaza gönderilmek üzere sırada",
+      "cancelling": "Durdurma istendi — cihazdan onay bekleniyor.",
+      "cancelled": "Komut dosyası cihazda durduruldu"
     },
     "fields": {
       "startedAt": "Başlangıç Tarihi",
@@ -640,7 +668,14 @@
       "pending": "Beklemede",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
     }
   },
   "executionHistory": {
@@ -661,7 +696,14 @@
       "running": "Koşuyor...",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -971,6 +1013,8 @@
       "variablePlaceholder": "ör. vendor_token",
       "fieldLabel": "Özel alan anahtarı",
       "fieldPlaceholder": "ör. asset_tag",
+      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: bağlandıktan sonra, çözümlenen değer normal bir parametre gibi betiğe iletilir — herhangi bir istem gösterilmez. Yazma: yeni bir değeri geri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldHelpAriaLabel": "Cihaz özel alan bağlaması hakkında",
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
       "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",
@@ -1293,7 +1337,8 @@
       "failed": "Başarısız",
       "timeout": "Zaman aşımına uğradı",
       "queued": "Kuyrukta",
-      "cancelled": "İptal edildi"
+      "cancelled": "İptal edildi",
+      "cancelling": "Durduruluyor…"
     },
     "errors": {
       "execute": "Test çalıştırması başlatılamadı",

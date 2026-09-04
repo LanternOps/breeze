@@ -1,13 +1,23 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations, sites, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
-import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
-import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
+import { assertInTransaction, db } from '../db';
+import {
+  contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
+  organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
+  invoices, invoiceLineDevices,
+} from '../db/schema';
+import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
+import type { ContractLineInput, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
+import {
+  ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
+  multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
+  contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
+  type DeviceRole, type UpdateContractLineInput,
+} from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+import { pgErrorNode } from '../utils/pgErrors';
 
 /**
  * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
@@ -32,9 +42,14 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
-import { countContractSeats, snapshotContractDevices, type DeviceSnapshotRow } from './contractQuantities';
-import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices } from './contractCoverage';
+import { countContractSeats, type DeviceSnapshotRow } from './contractQuantities';
+import { buildOrgDeviceSnapshot } from './contractSnapshot';
+import {
+  isDeviceLine, matchingDevicesForLine, orderDevicesForEvidence, quantityFor, uncoveredByRole,
+  type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers,
+} from './contractCoverage';
 import type { InvoiceActor } from './invoiceTypes';
+import { applyAllowance, billsOverage, overageValue, type ResolvedQuantity } from './contractAllowance';
 
 export type ContractActorT = ContractActor;
 
@@ -44,11 +59,96 @@ function requireOrgAccess(actor: ContractActor, orgId: string): void {
   }
 }
 
-async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
+export async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
   const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
   if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
   requireOrgAccess(actor, c.orgId);
   return c;
+}
+
+export type DecoratedContractLine = typeof contractLines.$inferSelect & {
+  site: { id: string; name: string } | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+};
+
+/** #3205 W03: one decorator for every line read. The group leg is W02's
+ *  (renamed from withDeviceGroup); the site leg is the W01-deferred detail-page
+ *  legibility fix — ContractDetail loads no sites of its own, so the name has to
+ *  travel on the line. Both legs match on (id, org_id): defence in depth beside
+ *  the composite FKs, and null when the referenced row is gone (site_id is
+ *  ON DELETE SET NULL). Two batched inArray selects, never a per-line query. */
+async function withLineRefs<T extends { siteId: string | null; deviceGroupId: string | null; orgId: string }>(
+  lines: T[],
+  executor: DbExecutor = db,
+): Promise<Array<T & {
+  site: { id: string; name: string } | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+}>> {
+  const siteIds = [...new Set(lines.map((l) => l.siteId).filter((x): x is string => x !== null))];
+  const groupIds = [...new Set(lines.map((l) => l.deviceGroupId).filter((x): x is string => x !== null))];
+  const siteRows = siteIds.length === 0 ? [] : await executor
+    .select({ id: sites.id, orgId: sites.orgId, name: sites.name })
+    .from(sites).where(inArray(sites.id, siteIds));
+  const groupRows = groupIds.length === 0 ? [] : await executor
+    .select({ id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type })
+    .from(deviceGroups).where(inArray(deviceGroups.id, groupIds));
+  const siteByKey = new Map(siteRows.map((s) => [`${s.id}|${s.orgId}`, { id: s.id, name: s.name }]));
+  const groupByKey = new Map(groupRows.map((g) => [`${g.id}|${g.orgId}`, { id: g.id, name: g.name, type: g.type }]));
+  return lines.map((l) => ({
+    ...l,
+    site: l.siteId ? (siteByKey.get(`${l.siteId}|${l.orgId}`) ?? null) : null,
+    deviceGroup: l.deviceGroupId ? (groupByKey.get(`${l.deviceGroupId}|${l.orgId}`) ?? null) : null,
+  }));
+}
+
+/** Columns a line PATCH can move. The audit reports NAMES from this list only. */
+const AUDITED_LINE_COLUMNS = [
+  'description', 'unitPrice', 'taxable', 'catalogItemId', 'manualQuantity',
+  'siteId', 'deviceRoles', 'deviceGroupId', 'deviceGroupName', 'sortOrder',
+  'includedQuantity', 'overageMode', 'overageUnitPrice',
+] as const;
+type AuditedLineColumn = typeof AUDITED_LINE_COLUMNS[number];
+type ContractLineRowT = typeof contractLines.$inferSelect;
+
+function lineColumnChanged(field: AuditedLineColumn, before: ContractLineRowT, after: ContractLineRowT): boolean {
+  if (field === 'deviceRoles') {
+    // A reorder is not a change: the set is what bills.
+    const norm = (v: readonly string[] | null) => (v === null ? null : JSON.stringify([...v].sort()));
+    return norm(before.deviceRoles) !== norm(after.deviceRoles);
+  }
+  // String()-normalise: Postgres hands numerics back as strings, and a numeric
+  // column round-tripped through Drizzle must not read as "changed".
+  const norm = (v: unknown) => (v === null || v === undefined ? null : String(v));
+  return norm(before[field]) !== norm(after[field]);
+}
+
+/** #3205 W03: changedFields comes from the PERSISTED rows, never from the patch
+ *  keys — an ignored client price (transition rows 2/4) must never claim to have
+ *  applied, and a patch that changes nothing must report []. */
+function diffLineAudit(
+  before: ContractLineRowT, after: ContractLineRowT,
+  c: { id: string; orgId: string; name: string },
+): ContractLineAudit {
+  const changedFields = AUDITED_LINE_COLUMNS.filter((f) => lineColumnChanged(f, before, after));
+  return {
+    orgId: c.orgId, contractId: c.id, contractName: c.name,
+    contractLineId: after.id, lineType: after.lineType,
+    changedFields: [...changedFields],
+    ...(changedFields.includes('unitPrice')
+      ? { oldUnitPrice: before.unitPrice, newUnitPrice: after.unitPrice }
+      : {}),
+  };
+}
+
+/** #3205 W03: the shared, no-free-text audit detail payload for HTTP and AI. */
+export function contractLineAuditDetails(audit: ContractLineAudit) {
+  return {
+    contractLineId: audit.contractLineId,
+    lineType: audit.lineType,
+    ...(audit.changedFields !== undefined ? { changedFields: audit.changedFields } : {}),
+    ...(audit.oldUnitPrice !== undefined ? { oldUnitPrice: audit.oldUnitPrice } : {}),
+    ...(audit.newUnitPrice !== undefined ? { newUnitPrice: audit.newUnitPrice } : {}),
+  };
 }
 
 function assertDraft(c: { status: string }): void {
@@ -61,14 +161,32 @@ function assertEditable(c: { status: string }): void {
   }
 }
 
-type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** A line may only be scoped to a site of ITS OWN org. The composite FK
- *  contract_lines_site_org_fk is the backstop; this is the 400 the operator sees. */
-async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<void> {
-  const [row] = await tx.select({ id: sites.id }).from(sites)
+/** #4693: returns the site row so the caller can STAMP its name with no second
+ *  query — the shape W02's assertGroupInOrg already has. The 400 SITE_NOT_IN_ORG
+ *  behaviour is unchanged. */
+async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<{ id: string; name: string }> {
+  const [row] = await tx.select({ id: sites.id, name: sites.name }).from(sites)
     .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
   if (!row) throw new ContractServiceError('Site does not belong to this organization', 400, 'SITE_NOT_IN_ORG');
+  return row;
+}
+
+async function assertGroupInOrg(tx: DbExecutor, groupId: string, orgId: string) {
+  const [row] = await tx.select({ id: deviceGroups.id, name: deviceGroups.name, type: deviceGroups.type, siteId: deviceGroups.siteId })
+    .from(deviceGroups).where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, orgId))).limit(1);
+  if (!row) throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+  return row;
+}
+
+/** Postgres 23503 on contract_lines_device_group_org_fk = the group vanished
+ *  between assertGroupInOrg and the insert (deleteDeviceGroup holds FOR UPDATE
+ *  on the group row, so the insert waited and then lost). Same answer. */
+function isGroupFkViolation(err: unknown): boolean {
+  const node = pgErrorNode(err);
+  const constraint = node?.constraint_name ?? node?.constraint;
+  return node?.code === '23503' && constraint === 'contract_lines_device_group_org_fk';
 }
 
 /**
@@ -134,16 +252,47 @@ export async function createContract(input: {
 
 export async function getContract(contractId: string, actor: ContractActor) {
   const contract = await getOwnedContractOr404(contractId, actor);
+  // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
+  // — addContractLineToContract defaults it to 0, so everything created through
+  // the editor ties — and Postgres was free to reshuffle the table on any edit.
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
-  const periods = await db.select().from(contractBillingPeriods)
-    .where(eq(contractBillingPeriods.contractId, contractId)).orderBy(desc(contractBillingPeriods.periodStart));
-  return { contract, lines, periods };
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
+  // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
+  // detail table. JSON digests remain exclusive to the expanded outcome read.
+  const periods = await db
+    .select({
+      id: contractBillingPeriods.id,
+      contractId: contractBillingPeriods.contractId,
+      orgId: contractBillingPeriods.orgId,
+      periodStart: contractBillingPeriods.periodStart,
+      periodEnd: contractBillingPeriods.periodEnd,
+      invoiceId: contractBillingPeriods.invoiceId,
+      generatedAt: contractBillingPeriods.generatedAt,
+      snapshotDeviceTotal: contractBillingPeriodOutcomes.snapshotDeviceTotal,
+      uncoveredTotal: contractBillingPeriodOutcomes.uncoveredTotal,
+      flaggedTotal: contractBillingPeriodOutcomes.flaggedTotal,
+      billedOverageTotal: contractBillingPeriodOutcomes.billedOverageTotal,
+    })
+    .from(contractBillingPeriods)
+    .leftJoin(
+      contractBillingPeriodOutcomes,
+      eq(contractBillingPeriodOutcomes.contractBillingPeriodId, contractBillingPeriods.id),
+    )
+    .where(eq(contractBillingPeriods.contractId, contractId))
+    .orderBy(desc(contractBillingPeriods.periodStart));
+  return { contract, lines: await withLineRefs(lines), periods };
 }
+
+type ContractRow = typeof contracts.$inferSelect;
+export type ContractListRow = ContractRow & {
+  estimatedPeriodValue: string | null;
+  estimateError?: 'GROUP_EVALUATION_FAILED';
+};
 
 export async function listContracts(query: {
   orgId?: string; status?: string; limit?: number;
-}, actor: ContractActor) {
+}, actor: ContractActor): Promise<ContractListRow[]> {
   const conds = [];
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(contracts.orgId, query.orgId)); }
   if (query.status) conds.push(eq(contracts.status, query.status as never));
@@ -157,7 +306,7 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  if (rows.length === 0) return rows;
+  if (rows.length === 0) return [];
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
   // lines). All lines for the page load in one query; one device snapshot is
@@ -171,30 +320,124 @@ export async function listContracts(query: {
   }
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  const out = [];
+  const out: ContractListRow[] = [];
   for (const c of rows) {
-    let total = 0;
-    for (const l of byContract.get(c.id) ?? []) {
-      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
-      total += Number(l.unitPrice) * quantity;
+    let cents = 0;
+    let estimateError: 'GROUP_EVALUATION_FAILED' | undefined;
+    let unresolved = false;
+    try {
+      const lines = byContract.get(c.id) ?? [];
+      const groupIds = groupIdsOf(lines);
+      if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
+      for (const l of lines) {
+        const r = await resolveLineQty(c.orgId, l, dc, sc);
+        if (r.unresolved) unresolved = true;
+        cents += lineCents(r, l.unitPrice, l, c.currencyCode);
+      }
+    } catch (err) {
+      // #3205 W02: one un-evaluable group must not fail the whole list.
+      if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') estimateError = err.code;
+      else throw err;
     }
-    out.push({ ...c, estimatedPeriodValue: total.toFixed(2) });
+    out.push(estimateError
+      ? { ...c, estimatedPeriodValue: null, estimateError }
+      : { ...c, estimatedPeriodValue: unresolved ? null : fromCents(cents) });
   }
   return out;
 }
 
-// ---- recurring-value estimate (live per_device/per_device_role/per_seat) ----
-// One device snapshot per org (#3205): every device-counted line on a contract
-// is computed from the same grouped query, so a device reclassified between two
-// per-line COUNTs can no longer be billed twice or skipped on the same run.
-type DeviceCache = Map<string, DeviceSnapshotRow[]>; // key orgId
-type SeatCache = Map<string, number>;                // key orgId
+// ---- recurring-value estimate (live per_device/per_device_role/per_device_group/per_seat) ----
+// One device snapshot per org PER CALCULATION (#3205): every device-counted line
+// on a contract is computed from the same query, and every billed group is
+// evaluated once per calculation. Never shared across the worker's per-contract
+// transactions — "at generation time" must stay literally true.
+interface OrgSnapshotEntry {
+  devices: readonly DeviceSnapshotRow[];
+  groups: Map<string, GroupMembers>;
+  failures: Map<string, ContractServiceError>;
+  /** Group ids already looked up (resolved OR absent). Absent ids are not in `groups`, and
+   *  must not be queried again on the next line of the same calculation. */
+  attempted: Set<string>;
+}
+type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
+type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
 
-async function orgSnapshot(orgId: string, dc: DeviceCache): Promise<DeviceSnapshotRow[]> {
-  let snap = dc.get(orgId);
-  if (!snap) { snap = await snapshotContractDevices(orgId); dc.set(orgId, snap); }
-  return snap;
+/** A wave-2 group line whose group is gone: all-zero, no allowance, so the
+ *  estimate never shows a number the invoice cannot carry (generation refuses
+ *  with GROUP_DELETED). #3205 W04 decision 7. */
+const UNRESOLVED_QTY: ResolvedQuantity = {
+  counted: 0, billed: 0, included: null, overage: 0, overageMode: null,
+};
+
+/** One line's contribution to a period total, in integer cents: the base leg at
+ *  `unitPrice` plus the overage leg at the line's stamped `overageUnitPrice`.
+ *  Both legs go through the exact-decimal primitives — `Number(a) * b` is what
+ *  turned 0.02 × 7.25 into 0.14. `overageValue` is the currency's zero whenever
+ *  the line is not billing an overage, so there is no branch here. */
+function lineCents(r: ResolvedQuantity, unitPrice: string, l: ContractLineRow, currencyCode: string): number {
+  return toCents(multiplyToCurrency(r.billed, unitPrice, currencyCode))
+    + toCents(overageValue(r, l, currencyCode));
+}
+
+function emptySnapshot(): OrgDeviceSnapshot {
+  return { devices: [], groups: new Map() };
+}
+
+function groupIdsOf(lines: readonly Pick<ContractLineRow, 'lineType' | 'deviceGroupId'>[]): string[] {
+  return [...new Set(lines.filter((l) => l.lineType === 'per_device_group' && l.deviceGroupId).map((l) => l.deviceGroupId!))];
+}
+
+/** The org's snapshot with the members of every group in `groupIds` resolved
+ *  (once per calculation). Behaviour is unchanged from wave 2: ONE contract's
+ *  estimate is all-or-nothing, and listContracts / the MRR rollup already catch
+ *  GROUP_EVALUATION_FAILED per contract. The assembly itself now lives in
+ *  contractSnapshot.buildOrgDeviceSnapshot so quote estimation shares it. */
+async function orgSnapshot(orgId: string, dc: DeviceCache, groupIds: readonly string[] = []): Promise<OrgDeviceSnapshot> {
+  let entry = dc.get(orgId);
+  const priorFailure = groupIds.map((id) => entry?.failures.get(id)).find((failure) => failure !== undefined);
+  if (priorFailure) throw priorFailure;
+  const missing = groupIds.filter((id) => !entry?.attempted.has(id));
+  if (!entry || missing.length > 0) {
+    // #3205 W05 fix round 4: when `entry` already exists, this org was already
+    // snapshotted this calculation — a NEW group id showing up on a later
+    // contract must not re-issue the full billable-device scan just to resolve
+    // it. Pass the cached device list through so the builder skips its own
+    // snapshotContractDevices call; group resolution still runs for `missing`.
+    const { snapshot, groupErrors, groupNames } = await buildOrgDeviceSnapshot(
+      orgId, missing, entry ? { devices: entry.devices } : undefined,
+    );
+    if (!entry) {
+      entry = { devices: snapshot.devices, groups: new Map(), failures: new Map(), attempted: new Set() };
+      dc.set(orgId, entry);
+    }
+    for (const id of missing) entry.attempted.add(id);
+    for (const [id, members] of snapshot.groups) entry.groups.set(id, members);
+    for (const [id, err] of groupErrors) {
+      // The builder already read this row while attempting groupMembersForBilling —
+      // groupNames carries its name forward so this never re-queries deviceGroups
+      // for something it already had in hand (#3205 W05 fix round 3).
+      const name = groupNames.get(id) ?? null;
+      entry.failures.set(id, new ContractServiceError(
+        `Device group "${name ?? id}" could not be evaluated (${err.reason})`, 500, 'GROUP_EVALUATION_FAILED',
+        { groupId: id, groupName: name, reason: err.reason },
+      ));
+    }
+  }
+  const failure = groupIds.map((id) => entry.failures.get(id)).find((candidate) => candidate !== undefined);
+  if (failure) throw failure;
+  return entry;
+}
+
+/** Lines the pure helpers can resolve: a group line whose group is absent from
+ *  the snapshot (deleted) covers nothing and is left out. */
+function resolvableLines(lines: readonly ContractLineRow[], snapshot: OrgDeviceSnapshot): ContractLineRow[] {
+  return lines.filter((l) =>
+    (l.lineType !== 'per_device_group' || (l.deviceGroupId !== null && snapshot.groups.has(l.deviceGroupId)))
+    // #4693: a site-deleted per_device / per_device_role line (id NULL, stamp kept)
+    // covers NOTHING — the same rule resolveLineQty applies. Without this the
+    // coverage notice would report the whole org as covered by a dead line.
+    && !isSiteDeletedLine(l));
 }
 
 /** True when `line` is a per_device_role line whose deviceRoles is missing,
@@ -220,26 +463,89 @@ function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 
 
 const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
 
-function assertSpecRoleLine(line: NewContractSpec['lines'][number]): void {
+// #3205 W04: the types contract_lines_allowance_chk lets carry an allowance.
+// Mirrors ALLOWANCE_LINE_TYPES in @breeze/shared; kept local so the writers do
+// not import a value they only need as a membership test.
+const ALLOWANCE_LINE_TYPE_SET: ReadonlySet<string> = new Set(ALLOWANCE_LINE_TYPES);
+
+/** The three allowance columns normalised for an insert: present only on a type
+ *  that may carry them, NULL everywhere else (same shape as the manualQuantity /
+ *  deviceRoles / siteId normalisation beside it). */
+function allowanceColumnsFor(input: {
+  lineType: string;
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
+}) {
+  const on = ALLOWANCE_LINE_TYPE_SET.has(input.lineType);
+  return {
+    includedQuantity: on ? (input.includedQuantity ?? null) : null,
+    overageMode: on ? (input.overageMode ?? null) : null,
+    overageUnitPrice: on ? (input.overageUnitPrice ?? null) : null,
+  };
+}
+
+// Task 7 widens the quote-conversion spec itself. Keep this producer ready for
+// that input without weakening the existing NewContractSpec contract elsewhere.
+type DeviceSetContractLineSpec = Omit<NewContractSpec['lines'][number], 'lineType'> & {
+  lineType: ContractLineRow['lineType'];
+  deviceGroupId?: string | null;
+};
+
+function assertSpecDeviceSetLine(line: {
+  lineType: string;
+  deviceRoles?: readonly string[] | null;
+  deviceGroupId?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+}): void {
   if (roleLineIsInvalid(line, BILLABLE_DEVICE_ROLE_SET)) {
     throw new ContractServiceError('per_device_role line requires at least one device role', 400, 'INVALID_STATE');
   }
+  if (line.lineType === 'per_device_group' && !line.deviceGroupId) {
+    throw new ContractServiceError('per_device_group line requires deviceGroupId', 400, 'INVALID_STATE');
+  }
+  if (isSiteDeletedLine({ lineType: line.lineType, siteId: line.siteId, siteName: line.siteName })) {
+    throw new ContractServiceError('site-scoped line requires siteId', 400, 'INVALID_STATE');
+  }
 }
 
+/**
+ * The one quantity resolver for the estimate, the contracts list and the MRR
+ * rollup. EVERY branch routes through applyAllowance — including flat and
+ * manual, where contract_lines_allowance_chk forbids an allowance and the
+ * function is the identity — so a future allowance-bearing type cannot be
+ * forgotten in one branch (#3205 W04).
+ */
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<{ quantity: number; live: boolean }> {
+): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' | 'site_deleted' }> {
   switch (line.lineType) {
-    case 'flat': return { quantity: 1, live: false };
-    case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
+    case 'flat':
+      return { ...applyAllowance(1, line, 'included_units'), live: false };
+    case 'manual':
+      return { ...applyAllowance(Number(line.manualQuantity ?? '0'), line, 'included_units'), live: false };
     case 'per_device':
     case 'per_device_role': {
+      // #4693: site_id NULL with a stamped name means the site was DELETED.
+      // Counting here would silently bill every device in the org. A line with
+      // neither column set never had a site and correctly remains org-wide.
+      if (isSiteDeletedLine(line)) {
+        return { ...UNRESOLVED_QTY, live: true, unresolved: 'site_deleted' };
+      }
       assertRoleLineHasRoles(line);
-      return { quantity: quantityFor(await orgSnapshot(orgId, dc), line), live: true };
+      const counted = quantityFor(await orgSnapshot(orgId, dc), line);
+      return { ...applyAllowance(counted, line, 'included_units'), live: true };
+    }
+    case 'per_device_group': {
+      if (line.deviceGroupId === null) return { ...UNRESOLVED_QTY, live: true, unresolved: 'group_deleted' };
+      const snapshot = await orgSnapshot(orgId, dc, [line.deviceGroupId]);
+      if (!snapshot.groups.has(line.deviceGroupId)) return { ...UNRESOLVED_QTY, live: true, unresolved: 'group_deleted' };
+      return { ...applyAllowance(quantityFor(snapshot, line), line, 'included_units'), live: true };
     }
     case 'per_seat': {
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
-      return { quantity: sc.get(orgId)!, live: true };
+      return { ...applyAllowance(sc.get(orgId)!, line, 'included_units'), live: true };
     }
     default: {
       // Exhaustiveness: a new line type is a compile error here, not a silent qty 0.
@@ -249,13 +555,131 @@ async function resolveLineQty(
   }
 }
 
+export interface OverageSummary {
+  contractLineId: string;
+  /** The materialized overage invoice line ('bill' mode) or null ('flag' mode). W07
+   *  attaches device evidence to it. */
+  invoiceLineId: string | null;
+  /** Carried so a toast/log can name the line without a second fetch (the same
+   *  reason PriceBookGap carries itemName). */
+  description: string;
+  counted: number;
+  included: number;
+  overage: number;
+  mode: 'bill' | 'flag';
+}
+
+type AddedContractInvoiceLine = Awaited<ReturnType<typeof addContractLine>>;
+
+export interface MaterializeContractLineInput {
+  invoiceId: string;
+  contract: Pick<typeof contracts.$inferSelect, 'id' | 'currencyCode'>;
+  line: Pick<typeof contractLines.$inferSelect,
+    'id' | 'description' | 'unitPrice' | 'taxable' | 'catalogItemId' | 'overageUnitPrice'>;
+  resolved: ResolvedQuantity;
+  currencyCode: string;
+}
+
+export interface MaterializedContractLine {
+  baseLine: AddedContractInvoiceLine['line'];
+  overageLine: AddedContractInvoiceLine['line'] | null;
+  overage: OverageSummary | null;
+  pricedFrom: AddedContractInvoiceLine['pricedFrom'];
+}
+
+/**
+ * The single invoice-writing path for a resolved contract line. The surrounding
+ * ambient transaction makes the base + optional bill-mode sibling atomic: the
+ * assertInTransaction guard ensures every nested savepoint and write uses its
+ * shared reserved connection, including interactive draft edits.
+ */
+export async function materializeContractLineOntoInvoice(
+  actor: InvoiceActor,
+  { invoiceId, contract, line, resolved, currencyCode }: MaterializeContractLineInput,
+): Promise<MaterializedContractLine> {
+  // Self-guard like generateDueInvoice: without an ambient context, nested
+  // db.transaction() calls would each open their own pooled connection and the
+  // base + overage writes would no longer be atomic.
+  assertInTransaction('materializeContractLineOntoInvoice');
+  if (currencyCode !== contract.currencyCode) {
+    throw new ContractServiceError('Resolved currency does not match the contract currency', 500, 'INVALID_STATE');
+  }
+
+  return db.transaction(async () => {
+    const quantity = resolved.included === null ? String(resolved.billed) : resolved.billed.toFixed(2);
+    const { line: baseLine, pricedFrom } = await addContractLine(invoiceId, {
+      description: line.description,
+      quantity,
+      unitPrice: line.unitPrice,
+      taxable: line.taxable,
+      catalogItemId: line.catalogItemId,
+      sourceId: line.id,
+      // Durable lineage (#3778): the CONTRACT id, not just the contract_line id.
+      // Survives removeContractLine, which is permitted on active contracts.
+      contractId: contract.id,
+    }, actor);
+
+    let overageLine: AddedContractInvoiceLine['line'] | null = null;
+    if (billsOverage(resolved)) {
+      const expectedLineTotal = multiplyToCurrency(resolved.overage, line.overageUnitPrice!, currencyCode);
+      const materialized = await addContractLine(invoiceId, {
+        description: `Overage: ${resolved.overage} above ${resolved.included} included — ${line.description}`,
+        quantity: resolved.overage.toFixed(2),
+        unitPrice: line.overageUnitPrice!,
+        // Inherit economics from the MATERIALIZED base. The catalog resolver,
+        // not the contract snapshot, owns these values for catalog-linked bases.
+        taxable: baseLine.taxable,
+        costBasis: baseLine.costBasis,
+        catalogItemId: null,
+        sourceId: line.id,
+        contractId: contract.id,
+      }, actor);
+      overageLine = materialized.line;
+      if (overageLine.lineTotal !== expectedLineTotal) {
+        throw new ContractServiceError('Materialized overage total does not match its exact decimal value', 500, 'INVALID_STATE');
+      }
+    }
+
+    const overage = resolved.overageMode !== null && resolved.overage > 0
+      ? {
+          contractLineId: line.id,
+          invoiceLineId: overageLine?.id ?? null,
+          description: line.description,
+          counted: resolved.counted,
+          included: resolved.included!,
+          overage: resolved.overage,
+          mode: resolved.overageMode,
+        }
+      : null;
+
+    return { baseLine, overageLine, overage, pricedFrom };
+  });
+}
+
 export interface ContractEstimate {
   currencyCode: string;
   periodTotal: string;
-  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean }>;
+  lines: Array<{
+    lineId: string;
+    lineType: ContractLineRow['lineType'];
+    /** The BASE invoice quantity — `billed`. Meaning unchanged for a line with no allowance. */
+    quantity: number;
+    /** multiplyToCurrency(quantity, unitPrice). The invariant value === qty × unitPrice still holds. */
+    value: string;
+    live: boolean;
+    counted: number;
+    included: number | null;
+    overage: number;
+    overageMode: 'bill' | 'flag' | null;
+    /** multiplyToCurrency(overage, overageUnitPrice), or the currency's zero. NEVER folded into `value`. */
+    overageValue: string;
+    unresolved?: 'group_deleted' | 'site_deleted';
+  }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
-   *  no per_device / per_device_role line, so the UI can tell "n/a" from "0". */
+   *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
   uncoveredDevices: UncoveredDevices | null;
+  /** One entry per allowance line that is OVER, in either mode. [] when none. */
+  overages: OverageSummary[];
 }
 
 /** Per-line resolved quantities + values + period total for one contract, using
@@ -263,21 +687,41 @@ export interface ContractEstimate {
 export async function computeContractEstimate(contractId: string, actor: ContractActor): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  let total = 0;
+  let cents = 0;
   const out: ContractEstimate['lines'] = [];
+  const overages: OverageSummary[] = [];
+  const groupIds = groupIdsOf(lines);
+  if (groupIds.length > 0) await orgSnapshot(contract.orgId, dc, groupIds);
   for (const l of lines) {
-    const { quantity, live } = await resolveLineQty(contract.orgId, l, dc, sc);
-    const value = Number(l.unitPrice) * quantity;
-    total += value;
-    out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
+    const r = await resolveLineQty(contract.orgId, l, dc, sc);
+    const value = multiplyToCurrency(r.billed, l.unitPrice, contract.currencyCode);
+    const oValue = overageValue(r, l, contract.currencyCode);
+    cents += toCents(value) + toCents(oValue);
+    out.push({
+      lineId: l.id, lineType: l.lineType, quantity: r.billed, value, live: r.live,
+      counted: r.counted, included: r.included, overage: r.overage, overageMode: r.overageMode,
+      overageValue: oValue,
+      ...(r.unresolved ? { unresolved: r.unresolved } : {}),
+    });
+    // Either mode: an over line the operator can act on. 'bill' is on the
+    // invoice, 'flag' is not — the UI and the worker branch on `mode`.
+    if (r.overageMode !== null && r.overage > 0) {
+      overages.push({
+        contractLineId: l.id, invoiceLineId: null, description: l.description,
+        counted: r.counted, included: r.included!, overage: r.overage, mode: r.overageMode,
+      });
+    }
   }
-  const uncoveredDevices = lines.some(isDeviceLine)
-    ? uncoveredByRole(await orgSnapshot(contract.orgId, dc), lines)
-    : null;
-  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out, uncoveredDevices };
+  let uncoveredDevices: UncoveredDevices | null = null;
+  if (lines.some(isDeviceLine)) {
+    const snapshot = await orgSnapshot(contract.orgId, dc, groupIds);
+    uncoveredDevices = uncoveredByRole(snapshot, resolvableLines(lines, snapshot));
+  }
+  return { currencyCode: contract.currencyCode, periodTotal: fromCents(cents), lines: out, uncoveredDevices, overages };
 }
 
 // ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
@@ -425,14 +869,48 @@ export async function summarizeActiveContractMrrByOrg(
   const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
 
   for (const c of rows) {
-    let periodValue = 0;
-    for (const l of byContract.get(c.id) ?? []) {
-      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
-      const unitPrice = l.catalogItemId
-        ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
-        : l.unitPrice;
-      periodValue += Number(unitPrice) * quantity;
+    let cents = 0;
+    let siteDeleted = false;
+    try {
+      const lines = byContract.get(c.id) ?? [];
+      const groupIds = groupIdsOf(lines);
+      if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
+      for (const l of lines) {
+        const r = await resolveLineQty(c.orgId, l, dc, sc);
+        if (r.unresolved === 'group_deleted') {
+          console.warn(
+            '[contracts] MRR rollup: contract %s line %s bills a deleted device group (%s); counted as 0',
+            c.id,
+            l.id,
+            l.deviceGroupName,
+          );
+        }
+        if (r.unresolved === 'site_deleted') {
+          console.warn(
+            '[contracts] MRR rollup skipped contract %s: line %s bills deleted site %s',
+            c.id,
+            l.id,
+            l.siteName,
+          );
+          siteDeleted = true;
+          break;
+        }
+        const unitPrice = l.catalogItemId
+          ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
+          : l.unitPrice;
+        // The BASE leg may be catalog-resolved; the overage leg never is
+        // (decision 13), so lineCents reads the stamped overage_unit_price.
+        cents += lineCents(r, unitPrice, l, c.currencyCode);
+      }
+    } catch (err) {
+      if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') {
+        console.warn('[contracts] MRR rollup skipped contract %s: %s', c.id, err.message);
+        continue;
+      }
+      throw err;
     }
+    if (siteDeleted) continue;
+    const periodValue = Number(fromCents(cents));
     const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
     // Round each contract in ITS OWN currency before grouping — a JPY contract
     // must never contribute a fractional yen.
@@ -794,9 +1272,24 @@ export async function changeContractCurrency(
     }
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
 
-    const lineRows = await tx.select({ id: contractLines.id, catalogItemId: contractLines.catalogItemId })
-      .from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
+    const lineRows = await tx.select({
+      id: contractLines.id, catalogItemId: contractLines.catalogItemId,
+      overageUnitPrice: contractLines.overageUnitPrice,
+    }).from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
     if (lineRows.length > 0) {
+      // #3205 W04 decision 15: the reprice loop writes only unit_price
+      // (`:822`) and cannot re-derive a hand-entered overage rate from a price
+      // book, so a catalog-linked line with one would keep a wrong-currency
+      // number that every future invoice would carry. Refused for BOTH reprice
+      // and a bare restamp; clearLines is still allowed, because it deletes the
+      // lines — and the rate with them.
+      const withOverageRate = lineRows.filter((l) => l.overageUnitPrice !== null).length;
+      if (withOverageRate > 0 && !input.clearLines) {
+        throw new ContractServiceError(
+          `${withOverageRate} line(s) carry an overage rate priced in ${c.currencyCode} that cannot be re-derived from a price book — clear the allowance on those lines, or pass clearLines to remove all lines`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
       if (input.reprice) {
         // Multi-currency wave 3 (#3775): re-resolve every catalog-linked line's
         // unit_price from the price book in the NEW currency on the locked tx
@@ -814,10 +1307,7 @@ export async function changeContractCurrency(
           try {
             resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
           } catch (err) {
-            if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
-                throw new ContractServiceError(err.message, 409, err.code);
-            }
-            throw err;
+            mapCatalogResolveError(err);
           }
           await tx.update(contractLines).set({ unitPrice: resolved.unitPrice }).where(eq(contractLines.id, line.id));
         }
@@ -863,10 +1353,35 @@ function assertRepresentable(value: string, currencyCode: string): void {
   }
 }
 
+/**
+ * #3205 W03: one mapping for every resolvePrice failure on a contract line.
+ *
+ * ITEM_NOT_FOUND was UNMAPPED on the add path: resolvePrice opens with
+ * getOwnedItemOr404, which throws CatalogServiceError('Catalog item not found',
+ * 404, 'ITEM_NOT_FOUND'), and handleContractError rethrows anything that is not
+ * a ContractServiceError — so a stale or foreign catalog item id on add was a
+ * live 500. 400, not 404: the contract line exists; the id in the body is what
+ * is wrong. The message deliberately does NOT distinguish missing / foreign /
+ * RLS-invisible, because a 404 that fires only for foreign ids is a
+ * partner-enumeration oracle.
+ */
+function mapCatalogResolveError(err: unknown): never {
+  if (err instanceof CatalogServiceError) {
+    if (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE') {
+      throw new ContractServiceError(err.message, 409, err.code);
+    }
+    if (err.code === 'ITEM_NOT_FOUND') {
+      throw new ContractServiceError('That catalog item is not available on this contract', 400, 'CATALOG_ITEM_NOT_FOUND');
+    }
+  }
+  throw err;
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
     assertEditable(c);
+    assertSpecDeviceSetLine(input);
     let unitPrice: string;
     let taxable: boolean;
     if (input.catalogItemId) {
@@ -879,10 +1394,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
           tx
         );
       } catch (err) {
-        if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
-            throw new ContractServiceError(err.message, 409, err.code);
-        }
-        throw err;
+        mapCatalogResolveError(err);
       }
       unitPrice = resolved.unitPrice;
       taxable = resolved.taxable;
@@ -896,27 +1408,199 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
-    const siteId = isDeviceLine(input) ? (input.siteId ?? null) : null;
-    if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
-    const [row] = await tx.insert(contractLines).values({
-      contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
-      catalogItemId: input.catalogItemId ?? null, unitPrice,
-      manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-      siteId,
-      // #3205: roles only on per_device_role (CHECK-enforced); the validator
-      // already guarantees a non-empty, duplicate-free, billable set.
-      deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
-      taxable, sortOrder: input.sortOrder ?? 0
-    }).returning();
-    return row!;
+    const allowance = allowanceColumnsFor(input);
+    // W6-G3-1, extended by #4607 (adopted from #4547's Codex finding 20): the
+    // overage rate is the template for every future generated invoice line, so
+    // an unrepresentable ¥12.50 must fail HERE, not months later inside the
+    // billing transaction where it rolls back the whole contract's generation.
+    // Note this runs on BOTH branches: a catalog-linked base line still carries
+    // a hand-entered overage rate (the overage leg is never catalog-priced).
+    if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, c.currencyCode);
+    const siteId = SITE_SCOPABLE_LINE_TYPES.has(input.lineType) ? (input.siteId ?? null) : null;
+    const site = siteId ? await assertSiteInOrg(tx, siteId, c.orgId) : null;
+    const group = input.lineType === 'per_device_group' && input.deviceGroupId
+      ? await assertGroupInOrg(tx, input.deviceGroupId, c.orgId) : null;
+    try {
+      const [row] = await tx.insert(contractLines).values({
+        contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
+        catalogItemId: input.catalogItemId ?? null, unitPrice,
+        manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+        siteId: site?.id ?? null,
+        siteName: site?.name ?? null,
+        // #3205: roles only on per_device_role (CHECK-enforced); the validator
+        // already guarantees a non-empty, duplicate-free, billable set.
+        deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
+        deviceGroupId: group?.id ?? null,
+        deviceGroupName: group?.name ?? null,
+        ...allowance,
+        taxable, sortOrder: input.sortOrder ?? 0
+      }).returning();
+      return { ...row!, contractName: c.name };
+    } catch (err) {
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
   });
 }
 
-export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
-  await db.transaction(async (tx) => {
+/**
+ * PATCH one contract line in place (#3205 W03). Keeping the line's id is the
+ * whole point: invoice_lines.source_id carries it, and issueInvoice refuses a
+ * draft whose source line is gone (invoiceService.ts:1194-1199), so
+ * delete-and-re-add wedges any unissued generated invoice.
+ *
+ * Lock order is the one every contract writer takes — contracts FOR UPDATE, then
+ * contract_lines — the same order issueInvoice/voidInvoice take, so there is no
+ * new deadlock edge. No FOR UPDATE on the line itself: the contract lock already
+ * excludes every other line writer.
+ *
+ * Edits affect FUTURE periods only, by construction rather than by a guard:
+ * invoice lines carry their own copies of description, quantity, unit price and
+ * taxable (invoiceService.ts:405-450), and nothing re-reads a contract line's
+ * CONTENT after generation.
+ */
+export async function updateContractLine(
+  contractId: string, lineId: string, patch: UpdateContractLineInput, actor: ContractActor,
+): Promise<{ line: DecoratedContractLine; audit: ContractLineAudit }> {
+  const { before, line, contract } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
     assertEditable(c);
+
+    const [current] = await tx.select().from(contractLines)
+      .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
+    if (!current) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+
+    // ---- catalog transition table (spec § Validators (d)) ------------------
+    const touchesLink = patchHasKey(patch, 'catalogItemId');
+    const targetItemId = touchesLink ? (patch.catalogItemId ?? null) : current.catalogItemId;
+    // Row 4 is excluded here on purpose: the SAME id re-sent is a no-op, not a
+    // reprice — a form echoing the current id must change nothing.
+    const relinking = touchesLink && patch.catalogItemId != null && patch.catalogItemId !== current.catalogItemId;
+    const unlinking = touchesLink && patch.catalogItemId === null && current.catalogItemId !== null;
+    const refreshing = patch.refreshCatalogPrice === true;
+
+    if (refreshing && targetItemId === null) {
+      throw new ContractServiceError('The line is not linked to a catalog item', 400, 'INVALID_LINE_PATCH', {
+        issues: [{ path: 'refreshCatalogPrice', message: 'the line is not linked to a catalog item' }],
+      });
+    }
+
+    let resolved: { unitPrice: string; taxable: boolean; catalogItemId: string | null } | undefined;
+    if (relinking || (refreshing && targetItemId !== null)) {
+      let priced: Awaited<ReturnType<typeof resolvePrice>>;
+      try {
+        priced = await resolvePrice(
+          targetItemId!, c.currencyCode, c.orgId,
+          { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds },
+          tx,
+        );
+      } catch (err) {
+        mapCatalogResolveError(err);
+      }
+      resolved = { unitPrice: priced.unitPrice, taxable: priced.taxable, catalogItemId: targetItemId };
+    } else if (unlinking) {
+      // After an unlink nothing re-resolves this number ever again, so the
+      // operator has to supply it now.
+      if (patch.unitPrice === undefined || patch.taxable === undefined) {
+        throw new ContractServiceError('unitPrice and taxable are required when clearing catalogItemId', 400, 'INVALID_LINE_PATCH', {
+          issues: [{ path: 'unitPrice', message: 'unitPrice and taxable are required when clearing catalogItemId' }],
+        });
+      }
+      assertRepresentable(patch.unitPrice, c.currencyCode);
+    } else if (targetItemId === null && patch.unitPrice !== undefined) {
+      assertRepresentable(patch.unitPrice, c.currencyCode);
+    }
+    // When the merged row stays LINKED and no resolve ran (rows 2 and 4),
+    // mergeContractLinePatch drops patch.unitPrice / patch.taxable.
+
+    const merged = mergeContractLinePatch(current, patch, resolved);
+    // #4693: re-stamp from the resolved site when the id changed; clearing the
+    // id makes the line deliberately org-wide, rather than marking it deleted.
+    if (patchHasKey(patch, 'siteId')) {
+      merged.siteName = merged.siteId && SITE_SCOPABLE_LINE_TYPES.has(merged.lineType)
+        ? (await assertSiteInOrg(tx, merged.siteId, c.orgId)).name
+        : null;
+    }
+    const issues = contractLineInvariantIssues(merged, { mode: 'persisted' });
+    if (issues.length > 0) {
+      throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_LINE_PATCH', { issues });
+    }
+
+    // #3205 W04: the merged row's overage rate must be representable in the
+    // contract's currency, beside the unitPrice calls the transition table
+    // already makes. Runs whenever the patch supplies a price — the overage leg
+    // is never catalog-resolved, so nothing else can correct it later.
+    if (patchHasKey(patch, 'overageUnitPrice') && merged.overageUnitPrice !== null) {
+      assertRepresentable(merged.overageUnitPrice, c.currencyCode);
+    }
+
+    // Ordering note: the invariants above read deviceGroupName from `current`,
+    // which W02's CHECK guarantees non-null on any persisted group line.
+    // Re-stamping here changes the STRING, never its null-ness. Sound as
+    // written — do not reorder to "fix" an imagined dependency.
+    let deviceGroupName = current.deviceGroupName;
+    if (patch.deviceGroupId !== undefined) {
+      const group = await assertGroupInOrg(tx, patch.deviceGroupId, c.orgId);
+      deviceGroupName = group.name;
+    }
+
+    let updated: ContractLineRowT;
+    try {
+      const [row] = await tx.update(contractLines).set({
+        description: merged.description,
+        unitPrice: merged.unitPrice,
+        taxable: merged.taxable,
+        catalogItemId: merged.catalogItemId,
+        manualQuantity: merged.manualQuantity,
+        siteId: merged.siteId,
+        siteName: merged.siteName,
+        // The merged shape is readonly string[] for portability across the web
+        // editor; the column is DeviceRole[] and the schema edge already proved
+        // membership (z.enum(BILLABLE_DEVICE_ROLES)).
+        deviceRoles: merged.deviceRoles === null ? null : ([...merged.deviceRoles] as DeviceRole[]),
+        deviceGroupId: merged.deviceGroupId,
+        deviceGroupName,
+        sortOrder: merged.sortOrder,
+        includedQuantity: merged.includedQuantity,
+        overageMode: merged.overageMode,
+        overageUnitPrice: merged.overageUnitPrice,
+      }).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).returning();
+      if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+      updated = row;
+    } catch (err) {
+      // The delete race: deleteDeviceGroup holds FOR UPDATE on the group row, so
+      // this update waited and then lost. Same answer as a cross-org group.
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
+
+    const [line] = await withLineRefs([updated], tx);
+    return { before: current, line: line as DecoratedContractLine, contract: c };
+  });
+
+  return { line, audit: diffLineAudit(before, line, contract) };
+}
+
+export async function removeContractLine(
+  contractId: string, lineId: string, actor: ContractActor,
+): Promise<ContractLineAudit> {
+  return db.transaction(async (tx) => {
+    const c = await lockContract(tx, contractId, actor);
+    assertEditable(c);
+    // #3205 W03: read before deleting so contract.line.removed names the real
+    // lineType, and so a miss is a typed 404 rather than a silent 200 (the
+    // pre-W03 behaviour deleted by (id, contract_id) and never checked whether
+    // a row matched). Its permissiveness is exactly what would make the audit lie.
+    const [row] = await tx.select({ id: contractLines.id, lineType: contractLines.lineType })
+      .from(contractLines)
+      .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
+    if (!row) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
     await tx.delete(contractLines).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
+    return { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
   });
 }
 
@@ -999,6 +1683,32 @@ export interface PriceBookGap {
   currencyCode: string;
 }
 
+/**
+ * #3205 W07: one device's row of billing evidence, collected during the line
+ * loop and written only after the period claim succeeds (the period id does not
+ * exist before then, and a lost claim deletes the draft anyway).
+ */
+interface PendingEvidence {
+  invoiceLineId: string;
+  deviceId: string;
+  hostname: string;
+  deviceRole: string;
+  siteId: string | null;
+  countedAs: InvoiceLineDeviceCountedAs;
+}
+
+/** 500 rows/statement (#3205 W07 decision 16). One statement for a 5,000-device
+ *  line would build a single enormous parameter list inside the billing
+ *  transaction. All chunks are in the SAME transaction, so the all-or-nothing
+ *  property is unchanged. */
+const EVIDENCE_INSERT_CHUNK = 500;
+
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 export interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
@@ -1010,9 +1720,14 @@ export interface GenerateResult {
   /** Always present (`[]` when none / nothing generated) — never a silent fallback. */
   priceBookGaps: PriceBookGap[];
   /** Devices no device-counted line billed on this run (#3205). null when the
-   *  contract has no per_device / per_device_role line or nothing generated.
+   *  contract has no per_device / per_device_role / per_device_group line or nothing generated.
    *  Rides beside priceBookGaps: the worker logs it, the generate route returns it. */
   uncoveredDevices: UncoveredDevices | null;
+  /** Allowance lines that were OVER this run, in either mode (#3205 W04).
+   *  Always present (`[]` when none / nothing generated), like priceBookGaps.
+   *  `mode: 'flag'` entries were NOT invoiced — the worker warns and the
+   *  generate UI toasts on exactly those. */
+  overages: OverageSummary[];
 }
 
 /**
@@ -1053,6 +1768,13 @@ export interface GenerateResult {
  * in the wave-3 plan's Self-Review (a).
  */
 export async function generateDueInvoice(contractId: string, asOf: Date = new Date()): Promise<GenerateResult> {
+  // #3205 W04 decision 14: this function does multi-statement all-or-nothing
+  // writes and does not open its own transaction — both callers wrap it in
+  // runOutsideDbContext(() => withSystemDbAccessContext(...)). Without one, every
+  // write below lands on the bare pool with no RLS GUC and silently affects 0
+  // rows (#1375). W04 doubles the writes per line, so the window widens.
+  assertInTransaction('generateDueInvoice');
+
   // PRODUCER SERIALIZATION (#3778): lock the contract row as the FIRST statement
   // of the caller-supplied transaction. Until wave 6 this opened with a plain
   // unlocked SELECT while every other contract writer locked — so a billing run
@@ -1065,9 +1787,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -1080,7 +1802,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -1091,12 +1813,39 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     accessibleOrgIds: [c.orgId]
   };
   const lines = await db.select().from(contractLines)
-    .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
+    .where(eq(contractLines.contractId, contractId))
+    .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
 
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
-  // (removeContractLine stays permissive; this generation-side guard is the backstop.)
+  // This generation-side guard remains the backstop for an active contract whose
+  // final line was removed before the billing run.
   if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
+  }
+
+  // #4693: refusing before invoice creation makes the whole run a no-write
+  // result. A stamped name with no id means the formerly scoped site is gone;
+  // treating the line as org-wide would over-bill every remaining device.
+  for (const l of lines) {
+    if (isSiteDeletedLine(l)) {
+      throw new ContractServiceError(
+        `contract line ${l.id} is scoped to site "${l.siteName}", which no longer exists`,
+        409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },
+      );
+    }
+  }
+
+  const hasDeviceLine = lines.some(isDeviceLine);
+  const dc: DeviceCache = new Map();
+  const snapshot = hasDeviceLine ? await orgSnapshot(c.orgId, dc, groupIdsOf(lines)) : emptySnapshot();
+  // #3205 W02: a group line whose group is gone must never bill zero silently.
+  for (const l of lines) {
+    if (l.lineType === 'per_device_group' && (l.deviceGroupId === null || !snapshot.groups.has(l.deviceGroupId))) {
+      throw new ContractServiceError(
+        `Contract line "${l.description}" bills device group "${l.deviceGroupName ?? ''}", which no longer exists`,
+        409, 'GROUP_DELETED', { contractLineId: l.id, deviceGroupName: l.deviceGroupName },
+      );
+    }
   }
 
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
@@ -1114,13 +1863,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    passed as-is — addContractLine resolves the catalog price in the contract's
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
-  // #3205: one snapshot per run. Every device-counted line and the coverage
-  // figure below derive from it — never a per-line COUNT.
-  const hasDeviceLine = lines.some(isDeviceLine);
-  const snapshot = hasDeviceLine ? await snapshotContractDevices(c.orgId) : [];
   const priceBookGaps: PriceBookGap[] = [];
+  const overages: OverageSummary[] = [];
+  const pendingEvidence: PendingEvidence[] = [];
   for (const l of lines) {
     let quantity: string;
+    // The ONE device source for this line. `quantity` IS its length, so there is
+    // no second walk to disagree with. W06's parity test pins quantityFor to the
+    // same matchingDevicesForLine definition.
+    let ordered: DeviceSnapshotRow[] | null = null;
     switch (l.lineType) {
       case 'flat':
         quantity = '1';
@@ -1130,8 +1881,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         break;
       case 'per_device':
       case 'per_device_role':
+      case 'per_device_group':
         assertRoleLineHasRoles(l);
-        quantity = String(quantityFor(snapshot, l));
+        ordered = orderDevicesForEvidence(matchingDevicesForLine(snapshot, l));
+        quantity = String(ordered.length);
         break;
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
@@ -1143,17 +1896,48 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         throw new ContractServiceError(`Unknown contract line type: ${String(l.lineType)}`, 500, 'INVALID_STATE');
       }
     }
-    const { pricedFrom } = await addContractLine(inv.id, {
-      description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
-      catalogItemId: l.catalogItemId, sourceId: l.id,
-      // Durable lineage (#3778): the CONTRACT id, not just the contract_line id.
-      // Survives removeContractLine, which is permitted on active contracts.
-      contractId
-    }, actor);
+
+    // The ONE definition of the split, shared with resolveLineQty.
+    const r = applyAllowance(Number(quantity), l, 'included_units');
+    // The materializer owns the base quantity, including allowance formatting.
+
+    const materialized = await materializeContractLineOntoInvoice(actor, {
+      invoiceId: inv.id,
+      contract: c,
+      line: l,
+      resolved: r,
+      currencyCode: c.currencyCode,
+    });
     // A non-catalog line is always its own snapshot — only a CATALOG line billed
     // at the snapshot is a price-book gap.
-    if (l.catalogItemId && pricedFrom === 'contract_snapshot') {
+    if (l.catalogItemId && materialized.pricedFrom === 'contract_snapshot') {
       priceBookGaps.push({ contractLineId: l.id, catalogItemId: l.catalogItemId, itemName: l.description, currencyCode: c.currencyCode });
+    }
+    if (materialized.overage) overages.push(materialized.overage);
+
+    // Evidence for THIS line, from the one array the quantity came from.
+    // With a fixed allowance above the count, the base line bills the allowance
+    // while only existing devices get rows. Rows past the allowance attach to
+    // the overage sibling in bill mode and to the base in flag mode.
+    if (ordered) {
+      const cut = r.included === null ? ordered.length : Math.min(r.included, ordered.length);
+      for (const [i, row] of ordered.entries()) {
+        const countedAs: InvoiceLineDeviceCountedAs =
+          i < cut ? 'included' : r.overageMode === 'bill' ? 'overage' : 'flagged';
+        if (countedAs === 'overage' && materialized.overageLine === null) {
+          throw new ContractServiceError(
+            `Overage evidence for contract line ${l.id} has no overage invoice line`, 500, 'INVALID_STATE',
+          );
+        }
+        pendingEvidence.push({
+          invoiceLineId: countedAs === 'overage' ? materialized.overageLine!.id : materialized.baseLine.id,
+          deviceId: row.id,
+          hostname: row.hostname,
+          deviceRole: row.role,
+          siteId: row.siteId,
+          countedAs,
+        });
+      }
     }
   }
 
@@ -1167,8 +1951,36 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
+
+  // 3b. Billing evidence (#3205 W07). The period id does not exist until the
+  //     claim above succeeds, and a lost claim deletes the draft — so nothing is
+  //     written before this point. Everything here shares the caller-supplied
+  //     transaction with the draft, lines and claim.
+  const periodId = claimed[0]!.id;
+  for (const chunk of chunksOf(pendingEvidence, EVIDENCE_INSERT_CHUNK)) {
+    await db.insert(invoiceLineDevices).values(
+      chunk.map((p) => ({ ...p, invoiceId: inv.id, orgId: c.orgId })),
+    );
+  }
+  // 1 means W07 recorded evidence for this invoice, including the meaningful
+  // zero-row case where a contract had no device-counted lines.
+  await db.update(invoices).set({ evidenceVersion: 1 }).where(eq(invoices.id, inv.id));
+
+  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, resolvableLines(lines, snapshot)) : null;
+  await db.insert(contractBillingPeriodOutcomes).values({
+    contractBillingPeriodId: periodId,
+    orgId: c.orgId,
+    contractId,
+    invoiceId: inv.id,
+    snapshotDeviceTotal: hasDeviceLine ? snapshot.devices.length : 0,
+    uncoveredTotal: uncoveredDevices?.total ?? 0,
+    uncoveredByRole: uncoveredDevices?.byRole ?? {},
+    flaggedTotal: overages.filter((o) => o.mode === 'flag').reduce((n, o) => n + o.overage, 0),
+    billedOverageTotal: overages.filter((o) => o.mode === 'bill').reduce((n, o) => n + o.overage, 0),
+    overages,
+  });
 
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
   const nextIdx = idx + 1;
@@ -1184,8 +1996,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, lines) : null;
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices, overages };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.
@@ -1233,26 +2044,48 @@ export async function createContractWithLinesDetailed(
 
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
-    const l = spec.lines[i]!;
-    assertSpecRoleLine(l);
+    const l = spec.lines[i]! as DeviceSetContractLineSpec;
+    const issues = contractLineInvariantIssues(l, { mode: 'create' });
+    if (issues.length > 0) {
+      throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_STATE', { issues });
+    }
+    assertSpecDeviceSetLine(l);
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
-    const siteId = isDeviceLine(l) ? (l.siteId ?? null) : null;
-    if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
-    const [insertedLine] = await db.insert(contractLines).values({
-      contractId: contract.id,
-      orgId: spec.orgId,
-      lineType: l.lineType,
-      description: l.description,
-      catalogItemId: l.catalogItemId ?? null,
-      unitPrice: l.unitPrice,
-      manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
-      siteId,
-      deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
-      taxable: l.taxable,
-      sortOrder: l.sortOrder ?? i,
-    }).returning({ id: contractLines.id });
+    const allowance = allowanceColumnsFor(l);
+    if (allowance.overageUnitPrice !== null) assertRepresentable(allowance.overageUnitPrice, spec.currencyCode);
+    const siteId = SITE_SCOPABLE_LINE_TYPES.has(l.lineType) ? (l.siteId ?? null) : null;
+    const site = siteId ? await assertSiteInOrg(db, siteId, spec.orgId) : null;
+    const group = l.lineType === 'per_device_group' && l.deviceGroupId
+      ? await assertGroupInOrg(db, l.deviceGroupId, spec.orgId) : null;
+    let insertedLine: { id: string } | undefined;
+    try {
+      [insertedLine] = await db.insert(contractLines).values({
+        contractId: contract.id,
+        orgId: spec.orgId,
+        lineType: l.lineType,
+        description: l.description,
+        catalogItemId: l.catalogItemId ?? null,
+        unitPrice: l.unitPrice,
+        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        siteId: site?.id ?? null,
+        // #4693: acceptance passes the string the customer SIGNED. Prefer it
+        // over a fresh read; every other caller falls back to the live name.
+        siteName: site ? (l.siteName ?? site.name) : null,
+        deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
+        deviceGroupId: group?.id ?? null,
+        deviceGroupName: group?.name ?? null,
+        ...allowance,
+        taxable: l.taxable,
+        sortOrder: l.sortOrder ?? i,
+      }).returning({ id: contractLines.id });
+    } catch (err) {
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
 
     if (!insertedLine) {
       throw new ContractServiceError(

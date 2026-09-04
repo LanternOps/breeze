@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Aprobar todo ({{count}})",
     "declineAll": "Rechazar todo ({{count}})",
-    "groupTitle": "{{count}} solicitudes similares · {{tool}}"
+    "groupTitle": "{{count}} solicitudes similares · {{tool}}",
+    "moreHostnames": "+{{count}} más",
+    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organización",
+    "allOrganizations": "Todas las organizaciones ({{count}})",
+    "orgOption": "{{name}} ({{count}} pendientes)",
+    "searchLabel": "Buscar",
+    "searchPlaceholder": "Buscar por acción, equipo o agente…",
+    "sortLabel": "Ordenar por",
+    "sortExpiringSoonest": "Vence pronto",
+    "sortNewest": "Más recientes",
+    "showingLoaded": "Mostrando {{shown}} de {{loaded}} cargadas",
+    "clearFilters": "Borrar filtros",
+    "noMatches": {
+      "title": "Ninguna aprobación coincide con tus filtros",
+      "description": "Prueba con otra organización o término de búsqueda, o borra tus filtros."
+    }
   },
   "risk": {
     "low": "Riesgo bajo",
@@ -31,6 +49,16 @@
   "deciding": "Enviando…",
   "expiresIn": "Vence en {{minutes}} min",
   "expiresSoon": "Vence en menos de un minuto",
+  "expired": "Vencida",
+  "unknownOrganization": "Organización desconocida",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "Se aprobó {{action}} para {{org}}",
+  "pagination": {
+    "showing": "Mostrando {{shown}} de {{total}}",
+    "showingCount": "Mostrando {{shown}}",
+    "loadMore": "Cargar más",
+    "loadMoreError": "No se pudo cargar más. Inténtalo de nuevo."
+  },
   "errors": {
     "noApproverDevice": "Registra un dispositivo de aprobación en tu perfil y vuelve a intentarlo.",
     "notSoleApprover": "Otra persona autorizada debe decidir sobre esta solicitud.",
@@ -40,7 +68,8 @@
     "decisionFailed": "No se pudo enviar la decisión. Inténtalo de nuevo.",
     "batchStepUp": "Este lote requiere un inicio de sesión más seguro. Aprueba las solicitudes de una en una.",
     "batchNotHomogeneous": "Estas solicitudes ya no se pueden decidir en conjunto.",
-    "batchTooLarge": "Este lote tiene demasiadas solicitudes para decidirlas juntas. Apruébalas en grupos más pequeños."
+    "batchTooLarge": "Este lote tiene demasiadas solicitudes para decidirlas juntas. Apruébalas en grupos más pequeños.",
+    "driftedFromBatch": "Esta solicitud cambió y debe decidirse de forma individual."
   },
   "registerDevice": "Registrar dispositivo",
   "alwaysAllow": {

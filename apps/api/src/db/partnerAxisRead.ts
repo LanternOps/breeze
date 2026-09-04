@@ -33,8 +33,18 @@ import {
  * (partner-axis tables are fully visible to it) and would double-hold
  * connections against the 25-connection US ceiling, where postgres-js has no
  * acquire timeout. Same skip branch as `getEnrollmentDefaultsForOrg`
- * (services/enrollmentDefaults.ts, #2818) and `withPartnerWideVisibility`
- * (services/featureConfigResolver.ts).
+ * (services/enrollmentDefaults.ts, #2818).
+ *
+ * WHY THIS ONE SURVIVED #4673 W03, which deleted the config-policy sibling
+ * (`withPartnerWideVisibility`): that sibling's rows are PARTNER-WIDE — they
+ * live on org-axis tables with `org_id IS NULL`, so a SELECT-only RLS branch
+ * (`org_id IS NULL AND partner_id = breeze_current_partner_id()`) can grant
+ * them without touching write targeting. These rows are on PARTNER-AXIS tables
+ * (`partners`, PARTNER_TENANT_TABLES): there is no `org_id IS NULL` shape to
+ * key a branch on, and the only gate is `breeze_has_partner_access`, which also
+ * governs WRITES. Granting it to org scope would widen UPDATE/DELETE, so the
+ * escape stays until #2822 designs a read-only partner-axis branch. Do not
+ * "clean this up" by analogy with W03.
  */
 export async function readWithPartnerAxisVisibility<T>(fn: () => Promise<T>): Promise<T> {
   // `getCurrentDbAccessContext()` reflects the GUCs actually SET LOCAL on the

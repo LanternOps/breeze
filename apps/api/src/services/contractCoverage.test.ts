@@ -1,36 +1,57 @@
 import { describe, it, expect } from 'vitest';
-import { isDeviceLine, quantityFor, uncoveredByRole, type CoverageLine } from './contractCoverage';
+import { coverageMatch, DEVICE_COUNTED_LINE_TYPES, isDeviceLine, matchingDevicesForLine, orderDevicesForEvidence, quantityFor, uncoveredByRole, type CoverageLine, type CoverageMatchReason, type OrgDeviceSnapshot } from './contractCoverage';
+import { CONTRACT_LINE_TYPES } from '@breeze/shared';
 import type { DeviceSnapshotRow } from './contractQuantities';
 
 const A = 'site-a';
 const B = 'site-b';
 // One org: 2 workstations at A, 1 at B; 1 server at A; 1 switch at B; 1 unknown at A.
-const snapshot: DeviceSnapshotRow[] = [
-  { role: 'workstation', siteId: A, n: 2 },
-  { role: 'workstation', siteId: B, n: 1 },
-  { role: 'server', siteId: A, n: 1 },
-  { role: 'switch', siteId: B, n: 1 },
-  { role: 'unknown', siteId: A, n: 1 },
+const devices: DeviceSnapshotRow[] = [
+  { id: 'ws1', hostname: 'ws1', role: 'workstation', siteId: A },
+  { id: 'ws2', hostname: 'ws2', role: 'workstation', siteId: A },
+  { id: 'ws3', hostname: 'ws3', role: 'workstation', siteId: B },
+  { id: 'srv1', hostname: 'srv1', role: 'server', siteId: A },
+  { id: 'sw1', hostname: 'sw1', role: 'switch', siteId: B },
+  { id: 'unk1', hostname: 'unk1', role: 'unknown', siteId: A },
 ];
+const G_VIP = 'group-vip';       // ws1, srv1, and a decommissioned device not in the snapshot
+const G_SITE_B = 'group-site-b'; // site-bound to B; members ws3 and (off-site) ws1
+const snapshot: OrgDeviceSnapshot = {
+  devices,
+  groups: new Map([
+    [G_VIP, { siteId: null, memberIds: new Set(['ws1', 'srv1', 'decommissioned-x']) }],
+    [G_SITE_B, { siteId: B, memberIds: new Set(['ws3', 'ws1']) }],
+  ]),
+};
 const line = (p: Partial<CoverageLine> & Pick<CoverageLine, 'lineType'>): CoverageLine =>
-  ({ siteId: null, deviceRoles: null, ...p });
+  ({ siteId: null, deviceRoles: null, deviceGroupId: null, ...p });
+const ALL_FIXTURE_LINES: CoverageLine[] = [
+  line({ lineType: 'per_device' }),
+  line({ lineType: 'per_device', siteId: A }),
+  line({ lineType: 'per_device_role', deviceRoles: ['server'] }),
+  line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }),
+  line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['workstation', 'switch'] }),
+  line({ lineType: 'per_device_group', deviceGroupId: G_VIP }),
+  line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }),
+];
 
 describe('isDeviceLine', () => {
-  it('is true only for the two device-counted types', () => {
-    expect(isDeviceLine({ lineType: 'per_device' })).toBe(true);
-    expect(isDeviceLine({ lineType: 'per_device_role' })).toBe(true);
+  it('is true only for the three device-counted types', () => {
+    for (const lineType of ['per_device', 'per_device_role', 'per_device_group'] as const) expect(isDeviceLine({ lineType })).toBe(true);
     for (const lineType of ['flat', 'per_seat', 'manual'] as const) expect(isDeviceLine({ lineType })).toBe(false);
   });
 });
 
 describe('quantityFor', () => {
   it.each<[string, CoverageLine, number]>([
-    ['per_device org-wide counts every row', line({ lineType: 'per_device' }), 6],
+    ['per_device org-wide counts every device', line({ lineType: 'per_device' }), 6],
     ['per_device scoped to a site', line({ lineType: 'per_device', siteId: A }), 4],
     ['per_device_role single role', line({ lineType: 'per_device_role', deviceRoles: ['server'] }), 1],
     ['per_device_role role set', line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }), 4],
     ['per_device_role scoped to a site', line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['workstation', 'switch'] }), 2],
     ['per_device_role with no matching devices', line({ lineType: 'per_device_role', deviceRoles: ['printer'] }), 0],
+    ['per_device_group counts members present in the billable snapshot only', line({ lineType: 'per_device_group', deviceGroupId: G_VIP }), 2],
+    ['per_device_group site-bound group ignores an off-site member', line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }), 1],
   ])('%s', (_name, l, expected) => {
     expect(quantityFor(snapshot, l)).toBe(expected);
   });
@@ -39,22 +60,17 @@ describe('quantityFor', () => {
     expect(() => quantityFor(snapshot, line({ lineType: 'flat' }))).toThrow(/not a device-counted/);
   });
 
-  it('resolves each line quantity independently for mixed site and role coverage', () => {
-    const perDeviceAtA = line({ lineType: 'per_device', siteId: A });
-    const switches = line({ lineType: 'per_device_role', deviceRoles: ['switch'] });
-    expect(quantityFor(snapshot, perDeviceAtA)).toBe(4);
-    expect(quantityFor(snapshot, switches)).toBe(1);
+  it('throws when a group line names a group missing from the snapshot, or no group at all', () => {
+    expect(() => quantityFor(snapshot, line({ lineType: 'per_device_group', deviceGroupId: 'nope' }))).toThrow(/group nope is not in the snapshot/);
+    expect(() => quantityFor(snapshot, line({ lineType: 'per_device_group' }))).toThrow(/without a device group/);
   });
 
-  it('returns zero for a server role line against unknown-only inventory', () => {
-    const unknownOnly: DeviceSnapshotRow[] = [{ role: 'unknown', siteId: null, n: 3 }];
-    expect(quantityFor(unknownOnly, line({ lineType: 'per_device_role', deviceRoles: ['server'] }))).toBe(0);
+  it('an empty group counts zero', () => {
+    const s: OrgDeviceSnapshot = { devices, groups: new Map([['empty', { siteId: null, memberIds: new Set() }]]) };
+    expect(quantityFor(s, line({ lineType: 'per_device_group', deviceGroupId: 'empty' }))).toBe(0);
   });
 
-  it.each([
-    ['null', null],
-    ['empty', []],
-  ] as const)('throws when a per_device_role line has %s device roles', (_name, deviceRoles) => {
+  it.each([['null', null], ['empty', []]] as const)('throws when a per_device_role line has %s device roles', (_n, deviceRoles) => {
     expect(() => quantityFor(snapshot, line({ lineType: 'per_device_role', deviceRoles }))).toThrow(/without device roles/);
   });
 });
@@ -71,9 +87,7 @@ describe('uncoveredByRole', () => {
   });
 
   it('a site-scoped per_device line leaves the other site uncovered', () => {
-    expect(uncoveredByRole(snapshot, [line({ lineType: 'per_device', siteId: A })])).toEqual({
-      total: 2, byRole: { workstation: 1, switch: 1 },
-    });
+    expect(uncoveredByRole(snapshot, [line({ lineType: 'per_device', siteId: A })])).toEqual({ total: 2, byRole: { workstation: 1, switch: 1 } });
   });
 
   it('role lines cover only their roles; unknown is always uncovered', () => {
@@ -84,44 +98,172 @@ describe('uncoveredByRole', () => {
     expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 1, byRole: { unknown: 1 } });
   });
 
-  it('a site-scoped role line does not cover the same role at another site', () => {
-    const lines = [line({ lineType: 'per_device_role', siteId: A, deviceRoles: ['workstation'] })];
-    expect(uncoveredByRole(snapshot, lines)).toEqual({
-      total: 4, byRole: { workstation: 1, server: 1, switch: 1, unknown: 1 },
+  it('a group line covers its billable members; a device on a group line and a role line is covered once', () => {
+    const lines = [
+      line({ lineType: 'per_device_group', deviceGroupId: G_VIP }),          // ws1, srv1
+      line({ lineType: 'per_device_role', deviceRoles: ['server'] }),         // srv1 again
+    ];
+    expect(quantityFor(snapshot, lines[0]!) + quantityFor(snapshot, lines[1]!)).toBe(3); // billed on both
+    expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 4, byRole: { workstation: 2, switch: 1, unknown: 1 } });
+  });
+
+  it('a site-bound group does not cover its off-site member', () => {
+    expect(uncoveredByRole(snapshot, [line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B })])).toEqual({
+      total: 5, byRole: { workstation: 2, server: 1, switch: 1, unknown: 1 },
     });
   });
 
-  it('overlapping role lines report a device as covered once', () => {
-    const lines = [
-      line({ lineType: 'per_device_role', deviceRoles: ['server'] }),
-      line({ lineType: 'per_device_role', deviceRoles: ['server', 'workstation', 'switch'] }),
-    ];
-    expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 1, byRole: { unknown: 1 } });
-  });
-
-  it('combines a site-scoped device line with an unscoped role line', () => {
-    const lines = [
-      line({ lineType: 'per_device', siteId: A }),
-      line({ lineType: 'per_device_role', deviceRoles: ['switch'] }),
-    ];
-    expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 1, byRole: { workstation: 1 } });
-  });
-
-  it('reports all unknown-only inventory as uncovered by a server role line', () => {
-    const unknownOnly: DeviceSnapshotRow[] = [{ role: 'unknown', siteId: null, n: 3 }];
-    expect(uncoveredByRole(unknownOnly, [line({ lineType: 'per_device_role', deviceRoles: ['server'] })])).toEqual({
-      total: 3, byRole: { unknown: 3 },
-    });
+  it('an empty group leaves everything uncovered', () => {
+    const s: OrgDeviceSnapshot = { devices, groups: new Map([['empty', { siteId: null, memberIds: new Set() }]]) };
+    expect(uncoveredByRole(s, [line({ lineType: 'per_device_group', deviceGroupId: 'empty' })]).total).toBe(6);
   });
 
   it('empty inventory is zero, not an error', () => {
-    expect(uncoveredByRole([], [line({ lineType: 'per_device_role', deviceRoles: ['server'] })])).toEqual({ total: 0, byRole: {} });
+    const s: OrgDeviceSnapshot = { devices: [], groups: new Map() };
+    expect(uncoveredByRole(s, [line({ lineType: 'per_device_role', deviceRoles: ['server'] })])).toEqual({ total: 0, byRole: {} });
   });
 
-  it.each([
-    ['null', null],
-    ['empty', []],
-  ] as const)('throws for %s device roles even when inventory is empty', (_name, deviceRoles) => {
-    expect(() => uncoveredByRole([], [line({ lineType: 'per_device_role', deviceRoles })])).toThrow(/without device roles/);
+  it.each([['null', null], ['empty', []]] as const)('throws for %s device roles even when inventory is empty', (_n, deviceRoles) => {
+    const s: OrgDeviceSnapshot = { devices: [], groups: new Map() };
+    expect(() => uncoveredByRole(s, [line({ lineType: 'per_device_role', deviceRoles })])).toThrow(/without device roles/);
+  });
+});
+
+// #3205 W06: coverageMatch is the SAME predicate as the private lineMatches,
+// with the reason attached. The parity block at the bottom is the anti-drift
+// assertion: every quantity W02 computes must equal the number of devices
+// coverageMatch calls covered, over W02's own truth-table fixtures.
+describe('coverageMatch (#3205 W06)', () => {
+  const rowOf = (id: string) => devices.find((d) => d.id === id)!;
+  const why = (l: CoverageLine, id: string): CoverageMatchReason | null => coverageMatch(l, rowOf(id), snapshot);
+
+  it('per_device names the selector: org-wide vs one site', () => {
+    expect(why(line({ lineType: 'per_device' }), 'ws1')).toBe('org');
+    expect(why(line({ lineType: 'per_device', siteId: A }), 'ws1')).toBe('site');
+    expect(why(line({ lineType: 'per_device', siteId: B }), 'ws1')).toBeNull();
+  });
+
+  it('a site-scoped role line is role, not site (Decision 3)', () => {
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['server'] }), 'srv1')).toBe('role');
+    expect(why(line({ lineType: 'per_device_role', siteId: A, deviceRoles: ['server'] }), 'srv1')).toBe('role');
+    expect(why(line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['server'] }), 'srv1')).toBeNull();
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['printer'] }), 'srv1')).toBeNull();
+  });
+
+  it('a group covers its members, and a site-bound group does not reach off-site', () => {
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_VIP }), 'ws1')).toBe('group');
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_VIP }), 'ws2')).toBeNull();
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }), 'ws3')).toBe('group');
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }), 'ws1')).toBeNull(); // member, wrong site
+  });
+
+  it('an unknown-role device is billable by non-role lines (roadmap correction)', () => {
+    expect(why(line({ lineType: 'per_device' }), 'unk1')).toBe('org');
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }), 'unk1')).toBeNull();
+    const s: OrgDeviceSnapshot = {
+      devices,
+      groups: new Map([['g-unk', { siteId: null, memberIds: new Set(['unk1']) }]]),
+    };
+    expect(coverageMatch(line({ lineType: 'per_device_group', deviceGroupId: 'g-unk' }), rowOf('unk1'), s)).toBe('group');
+  });
+
+  it('throws on an unresolvable line, exactly like quantityFor', () => {
+    expect(() => why(line({ lineType: 'per_device_role', deviceRoles: null }), 'srv1')).toThrow(/without device roles/);
+    expect(() => why(line({ lineType: 'per_device_group' }), 'srv1')).toThrow(/without a device group/);
+    expect(() => why(line({ lineType: 'per_device_group', deviceGroupId: 'nope' }), 'srv1')).toThrow(/group nope is not in the snapshot/);
+  });
+
+  it('returns null for every non-device-counted line type', () => {
+    for (const lineType of ['flat', 'per_seat', 'manual'] as const) {
+      expect(why(line({ lineType }), 'srv1')).toBeNull();
+    }
+  });
+
+  it('DEVICE_COUNTED_LINE_TYPES and isDeviceLine agree over every contract line type', () => {
+    for (const lineType of CONTRACT_LINE_TYPES) {
+      expect(isDeviceLine({ lineType })).toBe((DEVICE_COUNTED_LINE_TYPES as readonly string[]).includes(lineType));
+    }
+    expect([...DEVICE_COUNTED_LINE_TYPES].sort()).toEqual(['per_device', 'per_device_group', 'per_device_role']);
+  });
+
+  it('PARITY: quantityFor counts exactly the devices coverageMatch calls covered', () => {
+    for (const l of ALL_FIXTURE_LINES) {
+      expect(quantityFor(snapshot, l)).toBe(devices.filter((r) => coverageMatch(l, r, snapshot) !== null).length);
+    }
+    // …and the uncovered tally is exactly the complement, which is what makes
+    // the contract page's warning and the device page's panel one answer.
+    expect(uncoveredByRole(snapshot, ALL_FIXTURE_LINES).total)
+      .toBe(devices.filter((r) => !ALL_FIXTURE_LINES.some((l) => coverageMatch(l, r, snapshot) !== null)).length);
+  });
+});
+
+// #3205 W07: matchingDevicesForLine is the ONLY device source generation uses.
+// quantityFor === matchingDevicesForLine(...).length by construction, which is
+// what forbids an invoice saying "12" beside eleven evidence rows.
+describe('matchingDevicesForLine (#3205 W07)', () => {
+  it('returns exactly the rows coverageMatch calls covered, for every fixture line', () => {
+    for (const l of ALL_FIXTURE_LINES) {
+      const expected = snapshot.devices.filter((r) => coverageMatch(l, r, snapshot) !== null);
+      expect(matchingDevicesForLine(snapshot, l)).toEqual(expected);
+    }
+  });
+
+  it('PARITY: quantityFor is exactly its length', () => {
+    for (const l of ALL_FIXTURE_LINES) {
+      expect(quantityFor(snapshot, l)).toBe(matchingDevicesForLine(snapshot, l).length);
+    }
+  });
+
+  it('throws for a non-device line type, like quantityFor', () => {
+    expect(() => matchingDevicesForLine(snapshot, line({ lineType: 'flat' })))
+      .toThrow(/not a device-counted line type/);
+    expect(() => matchingDevicesForLine(snapshot, line({ lineType: 'per_seat' })))
+      .toThrow(/not a device-counted line type/);
+  });
+
+  it('carries hostname through from the snapshot row', () => {
+    const rows = matchingDevicesForLine(snapshot, line({ lineType: 'per_device' }));
+    expect(rows.every((r) => typeof r.hostname === 'string' && r.hostname.length > 0)).toBe(true);
+  });
+});
+
+// Decision 6. localeCompare is locale- and ICU-version-dependent ('a' vs 'B'
+// flips with collation, and Node's ICU data changes between releases), so it
+// cannot underwrite a reproducibility promise. '<'/'>' on strings is a fixed
+// code-unit comparison with no environment input. These cases are chosen so a
+// switch to localeCompare FAILS here.
+describe('orderDevicesForEvidence (#3205 W07)', () => {
+  const row = (id: string, hostname: string): DeviceSnapshotRow => ({ id, hostname, role: 'server', siteId: null });
+
+  it('orders uppercase before lowercase (code units, not collation)', () => {
+    const out = orderDevicesForEvidence([row('i2', 'alpha'), row('i1', 'Alpha')]);
+    expect(out.map((r) => r.hostname)).toEqual(['Alpha', 'alpha']);
+  });
+
+  it('breaks a duplicate-hostname tie on device id', () => {
+    const out = orderDevicesForEvidence([row('bbb', 'dup'), row('aaa', 'dup')]);
+    expect(out.map((r) => r.id)).toEqual(['aaa', 'bbb']);
+  });
+
+  it('orders non-ASCII hostnames by code unit, where collation would disagree', () => {
+    const out = orderDevicesForEvidence([
+      row('n3', 'zürich-01'), row('n1', 'ZÜRICH-02'), row('n2', '東京-01'), row('n0', 'zoo-01'),
+    ]);
+    // 'Z'(0x5A) < 'z'(0x7A); 'zoo' < 'zürich' because 'o'(0x6F) < 'ü'(0xFC);
+    // CJK (0x6771) sorts after every Latin-1 code unit here.
+    expect(out.map((r) => r.hostname)).toEqual(['ZÜRICH-02', 'zoo-01', 'zürich-01', '東京-01']);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [row('b', 'b-host'), row('a', 'a-host')];
+    const copy = [...input];
+    orderDevicesForEvidence(input);
+    expect(input).toEqual(copy);
+  });
+
+  it('is a total order — sorting twice is idempotent', () => {
+    const input = [row('c', 'dup'), row('a', 'dup'), row('b', 'Alpha')];
+    const once = orderDevicesForEvidence(input);
+    expect(orderDevicesForEvidence(once)).toEqual(once);
   });
 });

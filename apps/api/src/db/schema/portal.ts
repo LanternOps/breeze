@@ -31,6 +31,13 @@ export const portalBranding = pgTable('portal_branding', {
   enableAssetCheckout: boolean('enable_asset_checkout').notNull().default(false),
   enableSelfService: boolean('enable_self_service').notNull().default(true),
   enablePasswordReset: boolean('enable_password_reset').notNull().default(true),
+  // Portal visibility Wave 1 (#4562): per-org gates for the customer portal
+  // left-nav sections. Fail-closed defaults — false for every existing org.
+  enableDashboard: boolean('enable_dashboard').notNull().default(false),
+  enableSecurity: boolean('enable_security').notNull().default(false),
+  enableBackups: boolean('enable_backups').notNull().default(false),
+  enableReports: boolean('enable_reports').notNull().default(false),
+  enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -194,8 +201,12 @@ export const ticketComments = pgTable('ticket_comments', {
   // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
   // and skips admission — see the migration header for the full rationale.
   originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
-  // Loop-guard link to the agent run that authored this comment (Task 3
-  // reads it; nothing writes it yet — the autonomous-note lane is deferred).
+  // Loop-guard link to the agent run that authored this comment. Written by
+  // addAiTriageNote() (services/ticketService.ts, P2-4a #4300) — every
+  // AI-agent `comment` tool call that carries an agentRunId inserts a row
+  // here with a live value, so this is NOT a preemptive/unwritten column
+  // (an earlier version of this comment said otherwise; corrected alongside
+  // #4644, which found and backfilled the resulting stale-pointer rows).
   // Deliberately NOT `.references(() => aiAgentRuns.id, ...)` here: aiAgents.ts
   // already imports `tickets` from this file (for ai_agent_runs.ticket_id),
   // so a reverse import would be a circular module dependency. The actual FK

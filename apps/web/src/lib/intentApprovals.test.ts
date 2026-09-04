@@ -284,7 +284,23 @@ describe('decideIntentApprovalBatch', () => {
 
       const outcome = await decideIntentApprovalBatch(IDS, 'approve');
 
+      // No `offending` on the error itself (defensive fallback) -> empty.
       expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: [] });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
+    it('issue #4459 — carries the challenge route\'s offending ids through, not just the token', async () => {
+      // The challenge route is where an APPROVE's drift is usually caught
+      // (before proof, before the decide POST), so this is the common path
+      // for the inbox to learn which cards to deselect — not the decide-time
+      // 422 tested below.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_not_homogeneous', 422, 'batch_not_homogeneous', ['ap-2']),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: ['ap-2'] });
       expect(fetchWithAuth).not.toHaveBeenCalled();
     });
 

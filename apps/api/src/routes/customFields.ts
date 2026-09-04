@@ -8,12 +8,25 @@ import { db } from '../db';
 // Must match the database enum: 'text', 'number', 'boolean', 'dropdown', 'date'
 const customFieldTypeSchema = z.enum(['text', 'number', 'boolean', 'dropdown', 'date']);
 
+// Mirrors CustomFieldOptions in packages/shared/src/types/filters.ts. The
+// {label,value} choice shape is the one the shared contract, the web form and
+// services/customFields/validateValue.ts readChoices() all use; the bare-string
+// array is accepted for the rows already stored that way. Widening here was a
+// live bug fix, not a nicety: a dropdown created through the UI was rejected by
+// this very schema (#3257 Phase 0).
+const customFieldChoiceSchema = z.union([
+  z.string().min(1).max(255),
+  z.object({ label: z.string().min(1).max(255), value: z.string().min(1).max(255) })
+]);
+
 const customFieldOptionsSchema = z.object({
-  choices: z.array(z.string()).optional(),
+  choices: z.array(customFieldChoiceSchema).max(200).optional(),
   min: z.number().optional(),
   max: z.number().optional(),
-  pattern: z.string().optional(),
-  placeholder: z.string().optional()
+  minLength: z.number().int().nonnegative().optional(),
+  maxLength: z.number().int().positive().optional(),
+  pattern: z.string().max(512).optional(),
+  placeholder: z.string().max(255).optional()
 });
 
 const createCustomFieldSchema = z.object({

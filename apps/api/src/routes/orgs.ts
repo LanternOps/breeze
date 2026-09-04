@@ -50,6 +50,7 @@ import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isV
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
+import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
@@ -62,6 +63,7 @@ import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
+import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -446,6 +448,7 @@ const partnerPublicColumns = () => ({
   billingTermsAndConditions: partners.billingTermsAndConditions,
   defaultMarkupPercent: partners.defaultMarkupPercent,
   autoTaxHardware: partners.autoTaxHardware,
+  invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   createdAt: partners.createdAt,
@@ -484,6 +487,11 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   // without this a create carrying the alias persists a key the resolver ignores
   // (silent no-op the alias-fold set out to kill).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  // #4520: this handler inserts partners directly rather than going through
+  // createPartner(), so it has to apply the shared new-partner defaults itself —
+  // otherwise it mints `{}`-settings partners that the inbound readers' legacy
+  // absent-means-enabled fallback treats as opted IN (the #3608 regression).
+  data.settings = applyNewPartnerDefaultSettings(data.settings);
 
   const clash = await db
     .select({ id: partners.id })
@@ -2301,6 +2309,8 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
+// Audit-log retention policy (audit_retention_policies) — see routes/orgAuditRetentionSettings.ts
+registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
 registerOrgContactsRoutes(orgRoutes);
 

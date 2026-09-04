@@ -11,7 +11,15 @@ type HashableLine = {
   id: string; description: string; quantity: string; unitPrice: string; lineTotal: string;
   recurrence: string; taxable: boolean; customerVisible: boolean; sortOrder: number;
   depositEligible?: boolean;
+  contractLineType?: string | null;
+  deviceRoles?: string[] | null;
+  deviceGroupName?: string | null;
+  siteName?: string | null;
+  includedQuantity?: string | null;
+  overageMode?: string | null;
+  overageUnitPrice?: string | null;
 };
+export type QuoteHashVersion = 1 | 2;
 /**
  * A quote's contract block content at the point it's about to be signed:
  * which (immutable) template version rendered, and the fully-resolved
@@ -43,10 +51,17 @@ export function computeQuoteSha256(
   quote: HashableQuote,
   blocks: HashableBlock[],
   lines: HashableLine[],
-  contractParts: HashableContractPart[]
+  contractParts: HashableContractPart[],
+  /** Which canonicalisation to use. v1 is byte-for-byte the pre-#3205-W05
+   *  function — no `version` key, no `deviceSet`, whatever the rows carry — so
+   *  every acceptance recorded before that release re-verifies identically
+   *  forever. The version is READ FROM quote_acceptances.hash_version, never
+   *  inferred from the data being verified. */
+  version: QuoteHashVersion = 2,
 ): string {
   const canonical: { quote: Record<string, unknown>; blocks: unknown[]; lines: unknown[]; contracts?: unknown[] } = {
     quote: {
+      ...(version === 2 ? { version: 2 } : {}),
       id: quote.id, currency: quote.currencyCode,
       subtotal: quote.subtotal, taxTotal: quote.taxTotal, total: quote.total,
       oneTime: quote.oneTimeTotal, monthly: quote.monthlyRecurringTotal, annual: quote.annualRecurringTotal,
@@ -61,6 +76,25 @@ export function computeQuoteSha256(
         lineTotal: l.lineTotal, recurrence: l.recurrence, taxable: l.taxable,
         customerVisible: l.customerVisible, sortOrder: l.sortOrder,
         ...(l.depositEligible ? { depositEligible: true } : {}),
+        // The device set is part of what the customer signs. Emitted ONLY under
+        // v2 and ONLY when the line HAS one, so a v2 quote with no descriptor
+        // line still differs from its v1 hash by the `version` key alone — which
+        // is the point: the format is declared, not guessed.
+        //
+        // STAMPED VALUES ONLY, never device_group_id / site_id: both are
+        // ON DELETE SET NULL, and quoteAcceptanceVerify recomputes this hash
+        // from current rows, so hashing an id would report a legitimate group
+        // or site deletion as tampering on an already-accepted quote.
+        // roles are sorted so insertion order cannot move the hash.
+        ...(version === 2 && l.contractLineType ? { deviceSet: {
+          type: l.contractLineType,
+          roles: l.deviceRoles ? [...l.deviceRoles].sort() : null,
+          groupName: l.deviceGroupName ?? null,
+          siteName: l.siteName ?? null,
+          included: l.includedQuantity ?? null,
+          overageMode: l.overageMode ?? null,
+          overageUnitPrice: l.overageUnitPrice ?? null,
+        } } : {}),
       })),
   };
   // Deposit terms are part of what the customer signs. Included ONLY when a

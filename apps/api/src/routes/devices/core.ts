@@ -151,8 +151,13 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // detaches: it's an operator corpus that must survive device hard-delete so
 // cross-partner endpoint correlation still works after the originating
 // device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+// invoice_line_devices (#3205 W07) also detaches: the row is billing evidence
+// that must outlive the device it names — a past invoice still says which
+// devices it charged for, by hostname, after a hard delete. Its device_id FK is
+// declared ON DELETE SET NULL to match, and the table is deliberately NOT
+// append-only so this generic UPDATE loop can run as breeze_app.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -201,6 +206,17 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * story across two orgs; (b) the same (org_id, partner_id) composite FK
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
+ * org_id and device_id, but its org_id belongs to the INVOICE, which does not
+ * move. Re-stamping it would break the (invoice_line_id, org_id) and
+ * (invoice_id, org_id) composite FKs. It is additionally excluded from
+ * breeze_device_child_orgid_tables() by migration
+ * 2026-10-08-101300-device-move-exclude-billing-evidence.sql, because that
+ * trigger would otherwise restamp it mid-UPDATE and raise 23503 before any
+ * route code runs. moveOrg detaches device_id instead — an explicit,
+ * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
@@ -245,15 +261,53 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
- * Registered device/org tables whose org stamp is propagated by a composite
- * foreign key on `devices(id, org_id)`. They remain in the complete registry
- * above, but move-org must not issue its ordinary app-role UPDATE against
- * them. In particular, health observations revoke UPDATE from `breeze_app` so
- * immutable evidence can only be restamped by PostgreSQL's referential action.
+ * Registered device/org tables whose org stamp is propagated by some OTHER
+ * privileged mechanism, so move-org must NOT also issue its ordinary
+ * app-role UPDATE against them (breeze_app lacks UPDATE on some of these,
+ * and for the rest it would just be redundant with what already ran).
+ *
+ * Two different mechanisms populate this list:
+ *  - `agent_health_observations` / `software_inventory_observations`: a
+ *    composite FK on `devices(id, org_id)` declared `ON UPDATE CASCADE`, so
+ *    PostgreSQL's own referential action restamps them the instant the
+ *    `devices` row's org_id changes (line ~234's `.update(devices)` above)
+ *    — immutable evidence can only be restamped this way, never by a
+ *    direct app-role UPDATE.
+ *  - `agent_rollback_events` (#4371 fixup): breeze_app has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), so restamping it
+ *    the ordinary way here would 42501. It does NOT have its own `ON
+ *    UPDATE CASCADE` FK (only `ON DELETE CASCADE` — ON UPDATE defaults to
+ *    NO ACTION, so it must actually be re-tenanted, not just left alone).
+ *    That happens via `breeze_cascade_device_org_id()` (migrations/
+ *    2026-05-18-device-child-orgid-cascade.sql) instead: a SECURITY
+ *    DEFINER trigger on `devices` (AFTER UPDATE OF org_id) that discovers
+ *    every ordinary table with both a uuid `device_id` and `org_id` column
+ *    and restamps it under the function owner's privileges, bypassing
+ *    breeze_app's revoke the same way FK actions do. It fires as a row
+ *    trigger on the SAME `.update(devices)` statement above, so by the
+ *    time this loop runs, agent_rollback_events.org_id is already correct
+ *    — verified against real Postgres:
+ *    `SELECT * FROM breeze_device_child_orgid_tables()` includes it.
+ *    (`pam_actuation_results` is deliberately EXCLUDED from that same
+ *    discovery function — migrations/2026-09-17-pam-device-move-guard.sql
+ *    — because a device with PAM history cannot move orgs at all; see
+ *    devices_pam_history_move_guard / PamDeviceMoveBlockedError below.)
+ *  - `peripheral_policy_delivery_events` (#4806 fixup): same shape as
+ *    `agent_rollback_events` above — breeze_app now has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), and the table
+ *    has a uuid `device_id` + `org_id` pair but no `ON UPDATE CASCADE` FK,
+ *    so `breeze_cascade_device_org_id()`'s auto-discovery restamps it
+ *    instead — verified the same way, via `breeze_device_child_orgid_
+ *    tables()`. Before #4806, breeze_app kept a real UPDATE grant on this
+ *    table specifically so this loop's statement could restamp it; that
+ *    grant is what the fixup revoked, since the cascade trigger already
+ *    made the app-level UPDATE redundant.
  */
 export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'agent_health_observations',
   'software_inventory_observations',
+  'agent_rollback_events',
+  'peripheral_policy_delivery_events',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -282,8 +336,25 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = CORE_DEVICE_ORG_DENORMALIZED_TABLE
  * every entry exists with org_id but without device_id, so a future table
  * can't silently skip both paths. The dedicated statements themselves are
  * covered by behavior tests in moveOrg.test.ts.
+ *
+ * ORDER IS LOAD-BEARING, not cosmetic (#4657). `moveTicketOrg`
+ * (services/ticketService.ts) re-stamps these same tables `WHERE ticket_id`,
+ * and its rows overlap this path's — so both movers must take the locks in
+ * one order or a concurrent ticket-move and device-move deadlock with 40P01.
+ * That order is stated once, with its rationale, in
+ * services/ticketOrgMoveLockOrder.ts; this list must match it, and
+ * ticketOrgMoveLockOrder.test.ts fails if it drifts. moveOrg.test.ts pins the
+ * hand-written UPDATEs in moveOrg.ts to this array's order in turn, so the
+ * statements cannot drift from the list either.
  */
-export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts', 'ticket_attachments'] as const;
+export const CUSTOM_ORG_REWRITE_TABLES = [
+  'time_entries',
+  'ticket_parts',
+  'ticket_alert_links',
+  'ticket_outbox',
+  'ticket_attachments',
+  'ticket_email_links',
+] as const;
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
@@ -764,6 +835,15 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). Projected into the LIST as
+        // well as the detail response because DeviceDetails is handed the
+        // list-shaped row while its own detail fetch is still in flight — the
+        // badge would otherwise pop in a beat late on every navigation.
+        rebootScheduledAt: devices.rebootScheduledAt,
+        rebootDeadline: devices.rebootDeadline,
+        rebootSource: devices.rebootSource,
+        rebootDeferralsUsed: devices.rebootDeferralsUsed,
+        rebootMaxDeferrals: devices.rebootMaxDeferrals,
         // Collision enrollment (#2764): non-null when this row was created
         // because an agent presented a hostname that already existed in the
         // org. The list renders a "Possible duplicate" badge from it so the
@@ -942,6 +1022,13 @@ coreRoutes.get(
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). All five are null until an
+        // agent that reports reboot status has actually scheduled one.
+        rebootScheduledAt: d.rebootScheduledAt ?? null,
+        rebootDeadline: d.rebootDeadline ?? null,
+        rebootSource: d.rebootSource ?? null,
+        rebootDeferralsUsed: d.rebootDeferralsUsed ?? null,
+        rebootMaxDeferrals: d.rebootMaxDeferrals ?? null,
         lastSeenAt: d.lastSeenAt,
         // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
         // until the device has made one authenticated request, lanIp until an

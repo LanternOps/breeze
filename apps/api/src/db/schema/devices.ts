@@ -117,6 +117,31 @@ export const devices = pgTable('devices', {
   // on the first post-reboot heartbeat. Backs the system.rebootRequired
   // filter and the "Reboot pending" UI badge.
   pendingReboot: boolean('pending_reboot').notNull().default(false),
+  // Scheduled-restart status denormalized from the agent heartbeat (#3207 W5).
+  //
+  // Distinct from pendingReboot above: that is the OS saying "a restart is
+  // required at some point", these are the agent's RebootManager saying "a
+  // restart is booked for this instant, and the end user has postponed it N
+  // times". Scalars, not one jsonb column, because `devices` is an org-cascade
+  // table and CLAUDE.md forces any open container into the export policy's
+  // `excludedOpen` bucket — which would keep reboot status out of tenant
+  // exports entirely.
+  //
+  // All nullable, and NULL is load-bearing: it means "this agent has never
+  // reported reboot status" (a pre-#3207 build), which the console must be
+  // able to tell apart from "a restart is scheduled that cannot be postponed"
+  // (rebootMaxDeferrals === 0). Written from the heartbeat's `rebootStatus`,
+  // where an ABSENT field means "no news" (old agents must not wipe the
+  // console's view) and an explicit null means "cancelled, or already fired".
+  rebootScheduledAt: timestamp('reboot_scheduled_at', { withTimezone: true }),
+  rebootDeadline: timestamp('reboot_deadline', { withTimezone: true }),
+  rebootSource: varchar('reboot_source', { length: 32 }),
+  rebootDeferralsUsed: integer('reboot_deferrals_used'),
+  // The deferral budget in force for THIS schedule, read from the agent rather
+  // than re-derived from the patch policy: the policy can be edited after a
+  // restart is already booked, and the console must show the budget the end
+  // user actually has, not the one a tech just saved.
+  rebootMaxDeferrals: integer('reboot_max_deferrals'),
   // Current-state power/battery snapshot from the agent heartbeat (#2142).
   // Latest value only — dynamic per-heartbeat state, stored next to uptime /
   // pendingReboot rather than in the device_metrics time-series. null when the
@@ -434,7 +459,11 @@ export const deviceGroups = pgTable('device_groups', {
   parentId: uuid('parent_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Composite-FK target for contract_lines(device_group_id, org_id) (#3205 W02).
+  // Created in SQL migration 2026-10-06-100100; declared here for db:check-drift.
+  idOrgUnique: uniqueIndex('device_groups_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),

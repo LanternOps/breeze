@@ -57,6 +57,11 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       insertedActionIntentValues: [] as Record<string, unknown>[],
       insertedApprovalRequestsValues: [] as unknown[],
       insertedOutboxValues: [] as Record<string, unknown>[],
+      // Set to inject a failure on the NEXT intent_outbox insert only (auto
+      // clears itself) — proves the transaction-catch path in
+      // cancelActionIntent without giving every other outbox-writing test a
+      // footgun to forget to reset.
+      outboxInsertError: null as Error | null,
       updateActionIntentsSets: [] as Record<string, unknown>[],
       updateActionIntentsWheres: [] as unknown[],
       selectAgentRunsResults: [] as unknown[][],
@@ -149,6 +154,11 @@ vi.mock('../../db', () => ({
           };
         }
         if (table === schema.intentOutboxTbl) {
+          if (dbState.outboxInsertError) {
+            const err = dbState.outboxInsertError;
+            dbState.outboxInsertError = null;
+            return Promise.reject(err);
+          }
           dbState.insertedOutboxValues.push(values as Record<string, unknown>);
           return Promise.resolve(undefined);
         }
@@ -347,6 +357,7 @@ function resetDbState() {
   dbState.insertedActionIntentValues.length = 0;
   dbState.insertedApprovalRequestsValues.length = 0;
   dbState.insertedOutboxValues.length = 0;
+  dbState.outboxInsertError = null;
   dbState.updateActionIntentsSets.length = 0;
   dbState.updateActionIntentsWheres.length = 0;
   dbState.selectAgentRunsResults.length = 0;
@@ -2180,6 +2191,57 @@ describe('cancelActionIntent', () => {
     dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
     const result = await cancelActionIntent(makeAuth(), 'intent-1');
     expect(result).toEqual({ ok: false, status: 'completed' });
+  });
+
+  // #4798: a requester who already received the "approved and now running"
+  // outcome notification was never told a subsequent cancel happened — the
+  // CAS committed with no outbox row, so intentReleaseWorker.ts had nothing
+  // to deliver. Mirrors createActionIntent's intent_created/intent_approved
+  // outbox write: an event row in the SAME successful-CAS branch, ids only.
+  it('writes an intent_cancelled outbox row when the CAS succeeds', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', orgId: ORG_ID, requestedByUserId: REQUESTER_ID }),
+    ]);
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    const result = await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(result).toEqual({ ok: true, status: 'cancelled' });
+    expect(dbState.insertedOutboxValues).toEqual([
+      { intentId: 'intent-1', eventType: 'intent_cancelled', payload: { intentId: 'intent-1', orgId: ORG_ID } },
+    ]);
+  });
+
+  // Mirrors the "reports the lost race" test above: a lost CAS must not
+  // write an outbox row for a cancellation that never actually happened.
+  it('writes no outbox row when the CAS loses the race', async () => {
+    dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
+    dbState.updateActionIntentsResults.push([]); // CAS lost
+    dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
+    await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(dbState.insertedOutboxValues).toEqual([]);
+  });
+
+  // Review finding (#4798): a failed outbox insert must surface as a typed,
+  // logged failure — same posture as createActionIntent's transaction catch
+  // — rather than a bare exception. The CAS and the insert share ONE
+  // withSystemDbAccessContext transaction, so Postgres would roll the status
+  // flip back with it; nothing here claims otherwise.
+  it('wraps a failed outbox insert as a typed ActionIntentError, not a bare exception', async () => {
+    dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    dbState.outboxInsertError = new Error('connection reset');
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(cancelActionIntent(makeAuth(), 'intent-1')).rejects.toMatchObject({
+        message: expect.stringContaining('Failed to cancel action intent'),
+        code: 'cancel_failed',
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[intentService] cancel action intent transaction failed (rolled back):',
+        expect.any(Error),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 

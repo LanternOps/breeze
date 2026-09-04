@@ -76,24 +76,60 @@ brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema)
   return c.json(payload);
 });
 
+// Authenticated exact-route projection (Task 3.3, replaces the former
+// host-derived public lookup). Distinct from resolveBrandingByDomain() above:
+// this is org-scoped via portalAuth, includes the five W03 visibility flags,
+// and is cached private/per-viewer rather than public/per-host. Mounted after
+// portalAuthMiddleware on the exact `/branding` path in routes/portal/index.ts
+// — `/branding/:domain` remains public because that middleware only matches
+// the exact `/branding` path.
 brandingRoutes.get('/branding', async (c) => {
-  const host = c.req.header('x-forwarded-host')
-    || c.req.header('host')
-    || '';
-  const domain = host.split(':')[0] || '';
+  const auth = c.get('portalAuth');
 
-  const branding = await resolveBrandingByDomain(domain);
+  const [branding] = await db
+    .select({
+      id: portalBranding.id,
+      orgId: portalBranding.orgId,
+      logoUrl: portalBranding.logoUrl,
+      faviconUrl: portalBranding.faviconUrl,
+      primaryColor: portalBranding.primaryColor,
+      secondaryColor: portalBranding.secondaryColor,
+      accentColor: portalBranding.accentColor,
+      customDomain: portalBranding.customDomain,
+      domainVerified: portalBranding.domainVerified,
+      welcomeMessage: portalBranding.welcomeMessage,
+      supportEmail: portalBranding.supportEmail,
+      supportPhone: portalBranding.supportPhone,
+      footerText: portalBranding.footerText,
+      customCss: portalBranding.customCss,
+      enableTickets: portalBranding.enableTickets,
+      enableAssetCheckout: portalBranding.enableAssetCheckout,
+      enableSelfService: portalBranding.enableSelfService,
+      enablePasswordReset: portalBranding.enablePasswordReset,
+      enableDashboard: portalBranding.enableDashboard,
+      enableSecurity: portalBranding.enableSecurity,
+      enableBackups: portalBranding.enableBackups,
+      enableReports: portalBranding.enableReports,
+      enableSupportUsage: portalBranding.enableSupportUsage
+    })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, auth.user.orgId))
+    .limit(1);
+
   if (!branding) {
+    // No row means the MSP has never saved portal settings for this org — the
+    // default state, not an error. Match the public /branding/:domain 404
+    // contract so the portal falls into its documented 404 → defaultBranding
+    // path (flags undefined → every gated surface fails closed).
     return c.json({ error: 'Branding not found' }, 404);
   }
 
   const payload = { branding };
   applyPortalCacheHeaders(c, {
-    scope: 'public',
-    browserMaxAgeSeconds: 300,
-    sharedMaxAgeSeconds: 3600,
-    staleWhileRevalidateSeconds: 86400,
-    vary: ['Host']
+    scope: 'private',
+    browserMaxAgeSeconds: 30,
+    staleWhileRevalidateSeconds: 60,
+    vary: ['Authorization', 'Cookie']
   });
   const etag = buildWeakEtag(payload);
   c.header('ETag', etag);

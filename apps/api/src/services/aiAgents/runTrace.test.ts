@@ -253,7 +253,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       });
 
       it('projects the caller\'s live ticket_drafts rows as draftsWritten', () => {
-        const draftRows = [{ id: 'draft-1', kind: 'reply' as const }];
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'Hi — try restarting your computer.', state: 'active' as const }];
         const detail = buildRunTrace(
           baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
           AGENT, null, [], [], new Map(), null, draftRows,
@@ -269,14 +269,182 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         expect(detail.ticketProposal?.draftsWritten).toBeUndefined();
       });
 
-      it('never carries draft content — only id/kind — even if the caller\'s row shape somehow had it', () => {
-        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz' } as never];
+      // Issue #4467 — draftReply/draftResolutionNote (the proposal's OWN
+      // text, persisted at proposal time) and draftsWritten (a live
+      // ticket_drafts read) are two representations of the same draft and
+      // used to be sourced independently, so they could disagree — e.g. a
+      // technician edits the draft on the ticket's "AI draft" surface after
+      // it's written, and the run-detail page would keep showing the STALE
+      // originally-proposed text under "Draft reply" while draftsWritten
+      // correctly still pointed at the (now-edited) row. Once a
+      // `ticket_drafts` row exists for a kind, its live `content` is the
+      // single source of truth for that kind's text on the DTO — the
+      // proposal's own text is used only as a pre-write preview, before the
+      // intent has released and the row exists at all (see
+      // RunTraceDraftRowInput's docstring). This is a derivation off ONE
+      // source per kind, not two independently-synced copies.
+      it('derives draftReply from the live ticket_drafts content once written, never disagreeing with draftsWritten', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'EDITED on the ticket after approval.', state: 'active' as const }];
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ticketProposal: {
+                version: 1,
+                summary: 'Restart the spooler.',
+                draftReply: 'Originally proposed text, now stale.',
+                notes: [],
+              },
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftReply).toBe('EDITED on the ticket after approval.');
+        expect(detail.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: 'draft-1' }]);
+      });
+
+      it('derives draftResolutionNote from the live ticket_drafts content once written', () => {
+        const draftRows = [
+          { id: 'draft-2', kind: 'resolution_note' as const, content: 'Live resolution note content.', state: 'active' as const },
+        ];
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ticketProposal: {
+                version: 1,
+                summary: 'Restart the spooler.',
+                draftResolutionNote: 'Stale proposed resolution note.',
+                notes: [],
+              },
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftResolutionNote).toBe('Live resolution note content.');
+      });
+
+      // Issue #4467 review round 1 — the `draft` tool executor supersedes-
+      // then-inserts on every call (including its own unique-violation retry
+      // path), so more than one `ticket_drafts` row of the SAME kind can end
+      // up linked to one run_id: one `superseded`, one `active`. The route
+      // orders `draftRows` newest-first, but `pickDraftText` must not just
+      // trust ordering — it explicitly prefers the `active` row so a stale
+      // superseded row can never win even if it happened to sort first.
+      it('prefers the active row over a superseded one when two draftRows share the same kind', () => {
+        const draftRows = [
+          { id: 'draft-old', kind: 'reply' as const, content: 'STALE superseded text.', state: 'superseded' as const },
+          { id: 'draft-new', kind: 'reply' as const, content: 'Current active text.', state: 'active' as const },
+        ];
         const detail = buildRunTrace(
           baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
           AGENT, null, [], [], new Map(), null, draftRows,
         );
-        const json = JSON.stringify(detail.ticketProposal);
+        expect(detail.ticketProposal?.draftReply).toBe('Current active text.');
+        // draftsWritten still lists BOTH rows — it is an audit trail of
+        // every write, not just the currently-active one.
+        expect(detail.ticketProposal?.draftsWritten).toEqual([
+          { kind: 'reply', draftId: 'draft-old' },
+          { kind: 'reply', draftId: 'draft-new' },
+        ]);
+      });
+
+      it('derives both draftReply and draftResolutionNote independently when a run wrote one of each kind', () => {
+        const draftRows = [
+          { id: 'draft-reply-1', kind: 'reply' as const, content: 'Live reply text.', state: 'active' as const },
+          { id: 'draft-note-1', kind: 'resolution_note' as const, content: 'Live resolution text.', state: 'active' as const },
+        ];
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ticketProposal: {
+                version: 1,
+                summary: 'Restart the spooler.',
+                draftReply: 'Stale proposed reply.',
+                draftResolutionNote: 'Stale proposed note.',
+                notes: [],
+              },
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftReply).toBe('Live reply text.');
+        expect(detail.ticketProposal?.draftResolutionNote).toBe('Live resolution text.');
+        expect(detail.ticketProposal?.draftsWritten).toEqual([
+          { kind: 'reply', draftId: 'draft-reply-1' },
+          { kind: 'resolution_note', draftId: 'draft-note-1' },
+        ]);
+      });
+
+      it('falls back to the proposal\'s own draftReply text when no ticket_drafts row has been written yet (pending intent)', () => {
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ticketProposal: {
+                version: 1,
+                summary: 'Restart the spooler.',
+                draftReply: 'Proposed but not yet approved.',
+                notes: [],
+              },
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [], new Map(), null, [],
+        );
+        expect(detail.ticketProposal?.draftReply).toBe('Proposed but not yet approved.');
+        expect(detail.ticketProposal?.draftsWritten).toBeUndefined();
+      });
+
+      it('issue #4462 — projects outcome.ticketTriageSkipped as ticketProposal.skipped', () => {
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ...PROPOSAL_OUTCOME,
+              ticketTriageSkipped: [{ item: 'fields', reason: 'below_confidence_floor' }],
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.skipped).toEqual([
+          { item: 'fields', reason: 'below_confidence_floor' },
+        ]);
+      });
+
+      it('issue #4462 — leaves skipped undefined (not an empty array) when nothing was skipped', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.skipped).toBeUndefined();
+      });
+
+      // Issue #4467 changed what this guards: `content` now legitimately
+      // flows through to `draftReply`/`draftResolutionNote` (that's the
+      // fix — see `pickDraftText`), so the invariant worth a tripwire is
+      // narrower than "content never reaches the DTO at all": the
+      // `draftsWritten` array's OWN entries must still carry id/kind only,
+      // never a `content` key, so a written draft's text is exposed exactly
+      // once on the wire (via draftReply/draftResolutionNote) and not
+      // duplicated a second time inside draftsWritten.
+      it('draftsWritten entries never carry draft content — only id/kind — even though that content now feeds draftReply/draftResolutionNote', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz', state: 'active' as const }];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        // The content DOES legitimately reach draftResolutionNote now.
+        expect(detail.ticketProposal?.draftResolutionNote).toBe('leak-marker-zzz');
+        // ...but never a second time, inside draftsWritten's own entries.
+        const json = JSON.stringify(detail.ticketProposal?.draftsWritten);
         expect(json).not.toContain('leak-marker-zzz');
+        expect(json).not.toContain('"content"');
       });
     });
 

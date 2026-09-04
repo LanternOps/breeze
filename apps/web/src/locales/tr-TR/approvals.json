@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Tümünü onayla ({{count}})",
     "declineAll": "Tümünü reddet ({{count}})",
-    "groupTitle": "{{count}} benzer istek · {{tool}}"
+    "groupTitle": "{{count}} benzer istek · {{tool}}",
+    "moreHostnames": "+{{count}} daha",
+    "denyConfirmSummary": "Bu, {{org}} için {{count}} isteği reddeder."
+  },
+  "filters": {
+    "orgLabel": "Kuruluş",
+    "allOrganizations": "Tüm kuruluşlar ({{count}})",
+    "orgOption": "{{name}} ({{count}} bekliyor)",
+    "searchLabel": "Ara",
+    "searchPlaceholder": "Eylem, cihaz veya aracıya göre ara…",
+    "sortLabel": "Sıralama",
+    "sortExpiringSoonest": "Süresi yakında doluyor",
+    "sortNewest": "En yeni",
+    "showingLoaded": "Yüklenen {{loaded}} kayıttan {{shown}} tanesi gösteriliyor",
+    "clearFilters": "Filtreleri temizle",
+    "noMatches": {
+      "title": "Filtrelerinize uyan onay yok",
+      "description": "Farklı bir kuruluş veya arama terimi deneyin ya da filtrelerinizi temizleyin."
+    }
   },
   "risk": {
     "low": "Düşük risk",
@@ -31,6 +49,16 @@
   "deciding": "Gönderiliyor…",
   "expiresIn": "{{minutes}} dk içinde sona erer",
   "expiresSoon": "Bir dakikadan kısa sürede sona erer",
+  "expired": "Süresi doldu",
+  "unknownOrganization": "Bilinmeyen kuruluş",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{org}} için {{action}} onaylandı",
+  "pagination": {
+    "showing": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+    "showingCount": "{{shown}} kayıt gösteriliyor",
+    "loadMore": "Daha fazla yükle",
+    "loadMoreError": "Daha fazlası yüklenemedi. Yeniden deneyin."
+  },
   "errors": {
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
@@ -40,7 +68,8 @@
     "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
     "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
     "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez.",
-    "batchTooLarge": "Bu toplu işlemde birlikte karar verilemeyecek kadar çok istek var. Bunları daha küçük gruplar halinde onaylayın."
+    "batchTooLarge": "Bu toplu işlemde birlikte karar verilemeyecek kadar çok istek var. Bunları daha küçük gruplar halinde onaylayın.",
+    "driftedFromBatch": "Bu istek değişti ve tek başına karara bağlanmalıdır."
   },
   "registerDevice": "Cihazı kaydet",
   "alwaysAllow": {

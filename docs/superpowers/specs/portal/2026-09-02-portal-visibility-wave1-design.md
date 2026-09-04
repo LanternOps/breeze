@@ -80,7 +80,7 @@ All under `/api/v1/portal`, all behind `portalAuthMiddleware` + the prefix gate.
 | `GET /backups/overview` | Protected/unprotected device counts, last passed verification, last test restore, open RPO/RTO breaches, mean readiness. |
 | `GET /backups/devices?page&limit` | Per-device backup table. |
 | `GET /devices` (existing) | Add the enrichment columns (§7.6). |
-| `GET /devices/export.csv` | Same projection, streamed CSV, filename `<org-slug>-devices-<YYYY-MM-DD>.csv`. |
+| `GET /devices/export.csv` | Same projection, materialized in-transaction, paged 250 rows at a time as CSV, filename `<org-slug>-devices-<YYYY-MM-DD>.csv`. |
 | `GET /tickets` and `GET /tickets/:id` (existing) | Add `sla` object (§7.5). |
 | `GET /tickets/usage?month=YYYY-MM` | Month-to-date support usage (§7.5). Defaults to the current month in the org timezone. |
 | `GET /invoices/:id` (existing) | Customer line DTO gains `ticketNumber: string | null`. |
@@ -129,7 +129,7 @@ See §8.
 
 ### 7.6 Devices enrichment + CSV
 
-Columns added to the portal device projection: `lastPatchAt` (max `installed_at`), `protection` (7.1 state), `encryption`, `lastBackupAt` (7.3 last restore point), `warrantyEndsAt` (`device_warranty.warranty_end_date`). CSV export streams the same rows; header names are the UI labels.
+Columns added to the portal device projection: `lastPatchAt` (max `installed_at`), `protection` (7.1 state), `encryption`, `lastBackupAt` (7.3 last restore point), `warrantyEndsAt` (`device_warranty.warranty_end_date`). CSV export materializes the same rows in-transaction, paged 250 rows at a time; header names are the UI labels.
 
 ## 8. Report self-service
 

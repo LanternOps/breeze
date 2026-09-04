@@ -3006,6 +3006,44 @@ describe('EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS guard', () => {
 // AGENT_AUTO_PROMOTE/ABUSE_SIGNALS_ENABLED above: this silently governs
 // whether attemptPolicyDecision ever runs, so a typo must be caught at boot
 // rather than silently reading as off at the envFlag reader.
+// #1374 L4 platform-attestation gate. Same guard, sharper reasoning than the
+// siblings above: this flag is a break-glass revert for a CRITICAL-TIER
+// approval bypass, and the runtime reader keeps enforcement ON for an
+// unrecognized value — so without this boot refusal the ONLY symptom of a typo
+// would be an operator who believes they performed a revert and did not.
+describe('BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED boolean guard (#1374)', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED');
+    expect(
+      buildEnvParseInput({ BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: 'sentinel' })
+        .BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['flase', 'enabled', 'ture', 'yolo'])('refuses boot on the typo %j', (value) => {
+    withEnv({ ...validEnv, BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: value }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED/);
+    });
+  });
+
+  it('leaves the value unset when unset (defaults to enforcing)', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED'], () => {
+        expect(validateConfig().BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED).toBeUndefined();
+      });
+    });
+  });
+});
+
 describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED');

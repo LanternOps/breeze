@@ -11,7 +11,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'groupBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     // Make the chain awaitable: resolve to the next queued result (or []).
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
@@ -412,6 +412,46 @@ describe('invoiceService guards', () => {
     expect(result.invoice).not.toHaveProperty('partnerId');
   });
 
+  it('serializes ticketNumber without source metadata', () => {
+    expect(svc.toCustomerInvoiceLine({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    })).toEqual({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    });
+  });
+
+  it('joins tickets and scopes both sides to the invoice org', async () => {
+    queueResult([{
+      id: 'invoice-1', status: 'sent', orgId: 'org1', partnerId: 'p1',
+    }]);
+    queueResult([]);
+    await svc.getCustomerInvoice('invoice-1', 'org1');
+    const join = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.at(-1)![1];
+    const compiledJoin = new PgDialect().sqlToQuery(join as SQL);
+    expect(compiledJoin.sql).toContain(
+      '"tickets"."id" = "invoice_lines"."ticket_id"',
+    );
+    expect(compiledJoin.sql).toContain('"tickets"."org_id" =');
+    expect(compiledJoin.params).toContain('org1');
+
+    const where = (db as unknown as { where: Mock }).where.mock.calls.at(-1)![0];
+    const compiledWhere = new PgDialect().sqlToQuery(where as SQL);
+    expect(compiledWhere.sql).toContain('"invoice_lines"."org_id" =');
+    expect(compiledWhere.params).toContain('org1');
+  });
+
   it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     queueResult([{
@@ -437,9 +477,10 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
     expect(result.lines[0]).toEqual({
+      ticketNumber: null,
       // Legacy line (source row carries no `name`): description stays the title.
       name: null,
       description: 'Customer-facing work',
@@ -478,7 +519,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
   });
 
@@ -1182,6 +1223,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([]);                  // recompute: update
     queueResult([draftRow(currencyCode)]); // getInvoice: owned invoice
     queueResult([]);                  // getInvoice: lines
+    queueResult([]);                  // getInvoice: grouped evidence counts
     queueResult([]);                  // getInvoice: stripe connection
   };
 
@@ -1377,6 +1419,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('exposes the cached account currency and a warn-dont-block mismatch warning when connected', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // invoice
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD', accountCountry: 'US' }]); // stripe_connect_accounts
     queueResult([]); // accounting_entity_mappings (no QuickBooks mapping row)
     const out = await svc.getInvoice('i1', actor);
@@ -1390,6 +1433,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('no warning when the account settles in the document currency', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
+    queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'EUR', accountCountry: 'DE' }]);
     queueResult([]);
     const out = await svc.getInvoice('i1', actor);
@@ -1399,6 +1443,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
 
   it('connected but the account currency was never cached (pre-wave-5 row): explicit UNKNOWN warning, not "no warning" (review F6)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
     queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: null, accountCountry: null }]);
     queueResult([]);
@@ -1412,6 +1457,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
 
   it('both null when the partner is not connected', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+    queueResult([]);
     queueResult([]);
     queueResult([]); // no connection row
     queueResult([]);
@@ -1429,6 +1475,7 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
   it('surfaces the QuickBooks mapping row when a partner-scoped read can see it', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // invoice
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
     queueResult([]); // stripe connection (not connected)
     queueResult([{
       syncStatus: 'synced',
@@ -1443,11 +1490,31 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
       lastSyncedAt: '2026-09-01T12:00:00.000Z',
       lastError: null,
       remoteDocNumber: '1042',
+      remoteDeleted: false,
     });
+  });
+
+  // #4544: markInvoiceDeletedRemotely (accountingPaymentPull.ts) writes this
+  // exact lastError; getInvoiceAccountingSync must surface it as a typed
+  // boolean rather than making the web layer string-match lastError.
+  it('surfaces remoteDeleted: true when the mapping carries the remote-deleted marker', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([{
+      syncStatus: 'error',
+      lastSyncedAt: null,
+      lastError: 'Deleted in QuickBooks',
+      remoteDocNumber: null,
+    }]);
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toMatchObject({ syncStatus: 'error', remoteDeleted: true });
   });
 
   it('is null when the mapping read returns no row (never connected, or RLS hides a partner-axis table from an org-scoped read) — fail closed, no special-casing', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
     queueResult([]);
     queueResult([]);
     // Simulates an org-scoped ambient RLS context on `accounting_entity_mappings`
@@ -1456,6 +1523,29 @@ describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
     queueResult([]);
     const out = await svc.getInvoice('i1', partnerActor);
     expect(out.accountingSync).toBeNull();
+  });
+});
+
+describe('getInvoice — billing evidence counts (#3205 W07)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('#3205 W07 ruling 3: getInvoice adds deviceCount per line; listInvoices does NOT', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'l1' }, { id: 'l2' }]);
+    queueResult([{ lineId: 'l1', n: 3 }]);
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    queueResult([{ id: 'i1', orgId: 'org1' }]); // listInvoices
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.lines.every((l) => typeof l.deviceCount === 'number')).toBe(true);
+    expect(detail.lines.map((l) => l.deviceCount)).toEqual([3, 0]);
+    const list = await svc.listInvoices({ limit: 50 }, actor);
+    expect(list.some((i: Record<string, unknown>) => 'deviceCount' in i)).toBe(false);
+    // Exactly ONE grouped aggregate per detail view — never a per-row aggregate on
+    // the invoice index.
+    expect((db as unknown as { groupBy: { mock: { calls: unknown[][] } } }).groupBy.mock.calls).toHaveLength(1);
   });
 });
 
@@ -1585,6 +1675,18 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]); // #3778: parent contract locked FOR UPDATE
     await expect(
       svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.5', taxable: false, contractId: 'ct1' }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
+
+  it('addContractLine rejects a fractional injected JPY costBasis', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]);
+    await expect(
+      svc.addContractLine('i1', {
+        description: 'Overage', quantity: '1', unitPrice: '100', costBasis: '40.5',
+        taxable: false, contractId: 'ct1',
+      }, actor)
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
   });

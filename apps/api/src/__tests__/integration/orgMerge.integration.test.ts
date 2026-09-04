@@ -189,6 +189,8 @@ interface Fixture {
   deviceCommand: string;
   quote: string;
   quoteLine: string;
+  quoteOrphanLine: string;
+  quoteSiteLine: string;
   quoteRecipient: string;
   quoteOrder: string;
   quoteOrderLine: string;
@@ -292,6 +294,8 @@ async function seedFixture(): Promise<Fixture> {
     deviceCommand: randomUUID(),
     quote: randomUUID(),
     quoteLine: randomUUID(),
+    quoteOrphanLine: randomUUID(),
+    quoteSiteLine: randomUUID(),
     quoteRecipient: randomUUID(),
     quoteOrder: randomUUID(),
     quoteOrderLine: randomUUID(),
@@ -408,9 +412,24 @@ async function seedFixture(): Promise<Fixture> {
     // --- repoint + composite-FK chain (deferrable (id, org_id) FKs) --------
     await db.execute(sql`
       INSERT INTO quotes (id, partner_id, org_id, currency_code) VALUES (${f.quote}::uuid, ${f.partner}::uuid, ${f.loser}::uuid, 'USD')`);
+    const deletedDescriptorGroup = randomUUID();
     await db.execute(sql`
-      INSERT INTO quote_lines (id, quote_id, org_id, source_type, quantity, unit_price, line_total)
-      VALUES (${f.quoteLine}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, 'manual', 2, 100, 200)`);
+      INSERT INTO device_groups (id, org_id, name)
+      VALUES (${deletedDescriptorGroup}::uuid, ${f.loser}::uuid, 'Deleted Quote Group')`);
+    await db.execute(sql`
+      INSERT INTO quote_lines (
+        id, quote_id, org_id, source_type, name, quantity, unit_price, line_total,
+        recurrence, contract_line_type, device_group_id, device_group_name, site_id, site_name
+      ) VALUES
+        (${f.quoteLine}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, 'manual', 'Scoped quote line', 2, 100, 200,
+         'monthly', 'per_device_group', ${f.groupL}::uuid, 'L Group stamped', NULL, NULL),
+        (${f.quoteOrphanLine}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, 'manual', 'Orphaned quote line', 3, 25, 75,
+         'monthly', 'per_device_group', ${deletedDescriptorGroup}::uuid, 'Deleted Quote Group stamped', NULL, NULL),
+        (${f.quoteSiteLine}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, 'manual', 'Site quote line', 4, 10, 40,
+         'monthly', 'per_device', NULL, NULL, ${f.siteL}::uuid, 'L Main stamped')`);
+    // ON DELETE SET NULL clears only the live id. The stamped name deliberately
+    // survives and the merge must preserve that unresolved descriptor shape.
+    await db.execute(sql`DELETE FROM device_groups WHERE id = ${deletedDescriptorGroup}::uuid`);
     await db.execute(sql`
       INSERT INTO quote_recipients (id, quote_id, org_id, email)
       VALUES (${f.quoteRecipient}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, ${`rcpt-${suffix}@x.test`})`);
@@ -785,7 +804,7 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
       // composite-FK chain — parents and children move in separate statements,
       // which only works because Phase B runs SET CONSTRAINTS ALL DEFERRED
       quotes: { moved: 1, dropped: 0 },
-      quote_lines: { moved: 1, dropped: 0 },
+      quote_lines: { moved: 3, dropped: 0 },
       quote_recipients: { moved: 1, dropped: 0 },
       quote_orders: { moved: 1, dropped: 0 },
       quote_order_lines: { moved: 1, dropped: 0 },
@@ -918,6 +937,34 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     // count of one would pass even if the loser's duplicate had won the race.
     expect(assets.find((r) => r.ip === '10.0.0.1')?.id).toBe(f.assetCollideS);
     expect(await countIn('discovered_assets', f.loser)).toBe(0);
+
+    // Quote device-set descriptors are historical pricing prose. The merge
+    // repoints the live org-owned ids when their rows survive, keeps both
+    // stamps verbatim, and preserves an already-orphaned group as null-id plus
+    // stamp rather than manufacturing a dangling cross-org reference.
+    const quoteDescriptors = await query<{
+      id: string; org_id: string; device_group_id: string | null;
+      device_group_name: string | null; site_id: string | null; site_name: string | null;
+    }>(sql`
+      SELECT id, org_id, device_group_id, device_group_name, site_id, site_name
+        FROM quote_lines WHERE quote_id = ${f.quote}::uuid ORDER BY name`);
+    expect(quoteDescriptors).toEqual([
+      {
+        id: f.quoteOrphanLine, org_id: f.survivor,
+        device_group_id: null, device_group_name: 'Deleted Quote Group stamped',
+        site_id: null, site_name: null,
+      },
+      {
+        id: f.quoteLine, org_id: f.survivor,
+        device_group_id: f.groupL, device_group_name: 'L Group stamped',
+        site_id: null, site_name: null,
+      },
+      {
+        id: f.quoteSiteLine, org_id: f.survivor,
+        device_group_id: null, device_group_name: null,
+        site_id: f.siteL, site_name: 'L Main stamped',
+      },
+    ]);
 
     // -----------------------------------------------------------------------
     // 4b. The re-home-then-delete executors. Every child below hung off a

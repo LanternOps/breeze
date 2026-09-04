@@ -469,6 +469,135 @@ describe('org routes', () => {
         'partner-1'
       );
     });
+
+    // Issue #4520: this platform-admin path inserts partners directly instead of
+    // going through createPartner(), so it used to miss the #3608 opt-out default
+    // and fall back to the readers' absent-means-enabled behaviour.
+    describe('new-partner default settings (#4520)', () => {
+      const captureInsertedValues = () => {
+        const captured: Record<string, unknown>[] = [];
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => {
+          const tx = {
+            insert: vi.fn(() => ({
+              values: vi.fn((vals: Record<string, unknown>) => {
+                captured.push(vals);
+                // Model the real `.returning(partnerPublicColumns())`, which
+                // projects the PERSISTED row — settings included. That echo is
+                // what tells an admin caller what actually landed.
+                return {
+                  returning: vi.fn().mockResolvedValue([
+                    { id: 'partner-1', settings: vals.settings }
+                  ])
+                };
+              })
+            }))
+          };
+          return fn(tx);
+        });
+        return captured;
+      };
+
+      it('writes settings.ticketing.inbound.enabled=false when the caller sends no settings', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+      });
+
+      it('adds the default alongside caller-supplied settings without clobbering them', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: {
+              security: { ipAllowlist: ['10.0.0.0/8'] },
+              ticketing: { inbound: { unknownSenderMode: 'triage' } }
+            }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { ipAllowlist: ['10.0.0.0/8'] },
+          ticketing: { inbound: { unknownSenderMode: 'triage', enabled: false } }
+        });
+      });
+
+      it('respects an explicit ticketing.inbound.enabled=true from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { ticketing: { inbound: { enabled: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: true } } });
+      });
+
+      it('still folds the legacy allowedMfaMethods alias while applying the default', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { allowedMfaMethods: { totp: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { allowedMethods: { totp: true } },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      // `settings` is `z.any()`, so a malformed value reaches the handler. It
+      // cannot carry the flag, and the readers treat an untraversable path as
+      // absent (= inbound ENABLED), so it is normalized rather than persisted.
+      // The 201 body echoes the persisted row, so the caller is not left
+      // guessing what landed — assert that end-to-end, not just the insert.
+      it('normalizes a non-object settings value and echoes the result in the 201 body', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner', settings: 'nonsense' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+        expect(await res.json()).toMatchObject({
+          settings: { ticketing: { inbound: { enabled: false } } }
+        });
+      });
+    });
   });
 
   describe('GET /orgs/partners/:id', () => {
@@ -4800,7 +4929,9 @@ describe('org routes', () => {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {}, invoiceDeviceAppendix: true,
+              }])
             })
           })
         };
@@ -4810,7 +4941,9 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+      expect(body).toMatchObject({
+        id: 'partner-123', name: 'Acme MSP', slug: 'acme', invoiceDeviceAppendix: true,
+      });
 
       expect(selectedColumns).toBeDefined();
       const keys = Object.keys(selectedColumns!);
@@ -4822,6 +4955,7 @@ describe('org routes', () => {
         'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
         'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
         'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'invoiceDeviceAppendix',
         'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
       ]) {
         expect(keys).toContain(expected);

@@ -214,8 +214,22 @@ If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the u
 
 MFA verification is rate-limited separately from login.
 
-<Aside type="caution" title="Integrators: a wrong code and an expired session share a status code">
-  A wrong six-digit code and an expired or invalid `tempToken` both return **`401`**. Do not branch on the status code alone — a client that treats every `401` here as "session expired" will silently restart the login flow when the user simply mistyped a digit. Distinguish them by the response body: a bad code returns `{ "error": "Invalid MFA code" }`, while a dead session returns `{ "error": "Invalid or expired MFA session" }`.
+<Aside type="note" title="Integrators: a wrong code and an expired session have different status codes">
+  A **rejected proof** — a wrong six-digit code, a wrong recovery code, or a wrong step-up password — returns **`400`** with a stable machine-readable `code`:
+
+  ```json
+  { "error": "Invalid MFA code", "message": "Invalid MFA code", "code": "mfa_code_invalid" }
+  ```
+
+  A **dead credential** — an expired or invalid `tempToken`, or an expired bearer token — returns **`401`**:
+
+  ```json
+  { "error": "Invalid or expired MFA session" }
+  ```
+
+  Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), and `invalid_credentials` (a rejected step-up password or enrollment grant). Never branch on the human-readable `error`/`message` text — it is not part of the contract.
+
+  This applies to `/auth/mfa/*` and `/auth/phone/*`, and to the two other endpoints that verify a password supplied in the request body: `POST /auth/change-password` and `POST /auth/account-deletion-request`. Both answer a rejected password with `400` and `code: "invalid_credentials"`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit — or, on those two endpoints, mid-flow for a mistyped password.
 </Aside>
 
 ### Disabling MFA
@@ -264,6 +278,8 @@ Authenticated users can change their password via `POST /auth/change-password` b
 <Aside type="tip">
   SSO-provisioned users do not have a password. The change password endpoint returns `400` for these accounts.
 </Aside>
+
+A **wrong `currentPassword`** also returns `400`, with the stable body `{ "error": "Current password is incorrect", "message": "Current password is incorrect", "code": "invalid_credentials" }`. It previously returned `401`; branch on the status and on `code`, never on the message text. `401` from this endpoint now means only that the bearer token is dead.
 
 ---
 

@@ -53,6 +53,7 @@ import {
   type MergeTableOutcome,
 } from './orgMergeCustomExecutors';
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
+import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
 import { topologicalCascadeOrder } from './tenantCascade';
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
@@ -948,6 +949,18 @@ export function buildMergeWarnings(input: MergeWarningInput): string[] {
   return warnings;
 }
 
+/**
+ * The parents-first table walk both the merge transaction and the preview
+ * use: `topologicalCascadeOrder()` (children-before-parents, i.e. erasure
+ * order) reversed, then corrected so the ticket child tables land in the
+ * SAME relative order the ticket/device org-move axes lock them in
+ * (#4748) — see `applyTicketChildLockOrder` for why the correction is
+ * necessary and why it's always FK-safe to apply here.
+ */
+async function getOrgMergeWalkOrder(): Promise<string[]> {
+  return applyTicketChildLockOrder([...(await topologicalCascadeOrder())].reverse());
+}
+
 // ---------------------------------------------------------------------------
 // Execute
 // ---------------------------------------------------------------------------
@@ -1031,8 +1044,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
         // reversed it is parents-first, with `organizations` (loser-shell,
-        // a no-op) leading.
-        const order = [...(await topologicalCascadeOrder())].reverse();
+        // a no-op) leading. getOrgMergeWalkOrder() then corrects the ticket
+        // child tables' relative order to match the movers' lock order
+        // (#4748) — see its doc comment.
+        const order = await getOrgMergeWalkOrder();
 
         const summary: Record<string, OrgMergeCounts> = {};
         const notes: string[] = [];
@@ -1274,7 +1289,10 @@ export async function previewOrgMerge(
   return dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(async () => {
       const policies = getOrgMergePolicies();
-      const order = [...(await topologicalCascadeOrder())].reverse();
+      // Same walk order the merge transaction actually applies (#4748) — a
+      // preview computed from a different order could show tables in an
+      // order the real merge would never use.
+      const order = await getOrgMergeWalkOrder();
 
       const tables: OrgMergePreviewTable[] = [];
       const connectionDrops: Array<{ table: string; dropped: number }> = [];

@@ -30,6 +30,7 @@ const baseVerdict: AlertAiVerdictSummaryDto = {
   rationale: 'CPU pegged at 100% for 45 minutes with no recovery.',
   patternKind: null,
   feedback: null,
+  feedbackBy: null,
   suggestedIntentId: null,
   createdAt: '2026-08-28T00:00:00Z',
 };
@@ -128,6 +129,47 @@ describe('AlertVerdictBadge', () => {
     );
     fireEvent.click(screen.getByTestId('alert-verdict-feedback-up'));
     expect(onFeedback).toHaveBeenCalledWith('up');
+  });
+
+  // #4445 — a different tech's vote used to be invisible: the badge just
+  // showed a decided state with no indication of WHOSE decision it was,
+  // so clicking the other button surfaced a bare 409 toast. Surfacing
+  // feedbackByName on the badge itself answers "who voted" up front.
+  it('shows who already gave feedback when the verdict carries feedbackByName', () => {
+    render(
+      <AlertVerdictBadge
+        verdict={{ ...baseVerdict, feedback: 'up', feedbackByName: 'Dana Tech' }}
+        onFeedback={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId('alert-verdict-feedback-by').textContent).toBe('Feedback by Dana Tech');
+  });
+
+  it('does not render a feedback-by label when no one has voted yet', () => {
+    render(<AlertVerdictBadge verdict={baseVerdict} onFeedback={vi.fn()} />);
+    expect(screen.queryByTestId('alert-verdict-feedback-by')).toBeNull();
+  });
+
+  it('does not render a feedback-by label when the verdict is decided but the name is unresolved (deleted user)', () => {
+    render(
+      <AlertVerdictBadge
+        verdict={{ ...baseVerdict, feedback: 'up', feedbackByName: null }}
+        onFeedback={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('alert-verdict-feedback-by')).toBeNull();
+  });
+
+  it('appends the feedback-by label to the badge tooltip once decided', () => {
+    render(
+      <AlertVerdictBadge
+        verdict={{ ...baseVerdict, feedback: 'down', feedbackByName: 'Dana Tech' }}
+        onFeedback={vi.fn()}
+      />
+    );
+    const title = screen.getByTestId('alert-verdict-badge').getAttribute('title');
+    expect(title).toContain(baseVerdict.rationale);
+    expect(title).toContain('Feedback by Dana Tech');
   });
 });
 

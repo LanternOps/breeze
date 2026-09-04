@@ -1,3 +1,5 @@
+import type { ContractLineType } from '@breeze/shared';
+
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type BillingTiming = 'advance' | 'arrears';
 
@@ -37,7 +39,18 @@ export type ContractServiceErrorCode =
   | 'ORG_NOT_FOUND'
   // #3205: a line's siteId names a site owned by a different organization.
   | 'SITE_NOT_IN_ORG'
+  // #3205 W02: a line's deviceGroupId names a group owned by a different organization.
+  | 'GROUP_NOT_IN_ORG'
+  // #3205 W02: a dynamic group's filter could not be evaluated (malformed, engine
+  // error, 500 ms timeout). Never a zero count — generation aborts, list degrades.
+  | 'GROUP_EVALUATION_FAILED'
+  // #3205 W02: a per_device_group line whose group was deleted (device_group_id
+  // NULL). Reads show it unresolved; generation refuses.
+  | 'GROUP_DELETED'
+  // #4693: a formerly site-scoped device line whose site was deleted.
+  | 'SITE_DELETED'
   | 'CONTRACT_NOT_FOUND'
+  | 'PERIOD_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'
   | 'NOT_A_DRAFT'
@@ -71,7 +84,16 @@ export type ContractServiceErrorCode =
   | 'ORPHANED_CONTRACT_SOURCE'
   // A billing period's invoice fails the explicit lineage check (cross-tenant,
   // unattributable, or a cyclic/over-deep replaces_invoice_id ancestry).
-  | 'BROKEN_CONTRACT_LINEAGE';
+  | 'BROKEN_CONTRACT_LINEAGE'
+  // #3205 W03: the patch, merged onto the current row, violates a contract-line
+  // invariant (roles on a non-role line, a site on a group line, an unlink with
+  // no price, a refresh with no link). `details.issues` carries the failing
+  // paths. Distinct from INVALID_STATE, which is about the CONTRACT's status.
+  | 'INVALID_LINE_PATCH'
+  // #3205 W03: resolvePrice could not reach the catalog item. Deliberately does
+  // NOT distinguish missing / foreign / RLS-invisible (catalogService.ts:680) —
+  // a 404 that fires only for foreign ids enumerates other partners' catalogs.
+  | 'CATALOG_ITEM_NOT_FOUND';
 
 export class ContractServiceError extends Error {
   constructor(
@@ -88,4 +110,29 @@ export class ContractServiceError extends Error {
     super(message);
     this.name = 'ContractServiceError';
   }
+}
+
+/**
+ * #3205 W03: what a line mutation tells the audit log. Both doors write it —
+ * the HTTP route through writeRouteAudit, the AI tool through writeAuditEvent
+ * with initiatedBy: 'ai'.
+ *
+ * NO FREE TEXT. No description, no site name, no group name: the audit log is
+ * queryable by support and none of that is incident data (same reasoning as the
+ * recipient-count rule at routes/invoices/lifecycle.ts:70-72).
+ */
+export interface ContractLineAudit {
+  orgId: string;
+  contractId: string;
+  /** Absent on `contract.line.added`: the add path derives its payload from the
+   *  inserted row, which carries no contract name, and its signature is
+   *  deliberately unchanged. Becomes the audit event's resourceName when set. */
+  contractName?: string;
+  contractLineId: string;
+  lineType: ContractLineType;
+  /** Column NAMES whose persisted value changed. Empty on a no-op patch.
+   *  Absent for add/remove. Never a value — see the no-free-text rule. */
+  changedFields?: string[];
+  oldUnitPrice?: string;   // only when unitPrice changed
+  newUnitPrice?: string;   // also set on add
 }

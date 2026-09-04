@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { devices } from '../db/schema';
+import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '../services/agentCertificateBinding';
@@ -23,6 +23,24 @@ export interface AgentAuthContext {
   agentId: string;
   orgId: string;
   siteId: string;
+  /**
+   * #4673 W02 — the partner (MSP) that OWNS this device's organization,
+   * resolved by the device auth select's join to `organizations`.
+   * `organizations.partner_id` is NOT NULL, so this is always populated for an
+   * authenticated agent.
+   *
+   * Its ONLY job is to feed `DbAccessContext.currentPartnerId`, which
+   * `db/index.ts` SET LOCALs as the `breeze.current_partner_id` GUC. Wave 1 of
+   * #4673 added SELECT-ONLY RLS branches
+   * (`org_id IS NULL AND partner_id = public.breeze_current_partner_id()`)
+   * across the configuration-policy chain, so this widens agent READS to its
+   * own MSP's partner-wide config rows and nothing else.
+   *
+   * It is NOT a write capability and must never be spread into
+   * `accessiblePartnerIds` — that array gates `breeze_has_partner_access`, the
+   * partner-AXIS predicate that DOES admit writes. Agents stay `[]` there.
+   */
+  partnerId: string;
   role: AgentCredentialRole;
   /**
    * SHA-256 hex of the bearer token that actually authenticated this request —
@@ -514,8 +532,16 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         hostname: devices.hostname,
         lastSeenIp: devices.lastSeenIp,
+        // #4673 W02 — the owning MSP, for `currentPartnerId`. An INNER join is
+        // correct rather than a LEFT one: `devices.org_id` and
+        // `organizations.partner_id` are both NOT NULL with an FK between them,
+        // so a device whose org row is missing is not an agent we should
+        // authenticate at all. A LEFT join would instead hand that device a
+        // NULL partner and silently degrade it to the pre-W02 blind behaviour.
+        partnerId: organizations.partnerId,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.agentId, agentId))
       .limit(1);
     return row ?? null;
@@ -857,6 +883,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     agentId: device.agentId,
     orgId: device.orgId,
     siteId: device.siteId,
+    // #4673 W02 — surfaced here (not just baked into the wrap below) because
+    // the three SELF_MANAGED_DB_CONTEXT_ACTIONS routes skip that wrap and
+    // hand-build their own org context; they read this to populate
+    // `currentPartnerId` themselves.
+    partnerId: device.partnerId,
     role: match.role,
     // The exact hash that authenticated this request (current token). For a
     // rotation-required previous-token match this is still the previous-token
@@ -905,17 +936,27 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       scope: 'organization',
       orgId: device.orgId,
       accessibleOrgIds: [device.orgId],
-      // Agents are org-scoped; they have no access to partner-level tables.
+      // Agents have no partner-AXIS access: this array gates
+      // `breeze_has_partner_access`, which admits WRITES to partner-owned rows.
+      // It stays empty. `currentPartnerId` below is a strictly separate,
+      // read-only axis — do not merge the two.
       accessiblePartnerIds: [],
-      // Agents don't browse the catalog as org users and partnerId isn't in
-      // scope here; null disables EVERY partner-wide read branch (catalog,
-      // cis_baselines, tenant_variables, and as of #2468 the whole
-      // configuration-policy chain). Fail-closed: `partner_id = NULL` is NULL,
-      // never true. Agent paths that must see partner-wide config therefore
-      // still escalate to a system context — wave 2 of #4673 populates this
-      // field from the device org's partner and removes those escalations.
-      // Do not flip it to a real partner id without that wave's sweep.
-      currentPartnerId: null
+      // #4673 W02 — the device org's owning MSP, from the `organizations` join
+      // in the auth select above. Feeds the `breeze.current_partner_id` GUC,
+      // which Wave 1's SELECT-ONLY branches
+      // (`org_id IS NULL AND partner_id = breeze_current_partner_id()`) read
+      // across the configuration-policy chain, plus the pre-existing catalog /
+      // cis_baselines / tenant_variables branches.
+      //
+      // This lets an agent SEE its own MSP's partner-wide config directly. Wave
+      // 3 then deleted the nested system-context escapes on the agent paths
+      // that used to compensate, so this field is now LOAD-BEARING: drop it and
+      // partner-wide event-log / monitoring / PAM / patch-source / CIS config
+      // silently stops reaching agents, with no error. Because every consuming
+      // policy is FOR SELECT, it grants no write targeting: a foreign partner's
+      // rows stay invisible, and UPDATE/DELETE still see only the org-owned
+      // rows they saw before.
+      currentPartnerId: device.partnerId
     },
     async () => {
       await next();

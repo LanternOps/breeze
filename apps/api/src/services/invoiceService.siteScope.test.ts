@@ -12,7 +12,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'groupBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -67,6 +67,7 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice allows a site-restricted actor an in-site invoice', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteA' }]); // getOwnedInvoiceOr404
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
     queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', restricted);
     expect(result.invoice.id).toBe('i1');
@@ -75,6 +76,7 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice is unaffected for an unrestricted actor (out-of-site & null-site both visible)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB' }]);
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
     queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', unrestricted);
     expect(result.invoice.id).toBe('i1');

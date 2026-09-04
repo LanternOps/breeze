@@ -88,9 +88,19 @@ type HeartbeatPayload struct {
 	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
 	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
 	PendingReboot       bool                       `json:"pendingReboot"`
-	LastUser            string                     `json:"lastUser,omitempty"`
-	UptimeSeconds       int64                      `json:"uptime,omitempty"`
-	DeviceRole          string                     `json:"deviceRole,omitempty"`
+	// RebootStatus is the scheduled-restart snapshot from RebootManager
+	// (#3207 W5). Sent unconditionally — NO omitempty — for the same reason
+	// SecurityCapabilities below is: the server has to tell an old agent (the
+	// key absent from the JSON body entirely) apart from a capable agent
+	// reporting that nothing is scheduled (an explicit null). Absent means "no
+	// news, keep what you have"; null means "the restart was cancelled or has
+	// already fired, clear it". Collapsing those two would strand a cancelled
+	// restart on the device page forever, or let every pre-#3207 agent in the
+	// fleet wipe the console's view on its next beat.
+	RebootStatus  *RebootStatusReport `json:"rebootStatus"`
+	LastUser      string              `json:"lastUser,omitempty"`
+	UptimeSeconds int64               `json:"uptime,omitempty"`
+	DeviceRole    string              `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
@@ -1003,12 +1013,34 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications)
-	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
-		if h.sessionBroker != nil {
-			h.sessionBroker.BroadcastNotification(title, body, urgency)
-		}
-	}, cfg.PatchRebootMaxPerDay)
+	// Initialize reboot manager. Warnings and the interactive postponement
+	// prompt go to the desktop helper through the session broker first, and to
+	// the daemon-drawn Linux dialog when no helper session took them — see
+	// chainedRebootPrompt in reboot_prompt.go for why the order is that way and
+	// why patching.Desktop* is a no-op off Linux.
+	h.rebootMgr = patching.NewRebootManagerWithPrompt(
+		chainedRebootNotify(
+			func(title, body, urgency string) {
+				if h.sessionBroker != nil {
+					h.sessionBroker.BroadcastNotification(title, body, urgency)
+				}
+			},
+			patching.DesktopNotify,
+			func() bool {
+				return h.sessionBroker != nil && len(h.sessionBroker.SessionsWithScope("notify")) > 0
+			},
+		),
+		chainedRebootPrompt(
+			rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+				if h.sessionBroker == nil {
+					return ipc.NotifyResult{}, nil
+				}
+				return h.sessionBroker.RequestNotificationDecision(req, timeout)
+			}),
+			patching.DesktopPrompt,
+		),
+		cfg.PatchRebootMaxPerDay,
+	)
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -4094,6 +4126,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
 	payload.PendingReboot = pendingReboot
+	// Scheduled-restart snapshot (#3207 W5). nil here is not "skip it" — it
+	// marshals to an explicit null, which is how the server learns a restart it
+	// was told about is no longer happening.
+	payload.RebootStatus = h.rebootStatusForHeartbeat()
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
@@ -5726,11 +5762,19 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		ExitCode:  result.ExitCode,
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
+		Error:     result.Error,
 	}
 
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
+	// An explicitly-set Result wins. The stdout reparse below stays for the
+	// handlers that depend on it (discovery, backup, snmp, monitor read
+	// `result`, not stdout) but must never clobber a handler that built a
+	// structured payload on purpose — #2698's customFieldWrites envelope is the
+	// first such payload on the script path. The Error-suppresses-reparse
+	// behavior is unchanged: an errored command's raw stdout must not be
+	// mistaken for a successful structured result.
+	if result.Result != nil {
+		wsResult.Result = result.Result
+	} else if result.Error == "" && result.Stdout != "" {
 		var jsonResult any
 		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
 			wsResult.Result = jsonResult

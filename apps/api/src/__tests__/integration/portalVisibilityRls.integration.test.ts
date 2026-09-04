@@ -11,7 +11,9 @@ import {
   backupConfigs,
   backupJobs,
   backupVerifications,
+  devicePatches,
   devices,
+  patches,
   portalUsers,
   reports,
   reportRuns,
@@ -24,6 +26,9 @@ import {
 import {
   supportUsageForOrg,
 } from '../../services/portal/supportUsage';
+import { patchesAppliedTile } from '../../services/portal/patchReadModel';
+import { backupDevicesPage } from '../../services/portal/backupReadModel';
+import { enrichedDevicesForOrg } from '../../services/portal/deviceReadModel';
 import {
   createOrganization,
   createPartner,
@@ -474,6 +479,125 @@ describe('portal visibility RLS', () => {
       // boundary is actually computed in the caller's timezone rather
       // than always in UTC.
       expect(utcUsage.totals.billed.minutes).toBe(20);
+    });
+  });
+
+  // #4562 W04 regression, surfaced by the W10 portal e2e: the month-window
+  // anchor was bound as a JS Date inside a raw `sql` fragment, which the
+  // postgres-js driver cannot serialize (`Buffer.byteLength` TypeError at bind
+  // time), so every dashboard request 500ed. Unit tests compile the SQL and
+  // never bind, so only a real database proves this.
+  it('computes the patches tile against a real database', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({
+      partnerId: partner.id,
+    });
+    const portalContext: DbAccessContext = {
+      scope: 'organization',
+      orgId: orgA.id,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [],
+      currentPartnerId: null,
+      userId: null,
+    };
+
+    await expect(
+      withDbAccessContext(portalContext, () =>
+        patchesAppliedTile(orgA.id, {
+          timezone: 'America/Denver',
+          now: new Date('2026-09-02T12:00:00Z'),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: 'no_data',
+      month: '2026-09',
+      timezone: 'America/Denver',
+    });
+  });
+
+  // #4562 portal QA walk: the device and backup read models select raw `sql`
+  // timestamp subqueries (`max(completed_at)`, latest `installed_at`), which
+  // postgres-js returns as STRINGS — Drizzle only maps typed columns. Unit tests
+  // mock Date objects and pass; against a real database every
+  // /portal/devices and /portal/backups/devices request 500ed. The fixtures
+  // here deliberately carry completed timestamps so the raw paths execute.
+  it('serializes raw-SQL timestamps in the device and backup read models', async () => {
+    const admin = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const deviceA = await seedDevice(admin, orgA.id, 'ts');
+
+    const [config] = await admin
+      .insert(backupConfigs)
+      .values({ orgId: orgA.id, name: 'A', type: 'file', provider: 'local', providerConfig: {} })
+      .returning({ id: backupConfigs.id });
+    const [job] = await admin
+      .insert(backupJobs)
+      .values({
+        orgId: orgA.id,
+        configId: config!.id,
+        deviceId: deviceA,
+        status: 'completed',
+        completedAt: new Date('2026-09-02T09:00:00Z'),
+      })
+      .returning({ id: backupJobs.id });
+    await admin.insert(backupVerifications).values({
+      orgId: orgA.id,
+      deviceId: deviceA,
+      backupJobId: job!.id,
+      verificationType: 'test_restore',
+      status: 'passed',
+      startedAt: new Date('2026-09-01T09:00:00Z'),
+      completedAt: new Date('2026-09-01T09:05:00Z'),
+      restoreTimeSeconds: 300,
+    });
+    const [patch] = await admin
+      .insert(patches)
+      .values({ source: 'microsoft', externalId: `KB-${randomUUID()}`, title: 'Cumulative update' })
+      .returning({ id: patches.id });
+    await admin.insert(devicePatches).values({
+      orgId: orgA.id,
+      deviceId: deviceA,
+      patchId: patch!.id,
+      status: 'installed',
+      installedAt: new Date('2026-09-01T00:00:00Z'),
+    });
+
+    const portalContext: DbAccessContext = {
+      scope: 'organization',
+      orgId: orgA.id,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [],
+      currentPartnerId: null,
+      userId: null,
+    };
+
+    const devicesPage = await withDbAccessContext(portalContext, () =>
+      enrichedDevicesForOrg(orgA.id, { page: 1, limit: 50, timezone: 'America/Denver' }),
+    );
+    expect(devicesPage.data).toHaveLength(1);
+    expect(devicesPage.data[0]).toMatchObject({
+      lastPatchAt: 'Aug 31, 2026, 6:00 PM MDT',
+      lastBackupAt: 'Sep 2, 2026, 3:00 AM MDT',
+    });
+
+    const backupsPage = await withDbAccessContext(portalContext, () =>
+      backupDevicesPage(orgA.id, {
+        page: 1,
+        limit: 25,
+        timezone: 'America/Denver',
+        now: new Date('2026-09-02T12:00:00Z'),
+      }),
+    );
+    expect(backupsPage.data).toHaveLength(1);
+    expect(backupsPage.data[0]).toMatchObject({
+      configured: true,
+      lastRestorePointAt: '2026-09-02T09:00:00.000Z',
+      lastTestRestore: {
+        status: 'passed',
+        completedAt: '2026-09-01T09:05:00.000Z',
+        restoreTimeSeconds: 300,
+      },
     });
   });
 

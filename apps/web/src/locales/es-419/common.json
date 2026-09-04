@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Postura de la flota",
     "dashboard": "Panel",
@@ -65,6 +66,7 @@
     "sectionExtensions": "Extensiones",
     "variables": "Variables",
     "llmProviderCatalog": "Catálogo de proveedores de LLM",
+    "aiKillSwitch": "Interruptor de emergencia de IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestión de flota",
     "sectionBilling": "Facturación",

@@ -29,12 +29,13 @@ import {
   type ContractTemplateDetail,
   type TemplateVersionSummary,
 } from '../../../lib/api/contractTemplates';
-import type { QuoteBlockInput, CoverPage } from '@breeze/shared';
+import type { QuoteBlockInput, CoverPage, QuoteDeviceSetType } from '@breeze/shared';
 import { computeQuoteTotals, computeQuoteProfit, priceFromMarkup, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { showToast } from '../../shared/Toast';
+import type { DeviceRole } from '@/lib/deviceRoles';
 import { useToastRailOffset } from '../../shared/toastRailOffset';
 import RichTextEditor from '../../common/RichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
@@ -188,6 +189,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const toggleShowInternal = onToggleInternal ?? toggleFallbackShowInternal;
   const { quote, blocks: serverBlocks, lines: serverLines } = detail;
   const currency = quote.currencyCode;
+  useEffect(() => {
+    const onDeviceCountsRefreshed = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === quote.id) onChanged?.();
+    };
+    window.addEventListener('breeze:quote-device-counts-refreshed', onDeviceCountsRefreshed);
+    return () => window.removeEventListener('breeze:quote-device-counts-refreshed', onDeviceCountsRefreshed);
+  }, [quote.id, onChanged]);
 
   // ---- undo-able deletion (deferred DELETE + grace window) -----------------
   // Confirming a line/section removal hides it here and starts a grace timer;
@@ -416,7 +424,21 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [contractVarErrors, setContractVarErrors] = useState<Record<string, string>>({});
   const [contractLabel, setContractLabel] = useState('');
 
-  useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect is flushed AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale string the effect captured. Comparing the rendered STRING (not the
+  // prop's identity) means a refetch that hands back an equal-but-unchanged
+  // value changes nothing on screen and can't discard an in-progress edit.
+  const termsSeed = quote.termsAndConditions ?? '';
+  const [termsSeededFrom, setTermsSeededFrom] = useState(termsSeed);
+  if (termsSeededFrom !== termsSeed) {
+    setTermsSeededFrom(termsSeed);
+    setTerms(termsSeed);
+    setTermsDirty(false);
+  }
 
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
@@ -434,7 +456,17 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // selected_lines block further down for the rationale.
   const stagedSelectedLines = useRef(false);
   useEffect(() => { if (!stagedSelectedLines.current) setDepositType(quote.depositType ?? 'none'); }, [quote.depositType]);
-  useEffect(() => { setDepositPercentDraft(quote.depositPercent ?? ''); }, [quote.depositPercent]);
+  // Same render-phase reseed as `terms` above (#4807) — the percent field is a
+  // live-typed draft, so a passive effect here is the identical clobber
+  // window. Resetting the inline range error too: it described the draft this
+  // reseed just replaced.
+  const depositPercentSeed = quote.depositPercent ?? '';
+  const [depositPercentSeededFrom, setDepositPercentSeededFrom] = useState(depositPercentSeed);
+  if (depositPercentSeededFrom !== depositPercentSeed) {
+    setDepositPercentSeededFrom(depositPercentSeed);
+    setDepositPercentDraft(depositPercentSeed);
+    setDepositPctError(null);
+  }
 
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
   // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +
@@ -1596,14 +1628,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   const addManual = useCallback((
     blockId: string,
-    form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: {
+      name: string; description: string; quantity?: string; unitPrice: string; cost: string; sku: string; partNumber: string;
+      taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean; contractLineType?: QuoteDeviceSetType;
+      deviceRoles?: Exclude<DeviceRole, 'unknown'>[]; deviceGroupId?: string; siteId?: string; includedQuantity?: number;
+      overageMode?: 'bill' | 'flag'; overageUnitPrice?: number;
+    },
   ) => {
     // A line needs at least a title (name) or a description (mirrors the API refine).
     if (!form.name.trim() && !form.description.trim()) return Promise.resolve(false);
     // Guard qty 0 / non-numeric here too — the inline edit path already does, and
     // a silent $0-quantity line is a real footgun on the add path.
     const qtyNum = Number(form.quantity);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+    if (!form.contractLineType && (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum))) {
       handleActionError(new Error('invalid quantity'), t('quotes.editor.errors.quantityWholeGreaterThanZero'));
       return Promise.resolve(false);
     }
@@ -1630,7 +1667,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           blockId,
           name: form.name.trim() || null,
           description: form.description.trim() || null,
-          quantity: qtyNum,
+          ...(form.contractLineType ? {} : { quantity: qtyNum }),
           unitPrice: priceNum,
           unitCost: costEmpty ? null : costNum,
           sku: form.sku.trim() || null,
@@ -1641,6 +1678,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           // Manual lines are never deposit-eligible by default (no catalog itemType
           // to infer hardware from); the user flags it later in the line editor.
           depositEligible: false,
+          ...(form.contractLineType ? {
+            contractLineType: form.contractLineType,
+            deviceRoles: form.deviceRoles,
+            deviceGroupId: form.deviceGroupId,
+            siteId: form.siteId,
+            includedQuantity: form.includedQuantity,
+            overageMode: form.overageMode,
+            overageUnitPrice: form.overageUnitPrice,
+          } : {}),
         }),
         errorFallback: t('quotes.editor.errors.addLine'),
         // No success toast — the appended row is the feedback (see addCatalog).
@@ -2703,6 +2749,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 key={block.id}
                 block={block}
                 quoteId={quote.id}
+                orgId={quote.orgId}
                 lines={linesForBlock(block.id)}
                 currency={currency}
                 taxRate={quote.taxRate}

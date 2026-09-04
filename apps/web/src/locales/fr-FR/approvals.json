@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Tout approuver ({{count}})",
     "declineAll": "Tout refuser ({{count}})",
-    "groupTitle": "{{count}} demandes similaires · {{tool}}"
+    "groupTitle": "{{count}} demandes similaires · {{tool}}",
+    "moreHostnames": "+{{count}} de plus",
+    "denyConfirmSummary": "Ceci refuse {{count}} demandes pour {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organisation",
+    "allOrganizations": "Toutes les organisations ({{count}})",
+    "orgOption": "{{name}} ({{count}} en attente)",
+    "searchLabel": "Recherche",
+    "searchPlaceholder": "Rechercher par action, machine ou agent…",
+    "sortLabel": "Trier par",
+    "sortExpiringSoonest": "Expire bientôt",
+    "sortNewest": "Plus récentes",
+    "showingLoaded": "{{shown}} sur {{loaded}} chargées affichées",
+    "clearFilters": "Effacer les filtres",
+    "noMatches": {
+      "title": "Aucune approbation ne correspond à vos filtres",
+      "description": "Essayez une autre organisation ou un autre terme de recherche, ou effacez vos filtres."
+    }
   },
   "risk": {
     "low": "Risque faible",
@@ -31,6 +49,16 @@
   "deciding": "Envoi en cours…",
   "expiresIn": "Expire dans {{minutes}} min",
   "expiresSoon": "Expire dans moins d’une minute",
+  "expired": "Expirée",
+  "unknownOrganization": "Organisation inconnue",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} approuvé pour {{org}}",
+  "pagination": {
+    "showing": "Affichage de {{shown}} sur {{total}}",
+    "showingCount": "Affichage de {{shown}}",
+    "loadMore": "Charger plus",
+    "loadMoreError": "Impossible de charger plus d’éléments. Réessayez."
+  },
   "errors": {
     "noApproverDevice": "Enregistrez un appareil d’approbation dans votre profil, puis réessayez.",
     "notSoleApprover": "Une autre personne habilitée doit décider de cette demande.",
@@ -40,7 +68,8 @@
     "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
     "batchStepUp": "Ce lot nécessite une connexion plus forte. Approuvez les demandes une par une.",
     "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble.",
-    "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits."
+    "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits.",
+    "driftedFromBatch": "Cette demande a changé et doit être décidée séparément."
   },
   "registerDevice": "Enregistrer l’appareil",
   "alwaysAllow": {

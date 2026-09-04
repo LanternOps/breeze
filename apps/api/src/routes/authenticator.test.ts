@@ -10,6 +10,9 @@ const {
   redisMock,
   approverMocks,
   mobileHwKeyMocks,
+  attestationMocks,
+  sentryMocks,
+  rateLimitState,
   helperMocks,
   grantMocks,
   epochsMock,
@@ -61,6 +64,26 @@ const {
     },
     mobileHwKeyMocks: {
       verifyMobileSignature: vi.fn(),
+      sha256CanonicalSpki: vi.fn(),
+      // toMobileKeyAlg is pure and not used by these routes; keep it real-ish so
+      // an accidental import does not explode.
+      toMobileKeyAlg: vi.fn((v: string) => (v === 'RS256' || v === 'ES256' ? v : null)),
+    },
+    sentryMocks: {
+      captureException: vi.fn(),
+    },
+    attestationMocks: {
+      issueRegistrationAttempt: vi.fn(),
+      consumeRegistrationAttempt: vi.fn(),
+      registrationTranscript: vi.fn(),
+      verifyPlatformAttestation: vi.fn(),
+    },
+    // The per-user rate limiter is mocked as a REAL counter keyed exactly as the
+    // middleware keys it, so the tests below prove the middleware is wired with
+    // the intended bucket/limit rather than proving the limiter's own internals.
+    rateLimitState: {
+      calls: [] as { key: string; limit: number; windowSeconds: number }[],
+      counts: new Map<string, number>(),
     },
     helperMocks: {
       requireCurrentPasswordStepUp: vi.fn(),
@@ -87,6 +110,33 @@ vi.mock('../services/approverWebAuthn', () => ({
 
 vi.mock('../services/mobileHwKey', () => ({
   ...mobileHwKeyMocks,
+}));
+
+vi.mock('../services/sentry', () => ({
+  ...sentryMocks,
+}));
+
+vi.mock('../services/authenticatorAttestation', () => ({
+  ATTEMPT_TTL_SECONDS: 300,
+  ...attestationMocks,
+}));
+
+// userRateLimit imports getRedis from ../services/redis (not the ../services
+// barrel that the rest of this suite stubs), and rateLimiter from
+// ../services/rate-limit.
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => redisMock),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(
+    async (_redis: unknown, key: string, limit: number, windowSeconds: number) => {
+      rateLimitState.calls.push({ key, limit, windowSeconds });
+      const n = (rateLimitState.counts.get(key) ?? 0) + 1;
+      rateLimitState.counts.set(key, n);
+      return { allowed: n <= limit, resetAt: new Date(0) };
+    },
+  ),
 }));
 
 vi.mock('./auth/helpers', () => ({
@@ -141,6 +191,13 @@ vi.mock('../db/schema', () => ({
     aaguid: 'authenticatorDevices.aaguid',
     transports: 'authenticatorDevices.transports',
     isPlatformBound: 'authenticatorDevices.isPlatformBound',
+    platformBoundBasis: 'authenticatorDevices.platformBoundBasis',
+    attestationVerifiedAt: 'authenticatorDevices.attestationVerifiedAt',
+    attestationKeyId: 'authenticatorDevices.attestationKeyId',
+    attestedPublicKeySha256: 'authenticatorDevices.attestedPublicKeySha256',
+    attestationEvidence: 'authenticatorDevices.attestationEvidence',
+    appIntegrityVerifiedAt: 'authenticatorDevices.appIntegrityVerifiedAt',
+    possessionVerifiedAt: 'authenticatorDevices.possessionVerifiedAt',
     mobileDeviceId: 'authenticatorDevices.mobileDeviceId',
     createdAt: 'authenticatorDevices.createdAt',
     lastUsedAt: 'authenticatorDevices.lastUsedAt',
@@ -357,11 +414,46 @@ describe('approver device routes', () => {
       signCount: 0,
       isPlatformBound: true,
       label: 'My Laptop',
+      // #1374: a platform-bound browser key must record the basis it was
+      // DERIVED from. Without this a newly registered passkey defaults to
+      // 'unattested' and silently loses L4 — the migration only classifies
+      // rows that already existed.
+      platformBoundBasis: 'webauthn_backup_flags',
     });
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.authenticator.device.register' }),
     );
+  });
+
+  // #1374: the FALSE branch of the basis derivation. A synced / multi-device
+  // passkey is not platform-bound, so it must NOT be labelled
+  // `webauthn_backup_flags` — that basis literally means
+  // `singleDevice && !backedUp` AND it is in L4_TRUSTED_PLATFORM_BOUND_BASES.
+  it('records a synced (backed-up) passkey as unattested, not webauthn_backup_flags (#1374)', async () => {
+    approverMocks.verifyApproverRegistration.mockResolvedValue({
+      credentialId: 'credential-synced',
+      publicKey: 'public-key',
+      counter: 0,
+      deviceType: 'multiDevice',
+      backedUp: true,
+      transports: ['internal'],
+      aaguid: null,
+      isPlatformBound: false,
+    });
+
+    const res = await postJson('/devices/webauthn/verify', {
+      registerGrantId: 'g-1',
+      response: { id: 'credential-synced', rawId: 'credential-synced', type: 'public-key', response: {}, clientExtensionResults: {} },
+      label: 'Synced Passkey',
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbState.insertValues[0]).toMatchObject({
+      kind: 'webauthn_platform',
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
+    });
   });
 
   it('lists only the caller active approver devices', async () => {
@@ -468,7 +560,10 @@ describe('approver device routes', () => {
       label: 'iPhone',
       credentialId: null,
       signCount: 0,
-      isPlatformBound: true,
+      // #1374: this legacy endpoint performs NO platform attestation, so it
+      // must never assert platform binding. The row registers at L2/L3 only.
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
     });
     // Pending marker: never used yet — the insert must NOT set last_used_at; it
     // stays null until the first approval signature flips it active (server-side,
@@ -478,6 +573,43 @@ describe('approver device routes', () => {
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.authenticator.device.register' }),
+    );
+  });
+
+  // #1374 — the reported gap. A client that asserts isPlatformBound must not be
+  // able to influence the stored value: the server registers an unattested
+  // mobile key as NOT platform-bound regardless of what the body claims.
+  it('ignores a client-asserted isPlatformBound and registers the mobile key unattested (#1374)', async () => {
+    dbState.insertReturning = [
+      { ...deviceRow, id: 'mobile-pending-2', kind: 'mobile_hw_key', credentialId: null, lastUsedAt: null },
+    ];
+
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-2',
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({
+      kind: 'mobile_hw_key',
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
+    });
+    // The audit row is the forensic record of what was actually stored, so it
+    // must report the stored value, not the historical hard-coded `true`.
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'auth.authenticator.device.register',
+        details: expect.objectContaining({
+          kind: 'mobile_hw_key',
+          isPlatformBound: false,
+          platformBoundBasis: 'unattested',
+        }),
+      }),
     );
   });
 
@@ -925,5 +1057,459 @@ describe('approval-security policy routes (Phase 4)', () => {
       body: JSON.stringify({ floorOverrides: {}, requireEnrollment: true, enforceFrom: null }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+// ============================================================================
+// #1374 W02 — attested mobile registration: challenge/verify
+//
+// The whole point of the two-step protocol is ORDERING. Each 4xx below asserts
+// not just the status but what did NOT happen: an attestation that fails must
+// not burn the caller's single-use register grant, and nothing but a fully
+// verified request may insert a row.
+// ============================================================================
+
+describe('attested mobile registration (#1374 W02)', () => {
+  let app: Hono;
+
+  const ATTEMPT = {
+    attemptId: 'attempt-1',
+    userId: 'user-123',
+    challenge: 'challenge-abc',
+    issuedAt: 1781000000000,
+    platform: 'ios' as const,
+  };
+
+  const validBody = {
+    registerGrantId: 'g-attest-1',
+    attemptId: 'attempt-1',
+    publicKey: 'spki-b64',
+    publicKeyAlg: 'ES256' as const,
+    label: 'iPhone',
+    popSignature: 'pop-sig',
+    attestation: { platform: 'ios' as const, attestationObject: 'cbor', keyId: 'kid-1' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectQueue = [];
+    dbState.selectWheres.length = 0;
+    dbState.updateSets = [];
+    dbState.insertValues = [];
+    dbState.insertReturning = [
+      {
+        ...deviceRow,
+        id: 'mobile-attested-1',
+        kind: 'mobile_hw_key',
+        label: 'iPhone',
+        credentialId: null,
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested',
+        lastUsedAt: null,
+      },
+    ];
+    dbState.updateReturningQueue = [];
+    rateLimitState.calls.length = 0;
+    rateLimitState.counts.clear();
+    authState.requireAuthorizationHeader = true;
+    helperMocks.writeAuthAudit.mockReturnValue(undefined);
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
+    mobileHwKeyMocks.verifyMobileSignature.mockReturnValue(true);
+    mobileHwKeyMocks.sha256CanonicalSpki.mockReturnValue(Buffer.alloc(32, 7));
+    attestationMocks.issueRegistrationAttempt.mockResolvedValue(ATTEMPT);
+    attestationMocks.consumeRegistrationAttempt.mockResolvedValue(ATTEMPT);
+    attestationMocks.registrationTranscript.mockReturnValue(Buffer.alloc(32, 9));
+    attestationMocks.verifyPlatformAttestation.mockResolvedValue({
+      basis: 'unattested',
+      verifiedAt: null,
+      keyId: null,
+      evidence: {},
+      appIntegrityVerifiedAt: null,
+    });
+    app = new Hono();
+    app.route('/authenticator', authenticatorRoutes);
+  });
+
+  async function post(path: string, body: unknown, opts: { authorized?: boolean } = {}) {
+    return app.request(`/authenticator${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...((opts.authorized ?? true) ? { Authorization: 'Bearer access-token' } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  describe('POST /devices/mobile/challenge', () => {
+    it('requires authentication', async () => {
+      const res = await post('/devices/mobile/challenge', { platform: 'ios' }, { authorized: false });
+      expect(res.status).toBe(401);
+      expect(attestationMocks.issueRegistrationAttempt).not.toHaveBeenCalled();
+    });
+
+    it('validates the register grant WITHOUT consuming it and returns an attempt', async () => {
+      const res = await post('/devices/mobile/challenge', { registerGrantId: 'g-1', platform: 'ios' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        attemptId: 'attempt-1',
+        challenge: 'challenge-abc',
+        expiresAt: new Date(ATTEMPT.issuedAt + 300 * 1000).toISOString(),
+      });
+      // Non-consuming: the SAME grant is consumed at /verify, so a client that
+      // fails attestation does not burn it.
+      expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'g-1',
+        { consume: false },
+      );
+      expect(attestationMocks.issueRegistrationAttempt).toHaveBeenCalledWith('user-123', 'ios');
+    });
+
+    it('403s with no grant, before any attempt is issued', async () => {
+      helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'register_step_up_required' }), { status: 403 }),
+      );
+      const res = await post('/devices/mobile/challenge', { platform: 'ios' });
+      expect(res.status).toBe(403);
+      expect(attestationMocks.issueRegistrationAttempt).not.toHaveBeenCalled();
+    });
+
+    it('400s an unknown platform without touching the grant', async () => {
+      const res = await post('/devices/mobile/challenge', { registerGrantId: 'g-1', platform: 'web' });
+      expect(res.status).toBe(400);
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(attestationMocks.issueRegistrationAttempt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /devices/mobile/verify', () => {
+    it('requires authentication', async () => {
+      const res = await post('/devices/mobile/verify', validBody, { authorized: false });
+      expect(res.status).toBe(401);
+      expect(attestationMocks.consumeRegistrationAttempt).not.toHaveBeenCalled();
+    });
+
+    it('400s a client-asserted isPlatformBound (strict schema) before any side effect', async () => {
+      const res = await post('/devices/mobile/verify', { ...validBody, isPlatformBound: true });
+      expect(res.status).toBe(400);
+      expect(attestationMocks.consumeRegistrationAttempt).not.toHaveBeenCalled();
+      expect(dbState.insertValues).toHaveLength(0);
+    });
+
+    it('400s when the attempt is unknown or already consumed, WITHOUT burning the grant', async () => {
+      attestationMocks.consumeRegistrationAttempt.mockResolvedValueOnce(null);
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'registration_attempt_expired' });
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(dbState.insertValues).toHaveLength(0);
+    });
+
+    it('403s when the attempt belongs to a different user', async () => {
+      attestationMocks.consumeRegistrationAttempt.mockResolvedValueOnce({
+        ...ATTEMPT,
+        userId: 'someone-else',
+      });
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(403);
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(dbState.insertValues).toHaveLength(0);
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.denied',
+          result: 'failure',
+          reason: 'attempt_user_mismatch',
+        }),
+      );
+    });
+
+    it('403s when the attestation platform does not match the platform the attempt was issued for', async () => {
+      const res = await post('/devices/mobile/verify', {
+        ...validBody,
+        attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      });
+      expect(res.status).toBe(403);
+      expect(dbState.insertValues).toHaveLength(0);
+      // The grant survives — proven directly, not inferred from "nothing was
+      // inserted". The check happening before the grant consume is true by the
+      // current statement order, and that order is exactly what a refactor can
+      // change without any other test noticing.
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.denied',
+          result: 'failure',
+          reason: 'attempt_platform_mismatch',
+        }),
+      );
+    });
+
+    it('401s when the registration PoP signature does not verify', async () => {
+      mobileHwKeyMocks.verifyMobileSignature.mockReturnValueOnce(false);
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ error: 'registration_pop_invalid' });
+      expect(dbState.insertValues).toHaveLength(0);
+      // The grant survives a failed PoP — the caller may retry with a fresh
+      // challenge instead of re-doing the whole step-up.
+      expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: 'pop_signature_invalid' }),
+      );
+    });
+
+    it('verifies the PoP over the SERVER-derived transcript, with the declared alg', async () => {
+      await post('/devices/mobile/verify', validBody);
+      // The transcript is built from the CONSUMED attempt's challenge, never
+      // from anything the body supplied.
+      expect(attestationMocks.registrationTranscript).toHaveBeenCalledWith({
+        attemptId: 'attempt-1',
+        challenge: 'challenge-abc',
+        publicKeyAlg: 'ES256',
+        publicKeySpkiB64: 'spki-b64',
+      });
+      expect(mobileHwKeyMocks.verifyMobileSignature).toHaveBeenCalledWith({
+        publicKeySpkiB64: 'spki-b64',
+        payload: Buffer.alloc(32, 9).toString('base64'),
+        signatureB64: 'pop-sig',
+        alg: 'ES256',
+      });
+    });
+
+    it('403s when the grant is rejected AFTER a valid PoP — nothing is inserted', async () => {
+      helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'register_step_up_required' }), { status: 403 }),
+      );
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(403);
+      expect(dbState.insertValues).toHaveLength(0);
+    });
+
+    it('inserts unattested + not platform-bound while no verifier is wired (W02)', async () => {
+      const res = await post('/devices/mobile/verify', validBody);
+
+      expect(res.status).toBe(201);
+      expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'g-attest-1',
+        { consume: true },
+      );
+      expect(dbState.insertValues[0]).toMatchObject({
+        userId: 'user-123',
+        kind: 'mobile_hw_key',
+        label: 'iPhone',
+        publicKey: 'spki-b64',
+        publicKeyAlg: 'ES256',
+        credentialId: null,
+        signCount: 0,
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested',
+        attestationVerifiedAt: null,
+        attestationKeyId: null,
+        attestedPublicKeySha256: null,
+        appIntegrityVerifiedAt: null,
+        possessionVerifiedAt: expect.any(Date),
+      });
+    });
+
+    it('records the attested key digest and evidence ONLY when the attestation actually verified', async () => {
+      // Forward-looking guard for W03/W04: a basis that claims a verified
+      // attestation must carry the bound-key digest, or the DB CHECK
+      // (authenticator_devices_attested_basis_chk) rejects the row.
+      const verifiedAt = new Date('2026-10-06T00:00:00.000Z');
+      attestationMocks.verifyPlatformAttestation.mockResolvedValueOnce({
+        basis: 'ios_se_p256_app_attest',
+        verifiedAt,
+        keyId: 'app-attest-key-id',
+        evidence: { appId: 'D8W6N2JYMA.com.breeze.rmm' },
+        appIntegrityVerifiedAt: null,
+      });
+
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(201);
+      expect(dbState.insertValues[0]).toMatchObject({
+        isPlatformBound: true,
+        platformBoundBasis: 'ios_se_p256_app_attest',
+        attestationVerifiedAt: verifiedAt,
+        attestationKeyId: 'app-attest-key-id',
+        attestedPublicKeySha256: Buffer.alloc(32, 7),
+        attestationEvidence: { appId: 'D8W6N2JYMA.com.breeze.rmm' },
+      });
+    });
+
+    it('downgrades to unattested rather than inserting an attested row with no bound-key digest', async () => {
+      // The DB CHECK would reject basis+null-digest with a 500. Fail closed to
+      // an honest unattested row instead of crashing or, worse, storing a
+      // platform-bound claim with nothing behind it.
+      mobileHwKeyMocks.sha256CanonicalSpki.mockReturnValueOnce(null);
+      attestationMocks.verifyPlatformAttestation.mockResolvedValueOnce({
+        basis: 'ios_se_p256_app_attest',
+        verifiedAt: new Date(),
+        keyId: 'k',
+        evidence: { appId: 'x' },
+        appIntegrityVerifiedAt: new Date(),
+      });
+
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(201);
+      // ALL FIVE attestation-derived columns must fall back together. Asserting
+      // only two would miss a row labelled `unattested` that nonetheless carries
+      // attested-looking evidence — forensically worse than either honest state.
+      expect(dbState.insertValues[0]).toMatchObject({
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested',
+        attestationVerifiedAt: null,
+        attestationKeyId: null,
+        attestedPublicKeySha256: null,
+        attestationEvidence: {},
+        appIntegrityVerifiedAt: null,
+      });
+      expect(await res.json()).toMatchObject({
+        device: { isPlatformBound: false, platformBoundBasis: 'unattested' },
+      });
+    });
+
+    it('raises a dedicated signal when it downgrades — a silent success row is not enough', async () => {
+      // This path means a verifier said "verified" for a key that would not
+      // re-parse for hashing, even though the PoP check parsed the same bytes
+      // moments earlier. That is a server bug, not caller behaviour, and it is
+      // dead until W03/W04 wire a real verifier — i.e. it will start mattering
+      // at exactly the moment nobody remembers it exists.
+      mobileHwKeyMocks.sha256CanonicalSpki.mockReturnValueOnce(null);
+      attestationMocks.verifyPlatformAttestation.mockResolvedValueOnce({
+        basis: 'ios_se_p256_app_attest',
+        verifiedAt: new Date(),
+        keyId: 'k',
+        evidence: { appId: 'x' },
+        appIntegrityVerifiedAt: null,
+      });
+
+      await post('/devices/mobile/verify', validBody);
+
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.attestation_downgraded',
+          result: 'failure',
+          reason: 'attested_key_digest_unavailable',
+          details: expect.objectContaining({
+            claimedBasis: 'ios_se_p256_app_attest',
+            storedBasis: 'unattested',
+          }),
+        }),
+      );
+      expect(sentryMocks.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('ios_se_p256_app_attest') }),
+        expect.anything(),
+        expect.objectContaining({ area: 'authenticator_attestation' }),
+      );
+    });
+
+    it('raises NO downgrade signal on the ordinary unattested path (W02 today)', async () => {
+      // The stub returns verifiedAt: null, so nothing was ever claimed and there
+      // is nothing to downgrade. If this fired here it would cry wolf on every
+      // single registration until W03/W04 land.
+      await post('/devices/mobile/verify', validBody);
+      expect(sentryMocks.captureException).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register.attestation_downgraded',
+        }),
+      );
+    });
+
+    it('leaves last_used_at null — PoP at registration does not mean "used for an approval"', async () => {
+      await post('/devices/mobile/verify', validBody);
+      expect(dbState.insertValues[0]).not.toHaveProperty('lastUsedAt');
+    });
+
+    it('audits the stored basis, and returns it on the device DTO', async () => {
+      const res = await post('/devices/mobile/verify', validBody);
+      const body = await res.json();
+      expect(body.device).toMatchObject({ id: 'mobile-attested-1', platformBoundBasis: 'unattested' });
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.device.register',
+          result: 'success',
+          details: expect.objectContaining({
+            kind: 'mobile_hw_key',
+            isPlatformBound: false,
+            platformBoundBasis: 'unattested',
+            publicKeyAlg: 'ES256',
+            attestationPlatform: 'ios',
+          }),
+        }),
+      );
+    });
+
+    it('resolves the per-install header to the OWNED mobile_devices row, same as the legacy route', async () => {
+      dbState.selectQueue.push([{ id: '99999999-8888-7777-6666-555555555555' }]);
+      const res = await app.request('/authenticator/devices/mobile/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer access-token',
+          'X-Breeze-Mobile-Device-Id': '11111111-2222-3333-4444-555555555555',
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      expect(res.status).toBe(201);
+      expect(dbState.insertValues[0]).toMatchObject({
+        mobileDeviceId: '99999999-8888-7777-6666-555555555555',
+      });
+      // The ownership + active predicates are what RLS will NOT do for us here.
+      const values = sqlValues(dbState.selectWheres[0]);
+      expect(values).toContain('mobileDevices.deviceId');
+      expect(values).toContain('mobileDevices.userId');
+      expect(values).toContain('user-123');
+      expect(values).toContain('mobileDevices.status');
+      expect(values).toContain('active');
+      expect(values).not.toContain('mobileDevices.id');
+    });
+  });
+
+  describe('rate limiting', () => {
+    it('429s the 11th challenge in the window', async () => {
+      const results: number[] = [];
+      for (let i = 0; i < 11; i += 1) {
+        const res = await post('/devices/mobile/challenge', { registerGrantId: 'g-1', platform: 'ios' });
+        results.push(res.status);
+      }
+      expect(results.slice(0, 10).every((s) => s === 200)).toBe(true);
+      expect(results[10]).toBe(429);
+      // Keyed per user, with the documented bucket + window.
+      expect(rateLimitState.calls[0]).toEqual({
+        key: 'rl:authenticator-attest-challenge:user-123',
+        limit: 10,
+        windowSeconds: 300,
+      });
+    });
+
+    it('429s the 11th verify in the window, before the attempt is consumed', async () => {
+      const results: number[] = [];
+      for (let i = 0; i < 11; i += 1) {
+        const res = await post('/devices/mobile/verify', validBody);
+        results.push(res.status);
+      }
+      expect(results[10]).toBe(429);
+      expect(rateLimitState.calls[0]).toEqual({
+        key: 'rl:authenticator-attest-verify:user-123',
+        limit: 10,
+        windowSeconds: 300,
+      });
+      // The rate limiter runs BEFORE the handler, so the 11th call must not have
+      // consumed an attempt.
+      expect(attestationMocks.consumeRegistrationAttempt).toHaveBeenCalledTimes(10);
+    });
   });
 });

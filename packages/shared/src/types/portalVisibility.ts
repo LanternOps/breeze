@@ -127,7 +127,7 @@ export interface SecurityOverviewDto {
   band: SecurityScoreBand | null;
   scoreHistory: SecurityTrendPoint[];
   threatEvents: {
-    label: 'endpoint threat events';
+    label: 'Endpoint threat events';
     weeks: ThreatWeekDto[];
   };
   vulnerabilities: {
@@ -153,6 +153,7 @@ export interface SecurityDeviceRow {
 export interface SecurityDevicesDto {
   dataStatus: TileStatus;
   asOf: string;
+  timezone: string;
   data: SecurityDeviceRow[];
   pagination: PaginationDto;
 }
@@ -188,6 +189,9 @@ export interface BackupOverviewDto {
   openRpoBreaches: number | null;
   openRtoBreaches: number | null;
   meanReadinessScore: number | null;
+  lastTestRestoreStatus: string | null;
+  readinessScoredDevices: number | null;
+  readinessTotalDevices: number | null;
 }
 
 export interface BackupDevicesDto {
@@ -249,6 +253,7 @@ export interface PortalRunDto {
 export interface PortalRunsDto {
   data: PortalRunDto[];
   pagination: PaginationDto;
+  timezone: string;
 }
 
 export interface EnrichedPortalDevice {

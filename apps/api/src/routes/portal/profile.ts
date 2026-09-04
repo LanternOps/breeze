@@ -5,17 +5,20 @@ import { db } from '../../db';
 import { portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getRedis } from '../../services/redis';
+import { rejectProof, INVALID_CREDENTIALS_CODE } from '../auth/helpers';
 import {
   updateProfileSchema,
   changePasswordSchema,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
+  PASSWORD_CHANGE_RATE_LIMIT,
 } from './schemas';
 import {
   applyPortalCacheHeaders,
   buildWeakEtag,
   portalSessions,
   buildPortalUserPayload,
+  checkRateLimit,
   isEtagFresh,
   validatePortalCookieCsrfRequest,
   writePortalAudit,
@@ -119,6 +122,21 @@ profileRoutes.post('/profile/password', zValidator('json', changePasswordSchema)
   const auth = c.get('portalAuth');
   const { currentPassword, newPassword } = c.req.valid('json');
 
+  // #4797: throttle current-password guesses BEFORE looking the account up or
+  // verifying anything, keyed on the portal user id alone — this route is
+  // already session-authed (portalAuthMiddleware), so unlike the anonymous
+  // login/reset limiters there is no IP axis to also key on. Without this a
+  // stolen portal session could brute-force the current password at one
+  // argon2 verify per request with no lockout (the #4746 class). Uses the
+  // portal's own dual-mode limiter so self-hosted deployments without Redis
+  // keep working, exactly like every other portal auth rate limit.
+  const rateKey = `portal:profile-password:${auth.user.id}`;
+  const rate = await checkRateLimit(rateKey, PASSWORD_CHANGE_RATE_LIMIT);
+  if (!rate.allowed) {
+    c.header('Retry-After', String(rate.retryAfterSeconds));
+    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+  }
+
   const [user] = await db
     .select({
       id: portalUsers.id,
@@ -137,7 +155,16 @@ profileRoutes.post('/profile/password', zValidator('json', changePasswordSchema)
 
   const validCurrentPassword = await verifyPassword(user.passwordHash, currentPassword);
   if (!validCurrentPassword) {
-    return c.json({ error: 'Current password is incorrect' }, 401);
+    // #4797 (follows #4470/#4651/#4660): `currentPassword` is body data this
+    // handler validates, not the credential authenticating the request (the
+    // portal session cookie/bearer, already checked by portalAuthMiddleware).
+    // A 401 here collided with the session guard and the portal client
+    // (apps/portal/src/lib/api.ts) funnelled it into clearAuth() + a redirect
+    // to /login — a mistyped current password signed the user out mid-flow.
+    // 400 + a stable code matches the neighbouring rejections on this same
+    // route (passwordless account above, weak new password below), which
+    // were already 400.
+    return rejectProof(c, 'Current password is incorrect', INVALID_CREDENTIALS_CODE, 400);
   }
 
   const passwordCheck = isPasswordStrong(newPassword);

@@ -185,10 +185,16 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/tunnels.ts:POST /upgrade-to-webrtc',
   // ---- Not the bug class: platform-admin-only, portal-session auth, or a
   // mobile/OAuth device row (not an RMM device with a site).
-  // Resolves a mobile/OAuth device row (mobile_devices, no site_id/org_id) to
-  // scope authenticator registration — already narrowed by userId, tighter
-  // than site-scope, so a site gate is not meaningful here.
-  'routes/authenticator.ts:POST /devices',
+  // routes/authenticator.ts:POST /devices was exempt here until #1374 W02
+  // extracted its mobile_devices lookup into the shared
+  // resolveOwnedMobileDeviceId() helper (so the new attested
+  // POST /devices/mobile/verify route cannot drift from it) — the file-local
+  // scanner no longer attributes the query to either handler. Same shape as
+  // the routes/mobile.ts:POST /notifications/register removal below. The
+  // exemption REASON is unchanged and still true: it resolves a mobile/OAuth
+  // device row (mobile_devices, no site_id/org_id) already narrowed by userId,
+  // which is tighter than site-scope, so a site gate is not meaningful. Only
+  // the detector's visibility changed, not the query or its predicates.
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',
   'routes/mobile.ts:POST /devices',
@@ -256,9 +262,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
 // future regression where a non-user-auth file is migrated to plain user auth.
 const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<string>([
   // Mobile/OAuth device rows keyed on the user — not RMM devices with a site.
-  // routes/authenticator.ts resolves the row itself — already narrowed by
-  // userId, tighter than site-scope.
-  'routes/authenticator.ts:POST /devices',
+  // routes/authenticator.ts:POST /devices dropped out of this set in #1374 W02
+  // when its lookup moved into resolveOwnedMobileDeviceId(); see the note in
+  // SITE_SCOPE_INPUT_SOURCED_BASELINE above.
   'routes/mobile.ts:POST /devices',
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',

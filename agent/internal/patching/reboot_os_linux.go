@@ -3,9 +3,6 @@
 package patching
 
 import (
-	"fmt"
-	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -17,19 +14,10 @@ import (
 // would reintroduce, on Linux, exactly the fire-the-toast-then-kill-the-session
 // race that #3197 fixes on Windows.
 func execOSReboot(grace time.Duration) error {
-	args := unixRebootArgs(grace)
-	out, err := exec.Command("shutdown", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("shutdown %s: %w (%s)", strings.Join(args, " "), err, string(out))
-	}
-	return nil
+	return runRebootCommand("shutdown", unixRebootArgs(grace)...)
 }
 
 // abortOSReboot cancels a pending `shutdown` on Linux.
 func abortOSReboot() error {
-	out, err := exec.Command("shutdown", "-c").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("shutdown -c: %w (%s)", err, string(out))
-	}
-	return nil
+	return runRebootCommand("shutdown", "-c")
 }
