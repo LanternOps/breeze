@@ -1,8 +1,11 @@
 package executor
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -63,4 +66,73 @@ func TestParametersFromPayloadMatchesJSONRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("after a JSON round trip got %#v, want %#v", got, want)
 	}
+}
+
+// captureExecutorLog swaps the package logger for the duration of a test and
+// returns the buffer it writes to. Safe because no test in this package calls
+// t.Parallel(), and the swap is restored on cleanup.
+func captureExecutorLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log
+	log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { log = prev })
+	return &buf
+}
+
+// TestParametersFromPayloadWarnsOnBrokenWireContract proves the diagnostic
+// actually fires. #4882 was invisible precisely because a dropped parameter
+// produced no agent-side signal at all — a tripwire that silently does not
+// trip would reproduce that, so assert it rather than assume it.
+func TestParametersFromPayloadWarnsOnBrokenWireContract(t *testing.T) {
+	t.Run("non-object parameters field", func(t *testing.T) {
+		buf := captureExecutorLog(t)
+		if got := ParametersFromPayload("GoogleEmail=x"); got != nil {
+			t.Fatalf("got %#v, want nil", got)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "non-object") {
+			t.Fatalf("expected a warning about the non-object payload, got %q", out)
+		}
+		if !strings.Contains(out, "payloadType=string") {
+			t.Errorf("warning should name the offending type, got %q", out)
+		}
+	})
+
+	t.Run("absent parameters field stays silent", func(t *testing.T) {
+		buf := captureExecutorLog(t)
+		if got := ParametersFromPayload(nil); got != nil {
+			t.Fatalf("got %#v, want nil", got)
+		}
+		if out := buf.String(); out != "" {
+			t.Fatalf("an unparameterised script must log nothing, got %q", out)
+		}
+	})
+
+	t.Run("dropped non-string values name their keys only", func(t *testing.T) {
+		buf := captureExecutorLog(t)
+		got := ParametersFromPayload(map[string]any{
+			"keep":    "yes",
+			"retries": float64(3),
+			"flag":    true,
+		})
+		if !reflect.DeepEqual(got, map[string]string{"keep": "yes"}) {
+			t.Fatalf("got %#v", got)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "keys=flag,retries") {
+			t.Fatalf("expected the dropped keys, sorted, got %q", out)
+		}
+		if strings.Contains(out, "keep") {
+			t.Errorf("a kept key must not be reported as dropped, got %q", out)
+		}
+	})
+
+	t.Run("all-string map stays silent", func(t *testing.T) {
+		buf := captureExecutorLog(t)
+		ParametersFromPayload(map[string]any{"GoogleEmail": "user@example.com"})
+		if out := buf.String(); out != "" {
+			t.Fatalf("the ordinary case must log nothing, got %q", out)
+		}
+	})
 }

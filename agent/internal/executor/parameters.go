@@ -1,5 +1,11 @@
 package executor
 
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
 // ParametersFromPayload decodes a script command payload's "parameters" field
 // into the string-only map ScriptExecution.Parameters expects.
 //
@@ -36,13 +42,35 @@ package executor
 func ParametersFromPayload(raw any) map[string]string {
 	params, ok := raw.(map[string]any)
 	if !ok {
+		// Absent is the ordinary case for an unparameterised script and says
+		// nothing. Present-but-not-an-object means a producer broke the wire
+		// contract, and the script is about to run with its placeholders
+		// intact and no BREEZE_PARAM_* — exactly the invisible failure #4882
+		// was. Log the type (never the content) so it is diagnosable from
+		// agent logs instead of only from the script's own error message.
+		if raw != nil {
+			log.Warn("script command carried a non-object `parameters` field; running with no parameters",
+				"payloadType", fmt.Sprintf("%T", raw))
+		}
 		return nil
 	}
 	decoded := make(map[string]string, len(params))
+	var dropped []string
 	for key, value := range params {
 		if s, ok := value.(string); ok {
 			decoded[key] = s
+			continue
 		}
+		dropped = append(dropped, key)
+	}
+	if len(dropped) > 0 {
+		// The server canonicalises every value to a string before dispatch
+		// (canonicalizeScriptParameters), so reaching here means that
+		// chokepoint was bypassed. Keys only — a value is operator-supplied
+		// content that has no business in the agent log.
+		sort.Strings(dropped)
+		log.Warn("dropping non-string script parameter values",
+			"keys", strings.Join(dropped, ","))
 	}
 	return decoded
 }

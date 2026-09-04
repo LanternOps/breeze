@@ -66,12 +66,18 @@ func TestHandleScriptForwardsParametersToUserHelper(t *testing.T) {
 	clientIPC := ipc.NewConn(clientConn)
 
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "helper-params", []string{"run_as_user"})
+	// Pin the console-session binding (#1009) so resolveRunAsSession selects
+	// this helper on Windows too, not only on hosts where that binding is a
+	// no-op — otherwise the test is silently platform-dependent.
+	session.WinSessionID = "1"
 	t.Cleanup(func() { _ = session.Close() })
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
 	payloads := serveOneHelperCommand(t, clientIPC)
 
-	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	broker := newTestBrokerWithSessions(t, session)
+	broker.SetConsoleSessionIDFunc(func() string { return "1" })
+	h := newTestHeartbeat(broker)
 	result := handleScript(h, Command{
 		ID:   "cmd-params",
 		Type: tools.CmdScript,
@@ -122,6 +128,7 @@ func TestHandleScriptRefusesSecretEnvForRunAsUser(t *testing.T) {
 	clientIPC := ipc.NewConn(clientConn)
 
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "helper-secret", []string{"run_as_user"})
+	session.WinSessionID = "1"
 	t.Cleanup(func() { _ = session.Close() })
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
@@ -133,7 +140,9 @@ func TestHandleScriptRefusesSecretEnvForRunAsUser(t *testing.T) {
 		}
 	}()
 
-	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	broker := newTestBrokerWithSessions(t, session)
+	broker.SetConsoleSessionIDFunc(func() string { return "1" })
+	h := newTestHeartbeat(broker)
 	result := handleScript(h, Command{
 		ID:   "cmd-secret-user",
 		Type: tools.CmdScript,
