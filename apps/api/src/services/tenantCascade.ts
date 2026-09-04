@@ -938,11 +938,18 @@ export async function cascadeDeleteOrg(
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
     } catch (err) {
-      // A single table failure aborts the cascade — partial deletion is
-      // worse than no deletion (the org sits in an inconsistent state).
-      // Best-effort forensic record of how far the erasure got (#2195 —
-      // mirrors the partner purge's purge_failed breadcrumb), then re-throw
-      // with context.
+      // A single table failure aborts the WALK. It does NOT roll the erasure
+      // back: each table above deletes inside its own
+      // `withSystemDbAccessContext` transaction, so every table already
+      // processed is committed by the time a later one raises. The contract is
+      // therefore fail-fast + partial + re-runnable, not atomic — which is why
+      // the forensic breadcrumb below matters (it is the only record of how far
+      // the erasure got) and why the walk is idempotent (a re-run after the
+      // fault is cleared finishes the job; already-erased tables match zero
+      // rows). Pinned end-to-end by the "failure semantics" describe in
+      // `__tests__/integration/tenantCascadeErasureBreadth.integration.test.ts`
+      // (#3880). Best-effort forensic record (#2195 — mirrors the partner
+      // purge's purge_failed breadcrumb), then re-throw with context.
       await writeErasureFailedAudit(orgId, performedBy, performedByEmail, table, stats, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for org=${orgId}: ${
