@@ -63,18 +63,24 @@ export const SCRIPT_BUILDER_MCP_TOOL_NAMES = Object.keys(SCRIPT_BUILDER_TOOL_TIE
 );
 
 /**
- * MCP tool name -> the `executeTool` handler that actually runs it, for the
- * tools whose model-facing name differs from their handler.
+ * Registered tool name -> the `executeTool` handler that actually runs it, for
+ * the tools whose model-facing name differs from their handler.
+ *
+ * Keys are the BARE names the `tool()` calls register (`execute_script_on_device`),
+ * not the `mcp__script_builder__`-prefixed form — `scriptBuilderMcpToolName`
+ * adds the prefix where the allowlist needs it.
  *
  * The two identities are NOT interchangeable and must not be conflated:
- *   - the MCP name is what the model calls and what `scriptAi.ts` puts in the
- *     session's `allowedTools` (`SCRIPT_BUILDER_MCP_TOOL_NAMES`);
+ *   - the registered name is what the model calls, and prefixed, what
+ *     `scriptAi.ts` puts in the session's `allowedTools`
+ *     (`SCRIPT_BUILDER_MCP_TOOL_NAMES`);
  *   - the handler name is what `TOOL_TIERS`, `TOOL_PERMISSIONS`,
  *     `toolInputSchemas` and the per-tool rate limits are keyed on.
- * `makeExistingHandler` below resolves through this map so a call site names
- * only its MCP tool once — the earlier arrangement passed the handler name at
- * the `tool()` registration, which is how the session guardrail ended up
- * checking `run_script` against an allowlist that only holds
+ * `makeExistingHandler` below resolves through this map so each call site
+ * names only its own tool. Previously the handler name was passed into
+ * `makeExistingHandler` instead (the `tool()` name itself never changed),
+ * which is how the session guardrail ended up checking `run_script` against
+ * an allowlist that only holds
  * `mcp__script_builder__execute_script_on_device` (#4883).
  */
 export const SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL: Record<string, string> = {
@@ -86,21 +92,24 @@ export const SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL: Record<string, string> = {
 // ============================================
 
 /**
- * @param mcpToolName the tool's model-facing MCP name, i.e. the key the
- *   session allowlist and `SCRIPT_BUILDER_TOOL_TIERS` use. The `executeTool`
+ * @param registeredToolName the BARE name this tool is registered under in the
+ *   `tool()` call below — the key `SCRIPT_BUILDER_TOOL_TIERS` uses and, once
+ *   prefixed, what the session allowlist holds. (Not to be confused with
+ *   `PreToolUseCallback`'s `mcpToolName`, which is the fully-qualified
+ *   `mcp__script_builder__…` form this derives from it.) The `executeTool`
  *   handler it dispatches to is resolved from
  *   `SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL`, and everything keyed on the handler
  *   (tier, RBAC, rate limit, schema, result compaction, audit) stays on that
  *   name — only the session-allowlist check gets the exposed name (#4883).
  */
 function makeExistingHandler(
-  mcpToolName: string,
+  registeredToolName: string,
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
-  const toolName = SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL[mcpToolName] ?? mcpToolName;
-  const exposedToolName = scriptBuilderMcpToolName(mcpToolName);
+  const toolName = SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL[registeredToolName] ?? registeredToolName;
+  const exposedToolName = scriptBuilderMcpToolName(registeredToolName);
 
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();

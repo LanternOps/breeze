@@ -35,7 +35,7 @@ import type { AuthContext } from '../middleware/auth';
 // (and must not require) TOOL_TIERS / TOOL_PERMISSIONS entries.
 const APPLY_TOOLS = new Set(['apply_script_code', 'apply_script_metadata']);
 
-// A few MCP tool names dispatch to a differently-named executeTool handler;
+// One MCP tool name dispatches to a differently-named executeTool handler;
 // preToolUse's tier/RBAC/schema lookups see the HANDLER name. Imported rather
 // than restated here so the test cannot drift from the map the registration
 // itself resolves through — the "still dispatches each tool to its executeTool

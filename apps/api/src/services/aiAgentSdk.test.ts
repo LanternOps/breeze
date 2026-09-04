@@ -1684,6 +1684,31 @@ describe('createSessionPreToolUse', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    // The exposed name is AUTHORITATIVE. A session that somehow granted only
+    // the handler alias must not thereby gain the tool the model actually
+    // calls — this is the case that goes green if createSessionPreToolUse
+    // reverts to checking `toolName`, so it pins the direction of the fix and
+    // not just its effect.
+    it('denies when only the HANDLER name is granted and the exposed name is not', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: ['mcp__script_builder__run_script'],
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'execute_script_on_device' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('rejects an exposed name the session never granted', async () => {
       const session = makeActiveSession({
         approvalMode: 'auto_approve',

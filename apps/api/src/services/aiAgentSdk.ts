@@ -507,15 +507,30 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     }
 
     // Allowlist check runs on the EXPOSED name, not the handler name. The two
-    // coincide for every tool except script builder's
-    // `execute_script_on_device`, which dispatches to the `run_script`
-    // handler; comparing that handler name against an allowlist of
+    // coincide for every tool the `breeze` MCP server registers; script
+    // builder's `execute_script_on_device` dispatches to the `run_script`
+    // handler, and comparing THAT against an allowlist of
     // `mcp__script_builder__*` names denied every call before tier/approval
-    // logic ran (#4883). Nothing below this line uses `exposedToolName` — the
-    // capability being gated is the handler's, so tier, RBAC, rate limits,
-    // approval and audit all stay on `toolName`.
+    // logic ran (#4883). Once this gate resolves, nothing further in this
+    // function reads `exposedToolName` — the capability being gated is the
+    // handler's, so tier, RBAC, rate limits, approval and audit all stay on
+    // `toolName`.
     const exposedToolName = mcpToolName ?? toolName;
     if (session.allowedTools && !isAllowedForSession(exposedToolName, session.allowedTools)) {
+      // The SDK is handed the SAME list as `allowedTools` on `query()`, so it
+      // should never offer the model a tool this branch then refuses. Reaching
+      // here means the two views disagree — a wiring bug, not a user-permission
+      // outcome — and #4883 proves that failure is invisible without a signal:
+      // it read as an ordinary tool refusal in chat for weeks while every
+      // Script Builder test run was dead.
+      const wiringError = new Error(
+        `Session allowlist denied '${exposedToolName}' (handler '${toolName}') — `
+        + 'the SDK exposed a tool the app-layer guard refuses',
+      );
+      console.error(`[AI-SDK] ${wiringError.message} (session ${session.breezeSessionId})`);
+      // Detail rides in the message, not in tags: the Sentry scrubber's tag
+      // allowlist silently voids tag keys it does not know.
+      captureException(wiringError, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
       return {
         allowed: false,
         error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,

@@ -96,10 +96,15 @@ export type PreToolUseCallback = (
    * names. Everything downstream (tier, RBAC, rate limit, approval, audit)
    * stays on `toolName`, because that is where the capability actually lives.
    *
-   * Omit it whenever the two coincide, which is every tool except script
-   * builder's `execute_script_on_device` -> `run_script`. Passing the handler
-   * name to the allowlist gate is what denied every Script Builder test run
-   * with "Tool 'run_script' is not allowed for this session" (#4883).
+   * Pass the FULLY-QUALIFIED, non-empty `mcp__<server>__<tool>` string, not a
+   * bare name. Omit it whenever the two identities coincide — as of writing
+   * that is every tool this file's `breeze` server registers, and every
+   * script-builder tool except `execute_script_on_device` -> `run_script`.
+   * Only script builder's registrations are pinned against drift (see
+   * `scriptBuilderTools.guard.test.ts`); a NEW tool registered here under a
+   * name that differs from its handler must wire this argument, or the
+   * session allowlist will refuse it the way it refused every Script Builder
+   * test run with "Tool 'run_script' is not allowed for this session" (#4883).
    */
   mcpToolName?: string,
 ) => Promise<

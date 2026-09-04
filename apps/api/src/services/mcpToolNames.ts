@@ -1,12 +1,19 @@
 /**
  * Canonical MCP tool-name normalization and the session-allowlist predicate.
  *
- * Deliberately a dependency-free leaf module. Both helpers gate security
- * decisions (which tools a session may invoke, and which results must be
- * sealed), and both were previously copy-pasted into the modules that needed
- * them — `aiAgentSdk.ts` and `actionIntents/secretBearingTools.ts` — because
- * importing either of those from the other is a cycle. A narrower or drifted
- * copy of `stripMcpPrefix` fails OPEN, so it lives here once.
+ * Deliberately a dependency-free leaf module, for two different reasons:
+ *
+ * - `stripMcpPrefix` was duplicated — `aiAgentSdk.ts` and
+ *   `actionIntents/secretBearingTools.ts` each carried a hand-synced copy,
+ *   because `aiAgentSdk.ts` imports `secretBearingTools.ts` and neither could
+ *   import the other. It gates `isAllowedForSession` below,
+ *   `secretBearingTools.isSecretBearingTool` (and through it the
+ *   pre-execution refusal in `aiAgentSdkTools.ts` and
+ *   `assertNoPlaintextSecret`), so a narrower or drifted copy fails OPEN and
+ *   reinstates the plaintext-secret leak class. One implementation, here.
+ * - `isAllowedForSession` was never duplicated; it lived unexported in
+ *   `aiAgentSdk.ts` and moved here so the script-builder guard test can
+ *   exercise the real predicate without pulling in that module's graph.
  *
  * (Unrelated to `aiToolNames.ts`, which owns the core AI tool *registry* and
  * the extension reserved-name guard.)
@@ -35,6 +42,9 @@ export function stripMcpPrefix(toolName: string): string {
  * (script builder's `execute_script_on_device` -> `run_script`, #4883), the
  * caller must pass the exposed name here; checking the handler name against
  * an allowlist of exposed names denies a tool the session explicitly granted.
+ *
+ * `toolName` must be non-empty. An empty string fails CLOSED (nothing in an
+ * allowlist strips to `''`), but it is never a meaningful question to ask.
  */
 export function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
   const bareToolName = stripMcpPrefix(toolName);
