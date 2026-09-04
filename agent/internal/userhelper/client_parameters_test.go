@@ -151,3 +151,81 @@ func TestExecuteScriptNeverDeliversSecretEnv(t *testing.T) {
 		t.Errorf("a secretEnv value reached the user-context process environment; stdout = %q", stdout)
 	}
 }
+
+// TestExecuteScriptDeliversMetacharacterValueLiterallyInEnvironment covers the
+// safe half of parameter delivery. BREEZE_PARAM_* rides Cmd.Env, which is
+// never shell-parsed, so a value full of metacharacters must arrive byte-exact
+// rather than being re-interpreted. This matters now in a way it did not
+// before #4882: this path delivers parameters at all for the first time.
+func TestExecuteScriptDeliversMetacharacterValueLiterallyInEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution test requires Unix/macOS shell")
+	}
+
+	const meta = `a;b && c | d $(printf zz) "q" 'r'`
+
+	c := New("/tmp/test.sock", ipc.HelperRoleUser)
+
+	result := c.executeScript(ipc.IPCCommand{
+		CommandID: "exec-meta-env",
+		Type:      tools.CmdScript,
+		Payload: marshalPayload(t, map[string]any{
+			"language":       "bash",
+			"timeoutSeconds": 10,
+			// Read through the environment only — the placeholder is
+			// deliberately absent from the content, since substitution puts a
+			// value into shell SOURCE, where metacharacters are code.
+			"content":    `printf 'raw=%s\n' "$BREEZE_PARAM_META"`,
+			"parameters": map[string]any{"meta": meta},
+		}),
+	})
+
+	stdout := decodeHelperScriptStdout(t, result)
+
+	// Byte-exactness is the whole assertion: any shell evaluation of the
+	// substring `$(printf zz)` would rewrite the line, so an exact match
+	// proves the value was never re-interpreted.
+	if got, want := strings.TrimRight(stdout, "\n"), "raw="+meta; got != want {
+		t.Fatalf("BREEZE_PARAM_META was not delivered byte-exact.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestExecuteScriptValidatesAfterParameterSubstitution is the other half:
+// substitution writes the value into shell SOURCE, so the security validator
+// has to see the resolved text. executor.Execute substitutes first and
+// validates second, and the documented contract (docs/features/scripts.mdx)
+// says a parameter value that injects a dangerous command is caught.
+//
+// Before #4882 the helper path could not reach this at all — nothing was
+// substituted, so a dangerous value was inert here and the parity with the
+// SYSTEM path was untested. Now that parameters are live on this path, prove
+// the validator is live with them.
+//
+// The payload is deliberately harmless if the validator ever fails open: it
+// resolves to `echo Format-Volume`, which matches the PowerShell volume-format
+// pattern as TEXT while doing nothing but printing a word.
+func TestExecuteScriptValidatesAfterParameterSubstitution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution test requires Unix/macOS shell")
+	}
+
+	c := New("/tmp/test.sock", ipc.HelperRoleUser)
+
+	result := c.executeScript(ipc.IPCCommand{
+		CommandID: "exec-dangerous-param",
+		Type:      tools.CmdScript,
+		Payload: marshalPayload(t, map[string]any{
+			"language":       "bash",
+			"timeoutSeconds": 10,
+			"content":        `echo {{marker}}`,
+			"parameters":     map[string]any{"marker": "Format-Volume"},
+		}),
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("a parameter value that resolves to a dangerous pattern must be refused, got status %q (result %s)", result.Status, string(result.Result))
+	}
+	if !strings.Contains(result.Error, "script validation failed") {
+		t.Errorf("expected the validator's refusal, got error %q", result.Error)
+	}
+}
