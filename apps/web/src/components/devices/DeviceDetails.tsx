@@ -67,6 +67,7 @@ import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
+import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
@@ -234,10 +235,12 @@ function anomalyIdFromHash(hash: string): string | undefined {
 // Scripts tab (via tabFromHash, which only looks at the first segment) and
 // tells DeviceScriptHistory which execution to auto-open/highlight, so a
 // post-run redirect lands the operator watching the right row rather than a
-// generic tab switch.
+// generic tab switch. The segment is percent-decoded — deviceScriptsHash()
+// (the only writer) percent-encodes it, so this must reverse that or a
+// highlight for any id needing an escape would silently never match.
 function scriptExecutionIdFromHash(hash: string): string | undefined {
   const [tab, executionId] = hash.split("/");
-  return tab === "scripts" && executionId ? executionId : undefined;
+  return tab === "scripts" ? decodeScriptExecutionId(executionId) : undefined;
 }
 
 type LinkedNetworkAsset = { id: string; label: string };

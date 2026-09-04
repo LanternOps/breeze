@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { deviceScriptsHref } from '@/lib/deviceScriptsLink';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
 import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
@@ -472,7 +473,7 @@ export default function ScriptTestRunner({
             history list. */}
         {execution?.id && selectedDeviceId && (
           <a
-            href={`/devices/${selectedDeviceId}#scripts/${execution.id}`}
+            href={deviceScriptsHref(selectedDeviceId, execution.id)}
             data-testid="test-view-on-device"
             className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >

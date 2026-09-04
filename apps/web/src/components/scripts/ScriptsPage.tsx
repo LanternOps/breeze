@@ -15,6 +15,7 @@ import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -165,10 +166,9 @@ export default function ScriptsPage() {
       // a multi-device run has no single "the" device, so it goes to the
       // script's execution-history list instead.
       if (deviceIds.length === 1) {
-        const executionId = admittedTargets[0]?.executionId;
-        void navigateTo(`/devices/${deviceIds[0]}#scripts${executionId ? `/${executionId}` : ''}`);
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
       } else {
-        void navigateTo(`/scripts/${scriptId}/executions`);
+        void navigateTo(scriptExecutionsHref(scriptId));
       }
     }
     return data;
