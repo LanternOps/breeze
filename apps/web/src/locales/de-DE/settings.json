@@ -100,6 +100,7 @@
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",
     "sourceCidrs": "Quell-IPs oder CIDRs (eine pro Zeile)",
+    "writeScopeRestrictionsRequired": "Der Bereich enrollment-keys:write erfordert ein Ablaufdatum und mindestens eine Quell-IP oder CIDR.",
     "expiresAt": "Läuft ab am",
     "save": "Speichern",
     "cancel": "Abbrechen",

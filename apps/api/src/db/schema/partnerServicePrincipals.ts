@@ -7,11 +7,13 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
+  varchar,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { partners } from './orgs';
+import { enrollmentKeys, organizations, partners } from './orgs';
 import { users } from './users';
 
 export type PartnerServicePrincipalStatus = 'active' | 'disabled';
@@ -45,12 +47,40 @@ export const partnerServicePrincipals = pgTable('partner_service_principals', {
     'partner_service_principals_status_check',
     sql`${table.status} IN ('active', 'disabled')`,
   ),
-  scopesCheck: check(
+ scopesCheck: check(
     'partner_service_principals_scopes_check',
     sql`public.breeze_valid_partner_service_principal_scopes(${table.scopes})`,
   ),
+  enrollmentKeyWriteRestrictionsCheck: check(
+    'partner_service_principals_enrollment_key_write_restrictions_check',
+    sql`NOT (${table.scopes} @> ARRAY['enrollment-keys:write']::text[])
+      OR (cardinality(${table.sourceCidrs}) > 0 AND ${table.expiresAt} IS NOT NULL)`,
+  ),
 }));
 
+export const partnerEnrollmentKeyIdempotency = pgTable('partner_enrollment_key_idempotency', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  partnerServicePrincipalId: uuid('partner_service_principal_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  idempotencyKey: varchar('idempotency_key', { length: 128 }).notNull(),
+  requestFingerprint: varchar('request_fingerprint', { length: 64 }).notNull(),
+  enrollmentKeyId: uuid('enrollment_key_id').references(() => enrollmentKeys.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  principalKeyUnique: uniqueIndex('partner_enrollment_key_idempotency_principal_key_unique')
+    .on(table.partnerServicePrincipalId, table.idempotencyKey),
+  principalPartnerFk: foreignKey({
+    columns: [table.partnerServicePrincipalId, table.partnerId],
+    foreignColumns: [partnerServicePrincipals.id, partnerServicePrincipals.partnerId],
+    name: 'partner_enrollment_key_idempotency_principal_partner_fk',
+  }).onDelete('cascade'),
+  orgPartnerFk: foreignKey({
+    columns: [table.orgId, table.partnerId],
+    foreignColumns: [organizations.id, organizations.partnerId],
+    name: 'partner_enrollment_key_idempotency_org_partner_fk',
+  }).onDelete('cascade'),
+}));
 export const partnerServicePrincipalKeys = pgTable('partner_service_principal_keys', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id')

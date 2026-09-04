@@ -100,6 +100,7 @@
     "principalDescription": "Descrizione",
     "scopes": "Ambiti",
     "sourceCidrs": "IP di origine o CIDR (uno per riga)",
+    "writeScopeRestrictionsRequired": "L'ambito enrollment-keys:write richiede una data di scadenza e almeno un IP o CIDR di origine.",
     "expiresAt": "Scade il",
     "save": "Salva",
     "cancel": "Annulla",

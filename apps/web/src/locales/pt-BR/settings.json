@@ -100,6 +100,7 @@
     "principalDescription": "Descrição",
     "scopes": "Escopos",
     "sourceCidrs": "IPs ou CIDRs de origem (um por linha)",
+    "writeScopeRestrictionsRequired": "O escopo enrollment-keys:write exige uma data de expiração e pelo menos um IP ou CIDR de origem.",
     "expiresAt": "Expira em",
     "save": "Salvar",
     "cancel": "Cancelar",

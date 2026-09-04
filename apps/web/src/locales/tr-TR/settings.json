@@ -100,6 +100,7 @@
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
     "sourceCidrs": "Kaynak IP'leri veya CIDR'ler (satır başına bir tane)",
+    "writeScopeRestrictionsRequired": "enrollment-keys:write kapsamı bir son kullanma tarihi ve en az bir kaynak IP veya CIDR gerektirir.",
     "expiresAt": "Süresi doluyor",
     "save": "Kaydet",
     "cancel": "İptal",

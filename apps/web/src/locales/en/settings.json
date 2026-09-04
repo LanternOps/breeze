@@ -100,6 +100,7 @@
     "principalDescription": "Description",
     "scopes": "Scopes",
     "sourceCidrs": "Source IPs or CIDRs (one per line)",
+    "writeScopeRestrictionsRequired": "The enrollment-keys:write scope requires an expiry date and at least one source IP or CIDR.",
     "expiresAt": "Expires at",
     "save": "Save",
     "cancel": "Cancel",

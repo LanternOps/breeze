@@ -47,9 +47,24 @@
  *   - `ENROLLMENT_KEY_PURGE_AFTER_DAYS` — integer grace period (days) past
  *     expiry before a key is purged. Default 7.
  *
+ * Partner API idempotency claims:
+ *   - The same sweep reaps `partner_enrollment_key_idempotency`, the durable
+ *     claim table behind `X-Idempotency-Key` on
+ *     `POST /partner-api/v1/enrollment-keys`. A claim only has to outlive the
+ *     window in which a client may retry, not the key it minted, so rows older
+ *     than `PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS` are deleted.
+ *     Without this the table grows unbounded until org erasure: the FK cascade
+ *     from `enrollment_keys` only clears claims whose key was itself purged,
+ *     and a claim can outlive its key's own retention or have no key at all
+ *     (a request that died between claim and commit).
+ *   - The scan path is `partner_enrollment_key_idempotency_created_at_idx`.
+ *   - Retention is a constant, not an operator knob: it is not a security
+ *     bound, and a shorter window only means a very late retry mints a second
+ *     key rather than replaying.
+ *
  * Idempotency:
- *   - A single `DELETE ... WHERE`; running twice in one window simply finds
- *     zero matching rows the second time. Safe to retry on failure.
+ *   - Two `DELETE ... WHERE` statements; running twice in one window simply
+ *     finds zero matching rows the second time. Safe to retry on failure.
  *
  * RLS:
  *   - Background jobs have no request-scoped AsyncLocalStorage context, so
@@ -61,7 +76,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { and, isNotNull, lt } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { enrollmentKeys } from '../db/schema';
+import { enrollmentKeys, partnerEnrollmentKeyIdempotency } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { hasNoLiveUnexhaustedBootstrapToken } from '../services/enrollmentKeyPurgeGuards';
 import { getBullMQConnection } from '../services/redis';
@@ -74,6 +89,9 @@ const REPEAT_JOB_ID = 'enrollment-key-cleanup';
 // cron jobs (oauthCleanup, reliabilityWorker) to avoid contention.
 const DAILY_CRON = jobSchedule('enrollment-key-cleanup');
 const DEFAULT_PURGE_AFTER_DAYS = 7;
+// Far beyond any sane client retry window, and short enough that the claim
+// table stays a working set rather than an archive.
+const PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS = 7;
 
 function isCleanupEnabled(): boolean {
   const raw = process.env.ENROLLMENT_KEY_CLEANUP_ENABLED;
@@ -136,11 +154,24 @@ export function createEnrollmentKeyCleanupWorker(): Worker {
           .returning({ id: enrollmentKeys.id });
         const deletedCount = deletedRows.length;
 
+        // Runs after the key delete so claims orphaned by that delete's cascade
+        // are already gone and are not counted twice.
+        const idempotencyCutoff = new Date(
+          Date.now() - PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS * 86_400_000,
+        );
+        const deletedClaimRows = await dbModule.db
+          .delete(partnerEnrollmentKeyIdempotency)
+          .where(lt(partnerEnrollmentKeyIdempotency.createdAt, idempotencyCutoff))
+          .returning({ id: partnerEnrollmentKeyIdempotency.id });
+        const deletedIdempotencyClaimCount = deletedClaimRows.length;
+
         const durationMs = Date.now() - startedAt;
         console.log(
-          `[EnrollmentKeyCleanup] Deleted ${deletedCount} expired enrollment key(s) (purge-after=${purgeAfterDays}d) in ${durationMs}ms`,
+          `[EnrollmentKeyCleanup] Deleted ${deletedCount} expired enrollment key(s) (purge-after=${purgeAfterDays}d) `
+          + `and ${deletedIdempotencyClaimCount} partner idempotency claim(s) `
+          + `(retention=${PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS}d) in ${durationMs}ms`,
         );
-        return { deletedCount, durationMs };
+        return { deletedCount, deletedIdempotencyClaimCount, durationMs };
       });
     },
     {
@@ -229,6 +260,7 @@ export const __testOnly = {
   REPEAT_JOB_ID,
   DAILY_CRON,
   DEFAULT_PURGE_AFTER_DAYS,
+  PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS,
   isCleanupEnabled,
   getPurgeAfterDays,
 };

@@ -625,6 +625,7 @@ const REPOINT_TABLES: readonly string[] = [
   "onedrive_device_state",
   "organization_external_links",
   "pam_rules",
+  "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
   "patch_compliance_snapshots",
   "patch_jobs",

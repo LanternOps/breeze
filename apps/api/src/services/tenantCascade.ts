@@ -328,6 +328,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
+  // partner_enrollment_key_idempotency (2026-08-09, partner-api-enrollment-keys):
+  // Idempotency claim store for Partner API enrollment-key minting. org_id is a
+  // direct FK to organizations (ON DELETE CASCADE already clears rows on org
+  // delete; listed here anyway per the cascade contract test's requirement that
+  // every org_id-columned public table be enumerated for auditability).
+  'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
   'patch_compliance_snapshots',
   'patch_jobs',
