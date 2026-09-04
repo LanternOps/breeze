@@ -664,6 +664,7 @@
     "retry": "Réessayer",
     "activities": "Activités",
     "total": "total)",
+    "totalAtLeast": "{{count}} ou plus",
     "searchActivities": "Rechercher des activités...",
     "all": "Tous",
     "success": "Succès",
@@ -683,7 +684,8 @@
     "details": "Détails",
     "showing": "Affichage",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossible de récupérer l’état du système de fichiers",

@@ -1,41 +1,75 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-// Tracks how many times the count(*) query (db.select({ count })...where()) is
-// issued, so tests can prove the unbounded count is skipped unless withTotal is
-// set. The count select is distinguishable from the row select by its shape:
-// the count projection has a `count` key; the row projection does not.
+// Tracks how many times the capped count query (the OUTER `select({ count
+// })...from(<capped derived table>)`) is issued, so tests can prove the count
+// is skipped unless withTotal is set. Distinguished from the row select by
+// its projection shape: the count projection has a `count` key, the row
+// projection does not.
 const countQueryCalls = vi.fn();
 // Captures the WHERE condition handed to the feed query so tests can prove the
 // org_id scoping is present (BREEZE-B — it is load-bearing for performance, not
 // cosmetic; see the comment in events.ts).
 const feedWhereArgs: unknown[] = [];
+// Captures the WHERE/LIMIT the capped-count derived table builds (#4834), so
+// tests can prove (a) it reuses the arm's `where` unchanged — same predicate,
+// same index — and (b) the count is genuinely bounded, never an unbounded
+// count(*). `mockCappedCounts` is consumed FIFO in build order (resource arm,
+// then details arm) so a test can drive below-cap / above-cap scenarios.
+const cappedCountWhereArgs: unknown[] = [];
+const cappedCountLimitArgs: { limit: number }[] = [];
+let mockCappedCounts: number[] = [];
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
-    select: vi.fn((projection?: Record<string, unknown>) => ({
-      from: vi.fn(() => ({
-        leftJoin: vi.fn(() => ({
-          where: vi.fn((cond: unknown) => {
-            feedWhereArgs.push(cond);
-            return {
-              orderBy: vi.fn(() => ({
-                // Each feed arm is a bounded `limit(offset + limit)` read; the
-                // page is cut client-side by mergeFeedPage. No `.offset()`.
-                limit: vi.fn().mockResolvedValue([])
-              }))
-            };
+    select: vi.fn((projection?: Record<string, unknown>) => {
+      // Inner capped-count derived table: `SELECT 1 FROM audit_logs WHERE
+      // <arm predicate> LIMIT (cap + 1)`, later wrapped in `.as(...)`.
+      if (projection && 'one' in projection) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn((cond: unknown) => {
+              cappedCountWhereArgs.push(cond);
+              return {
+                limit: vi.fn((n: number) => {
+                  cappedCountLimitArgs.push({ limit: n });
+                  return { as: vi.fn(() => ({ __cappedSubquery: true })) };
+                })
+              };
+            })
+          }))
+        };
+      }
+      // Outer `SELECT count(*) FROM (<capped derived table>) t`.
+      if (projection && 'count' in projection) {
+        return {
+          from: vi.fn(() => {
+            countQueryCalls();
+            return Promise.resolve([{ count: mockCappedCounts.shift() ?? 0 }]);
           })
-        })),
-        where: vi.fn(() => {
-          if (projection && 'count' in projection) countQueryCalls();
-          return Promise.resolve([{ count: 0 }]);
-        }),
-      }))
-    })),
+        };
+      }
+      // Row-projection feed-arm read (unchanged).
+      return {
+        from: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn((cond: unknown) => {
+              feedWhereArgs.push(cond);
+              return {
+                orderBy: vi.fn(() => ({
+                  // Each feed arm is a bounded `limit(offset + limit)` read; the
+                  // page is cut client-side by mergeFeedPage. No `.offset()`.
+                  limit: vi.fn().mockResolvedValue([])
+                }))
+              };
+            })
+          }))
+        }))
+      };
+    }),
   }
 }));
 
@@ -86,7 +120,7 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { eventsRoutes, likePrefixPattern, formatActionMessage, mergeFeedPage } from './events';
+import { eventsRoutes, likePrefixPattern, formatActionMessage, mergeFeedPage, FEED_TOTAL_CAP } from './events';
 
 describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
   it('appends a trailing wildcard for a clean dotted prefix', () => {
@@ -136,6 +170,9 @@ describe('GET /devices/:id/events validation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
     app = new Hono();
     app.route('/devices', eventsRoutes);
   });
@@ -257,6 +294,57 @@ describe('GET /devices/:id/events validation', () => {
     expect(countQueryCalls).toHaveBeenCalledTimes(2);
   });
 
+  // #4834 stop-gap: cap the withTotal count instead of walking the device's
+  // whole audit history (option 2 of the three the issue lays out).
+  it('reports the exact sum and totalIsLowerBound=false when both arms are below the cap', async () => {
+    mockCappedCounts = [40, 10];
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      pagination: { total: number; totalIsLowerBound: boolean };
+    };
+    expect(json.pagination.total).toBe(50);
+    expect(json.pagination.totalIsLowerBound).toBe(false);
+  });
+
+  it('clamps total to FEED_TOTAL_CAP and sets totalIsLowerBound=true when the summed raw count exceeds the cap', async () => {
+    mockCappedCounts = [8000, 3000]; // sum 11000 > FEED_TOTAL_CAP (10000)
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      pagination: { total: number; totalIsLowerBound: boolean };
+    };
+    expect(json.pagination.total).toBe(FEED_TOTAL_CAP);
+    expect(json.pagination.totalIsLowerBound).toBe(true);
+  });
+
+  it('caps the count query per arm at FEED_TOTAL_CAP + 1 and reuses the arm predicate unchanged', async () => {
+    feedWhereArgs.length = 0;
+    mockCappedCounts = [5, 5];
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    // The count query is genuinely bounded — never an unbounded count(*).
+    expect(JSON.stringify(cappedCountLimitArgs)).toContain('limit');
+    expect(cappedCountLimitArgs).toEqual([
+      { limit: FEED_TOTAL_CAP + 1 },
+      { limit: FEED_TOTAL_CAP + 1 },
+    ]);
+    // Same predicate as the row read, arm for arm, so the count hits the same
+    // index the row read for that arm uses.
+    expect(cappedCountWhereArgs).toHaveLength(2);
+    expect(JSON.stringify(cappedCountWhereArgs[0])).toBe(JSON.stringify(feedWhereArgs[0]));
+    expect(JSON.stringify(cappedCountWhereArgs[1])).toBe(JSON.stringify(feedWhereArgs[1]));
+  });
+
   it('rejects an invalid withTotal value with 400', async () => {
     const res = await app.request(
       '/devices/11111111-1111-1111-1111-111111111111/events?withTotal=maybe',
@@ -272,6 +360,9 @@ describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)",
   beforeEach(() => {
     vi.clearAllMocks();
     feedWhereArgs.length = 0;
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
     app = new Hono();
     app.route('/devices', eventsRoutes);
   });
@@ -312,6 +403,9 @@ describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotab
   beforeEach(() => {
     vi.clearAllMocks();
     feedWhereArgs.length = 0;
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
     app = new Hono();
     app.route('/devices', eventsRoutes);
   });

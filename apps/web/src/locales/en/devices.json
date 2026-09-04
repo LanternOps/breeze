@@ -664,6 +664,7 @@
     "retry": "Retry",
     "activities": "Activities",
     "total": "total)",
+    "totalAtLeast": "{{count}}+",
     "searchActivities": "Search activities...",
     "all": "All",
     "success": "Success",
@@ -683,7 +684,8 @@
     "details": "Details",
     "showing": "Showing",
     "text": "–",
-    "of": "of"
+    "of": "of",
+    "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Failed to fetch filesystem status",
