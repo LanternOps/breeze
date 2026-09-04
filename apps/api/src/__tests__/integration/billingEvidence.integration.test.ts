@@ -151,10 +151,10 @@ describe('billing evidence at generation (real DB) #3205 W07', () => {
     await withSystemDbAccessContext(async () => {
       const manual = await createManualInvoice({ orgId: f.orgId }, actor);
       const before = await db.select().from(contractBillingPeriodOutcomes);
-      const { contract, lines } = await getContract(f.contractId, actor);
+      const { contract, lines } = await getContract(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' });
       for (const invoiceId of [manual.id, generated.invoiceId!]) {
         const evidence = new Map<string, readonly import('../../services/contractQuantities').DeviceSnapshotRow[]>();
-        const estimate = await computeContractEstimate(f.contractId, ACTOR, evidence);
+        const estimate = await computeContractEstimate(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' }, evidence);
         const est = estimate.lines[0]!;
         const added = await materializeContractLineOntoInvoice(actor, {
           invoiceId, contract, line: lines[0]!, currencyCode: contract.currencyCode,
@@ -177,7 +177,7 @@ describe('billing evidence at generation (real DB) #3205 W07', () => {
     const actor = { ...ACTOR, partnerId: f.partnerId };
     const manual = await withSystemDbAccessContext(() => createManualInvoice({ orgId: f.orgId }, actor));
     await expect(withSystemDbAccessContext(async () => {
-      const { contract, lines } = await getContract(f.contractId, actor);
+      const { contract, lines } = await getContract(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' });
       // A nonexistent device violates the FK after the base line was written.
       await materializeContractLineOntoInvoice(actor, {
         invoiceId: manual.id, contract, line: lines[0]!, currencyCode: contract.currencyCode,
