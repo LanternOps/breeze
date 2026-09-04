@@ -1,8 +1,8 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
-import { DashboardTiles } from '../../components/portal/DashboardTiles';
+import { DashboardTiles, DashboardUnavailable } from '../../components/portal/DashboardTiles';
 import { portalApi } from '../../lib/api';
-import { buildServerApiConfig } from '../../lib/server';
+import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
 
 const response = await portalApi.getDashboard(
@@ -11,12 +11,19 @@ const response = await portalApi.getDashboard(
 if (response.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
 }
+
+// The concierge line is the whole point of the failure state, so the support
+// address is fetched only when there is a failure to explain — the happy path
+// must not pay for a second branding round trip (the layout already made one).
+const supportEmail = response.data
+  ? null
+  : (await loadPortalBranding(Astro.request)).supportEmail;
 ---
 
 <PortalLayout title="Dashboard">
   {
     response.data
       ? <DashboardTiles dashboard={response.data} />
-      : <p data-testid="portal-dashboard-error">{response.error}</p>
+      : <DashboardUnavailable supportEmail={supportEmail} />
   }
 </PortalLayout>

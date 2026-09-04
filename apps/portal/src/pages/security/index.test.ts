@@ -7,25 +7,43 @@ const tableSource = readFileSync(
   'utf8',
 );
 
-describe('security page device fetch states', () => {
-  it('renders a dedicated devices error instead of the empty table state on fetch failure', () => {
-    expect(pageSource).toContain('data-testid="portal-security-devices-error"');
-    expect(pageSource).toContain('{devices.error}');
-    expect(pageSource).toMatch(
-      /devices\.data\s*\?[\s\S]*<SecurityDeviceTable[\s\S]*devices=\{devices\.data\.data\}[\s\S]*timezone=\{devices\.data\.timezone\}[\s\S]*<\/\>\s*:\s*<p data-testid="portal-security-devices-error">\{devices\.error\}<\/p>/,
+describe('security page fetch states', () => {
+  it('never prints a raw transport error at the customer', () => {
+    expect(pageSource).not.toMatch(/\{overview\.error\}/);
+    expect(pageSource).not.toMatch(/\{devices\.error\}/);
+  });
+
+  it('surfaces both failures through ErrorNotice with copy that names the recovery', () => {
+    expect(pageSource).toMatch(/import \{[^}]*ErrorNotice[^}]*\} from '\.\.\/\.\.\/components\/portal\/ui'/);
+    expect(pageSource).toContain('data-testid="portal-security-error"');
+    expect(pageSource).toContain(
+      "We couldn't load your security summary just now. Your IT team can help.",
     );
+    expect(pageSource).toContain('data-testid="portal-security-devices-error"');
+    expect(pageSource).toContain(
+      "We couldn't load your device list just now. Your IT team can help.",
+    );
+  });
+
+  it('keeps a page title even when the summary fails to load', () => {
+    expect(pageSource).toMatch(/import \{[^}]*PageHeader[^}]*\} from '\.\.\/\.\.\/components\/portal\/ui'/);
+    expect(pageSource).toMatch(/<PageHeader\s+title="Security"/);
+  });
+
+  it('hands the device ledger the fleet total so it can foot itself honestly', () => {
+    expect(pageSource).toMatch(/<SecurityDeviceTable[\s\S]*devices=\{devices\.data\.data\}/);
+    expect(pageSource).toMatch(/<SecurityDeviceTable[\s\S]*timezone=\{devices\.data\.timezone\}/);
+    expect(pageSource).toMatch(/<SecurityDeviceTable[\s\S]*total=\{devices\.data\.pagination\.total\}/);
     expect(pageSource).not.toContain('devices.data?.data ?? []');
+    // The cap line is a ledger foot inside the table, not an unstyled page paragraph.
+    expect(pageSource).not.toContain('portal-security-devices-cap');
+    expect(tableSource).toContain('data-testid="portal-security-devices-cap"');
+    expect(tableSource).toContain('Showing the first');
   });
 
   it('keeps the successful zero-device state distinct in the device table', () => {
     expect(tableSource).toContain('data-testid="portal-security-devices-empty"');
-    expect(tableSource).toContain('No devices are enrolled.');
+    expect(tableSource).toContain('No devices yet');
     expect(pageSource).not.toContain('portal-security-devices-empty');
-  });
-
-  it('tells customers when the first page is capped below the fleet total', () => {
-    expect(pageSource).toContain('data-testid="portal-security-devices-cap"');
-    expect(pageSource).toContain('devices.data.pagination.total');
-    expect(pageSource).toContain('Additional devices are not shown.');
   });
 });
