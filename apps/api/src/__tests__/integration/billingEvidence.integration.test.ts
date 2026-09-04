@@ -175,15 +175,17 @@ describe('billing evidence at generation (real DB) #3205 W07', () => {
   runDb('interactive evidence failure rolls back the base line and invoice marker (#4837)', async () => {
     const f = await seedContract(['alpha'], { lineType: 'per_device' });
     const actor = { ...ACTOR, partnerId: f.partnerId };
-    await withSystemDbAccessContext(async () => {
-      const manual = await createManualInvoice({ orgId: f.orgId }, actor);
+    const manual = await withSystemDbAccessContext(() => createManualInvoice({ orgId: f.orgId }, actor));
+    await expect(withSystemDbAccessContext(async () => {
       const { contract, lines } = await getContract(f.contractId, actor);
       // A nonexistent device violates the FK after the base line was written.
-      await expect(materializeContractLineOntoInvoice(actor, {
+      await materializeContractLineOntoInvoice(actor, {
         invoiceId: manual.id, contract, line: lines[0]!, currencyCode: contract.currencyCode,
         resolved: { counted: 1, billed: 1, included: null, overage: 0, overageMode: null },
         deviceEvidence: [{ id: '00000000-0000-4000-8000-000000000099', hostname: 'missing', role: 'server', siteId: null }],
-      })).rejects.toThrow();
+      });
+    })).rejects.toThrow();
+    await withSystemDbAccessContext(async () => {
       expect(await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, manual.id))).toEqual([]);
       const [invoice] = await db.select().from(invoices).where(eq(invoices.id, manual.id));
       expect(invoice!.evidenceVersion).toBeNull();
