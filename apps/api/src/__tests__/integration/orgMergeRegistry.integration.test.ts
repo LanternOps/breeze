@@ -298,18 +298,27 @@ describe('Org merge policy registry contract', () => {
     expect(extra).toEqual([]);
   });
 
-  it('organizations is loser-shell; the four append-only tables are leave-for-erasure', () => {
+  it('organizations is loser-shell; the five append-only tables are leave-for-erasure', () => {
     expect(policies.get('organizations')).toEqual({ kind: 'loser-shell' });
-    for (const t of ['audit_logs', 'audit_log_chain', 'audit_chain_anchors', 'ml_feedback_events']) {
+    // agent_rollback_events joined this list in the #4371 fixup, and
+    // peripheral_policy_delivery_events in the #4806 fixup: breeze_app has
+    // no UPDATE on either (same privilege topology as ml_feedback_events),
+    // so neither can ever be a live 'repoint' target — see the SPECIAL
+    // entry's note in orgMergeRegistry.ts for the full history.
+    for (const t of ['audit_logs', 'audit_log_chain', 'audit_chain_anchors', 'ml_feedback_events', 'agent_rollback_events', 'peripheral_policy_delivery_events']) {
       expect(policies.get(t)?.kind, t).toBe('leave-for-erasure');
     }
   });
 
   it('repoints Track D device-control state and evidence with the device owner', () => {
+    // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
+    // events (#4806 fixup) are deliberately NOT in this list: breeze_app has
+    // UPDATE revoked on both, so neither can be repointed by the merge —
+    // they're asserted 'leave-for-erasure' above instead.
+    // agent_rollback_directives keeps its own separate 'repoint' policy;
+    // its evidence table just doesn't follow along anymore.
     for (const table of [
       'agent_rollback_directives',
-      'agent_rollback_events',
-      'peripheral_policy_delivery_events',
       'peripheral_policy_device_states',
     ]) {
       expect(policies.get(table), table).toEqual({ kind: 'repoint' });

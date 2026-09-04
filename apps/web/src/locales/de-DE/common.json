@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
@@ -41,10 +42,12 @@
     "auditTrail": "Audit-Protokoll",
     "eventLogs": "Ereignisprotokolle",
     "partner": "Partner",
+    "billing": "Abrechnung",
     "organizations": "Organisationen",
     "aiUsageBudget": "KI-Nutzung und Budget",
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",
+    "aiImpact": "KI-Wirkung",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -63,6 +66,7 @@
     "sectionExtensions": "Erweiterungen",
     "variables": "Variablen",
     "llmProviderCatalog": "LLM-Anbieterkatalog",
+    "aiKillSwitch": "KI-Notausschalter",
     "sectionAi": "KI",
     "sectionFleetManagement": "Flottenverwaltung",
     "sectionBilling": "Abrechnung",

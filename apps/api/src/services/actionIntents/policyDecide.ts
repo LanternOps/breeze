@@ -12,12 +12,13 @@ import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { policyDecideEnabled } from '../../config/env';
-import { checkAgentGuardrails, resolveActionForTool, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { resolveRecipientUserIds } from '../aiAgents/recipients';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
+import { canonicalPolicyKey } from './canonicalPolicyKey';
 import { validateAuthorizationKeys, POLICY_DECIDABLE_TIER3_VERSION } from './policyDecidable';
 import { computeExposureBudget } from './exposureBudget';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
@@ -62,15 +63,6 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  */
 export function computePolicySnapshotDigest(snapshot: AiAgentPolicySnapshot): string {
   return computeArgumentDigest(canonicalizeArguments(snapshot as unknown as Record<string, unknown>));
-}
-
-/** The canonical POLICY_DECIDABLE_TIER3 key for a stored intent's action —
- *  derived EXACTLY the way checkGuardrails/checkAgentGuardrails resolve the
- *  sub-operation (aiGuardrails.ts's `resolveActionForTool`), never a second
- *  ad hoc parse of `arguments`. */
-function canonicalPolicyKey(actionName: string, args: Record<string, unknown>): string {
-  const action = resolveActionForTool(actionName, args);
-  return action ? `${actionName}:${action}` : actionName;
 }
 
 /** Thrown INSIDE the authorize transaction when the final CAS loses a race

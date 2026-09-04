@@ -281,7 +281,8 @@
       "partial": "Teilweise",
       "running": "Wird ausgeführt",
       "pending": "Ausstehend",
-      "skipped": "Übersprungen"
+      "skipped": "Übersprungen",
+      "cancelled": "Abgebrochen"
     },
     "empty": "Kein Ausführungsverlauf verfügbar.",
     "triggeredBy": {
@@ -618,6 +619,30 @@
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"
     },
+    "customFields": {
+      "title": "Skript-Schreibvorgänge für benutzerdefinierte Felder",
+      "applied": "Übernommen",
+      "rejected": "Abgelehnt",
+      "none": "Keine",
+      "reasons": {
+        "unknown_field": "Keine passende Felddefinition",
+        "not_script_writable": "Feld ist nicht per Skript beschreibbar",
+        "not_applicable_to_device": "Feld gilt nicht für diesen Gerätetyp",
+        "device_not_found": "Gerät nicht gefunden",
+        "invalid_type": "Wert hat den falschen Typ",
+        "out_of_range": "Wert liegt außerhalb des zulässigen Bereichs",
+        "not_a_choice": "Wert ist keine der zulässigen Optionen des Feldes",
+        "too_long": "Wert ist zu lang",
+        "invalid_date": "Wert ist kein gültiges Datum",
+        "marker_unparseable": "Marker konnte nicht als JSON geparst werden",
+        "too_many_lines": "Zu viele Marker-Zeilen in diesem Lauf",
+        "too_many_keys": "Zu viele Schlüssel im Marker",
+        "marker_too_large": "Marker hat das Größenlimit überschritten",
+        "forbidden_key": "Schlüssel ist nicht zulässig",
+        "envelope_unparseable": "Strukturiertes Ergebnis konnte nicht geparst werden",
+        "envelope_unsupported_version": "Strukturiertes Ergebnis verwendet eine nicht unterstützte Version"
+      }
+    },
     "actions": {
       "copyToClipboard": "In die Zwischenablage kopieren"
     },
@@ -627,7 +652,10 @@
       "completed": "Skript erfolgreich abgeschlossen",
       "failed": "Die Skriptausführung ist fehlgeschlagen",
       "timeout": "Zeitüberschreitung bei der Skriptausführung",
-      "pending": "Das Skript wartet darauf, ausgeführt zu werden"
+      "pending": "Das Skript wartet darauf, ausgeführt zu werden",
+      "queued": "Das Skript wartet auf die Übermittlung an das Gerät",
+      "cancelling": "Abbruch angefordert – warte auf Bestätigung durch das Gerät.",
+      "cancelled": "Das Skript wurde auf dem Gerät gestoppt"
     },
     "fields": {
       "startedAt": "Begonnen um",
@@ -640,7 +668,14 @@
       "pending": "Ausstehend",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
     }
   },
   "executionHistory": {
@@ -661,7 +696,14 @@
       "running": "Wird ausgeführt...",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -1035,6 +1077,8 @@
       "variablePlaceholder": "z.B. vendor_token",
       "fieldLabel": "Schlüssel des benutzerdefinierten Felds",
       "fieldPlaceholder": "z.B. asset_tag",
+      "fieldHelp": "Geben Sie den Feldschlüssel ein, der unter Einstellungen → Benutzerdefinierte Felder angezeigt wird (Groß-/Kleinschreibung beachten). Lesen: Sobald die Bindung besteht, wird der aufgelöste Wert wie ein normaler Parameter an das Skript übergeben — es erscheint keine Eingabeaufforderung. Schreiben: Um einen neuen Wert zurückzuschreiben, lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen.",
+      "fieldHelpAriaLabel": "Über die Bindung des benutzerdefinierten Gerätefelds",
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
       "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
@@ -1294,7 +1338,8 @@
       "failed": "Fehlgeschlagen",
       "timeout": "Zeitüberschreitung",
       "queued": "In Warteschlange",
-      "cancelled": "Abgebrochen"
+      "cancelled": "Abgebrochen",
+      "cancelling": "Wird gestoppt…"
     },
     "errors": {
       "execute": "Testlauf konnte nicht gestartet werden",

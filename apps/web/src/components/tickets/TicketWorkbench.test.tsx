@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { configure, fireEvent, getConfig, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketWorkbench from './TicketWorkbench';
@@ -747,6 +747,53 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
   // e.g. resolveDraftId survived from a prior ticket's aiDrafts state) used
   // to fall through the `err.status === 409` check and loop forever. The
   // recovery must match the sibling send/discard handlers (any non-401).
+  // Regression for a CI-only flake (I1 below, 2026-09-03 run 33724780964):
+  // the resolve note came up '' although the draft badge was already on
+  // screen. openResolveForm reads aiDraftsRef, which was synced in a PASSIVE
+  // effect — flushed in a later macrotask than the commit that painted the
+  // badge. RTL's findBy* normally hides the window with a setTimeout(0) drain
+  // after the element appears, but under CI load the scheduler's flush can
+  // lose to that drain. Bypassing the drain here reproduces the window
+  // deterministically: red on the useEffect sync, green on useLayoutEffect.
+  it('prefills the resolve note even when the status change lands in the same macrotask as the draft commit', async () => {
+    let resolveAttempts = 0;
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [resolutionDraft] });
+      }
+      if (url === '/tickets/tk-1/status' && init?.method === 'POST') {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) {
+          consumed = true;
+          return makeJsonResponse({ error: 'Draft not found' }, false, 404);
+        }
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', status: 'resolved' }) });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    const previousWrapper = getConfig().asyncWrapper;
+    configure({ asyncWrapper: (cb) => cb() });
+    try {
+      await screen.findByTestId('ticket-ai-draft-resolution_note');
+      fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+      const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+      expect(note.value).toBe(resolutionDraft.content);
+    } finally {
+      configure({ asyncWrapper: previousWrapper });
+    }
+  });
+
   it('I1: on a 404 resolve conflict from a stale aiDraftId, drops it and retries without it (not just 409)', async () => {
     let resolveAttempts = 0;
     let consumed = false;
@@ -934,6 +981,54 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
 
     resolveTk2Drafts(makeJsonResponse({ data: [resolutionDraft] }));
     await screen.findByTestId('ticket-ai-draft-resolution_note');
+  });
+
+  // #4469 — the two draft cards are independent operations (different draft
+  // ids); acting on one must not block the other. Holds the reply's send
+  // request open (never resolved during the assertion) so the resolution_note
+  // card's discard click happens while sendingDraftId is still set to the
+  // OTHER draft's id — a regression that guards on "any in-flight action"
+  // rather than "this draft's own in-flight action" would silently swallow
+  // the discard click here (the button isn't visually disabled, but the
+  // handler's guard clause no-ops before the fetch fires).
+  it('#4469: discarding one draft while the other is mid-send still fires the discard request', async () => {
+    let resolveSend!: (value: Response) => void;
+    const sendPromise = new Promise<Response>((resolve) => { resolveSend = resolve; });
+
+    mockDraftsApi([replyDraft, resolutionDraft], (url, init) => {
+      if (url === '/tickets/tk-1/ai-drafts/draft-reply-1/send' && init?.method === 'POST') {
+        return sendPromise as unknown as Response;
+      }
+      return null;
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-ai-draft-reply');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-reply-send'));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // Reply's send is still in flight (sendPromise unresolved) when the
+    // resolution_note card is discarded.
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-resolution_note-discard'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-note-1/discard',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    resolveSend(makeJsonResponse({ success: true }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull(); // send completed, card removed
+    });
   });
 });
 
@@ -2062,6 +2157,48 @@ describe('TicketWorkbench requester editing + device link', () => {
       expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
         method: 'PATCH',
         body: JSON.stringify({ submittedBy: null, submitterName: 'Walk-in User', submitterEmail: null })
+      }));
+    });
+  });
+
+  it('does NOT PATCH when the requester editor is opened and saved unchanged', async () => {
+    // #3258 W03: an emailed ticket has no portal login, so the editor opens on
+    // "someone else" with the snapshot pre-filled. Saving it untouched used to
+    // POST {submittedBy: null, submitterName, submitterEmail} — which the API
+    // read as a requester change and used to clear requester_contact_id,
+    // removing the customer's own ticket from their portal with no way back.
+    mockTicketApi({
+      'tk-1': makeTicket({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' })
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    const patches = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(patches).toHaveLength(0);
+    // The editor still closes — an unchanged save is a successful no-op, not a
+    // stuck form.
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-requester-save')).toBeNull());
+  });
+
+  it('still PATCHes when only the requester EMAIL is edited', async () => {
+    // The dirty check must compare all three fields, not just the picker.
+    mockTicketApi({
+      'tk-1': makeTicket({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' })
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    fireEvent.change(screen.getByTestId('ticket-workbench-requester-email'), { target: { value: 'bob@acme.test' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'bob@acme.test' })
       }));
     });
   });

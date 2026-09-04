@@ -252,14 +252,32 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
+  // Money-authoring drafts vs money-moving actions (#2551): this boundary
+  // tracks reversibility/external-commitment, not dollar amount. Drafting —
+  // create_draft, add_manual_line, add_catalog_line, update, etc. — only
+  // mutates an internal record nobody outside Breeze has seen yet; it's
+  // Tier 2 (auto-execute + audit) no matter how large the draft's total is.
+  // The step that actually commits externally — issuing/voiding an invoice,
+  // recording/voiding a payment, sending a quote to the customer, or
+  // transitioning a contract's lifecycle — is what exposes the change beyond
+  // Breeze, so THAT step is Tier 3 regardless of amount. A five-figure quote
+  // draft and a $10 one get the same tier; only `send` escalates.
+  //
+  // This is deliberate, not an oversight that `manage_organizations:
+  // create_org` is Tier 3 while `manage_quotes: create_draft` is Tier 2 —
+  // create_org is gated on tenant-structure mutation, an unrelated axis, not
+  // financial size. A partner-configurable dollar-amount escalation
+  // threshold for drafting was proposed and explicitly deferred (not
+  // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
-  // add_contact stays at the tool's base tier (it returns guidance only).
+  // add_contact (#3258) writes customer PII (a first-class contact record),
+  // so it escalates too, even though it reshapes no tenant boundary.
   // update_org's approval SCOPE (not its tier) is input-aware — see
   // resolveApprovalScope's override hook below.
-  manage_organizations: ['create_org', 'update_org', 'create_site'],
+  manage_organizations: ['create_org', 'update_org', 'create_site', 'add_contact'],
   // s1_threat_action is registered at base Tier 3 (see TIER3_FOUR_EYES_TOOLS /
   // TIER3_SUPERVISED_TOOLS below for its whole-tool catch-all), but its
   // `action` enum (kill/quarantine/rollback) is a real dispatch discriminator
@@ -321,6 +339,11 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
   manage_tickets: ['move_org'],
+  // Grants an AUTHORITY, not a device action: it converts "this agent must ask
+  // a human for <opKey>" into "this agent may run <opKey> unattended for this
+  // org from now on". Proposing that and authorising it are separate
+  // responsibilities. See services/aiToolsAiAgentGovernance.ts.
+  manage_ai_agents: ['authorize_supervised_key'],
   // Destroys or rewinds state.
   manage_hyperv_checkpoints: ['delete', 'apply'],
   manage_patches: ['rollback'],
@@ -340,6 +363,10 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'computer_control', 'create_remote_session',
   // Tenant destruction.
   'delete_tenant',
+  // AI agent authority grants (P2-5, #4192). Whole-tool member on top of the
+  // TIER3_FOUR_EYES_ACTIONS entry above, so a future action of this tool
+  // defaults to four_eyes instead of falling through to `supervised`.
+  'manage_ai_agents',
   // Identity / account control — M365 (helpdesk tools; dispatch outside the
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
@@ -370,6 +397,25 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // request_elevation above). Not named in spec §3.2; classified four_eyes
   // out of caution — flagged in the task report "concerns".
   'request_elevation',
+]);
+
+/**
+ * Tools the `ai_agent` principal may NEVER call, whatever its allowlist says.
+ *
+ * A third unconditional denial class alongside BLOCKED_TOOLS (tier 4) and
+ * `isSecretBearingTool` — and, like those, enforced in `checkAgentGuardrails`
+ * ABOVE the allowlist and the multiplexed-action resolution, so the deny
+ * cannot depend on a parseable `action` or on the snapshot omitting the name.
+ *
+ * `manage_ai_agents` (P2-5, #4192) grants an agent a pre-authorized action
+ * key: an agent able to call it could grant ITSELF new unattended authority,
+ * which is the one escalation no approval scope can contain (the grant
+ * outlives the run). Membership here is a registry, not a hard-coded string,
+ * so aiGuardrails.agentPrincipal.contract.test.ts can treat the class as
+ * unconditionally denied instead of duplicating the literal.
+ */
+export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
+  'manage_ai_agents',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -410,7 +456,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
-  manage_organizations: ['create_site'],
+  // add_contact (#3258) writes customer PII but is neither externally-binding
+  // nor identity/destroy-class, so it stays supervised alongside create_site
+  // rather than four_eyes — see spec §5.
+  manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
 };
 
@@ -520,6 +569,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     resolve: { resource: 'alerts', action: 'write' },
     suppress: { resource: 'alerts', action: 'write' },
   },
+  // Per-ACTION shape (like manage_tickets below) so a future action of this
+  // tool cannot inherit the grant permission by accident. `ai_agents:write`
+  // already exists in the canonical registry, seed, migration and catalog.
+  manage_ai_agents: {
+    authorize_supervised_key: { resource: 'ai_agents', action: 'write' },
+  },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
     get: { resource: 'tickets', action: 'read' },
@@ -587,6 +642,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'contracts', action: 'write' },
     add_line: { resource: 'contracts', action: 'write' },
     remove_line: { resource: 'contracts', action: 'write' },
+    update_line: { resource: 'contracts', action: 'write' },
     activate: { resource: 'contracts', action: 'manage' },
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
@@ -1145,6 +1201,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   get_service_monitoring_status: { limit: 30, windowSeconds: 300 },
   // Integration & webhook tools
   test_webhook: { limit: 5, windowSeconds: 300 },
+  // AI agent governance — a grant is a rare, deliberate act.
+  manage_ai_agents: { limit: 5, windowSeconds: 3600 },
   // Agent version & remote session tools
   trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
@@ -1624,6 +1682,9 @@ export function checkAgentGuardrails(
   if (isSecretBearingTool(toolName)) {
     return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
   }
+  if (AGENT_HUMAN_ONLY_TOOLS.has(toolName)) {
+    return deny(`Tool "${toolName}" is human-only and is never available to agents`);
+  }
 
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
   if (siteDenial) return deny(`Denied: ${siteDenial}`);
@@ -1970,6 +2031,34 @@ function buildApprovalDescription(
       break;
     }
 
+    // P2-5 (#4192): the op key ONLY. Never the agent's own text, never a
+    // rationale — this string is rendered in the approval inbox and stored on
+    // the intent, and no model-authored content may reach either.
+    //
+    // The parenthetical is not decoration: `cloneValuesFromEffective`
+    // (`aiAgents/supervisedKeyGrant.ts`) materializes the partner's CURRENT
+    // policy as a per-org `ai_agents` row whenever the org has none — the
+    // COMMON case under partner-wide-first. After that the org follows the
+    // partner only where the merge is tighten-only, so a partner that later
+    // WIDENS (a new tool in the allowlist, a raised limit, a new recipient or
+    // trigger) no longer reaches this org. The grant audit row records
+    // `clonedFromEffective` after the fact; this is the only place the second
+    // approver can be told BEFORE they consent. Unconditional because the
+    // description is built at intent-CREATION time, when whether the org
+    // already has a row is a race against the release — stating the
+    // conditional truth is honest at both moments.
+    case 'manage_ai_agents':
+      if (action === 'authorize_supervised_key') {
+        parts.push(
+          `Authorize the AI agent to run "${String(input.opKey ?? 'unknown')}" without an approval ` +
+          'for this organization in future runs',
+          '(creates a per-organization agent policy override if this organization does not already have one)',
+        );
+      } else {
+        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      }
+      break;
+
     case 'security_scan':
       parts.push(`Security: ${action}`);
       if (input.threatId) parts.push(`threat ${(input.threatId as string).slice(0, 8)}...`);
@@ -2111,7 +2200,44 @@ function buildApprovalDescription(
       if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
       else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
       else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
-      else parts.push(`Organizations: ${action}`);
+      else if (action === 'add_contact') {
+        // Review finding (fix round 1): `input.name` had no `??` fallback, so
+        // a phone/mobile-only contact (legal since contacts_identifiable_chk
+        // only needs ONE of name/email/phone/mobile) rendered literally as
+        // `Add contact "undefined"` — the approver saw nothing identifying,
+        // the exact failure spec §5 created this branch to prevent. Falls
+        // back through the same priority order createContact accepts, and
+        // lists every OTHER present identifier alongside it so the approver
+        // sees everything supplied, not just whichever field won the fallback.
+        const acName = typeof input.name === 'string' ? input.name : undefined;
+        const acEmail = typeof input.email === 'string' ? input.email : undefined;
+        const acPhone = typeof input.phone === 'string' ? input.phone : undefined;
+        const acMobile = typeof input.mobile === 'string' ? input.mobile : undefined;
+        const acHeadline = acName ?? acEmail ?? acPhone ?? acMobile ?? 'no identifying info provided';
+        const acOthers = [
+          acEmail && acEmail !== acHeadline ? `email: ${acEmail}` : null,
+          acPhone && acPhone !== acHeadline ? `phone: ${acPhone}` : null,
+          acMobile && acMobile !== acHeadline ? `mobile: ${acMobile}` : null,
+        ].filter((part): part is string => part !== null);
+        parts.push(
+          `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
+        );
+        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
+        // two add_contact inputs whose effect reaches beyond inserting a row,
+        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
+        // holds the scope's primary slot and REPLACES the legacy projection —
+        // organizations.billing_contact, or sites.contact when a site is
+        // pinned, which is a public partner-API DTO. Without these the
+        // approver cannot tell "file a new contact" (routine, hence
+        // supervised) apart from "overwrite this customer's billing contact".
+        const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+        if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
+        if (input.isPrimary === true) {
+          parts.push(
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+          );
+        }
+      } else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':

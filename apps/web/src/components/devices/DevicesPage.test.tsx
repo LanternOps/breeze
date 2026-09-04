@@ -263,6 +263,15 @@ vi.mock('./DeviceList', () => ({
           onClick={() => onAction?.('restore', d)}
         />
       ))}
+      {devices.map(d => (
+        <button
+          key={`row-permanent-delete-${d.id}`}
+          type="button"
+          aria-label={`row permanent delete ${d.id}`}
+          data-testid={`row-permanent-delete-${d.id}`}
+          onClick={() => onAction?.('permanent-delete', d)}
+        />
+      ))}
       {onShowDecommissioned && (
         <button
           type="button"
@@ -420,6 +429,89 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     expect(screen.getByTestId(`device-card-${DEV_2}`)).toBeTruthy();
     expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
     expect(vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))).toBe(false);
+  });
+});
+
+// #4732: a failed /filters/preview (403 on a pinned orgId the caller can't
+// access, 500, network error) must never render as a silently unfiltered
+// list. useAdvancedFilterIds fails CLOSED (empty id set, `error: true`);
+// these tests prove DevicesPage actually surfaces that in BOTH views, since
+// only DeviceList (list view) gets an inline pill from its own suite —
+// DevicesPage owns the toast (which is the ONLY signal in grid view) and the
+// grid view's own persistent banner.
+describe('DevicesPage — advanced filter preview failure surfaces in both views (#4732)', () => {
+  function failPreview(status: number) {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return { ok: false, status, json: async () => ({ error: 'failed' }) } as unknown as Response;
+      }
+      return jsonResponse({ data: [] });
+    });
+  }
+
+  it('list view: resolves to an empty (not null) id set and toasts the failure on a 403', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(403);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    // Empty Set -> `[...set].sort().join(',')` is '' — distinguishable from
+    // the "no filter" case (also '') only by the toast below firing, which
+    // is exactly why `error` exists as a separate signal from `ids`.
+    await waitFor(() => {
+      expect(list.getAttribute('data-filter-ids')).toBe('');
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('Advanced filter failed to load'),
+        }),
+      );
+    });
+  });
+
+  it('grid view: renders zero cards and a persistent error banner (not just the transient toast) on a 500', async () => {
+    failPreview(500);
+
+    render(<DevicesPage />);
+
+    const gridButton = await screen.findByLabelText('Grid view');
+    fireEvent.click(gridButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-filter-error-grid')).toBeTruthy();
+    });
+    expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+  });
+
+  it('does not spam the toast on an unrelated re-render while the same failing filter stays active', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(500);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    const failureToasts = () =>
+      vi.mocked(showToast).mock.calls.filter(([toast]) =>
+        typeof toast.message === 'string' && toast.message.includes('Advanced filter failed to load'),
+      ).length;
+
+    await waitFor(() => expect(failureToasts()).toBe(1));
+
+    // Toggle view mode twice (grid, then back to list) — a state change and
+    // re-render on the page that does NOT touch `advancedFilter`. The error
+    // toast fires once on the false->true transition only; it must not fire
+    // again just because the page re-rendered for an unrelated reason.
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByLabelText('List view'));
+    await screen.findByTestId('device-list');
+
+    expect(failureToasts()).toBe(1);
   });
 });
 
@@ -2038,5 +2130,72 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
     expect(vi.mocked(showToast)).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: expect.stringContaining('at least 2') }),
     );
+  });
+});
+
+// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the
+// agent could not be reached for remote uninstall (decommission force-closes
+// the WS handshake, so this is the common case, not a rare race — see the
+// issue). The row/grid path must branch the toast on it instead of always
+// showing a green success, or the operator believes the endpoint is clean
+// when the agent is still installed and running.
+describe('DevicesPage — permanent delete surfaces the API warning (#4368)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
+    } as never);
+  });
+
+  async function runPermanentDelete() {
+    render(<DevicesPage />);
+    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
+
+    // Only setTimeout is faked, and fake timers must be installed BEFORE the
+    // click — the 5s undo-window timer is scheduled synchronously inside the
+    // click handler, so installing fake timers after the click would leave it
+    // running on the real clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(trigger);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('shows a warning toast (not success) when the agent could not be reached', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      agentUninstallSent: false,
+      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
+    } as never);
+
+    await runPermanentDelete();
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('host-alpha'),
+      }),
+    );
+    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
+    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('still shows a success toast when there is no warning', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+
+    await runPermanentDelete();
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
 });

@@ -24,6 +24,11 @@ const SETTINGS = {
   enableAssetCheckout: true,
   enableSelfService: false,
   enablePasswordReset: true,
+  enableDashboard: false,
+  enableSecurity: false,
+  enableBackups: false,
+  enableReports: false,
+  enableSupportUsage: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -93,6 +98,62 @@ describe('OrgPortalSettingsEditor', () => {
     expect(body.enableTickets).toBe(false);
     expect(body.supportEmail).toBeNull();
     expect(body.welcomeMessage).toBe('Welcome!');
+  });
+
+  it('enables all visibility flags in the local draft', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor
+      orgId={ORG_ID}
+      onDirty={onDirty}
+      onSave={onSave}
+    />);
+
+    fireEvent.click(await screen.findByTestId(
+      'org-portal-enable-all-visibility',
+    ));
+
+    for (const key of [
+      'enableDashboard',
+      'enableSecurity',
+      'enableBackups',
+      'enableReports',
+      'enableSupportUsage',
+    ]) {
+      expect((screen.getByTestId(
+        `org-portal-toggle-${key}`,
+      ) as HTMLInputElement).checked).toBe(true);
+    }
+
+    expect(onDirty).toHaveBeenCalled();
+  });
+
+  it('saves all visibility flags through the existing runAction path', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor
+      orgId={ORG_ID}
+      onDirty={onDirty}
+      onSave={onSave}
+    />);
+
+    fireEvent.click(await screen.findByTestId(
+      'org-portal-enable-all-visibility',
+    ));
+    fireEvent.click(screen.getByTestId(
+      'org-portal-save',
+    ));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({
+      enableDashboard: true,
+      enableSecurity: true,
+      enableBackups: true,
+      enableReports: true,
+      enableSupportUsage: true,
+    });
   });
 
   it('shows an error state with retry when the load fails', async () => {

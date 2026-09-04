@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import type Redis from 'ioredis';
 import { z } from 'zod';
 import { eq, and, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions, organizations } from '../db/schema';
 import {
   handleTerminalOutput,
   getActiveTerminalSession,
@@ -18,7 +19,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
-import { isRedisAvailable } from '../services/redis';
+import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 import { processBackupVerificationResult } from './backup/verificationService';
@@ -77,6 +78,14 @@ import { redactResultAgainstCommandSecrets } from '../services/commandSecretReda
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
 import { breezeRole } from '../config/env';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import type { PartnerTrustState } from '../db/schema/orgs';
+import {
+  evaluateCapability,
+  isLifecycleCommand,
+  loadTrustState,
+  partnerIdForDevice,
+} from '../services/partnerTrust';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -187,9 +196,72 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
   'restore',
 ]);
 
-// Store active WebSocket connections by agentId
-// Map<agentId, WSContext>
-const activeConnections = new Map<string, WSContext>();
+interface ActiveAgentConnection {
+  ws: WSContext;
+  partnerId: string | null;
+  trustState: PartnerTrustState;
+}
+
+// Store active WebSocket connections and their connect-time trust snapshot by agentId.
+const activeConnections = new Map<string, ActiveAgentConnection>();
+
+const PARTNER_TRUST_CHANGED_CHANNEL = 'partner-trust:changed';
+let partnerTrustSubscriber: Redis | null = null;
+let partnerTrustSubscriptionPromise: Promise<void> | null = null;
+
+export async function handleTrustChanged(msg: unknown): Promise<void> {
+  let parsed: unknown = msg;
+  if (typeof msg === 'string') {
+    try {
+      parsed = JSON.parse(msg);
+    } catch {
+      return;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return;
+
+  const { partnerId, trustState } = parsed as {
+    partnerId?: unknown;
+    trustState?: unknown;
+  };
+  if (
+    typeof partnerId !== 'string'
+    || !['probation', 'trusted', 'restricted'].includes(String(trustState))
+  ) {
+    return;
+  }
+
+  for (const connection of activeConnections.values()) {
+    if (connection.partnerId === partnerId) {
+      connection.trustState = trustState as PartnerTrustState;
+    }
+  }
+}
+
+function initializePartnerTrustSubscription(): Promise<void> {
+  if (partnerTrustSubscriptionPromise) return partnerTrustSubscriptionPromise;
+  const redis = getRedis();
+  if (!redis || typeof redis.duplicate !== 'function') return Promise.resolve();
+
+  const subscriber = redis.duplicate({ connectionName: 'breeze:agent-ws:partner-trust' });
+  partnerTrustSubscriber = subscriber;
+  subscriber.on('message', (channel: string, message: string) => {
+    if (channel === PARTNER_TRUST_CHANGED_CHANNEL) {
+      void handleTrustChanged(message);
+    }
+  });
+  subscriber.on('error', (error: Error) => {
+    console.error('[AgentWs] Partner-trust Redis subscriber error:', error.message);
+  });
+  partnerTrustSubscriptionPromise = subscriber.subscribe(PARTNER_TRUST_CHANGED_CHANNEL)
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      console.error('[AgentWs] Failed to subscribe to partner-trust changes:', error);
+      partnerTrustSubscriber = null;
+      partnerTrustSubscriptionPromise = null;
+    });
+  return partnerTrustSubscriptionPromise;
+}
 
 // Delivery epoch, monotonic per agent. Bumped every time a socket is installed
 // in `activeConnections`, so every command is dispatched on a known epoch.
@@ -216,7 +288,7 @@ function installAgentSocketEpoch(agentId: string): number {
  * identity rules out a socket that was never installed at all.
  */
 function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): boolean {
-  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId) === ws;
+  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId)?.ws === ws;
 }
 
 /**
@@ -630,6 +702,16 @@ export interface AgentCommand {
 type AgentDbContext = {
   deviceId: string;
   orgId: string;
+  /**
+   * #4673 W02 — the MSP that owns this device's org, from the auth select's
+   * join to `organizations` (NOT NULL, so always present after a successful
+   * token validation). Feeds `currentPartnerId` on every org context this
+   * socket opens, so Wave 1's SELECT-only partner-wide branches can match.
+   *
+   * Read-only axis. It must never be spread into `accessiblePartnerIds`,
+   * which is the write-capable partner-AXIS predicate.
+   */
+  partnerId: string;
   role?: AgentCredentialRole;
 };
 
@@ -734,8 +816,14 @@ export async function validateAgentToken(
         pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
+        // #4673 W02 — owning MSP, for `currentPartnerId` on this socket's org
+        // contexts. INNER join: org_id and partner_id are both NOT NULL behind
+        // an FK, so a device with no org row is not authenticable anyway, and a
+        // LEFT join would silently degrade it to the pre-W02 blind behaviour.
+        partnerId: organizations.partnerId,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.agentId, agentId))
       .limit(1);
     return row ?? null;
@@ -818,6 +906,7 @@ export async function validateAgentToken(
     ctx: {
       deviceId: device.id,
       orgId: device.orgId,
+      partnerId: device.partnerId,
       role: match.role,
     },
   };
@@ -1495,17 +1584,26 @@ export async function processOrphanedCommandResult(
  * follow-up, now bounded by short per-operation wraps instead of a
  * message-long one.
  */
-async function runWithAgentOrgDbAccess<T>(label: string, orgId: string, fn: () => Promise<T>): Promise<T> {
+async function runWithAgentOrgDbAccess<T>(
+  label: string,
+  orgId: string,
+  partnerId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   return withDbAccessContext(
     {
       scope: 'organization',
       orgId,
       accessibleOrgIds: [orgId],
-      // Agents are org-scoped; they have no access to partner-level tables.
+      // Partner-AXIS access gates `breeze_has_partner_access`, which admits
+      // WRITES to partner-owned rows. Agents get none of it — this stays empty.
       accessiblePartnerIds: [],
-      // Agents don't browse the catalog as org users; null disables the
-      // partner-wide read branch (safe).
-      currentPartnerId: null,
+      // #4673 W02 — the device org's owning MSP. Feeds the
+      // `breeze.current_partner_id` GUC that Wave 1's SELECT-ONLY branches read
+      // (`org_id IS NULL AND partner_id = breeze_current_partner_id()`), so an
+      // agent socket can see its own MSP's partner-wide config directly.
+      // A separate, read-only axis from `accessiblePartnerIds` above.
+      currentPartnerId: partnerId,
       label
     },
     fn
@@ -1535,7 +1633,12 @@ async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
   deviceId: string | undefined,
-  orgId: string
+  orgId: string,
+  // #4673 W02 — threaded in (rather than re-looked-up) so every short-lived
+  // org context this function opens carries the same `currentPartnerId` the
+  // socket authenticated with. Without it these contexts would be the one
+  // remaining agent path where partner-wide rows stay invisible.
+  partnerId: string
 ): Promise<void> {
   try {
     // #2434 chokepoint — FIRST statement, so "any agent result that enters this
@@ -1566,7 +1669,7 @@ async function processCommandResult(
     // the ambient db, so they need the tenant context the removed
     // message-level wrap used to provide.
     if (!UUID_REGEX.test(result.commandId)) {
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
         processOrphanedCommandResult(agentId, deviceId ?? '', result)
       );
       return;
@@ -1651,7 +1754,7 @@ async function processCommandResult(
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here (short org
       // wrap for the same reason as the non-UUID branch above, #3021).
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
         processOrphanedCommandResult(agentId, deviceId ?? '', result)
       );
       return;
@@ -1808,7 +1911,7 @@ async function processCommandResult(
           try {
             // Short org wrap (#3021): handlers touch RLS-guarded org tables
             // through the ambient db (same as the happy-path dispatch below).
-            await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+            await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, partnerId, () =>
               rejectedHandler({ agentId, command, commandId: result.commandId, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
             );
           } catch (handlerErr) {
@@ -1831,7 +1934,7 @@ async function processCommandResult(
         const { handleDrCommandResult } = await import('./backup/drResultHandler');
         // Short org wrap (#3021): DR result persistence reads/writes
         // RLS-guarded org tables through the ambient db.
-        await runWithAgentOrgDbAccess('agentWs.commandResult.drResult', orgId, () =>
+        await runWithAgentOrgDbAccess('agentWs.commandResult.drResult', orgId, partnerId, () =>
           handleDrCommandResult({
             commandId: result.commandId,
             commandType: command.type,
@@ -1865,7 +1968,7 @@ async function processCommandResult(
     // why the wrap sits here instead of around the whole message.
     const handler = commandResultHandlers[command.type];
     if (handler) {
-      await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, partnerId, () =>
         handler({ agentId, command, commandId: result.commandId, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
       );
     }
@@ -1896,7 +1999,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
    * sessionId) — they become a Sentry tag and part of the grouping message.
    */
   const runWithAgentDbAccess = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
-    return runWithAgentOrgDbAccess(label, agentDb.orgId, fn);
+    return runWithAgentOrgDbAccess(label, agentDb.orgId, agentDb.partnerId, fn);
   };
 
   // The delivery epoch this handler set owns, stamped when its socket is
@@ -1911,6 +2014,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
+      const trustMode = partnerTrustMode();
+      if (trustMode !== 'off') {
+        await initializePartnerTrustSubscription();
+      }
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
       // for the same agentId would otherwise overwrite the map entry WITHOUT
       // closing the previous socket, leaving an orphaned-but-authorized socket
@@ -1918,7 +2025,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // revocation/disconnect (which only act on the mapped socket) miss it.
       // Close the previous socket before replacing it so `activeConnections`
       // stays authoritative and disconnectAgent can never miss a live socket.
-      const previousWs = activeConnections.get(agentId);
+      const previousWs = activeConnections.get(agentId)?.ws;
       if (previousWs && previousWs !== ws) {
         try {
           previousWs.close(4002, 'Superseded by newer connection');
@@ -1934,8 +2041,33 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
+      // Trust mode off preserves the pre-gate connection path without trust DB reads.
+      // Shadow/enforce keep the socket open but fail closed in the cached snapshot
+      // whenever partner or trust resolution is missing or unavailable.
+      let partnerId: string | null = null;
+      let trustState: PartnerTrustState = 'trusted';
+      if (trustMode !== 'off') {
+        try {
+          partnerId = await partnerIdForDevice(agentDb.deviceId);
+          const trust = partnerId ? await loadTrustState(partnerId) : null;
+          if (!trust) {
+            trustState = 'restricted';
+            console.warn(`[AgentWs] Partner trust unresolved for device ${agentDb.deviceId}; restricting connection`);
+          } else {
+            trustState = trust.trustState;
+          }
+        } catch {
+          trustState = 'restricted';
+          console.warn(`[AgentWs] Partner trust resolution failed for device ${agentDb.deviceId}; restricting connection`);
+        }
+      }
+
       // Store connection and stamp this socket's delivery epoch.
-      activeConnections.set(agentId, ws);
+      activeConnections.set(agentId, {
+        ws,
+        partnerId,
+        trustState,
+      });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
@@ -2099,7 +2231,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
               // Self-heal: an evict-path unconditional delete may have raced a
               // reconnect; if we are still the live socket, re-establish the lease.
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2113,7 +2245,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (state) {
             state.lastPongAt = Date.now();
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2494,7 +2626,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               agentId,
               parsed.data as z.infer<typeof commandResultSchema>,
               authenticatedAgent.deviceId,
-              authenticatedAgent.orgId
+              authenticatedAgent.orgId,
+              authenticatedAgent.partnerId
             );
             ws.send(JSON.stringify({
               type: 'ack',
@@ -2663,7 +2796,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
       // Only remove from active connections if this ws is still the current one.
       // A reconnecting agent may have already replaced us in the map — deleting
       // the new connection's entry would make the agent unreachable.
-      if (activeConnections.get(agentId) === ws) {
+      if (activeConnections.get(agentId)?.ws === ws) {
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2724,7 +2857,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
-if (activeConnections.get(agentId) === ws) {
+if (activeConnections.get(agentId)?.ws === ws) {
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2994,7 +3127,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     }
 
     // Close any active WS for this agent so it has to re-auth (and fail).
-    const activeWs = activeConnections.get(agentId);
+    const activeWs = activeConnections.get(agentId)?.ws;
     if (activeWs) {
       try {
         activeWs.close(4001, 'Token suspended');
@@ -3034,12 +3167,23 @@ export function __resetCrossTenantDropsForTest() {
 // wave 3.5b (#4084) relay integration suite, which needs a "locally connected"
 // agent on ONE simulated process while dispatching from another. Never usable
 // in production — a real socket must come through createAgentWsHandlers.
-export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+export function registerConnection(
+  agentId: string,
+  ws: { send(data: string): void },
+  trust: { partnerId: string; trustState: PartnerTrustState } = {
+    partnerId: 'test-partner',
+    trustState: 'trusted',
+  },
+): void {
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('__installAgentSocketForTest is test-only');
+    throw new Error('registerConnection is test-only');
   }
-  activeConnections.set(agentId, ws as never);
+  activeConnections.set(agentId, { ws: ws as never, ...trust });
   installAgentSocketEpoch(agentId);
+}
+
+export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+  registerConnection(agentId, ws);
 }
 
 /**
@@ -3132,15 +3276,27 @@ function assertSocketLocalDispatchAllowed(fn: string): void {
  */
 export function sendCommandToAgent(agentId: string, command: AgentCommand): boolean {
   assertSocketLocalDispatchAllowed('sendCommandToAgent');
-  const ws = activeConnections.get(agentId);
-  if (!ws) {
+  const conn = activeConnections.get(agentId);
+  if (!conn) {
     return false;
+  }
+
+  const mode = partnerTrustMode();
+  if (mode !== 'off' && conn.trustState !== 'trusted' && !isLifecycleCommand(command.type)) {
+    if (mode === 'enforce') return false;
+    if (conn.partnerId) {
+      void evaluateCapability('device_execute', {
+        partnerId: conn.partnerId,
+        commandType: command.type,
+        detail: { via: 'ws_fast_path' },
+      });
+    }
   }
 
   try {
     const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
-    ws.send(json);
+    conn.ws.send(json);
     recordOrphanedResultExpectation(agentId, command);
     return true;
   } catch (error) {
@@ -3171,10 +3327,10 @@ export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected
  * a live-but-orphaned socket.
  */
 export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
-  const ws = activeConnections.get(agentId);
-  if (!ws) return 'not-connected';
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
   try {
-    ws.close(code, reason);
+    conn.ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -3217,13 +3373,13 @@ export function broadcastToAgents(
   let sent = 0;
   const payload = JSON.stringify(message);
 
-  for (const [agentId, ws] of activeConnections) {
+  for (const [agentId, conn] of activeConnections) {
     if (filter && !filter(agentId)) {
       continue;
     }
 
     try {
-      ws.send(payload);
+      conn.ws.send(payload);
       sent++;
     } catch (error) {
       console.error(`Failed to broadcast to agent ${agentId}:`, error);

@@ -38,6 +38,19 @@ Above the list you can:
 
 ---
 
+## Billing Coverage
+
+The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
+
+- **Covered** -- one row per active contract line that bills the device, with the contract name, the line description, and *why* it matches: **Org-wide**, **This site**, **Role: Server**, or **Group: VIP Laptops**. Two contracts can both bill the same device; both rows show.
+- **Not billed by any line** -- no active contract line reaches this device.
+- **Not billed** -- the device is decommissioned or an ephemeral support-session machine, so it is excluded from billing entirely. Nothing is wrong.
+- **Coverage unknown** -- a device group on an active contract could not be evaluated (a broken filter, for example). The card says so and offers a retry rather than reporting the device as unbilled.
+
+The **Role** chip names the contract line's configured role set, not the individual device's role.
+
+Only **active** contracts count, and the answer is computed live from the same rule the billing run uses, so the card and the contract's own coverage warning can never disagree.
+
 ## VPN Presence
 
 Agents on Windows, macOS, and Linux detect active VPN and overlay-network clients on the device and report them to Breeze. Recognized providers:

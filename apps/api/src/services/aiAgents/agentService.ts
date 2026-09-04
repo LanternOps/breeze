@@ -240,12 +240,20 @@ function updatePolicyColumns(
   };
 }
 
-type AgentChange = 'created' | 'updated' | 'disabled';
+/**
+ * `enabled` is the un-archive in `POST /:id/enable` (routes/aiAgents.ts) — the
+ * inverse of `disabled`, and the reason this union is not private to this file:
+ * that route owns the write but must record it through the SAME pair of side
+ * effects, or the one agent mutation implemented outside this service silently
+ * skips the `ai.agent.policy_changed` broadcast every other one publishes.
+ */
+type AgentChange = 'created' | 'updated' | 'disabled' | 'enabled';
 
 async function recordAgentAudit(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await createAuditLog({
     orgId: row.orgId,
@@ -255,11 +263,13 @@ async function recordAgentAudit(
     action: `ai.agent.${change}`,
     resourceType: 'ai_agent',
     resourceId: row.id,
+    resourceName: row.name,
     details: {
       agentId: row.id,
       kind: row.kind,
       ownerScope: row.partnerId === null ? 'organization' : 'partner',
       partnerId: row.partnerId,
+      ...extraDetails,
     },
     result: 'success',
   });
@@ -327,13 +337,29 @@ async function publishPolicyChanged(
   }
 }
 
-async function recordMutation(
+/**
+ * The two side effects EVERY agent mutation owes: an awaited `ai.agent.<change>`
+ * audit row and the `ai.agent.policy_changed` broadcast in-flight runners read.
+ *
+ * Exported because `POST /:id/enable` writes its row in the route layer (the
+ * lock, the tenancy predicate and the conflict pre-check are reused there, but
+ * the write itself never moved into this service). It used to audit through
+ * `writeRouteAudit` — the fire-and-forget variant — and publish nothing at all,
+ * so un-archiving an agent was the one mutation whose policy change no runner
+ * ever heard about. Route-layer writers call THIS, not the two halves.
+ *
+ * @param extraDetails merged into the audit `details` after the standard keys,
+ *   for facts only the caller knows (e.g. that an un-archive deliberately
+ *   leaves `enabled` false).
+ */
+export async function recordAgentMutation(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await Promise.all([
-    recordAgentAudit(row, auth, change),
+    recordAgentAudit(row, auth, change, extraDetails),
     publishPolicyChanged(row, auth.user.id, change),
   ]);
 }
@@ -392,6 +418,78 @@ export async function getAgent(
     .where(and(eq(aiAgents.id, id), accessibleAgentCondition(auth)))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Task 8 (#4192). `actAssets` is a jsonb column every writer merges into
+ * read-modify-write (`{ ...stored.actAssets, ...patch }`, same shape as
+ * recipients above) — without a row lock, two concurrent writers (an
+ * operator PATCH racing a scheduler's promote/demote CAS) can each read the
+ * same starting object and each commit an UPDATE that silently drops the
+ * other's key. `withAgentRowLocked` is the one place every such writer is
+ * meant to route through: it takes a `SELECT … FOR UPDATE` on exactly one
+ * row, bound by the SAME predicate `getAgent` uses, then runs `fn` with the
+ * locked row inside the caller's ambient transaction (routes/aiAgents.ts
+ * already opens `withDbAccessContext` per request, so no new transaction is
+ * started here — the lock is held for the rest of that transaction, same
+ * mechanic as `recordVerdictFeedback`'s `.for('update')` on `ai_alert_verdicts`,
+ * alertVerdicts.ts:637).
+ *
+ * `auth: null` is the system-caller shape A2's promote/demote executors
+ * (not in this PR) are expected to use, run from a scheduler with no HTTP
+ * request or AuthContext — the same SYSTEM-context case `getAgent`'s own
+ * comment documents. Fix round 1/5: this branch previously dropped the
+ * tenancy predicate to `id` alone, reasoning that RLS passes unconditionally
+ * under a system DB context so an app-layer predicate could only narrow an
+ * already-trusted caller. That reasoning is exactly what this repo's
+ * tenancy invariant rejects (CLAUDE.md: "every new loader predicates by
+ * org_id explicitly under the system context") — a forged or mismatched
+ * agent id would lock and return another tenant's row. The system branch
+ * now REQUIRES `opts.orgId` (enforced both by the overload below and at
+ * runtime) and predicates by `id + org_id`, never `id` alone.
+ *
+ * Callers must not re-check "not found" — a predicate miss is reported as
+ * `AgentAccessDeniedError` from here, before `fn` ever runs. Anything else
+ * (disabled row, write-scope denial) is the caller's job, checked inside
+ * `fn` against the row this function handed it, never against a second
+ * unlocked read.
+ */
+export async function withAgentRowLocked<T>(
+  auth: AuthContext,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+): Promise<T>;
+export async function withAgentRowLocked<T>(
+  auth: null,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+  opts: { orgId: string },
+): Promise<T>;
+export async function withAgentRowLocked<T>(
+  auth: AuthContext | null,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+  opts?: { orgId: string },
+): Promise<T> {
+  if (auth === null && !opts?.orgId) {
+    // Programmer error, not a tenancy denial — a system caller that forgot
+    // to bind an org would otherwise fall through to an id-only predicate,
+    // which is the exact cross-tenant hole this overload exists to close.
+    throw new AgentInvariantError('withAgentRowLocked: system caller (auth: null) requires opts.orgId');
+  }
+  const condition = auth === null
+    ? and(eq(aiAgents.id, id), eq(aiAgents.orgId, opts!.orgId))
+    : and(eq(aiAgents.id, id), accessibleAgentCondition(auth));
+
+  const [row] = await db
+    .select()
+    .from(aiAgents)
+    .where(condition)
+    .limit(1)
+    .for('update');
+  if (!row) throw new AgentAccessDeniedError('Agent not found');
+
+  return fn(row);
 }
 
 export async function createAgent(
@@ -463,7 +561,7 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
-  await recordMutation(row, auth, 'created');
+  await recordAgentMutation(row, auth, 'created');
   return row;
 }
 
@@ -472,64 +570,72 @@ export async function updateAgent(
   id: string,
   input: UpdateAiAgentInput,
 ): Promise<AiAgentRow> {
-  const existing = await getAgent(auth, id);
-  if (!existing || existing.disabledAt) {
-    throw new AgentAccessDeniedError('Agent not found');
-  }
-  assertAgentWriteAllowed(auth, existing);
+  // Task 8 (#4192): the whole read-validate-write below now runs against a
+  // row `withAgentRowLocked` has already SELECT … FOR UPDATE'd, so a
+  // concurrent writer of `actAssets` (A2's promote/demote executors) blocks
+  // on this transaction rather than racing it. The disabled/write-scope
+  // checks move inside the callback so they read the LOCKED row, not a
+  // separate unlocked `getAgent` — `withAgentRowLocked` itself only reports
+  // "not found" for a predicate miss; everything else is this callback's job.
+  return withAgentRowLocked(auth, id, async (existing) => {
+    if (existing.disabledAt) {
+      throw new AgentAccessDeniedError('Agent not found');
+    }
+    assertAgentWriteAllowed(auth, existing);
 
-  const stored = normalizeAgentPolicy(existing);
-  const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
+    const stored = normalizeAgentPolicy(existing);
+    const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
 
-  // Validate the MERGED recipients — the exact object updatePolicyColumns
-  // persists ({ ...stored, ...patch }), so what is checked is what is stored.
-  const mergedRecipients = input.recipients === undefined
-    ? stored.recipients
-    : { ...stored.recipients, ...input.recipients };
-  if (input.recipients !== undefined) {
-    await validateAgentRecipients(owner, mergedRecipients);
-  }
+    // Validate the MERGED recipients — the exact object updatePolicyColumns
+    // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+    const mergedRecipients = input.recipients === undefined
+      ? stored.recipients
+      : { ...stored.recipients, ...input.recipients };
+    if (input.recipients !== undefined) {
+      await validateAgentRecipients(owner, mergedRecipients);
+    }
 
-  // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
-  // the merged/stored value — see assertSupervisedActionKeysValid's doc.
-  if (input.actAssets?.supervisedActionKeys !== undefined) {
-    assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
-  }
+    // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
+    // the merged/stored value — see assertSupervisedActionKeysValid's doc.
+    if (input.actAssets?.supervisedActionKeys !== undefined) {
+      assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+    }
 
-  // Task 6 (#3826): prerequisites are checked against what the update will
-  // actually PERSIST (merged, same as recipients above) — never just the raw
-  // patch. A PATCH touching only `mode: 'act'` on an already-equipped agent
-  // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
-  // under an existing act-mode agent is refused before the UPDATE runs.
-  await assertActPrerequisites(owner, {
-    mode: input.mode ?? stored.mode,
-    toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
-    actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
-    recipients: mergedRecipients,
+    // Task 6 (#3826): prerequisites are checked against what the update will
+    // actually PERSIST (merged, same as recipients above) — never just the raw
+    // patch. A PATCH touching only `mode: 'act'` on an already-equipped agent
+    // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
+    // under an existing act-mode agent is refused before the UPDATE runs.
+    await assertActPrerequisites(owner, {
+      mode: input.mode ?? stored.mode,
+      toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+      actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
+      recipients: mergedRecipients,
+    });
+
+    const [row] = await db
+      .update(aiAgents)
+      .set({
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...updatePolicyColumns(existing, input),
+        lastUpdatedBy: auth.user.id,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(aiAgents.id, id), isNull(aiAgents.disabledAt)))
+      .returning();
+    if (!row) throw new AgentAccessDeniedError('Agent not found');
+
+    // Mirroring the disable direction too is deliberate symmetry: one switch
+    // updates both the agent policy and its managed wiring before audit.
+    const managedPatch: { name?: string; enabled?: boolean } = {};
+    if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
+    if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
+    if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
+      await syncManagedAutomation(row.id, managedPatch);
+    }
+    await recordAgentMutation(row, auth, 'updated');
+    return row;
   });
-
-  const [row] = await db
-    .update(aiAgents)
-    .set({
-      ...(input.name === undefined ? {} : { name: input.name }),
-      ...updatePolicyColumns(existing, input),
-      lastUpdatedBy: auth.user.id,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(aiAgents.id, id), isNull(aiAgents.disabledAt)))
-    .returning();
-  if (!row) throw new AgentAccessDeniedError('Agent not found');
-
-  // Mirroring the disable direction too is deliberate symmetry: one switch
-  // updates both the agent policy and its managed wiring before audit.
-  const managedPatch: { name?: string; enabled?: boolean } = {};
-  if (input.name !== undefined && input.name !== existing.name) managedPatch.name = row.name;
-  if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
-  if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
-    await syncManagedAutomation(row.id, managedPatch);
-  }
-  await recordMutation(row, auth, 'updated');
-  return row;
 }
 
 export async function disableAgent(auth: AuthContext, id: string): Promise<AiAgentRow> {
@@ -555,6 +661,6 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
   // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
   // so soft-disable must also stop the wiring from generating queue traffic.
   await setManagedAutomationEnabled(row.id, false);
-  await recordMutation(row, auth, 'disabled');
+  await recordAgentMutation(row, auth, 'disabled');
   return row;
 }

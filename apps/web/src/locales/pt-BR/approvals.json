@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Aprovar tudo ({{count}})",
     "declineAll": "Recusar tudo ({{count}})",
-    "groupTitle": "{{count}} solicitações semelhantes · {{tool}}"
+    "groupTitle": "{{count}} solicitações semelhantes · {{tool}}",
+    "moreHostnames": "+{{count}} mais",
+    "denyConfirmSummary": "Isso recusa {{count}} solicitações de {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organização",
+    "allOrganizations": "Todas as organizações ({{count}})",
+    "orgOption": "{{name}} ({{count}} pendentes)",
+    "searchLabel": "Pesquisar",
+    "searchPlaceholder": "Pesquisar por ação, máquina ou agente…",
+    "sortLabel": "Ordenar por",
+    "sortExpiringSoonest": "Expirando em breve",
+    "sortNewest": "Mais recentes",
+    "showingLoaded": "Mostrando {{shown}} de {{loaded}} carregadas",
+    "clearFilters": "Limpar filtros",
+    "noMatches": {
+      "title": "Nenhuma aprovação corresponde aos seus filtros",
+      "description": "Tente outra organização ou termo de pesquisa, ou limpe seus filtros."
+    }
   },
   "risk": {
     "low": "Risco baixo",
@@ -31,6 +49,16 @@
   "deciding": "Enviando…",
   "expiresIn": "Expira em {{minutes}} min",
   "expiresSoon": "Expira em menos de um minuto",
+  "expired": "Expirada",
+  "unknownOrganization": "Organização desconhecida",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} aprovado para {{org}}",
+  "pagination": {
+    "showing": "Mostrando {{shown}} de {{total}}",
+    "showingCount": "Mostrando {{shown}}",
+    "loadMore": "Carregar mais",
+    "loadMoreError": "Não foi possível carregar mais. Tente novamente."
+  },
   "errors": {
     "noApproverDevice": "Registre um dispositivo aprovador no seu perfil e tente novamente.",
     "notSoleApprover": "Outra pessoa autorizada precisa decidir esta solicitação.",
@@ -39,7 +67,24 @@
     "expired": "Esta solicitação expirou antes que fosse possível decidir.",
     "decisionFailed": "Não foi possível enviar a decisão. Tente novamente.",
     "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
-    "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto."
+    "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto.",
+    "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores.",
+    "driftedFromBatch": "Esta solicitação mudou e precisa ser decidida individualmente."
   },
-  "registerDevice": "Registrar dispositivo"
+  "registerDevice": "Registrar dispositivo",
+  "alwaysAllow": {
+    "button": "Aprovar e sempre permitir",
+    "confirm": {
+      "title": "Aprovar e solicitar pré-autorização",
+      "message": "Isso aprova a solicitação que você está vendo agora. Também pede a um segundo aprovador que pré-autorize {{opKey}} para o agente desta organização, então isso se aplica somente a execuções futuras e nunca autoriza esta solicitação nem qualquer outra que já esteja aguardando decisão.",
+      "action": "Aprovar e solicitar"
+    },
+    "toasts": {
+      "requested": "Aprovado. Um segundo aprovador precisa aprovar a pré-autorização antes que esta operação seja executada sem supervisão, e isso se aplica somente a execuções futuras."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Aprovado, mas não foi possível enviar a solicitação de pré-autorização. Tente novamente nas configurações do agente.",
+      "policyDecideDisabled": "Aprovado. Não foi possível solicitar a pré-autorização porque ela está desativada para esta implantação."
+    }
+  }
 }

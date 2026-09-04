@@ -298,6 +298,26 @@
     "resolve": "Çöz",
     "promote": "Tanıt"
   },
+  "deviceBillingCard": {
+    "title": "Faturalama",
+    "uncovered": "Bu cihazı faturalandıran etkin bir sözleşme satırı yok.",
+    "viewContracts": "Sözleşmeleri görüntüle",
+    "notBillable": {
+      "decommissioned": "Faturalandırılmıyor — bu cihaz hizmet dışı bırakıldı",
+      "ephemeral": "Faturalandırılmıyor — bu cihaz geçici bir destek oturumu cihazı",
+      "not_billable": "Faturalandırılmıyor — bu cihaz şu anda faturalandırılabilir değil"
+    },
+    "error": {
+      "generic": "Faturalama kapsamı yüklenemedi.",
+      "groupEvaluation": "Etkin bir sözleşmedeki bir cihaz grubu değerlendirilemedi ({{group}}). Kapsam bilinmiyor."
+    },
+    "matchedBy": {
+      "org": "Kuruluş geneli",
+      "site": "Bu konum",
+      "role": "Rol: {{role}}",
+      "group": "Grup: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Önyükleme ölçümleri koleksiyonu tetiklendi. Veriler bir sonraki önyükleme veya toplama döngüsünden sonra görünecektir.",
     "failedToTriggerCollection": "Toplama tetiklenemedi",
@@ -509,6 +529,7 @@
     "s": "s",
     "decommissionCancelled": "Çıkarma iptal edildi",
     "permanentDeleteCancelled": "Kalıcı silme işlemi iptal edildi",
+    "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
     "failedToQueueScript": "Komut dosyası sıraya alınamadı",
     "loadingDevice": "Cihaz yükleniyor...",
     "backToDevices": "Cihazlara geri dön",
@@ -568,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
     "theOsReportsAPendingReboot": "İşletim sistemi, beklemede olan bir yeniden başlatma rapor ediyor (Windows kayıt defteri / Linux'un yeniden başlatılması gereken işaretler).",
     "rebootPending": "Yeniden başlatma bekleniyor",
+    "restartScheduled": "Yeniden başlatma planlandı",
+    "restartInProgress": "Yeniden başlatılıyor",
+    "restartScheduledFor": "Yeniden başlatma {{time}} için planlandı",
+    "restartInProgressAt": "Yeniden başlatma {{time}} saatinde başladı",
+    "restartDeadline": "En geç {{time}} itibarıyla yeniden başlatılmalı",
+    "restartPostponed": "{{max}} üzerinden {{used}} kez ertelendi",
+    "restartPostponedTooltip": "Bu cihazı kullanan kişinin, politikanın izin verdiği bütçeden yeniden başlatmayı kaç kez ertelediği.",
+    "restartCannotBePostponed": "Ertelenemez",
+    "restartSourcePatchJob": "Bir yama kurulumu tarafından istendi",
+    "restartSourceMaintenanceWindow": "Bir bakım penceresi tarafından istendi",
+    "restartSourceManual": "Bir teknisyen tarafından istendi",
+    "restartSourceUnknown": "Planlanmış yeniden başlatma",
     "agentV": "Temsilci v",
     "uptime": "Çalışma Süresi",
     "lastSeen": "Son Görülme",
@@ -733,6 +766,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Cihaz grubu kaydedilemedi",
     "failedToDeleteGroup": "Grup silinemedi",
+    "billedByContracts": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor: {{names}}. Önce bu sözleşme satırlarını kaldırın.",
+    "billedByContractsCount": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor. Önce bu sözleşme satırlarını kaldırın.",
+    "quotedByQuotes": "Bu grup {{count}} açık teklifte fiyatlandırılıyor: {{names}}. Önce bu teklif satırlarını kaldırın.",
+    "quotedByQuotesCount": "Bu grup {{count}} açık teklifte fiyatlandırılıyor. Önce bu teklif satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",
@@ -1058,6 +1095,7 @@
     "of": "arasında",
     "devices": "cihazlar",
     "advancedFilterActive": "Gelişmiş filtre etkin",
+    "advancedFilterFailed": "Filtre yüklenemedi — hiçbir cihaz gösterilmiyor",
     "filterByDeviceClass": "Cihaz sınıfına göre filtrele",
     "filterByVpn": "VPN'e göre filtrele",
     "allVpn": "Tüm VPN'ler",
@@ -1226,6 +1264,8 @@
       "installOsPatches": "Bekleyen işletim sistemi yamalarını yükleyin ({{count}})",
       "installThirdPartyPatches": "3. taraf yamaları yükleyin ({{count}})",
       "lastScan": "Son tarama: {{label}}",
+      "managePatches": "Yamaları yönet",
+      "managedByPolicy": "Şu politika tarafından yönetiliyor:",
       "pendingApprovalCount": "({{count}} onay bekleniyor)",
       "polling": "Oylama...",
       "refreshPatchData": "Yama verilerini yenile",
@@ -1762,6 +1802,7 @@
     "title": "Cihazlar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
+      "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
@@ -1796,6 +1837,7 @@
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "Kalıcı Silme",
       "permanentlyDeleted": "Kalıcı Olarak Silindi",
+      "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
       "restored": "Yenilendi",
       "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
       "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",

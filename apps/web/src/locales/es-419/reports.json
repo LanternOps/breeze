@@ -319,6 +319,7 @@
       },
       "loading": "Cargando informes...",
       "never": "Nunca",
+      "visibleInPortal": "Visible en el portal del cliente",
       "newReport": "Nuevo informe",
       "nextOccurrence": "Siguiente: {{next}}",
       "reportTypes": {
@@ -700,6 +701,7 @@
         "templateName": "Paquete de cumplimiento trimestral",
         "value": "Valor"
       },
+      "recipients": { "contacts": "Contactos de la organización", "legacy": "Direcciones de correo electrónico heredadas", "convert": "Convertir en contacto", "added": "Destinatario del informe agregado", "removed": "Destinatario del informe eliminado", "converted": "Dirección de correo electrónico convertida en contacto", "updateFailed": "No se pudieron actualizar los destinatarios del informe", "convertFailed": "No se pudo convertir esta dirección de correo electrónico", "mfaRequired": "La conversión de un destinatario requiere autenticación multifactor. Activa MFA en tu perfil y vuelve a intentarlo.", "loadFailed": "No se pudieron cargar los destinatarios del informe" },
       "previewTable": {
         "selectFields": "Seleccione campos para completar la tabla de vista previa."
       },
@@ -849,10 +851,6 @@
           "description": "Alertas principales, tendencias de gravedad y carga de trabajo de respuesta.",
           "name": "Informe resumido de alertas"
         },
-        "billing_usage": {
-          "description": "Utilización de licencias, niveles de uso y resúmenes de contracargos.",
-          "name": "Informe de facturación/uso"
-        },
         "device_health": {
           "description": "CPU, tendencias de memoria y tiempo de actividad con puntuación del estado del dispositivo.",
           "name": "Informe de estado del dispositivo"
@@ -861,21 +859,9 @@
           "description": "KPI de alto nivel, postura de riesgo y tendencias estratégicas para el liderazgo.",
           "name": "Resumen ejecutivo"
         },
-        "patch_compliance": {
-          "description": "Cobertura de parches, actualizaciones vencidas y estado de corrección.",
-          "name": "Informe de cumplimiento de parches"
-        },
         "security_compliance_posture": {
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",
           "name": "Postura de seguridad y cumplimiento (seguros)"
-        },
-        "sla_compliance": {
-          "description": "SLA cumplimiento, riesgo de infracción y plazos de respuesta.",
-          "name": "Informe de cumplimiento SLA"
-        },
-        "technician_activity": {
-          "description": "Volumen de tickets, toques del dispositivo y velocidad de resolución.",
-          "name": "Informe de actividad del técnico"
         }
       },
       "title": "Plantillas de informes",

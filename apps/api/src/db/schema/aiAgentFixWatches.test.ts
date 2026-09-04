@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { getTableColumns } from 'drizzle-orm';
-import { aiAgentFixWatches, AI_AGENT_FIX_WATCH_STATES } from './aiAgentFixWatches';
+import {
+  aiAgentFixWatches,
+  AI_AGENT_FIX_WATCH_SOURCE_KINDS,
+  AI_AGENT_FIX_WATCH_STATES,
+} from './aiAgentFixWatches';
+import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 
 describe('AI_AGENT_FIX_WATCH_STATES', () => {
   it('has exactly the six verdict states', () => {
@@ -16,21 +21,24 @@ describe('AI_AGENT_FIX_WATCH_STATES', () => {
       import.meta.url,
     );
     const sql = readFileSync(sqlPath, 'utf8');
-
-    const check = /ai_agent_fix_watches_state_chk\s+CHECK\s*\(\s*state\s+IN\s*\(([^)]*)\)\s*\)/i.exec(sql);
-    const memberList = check?.[1];
-    expect(memberList, 'ai_agent_fix_watches_state_chk CHECK constraint not found in the migration').toBeDefined();
-
-    const literals = (memberList ?? '')
-      .split(',')
-      .map((raw) => raw.trim())
-      .filter((raw) => raw.length > 0)
-      .map((raw) => {
-        expect(raw, `CHECK member ${raw} is not a single-quoted literal`).toMatch(/^'[^']*'$/);
-        return raw.slice(1, -1);
-      });
-
+    const literals = checkConstraintLiterals(sql, 'ai_agent_fix_watches_state_chk', 'state');
     expect([...literals].sort()).toEqual([...AI_AGENT_FIX_WATCH_STATES].sort());
+  });
+});
+
+describe('AI_AGENT_FIX_WATCH_SOURCE_KINDS', () => {
+  it('has exactly the two source kinds', () => {
+    expect(AI_AGENT_FIX_WATCH_SOURCE_KINDS).toEqual(['act_run', 'intent']);
+  });
+
+  it('matches the SQL CHECK constraint literals exactly (P2-5, #4192)', () => {
+    const sqlPath = new URL(
+      '../../../migrations/2026-10-01-100000-ai-agents-graduation-evidence.sql',
+      import.meta.url,
+    );
+    const sql = readFileSync(sqlPath, 'utf8');
+    const literals = checkConstraintLiterals(sql, 'ai_agent_fix_watches_source_kind_chk', 'source_kind');
+    expect([...literals].sort()).toEqual([...AI_AGENT_FIX_WATCH_SOURCE_KINDS].sort());
   });
 });
 
@@ -42,6 +50,8 @@ describe('ai_agent_fix_watches schema', () => {
         'id', 'orgId', 'partnerId', 'agentId', 'runId', 'alertId', 'ruleId', 'deviceId',
         'configItemName', 'state', 'recoveryObservedAt', 'dueAt', 'evaluatedAt',
         'recurrenceAlertId', 'notifiedAt', 'createdAt',
+        // P2-5 (#4192): intent-anchored fix watches.
+        'intentId', 'sourceKind', 'opKeys',
       ].sort(),
     );
   });
@@ -72,5 +82,24 @@ describe('ai_agent_fix_watches schema', () => {
     expect(cols.state.hasDefault).toBe(true);
     expect(cols.createdAt.notNull).toBe(true);
     expect(cols.createdAt.hasDefault).toBe(true);
+  });
+
+  // P2-5 (#4192): intent-anchored fix watches.
+  it('leaves intent_id nullable with no default', () => {
+    const cols = getTableColumns(aiAgentFixWatches);
+    expect(cols.intentId.notNull).toBe(false);
+    expect(cols.intentId.hasDefault).toBe(false);
+  });
+
+  it("requires source_kind, defaulting to 'act_run'", () => {
+    const cols = getTableColumns(aiAgentFixWatches);
+    expect(cols.sourceKind.notNull).toBe(true);
+    expect(cols.sourceKind.hasDefault).toBe(true);
+  });
+
+  it("requires op_keys, defaulting to '{}'", () => {
+    const cols = getTableColumns(aiAgentFixWatches);
+    expect(cols.opKeys.notNull).toBe(true);
+    expect(cols.opKeys.hasDefault).toBe(true);
   });
 });

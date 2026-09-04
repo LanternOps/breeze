@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Canone fisso",
         "perDevice": "Per dispositivo",
+        "perDeviceRole": "Per ruolo dispositivo",
+        "perDeviceGroup": "Per gruppo di dispositivi",
         "perSeat": "Per postazione",
         "manual": "Quantità manuale"
+      },
+      "dynamicGroup": "dinamico",
+      "deletedGroup": "{{name}} (gruppo eliminato)",
+      "coverage": {
+        "uncovered": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
+        "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto.",
+        "uncoveredLead": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{counted}} di {{included}} inclusi",
+        "includedOnly": "{{included}} inclusi",
+        "overBilled": "{{included}} inclusi · {{overage}} oltre (fatturati)",
+        "overFlagged": "{{included}} inclusi · {{overage}} oltre (segnalati)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} oltre i {{included}} inclusi, non fatturati",
+        "billed": "{{description}} — {{overage}} oltre i {{included}} inclusi, fatturati alla tariffa di eccedenza"
       },
       "transition": {
         "activate": "Attiva",
@@ -31,7 +51,13 @@
         "cancel": "Annulla"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "gruppo eliminato",
+        "siteDeleted": "sede eliminata",
+        "siteDeletedNamed": "sede eliminata: {{name}}"
+      },
+      "lineScope": {
+        "site": "Sede: {{name}}"
       }
     },
     "contractDetail": {
@@ -67,6 +93,15 @@
         "period": "Periodo",
         "generated": "Generata",
         "invoice": "Fattura",
+        "outcome": "Esito",
+        "outcomeAllBilled": "Tutto fatturato",
+        "outcomeUncovered": "{{count}} non coperti",
+        "outcomeFlagged": "{{count}} segnalati",
+        "outcomeNoDeviceLines": "Nessuna riga dispositivi",
+        "outcomeNotRecorded": "Non registrato",
+        "outcomeToggle": "Mostra l'esito del periodo",
+        "outcomeDevicesEvaluated": "Dispositivi valutati: {{count}}",
+        "outcomeBilledOverage": "Eccedenza fatturata: {{count}}",
         "empty": "Non è stata ancora generata alcuna fattura.",
         "viewInvoice": "Visualizza fattura"
       },
@@ -96,6 +131,8 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
+        "flaggedOverage": "{{count}} riga/righe superano la quantità inclusa e non sono state fatturate: {{names}}",
+        "uncoveredDevices": "Fattura generata, ma {{count}} dispositivo/i non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
       },
@@ -143,13 +180,22 @@
         "addLine": "Impossibile aggiungere la riga.",
         "removeLine": "Impossibile rimuovere la riga.",
         "activateContract": "Impossibile attivare il contratto.",
-        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o cancella il collegamento al catalogo."
+        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o cancella il collegamento al catalogo.",
+        "updateLine": "Impossibile aggiornare la riga.",
+        "lineNotFound": "Questa riga non esiste più. Aggiorna il contratto.",
+        "contractNotEditable": "Le righe possono essere modificate solo su contratti in bozza o attivi.",
+        "siteNotInOrg": "Questa sede appartiene a un’altra organizzazione.",
+        "groupNotInOrg": "Questo gruppo di dispositivi appartiene a un’altra organizzazione.",
+        "invalidLinePatch": "Queste modifiche non sono valide per questo tipo di riga.",
+        "priceNotRepresentable": "Questo prezzo ha troppi decimali per {{currency}}.",
+        "catalogItemNotFound": "Questo articolo del catalogo non è disponibile su questo contratto."
       },
       "toast": {
         "contractCreated": "Contratto creato",
         "lineAdded": "Riga aggiunta",
         "lineRemoved": "Riga rimossa",
-        "contractActivated": "Contratto attivato"
+        "contractActivated": "Contratto attivato",
+        "lineUpdated": "Riga aggiornata"
       },
       "schedule": {
         "title": "Pianificazione",
@@ -180,7 +226,8 @@
         "unitPrice": "Prezzo unitario",
         "qty": "Qtà",
         "tax": "Imposta",
-        "empty": "Nessuna riga. Aggiungi una riga ricorrente qui sotto."
+        "empty": "Nessuna riga. Aggiungi una riga ricorrente qui sotto.",
+        "edit": "Modifica"
       },
       "addLine": {
         "integrationHint": "Aggiungi da un'integrazione: precompila una riga.",
@@ -188,6 +235,20 @@
         "addFromPax8Catalog": "Aggiungi dal catalogo Pax8",
         "importFromTdSynnex": "Importa da TD SYNNEX",
         "lineType": "Tipo di riga",
+        "allowanceToggle": "Includi una quantità fissa e gestisci le eccedenze",
+        "allowanceHint": "La riga fattura la quantità inclusa in ogni periodo, anche quando i dispositivi contati sono meno.",
+        "includedQuantity": "Quantità inclusa",
+        "overageMode": "Oltre la quantità inclusa",
+        "overageBill": "Fattura le eccedenze",
+        "overageFlag": "Segnala le eccedenze per revisione",
+        "overageUnitPrice": "Prezzo per unità aggiuntiva",
+        "allowanceRequired": "Inserisci una quantità inclusa e un prezzo se fatturi le eccedenze.",
+        "deviceRoles": "Ruoli dispositivo (un dispositivo viene fatturato quando il suo ruolo è uno di questi)",
+        "deviceRolesRequired": "Seleziona almeno un ruolo.",
+        "deviceGroup": "Gruppo di dispositivi (fattura i suoi membri; i gruppi dinamici sono valutati alla fatturazione)",
+        "selectGroup": "Seleziona un gruppo",
+        "deviceGroupRequired": "Scegli un gruppo.",
+        "deviceGroupsLoadFailed": "Impossibile caricare i gruppi di dispositivi di questa organizzazione.",
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
@@ -207,6 +268,16 @@
         "priceLookupFailed": "Impossibile recuperare il prezzo in {{currency}}.",
         "priceNotRepresentable": "Il prezzo in {{currency}} salvato per questo articolo non è valido in {{currency}}: correggilo nel catalogo oppure rimuovi il collegamento al catalogo e inserisci una riga manuale.",
         "priceSourceOrgOverride": "Prezzo specifico per l’organizzazione {{org}}"
+      },
+      "editLine": {
+        "save": "Salva riga",
+        "cancel": "Annulla",
+        "typeLocked": "Il tipo di riga non può essere modificato. Rimuovi la riga e aggiungine una nuova.",
+        "priceFromCatalog": "Il prezzo proviene dal catalogo. Rimuovi il collegamento al catalogo per impostarlo manualmente.",
+        "refreshPrice": "Aggiorna il prezzo dal catalogo",
+        "restoreCatalogLink": "Ripristina il collegamento al catalogo",
+        "unlinkNeedsPrice": "Inserisci un prezzo unitario e l’impostazione fiscale per rimuovere il collegamento al catalogo.",
+        "noChanges": "Non c’è ancora nulla da salvare."
       },
       "estimate": {
         "title": "Stimato per questo periodo",
@@ -239,6 +310,10 @@
       "backToContractsText": "Torna ai contratti",
       "newContract": "Nuovo contratto",
       "doneEditing": "Modifica completata"
+    },
+    "list": {
+      "estimateUnavailable": "Stima non disponibile: non è stato possibile valutare un gruppo di dispositivi in questo contratto",
+      "estimateExcluded": "Esclude {{count}} contratto/i la cui stima non è disponibile"
     },
     "contractsList": {
       "title": "Contratti",
@@ -509,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "postazioni di lavoro", "server": "server", "printer": "stampanti", "router": "router", "switch": "switch", "firewall": "firewall",
+        "access_point": "punti di accesso", "phone": "telefoni", "iot": "dispositivi IoT", "camera": "telecamere", "nas": "dispositivi NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Fattura per insieme di dispositivi", "typeLabel": "Insieme di dispositivi",
+        "types": { "per_device": "Per dispositivo", "per_device_role": "Per ruolo dispositivo", "per_device_group": "Per gruppo di dispositivi", "per_seat": "Per postazione" },
+        "rolesLabel": "Ruoli dispositivo", "groupLabel": "Gruppo di dispositivi", "siteLabel": "Sede (facoltativa)", "allSites": "Tutte le sedi",
+        "quantityAuto": "La quantità viene conteggiata automaticamente", "autoSummary": "Quantità automatica · {{count}} {{set}} · stimata",
+        "driftChip": "conteggio cambiato: {{stored}} → {{live}}", "refresh": "Aggiorna conteggi", "estimateError": "Impossibile verificare il conteggio attuale dei dispositivi.", "pickerError": "Impossibile caricare i gruppi di dispositivi o i siti. Aggiorna la pagina e riprova.",
+        "groupDeleted": "Il gruppo di dispositivi “{{name}}” è stato eliminato — scegline un altro", "siteDeleted": "La sede “{{name}}” è stata eliminata — scegline un'altra",
+        "typeLocked": "Un insieme di dispositivi non può essere modificato dopo la creazione della riga — rimuovi la riga e aggiungila di nuovo.",
+        "includedLabel": "Quantità inclusa", "overageModeLabel": "Oltre la soglia inclusa", "overageBill": "Fattura ogni unità aggiuntiva", "overageFlag": "Segnala per revisione", "overagePriceLabel": "Prezzo eccedenza",
+        "driftToast": "{{count}} riga/righe non corrispondono più al conteggio dispositivi attuale: {{lines}}",
+        "retargetToast": "{{count}} riga/righe richiedono di riselezionare un gruppo di dispositivi o una sede per questa organizzazione"
+      },
       "actions": {
         "addImage": "Aggiungi immagine",
         "addLine": "Aggiungi riga",
@@ -557,7 +650,7 @@
       "addSection": {
         "captionPlaceholder": "Didascalia (facoltativa)",
         "headingPlaceholder": "Testo intestazione",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Aggiungi sezione",
         "richTextPlaceholder": "Testo della proposta…",
@@ -675,7 +768,8 @@
         "updateSection": "Impossibile aggiornare la sezione.",
         "uploadImage": "Impossibile caricare l'immagine.",
         "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
-        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
+        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
+        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -838,7 +932,7 @@
         "preparedForPlaceholder": "Sostituisci il nome del cliente",
         "showPreparedBy": "Mostra “preparata da” (la tua azienda)",
         "imageLabel": "Immagine copertina",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "removeImage": "Rimuovi immagine"
       },
       "ghost": {
@@ -1134,6 +1228,29 @@
         "untitled": "una versione più recente"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta del preventivo",
+        "description": "Questo preventivo in bozza è prezzato in {{currency}}.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe del preventivo",
+        "modeClear": "Rimuovi tutte le righe",
+        "modeClearHint": "Le righe vengono eliminate. Obbligatorio quando una riga è manuale o un bundle.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione cambia la valuta del preventivo.",
+        "submit": "Cambia valuta"
+      },
+      "toast": {
+        "changed": "Valuta del preventivo cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta del preventivo."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
       "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
@@ -1165,6 +1282,12 @@
       "warehouses": "Magazzini: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Stima", "estimate": "Quantità stimata — fatturata in base al numero effettivo di {{set}} in ogni periodo di fatturazione.",
+        "setDevices": "dispositivi", "setSeats": "postazioni", "setGroup": "dispositivi in “{{name}}”", "atSite": "{{set}} presso {{site}}",
+        "allowanceBill": "Include {{included}}; le unità aggiuntive sono fatturate a {{price}} ciascuna.",
+        "allowanceFlag": "Include {{included}}; le unità aggiuntive sono segnalate per revisione, non fatturate automaticamente."
+      },
       "additionalItems": "Elementi aggiuntivi",
       "contract": {
         "download": "Scarica contratto",
@@ -1499,6 +1622,7 @@
       "messageLabel": "Messaggio (facoltativo)",
       "messagePlaceholder": "Aggiungi una breve nota per il cliente…",
       "includePdfLabel": "Allega il PDF della fattura",
+      "includeDeviceAppendixLabel": "Includi l'appendice dei dispositivi fatturati",
       "signaturePreviewLabel": "La tua firma verrà aggiunta:",
       "invalidEmail": "Indirizzo e-mail non valido: {{addresses}}",
       "tooManyRecipients": "Fino a {{max}} indirizzi.",
@@ -1554,6 +1678,29 @@
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta della fattura",
+        "description": "Questa fattura in bozza è prezzata in {{currency}}.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe della fattura",
+        "modeClear": "Rimuovi tutte le righe",
+        "modeClearHint": "Le righe vengono eliminate. Obbligatorio quando una riga è manuale o un bundle.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione cambia la valuta della fattura.",
+        "submit": "Cambia valuta"
+      },
+      "toast": {
+        "changed": "Valuta della fattura cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta della fattura."
+      }
+    },
     "deposit": {
       "duePrefix": "Acconto di",
       "dueSuffix": "dovuto — {{paid}} di {{total}} pagati.",
@@ -1576,6 +1723,21 @@
       "tax": "Imposta",
       "total": "Totale",
       "allHidden": "Tutte le righe sono solo interne. Usa \"Mostra costo e margine\" per vederle."
+    },
+    "devices": {
+      "title": "Dispositivi fatturati",
+      "toggle": "Dispositivi ({{count}})",
+      "notRecorded": "Il dettaglio dei dispositivi non è stato registrato per questa fattura.",
+      "hostname": "Nome host",
+      "role": "Ruolo",
+      "countedAs": "Conteggiato come",
+      "included": "Incluso",
+      "overage": "Eccedenza",
+      "removed": "Dispositivo rimosso",
+      "showing": "Visualizzati {{shown}} di {{total}}",
+      "flaggedHeading": "Segnalati, non fatturati",
+      "empty": "Nessun dispositivo è stato conteggiato per questa riga.",
+      "loadError": "Impossibile caricare l'elenco dei dispositivi."
     },
     "paymentMethods": {
       "cash": "Contanti",
@@ -1622,6 +1784,8 @@
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
       "viaStripe": "tramite Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "tramite QuickBooks",
       "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {
@@ -1660,6 +1824,23 @@
       "confirm": "Reimposta link",
       "success": "Link reimpostato — i link precedenti non funzionano più",
       "error": "Impossibile reimpostare il link"
+    },
+    "accountingSync": {
+      "title": "Sincronizzazione QuickBooks",
+      "status": {
+        "pending": "Non ancora inviata",
+        "synced": "Sincronizzata",
+        "error": "Sincronizzazione non riuscita",
+        "synced_with_tax_variance": "Sincronizzata con differenza d'imposta"
+      },
+      "taxVarianceHint": "QuickBooks ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
+      "docNumber": "Documento QuickBooks {{docNumber}}",
+      "lastSynced": "Ultima sincronizzazione: {{when}}",
+      "push": "Invia a QuickBooks",
+      "pushed": "Fattura inviata a QuickBooks.",
+      "pushFailed": "Impossibile inviare la fattura a QuickBooks.",
+      "voidedHint": "Questa fattura è annullata — non c'è nulla da inviare a QuickBooks.",
+      "remoteDeletedHint": "Questa fattura è stata eliminata in QuickBooks. Inviarla di nuovo creerebbe un duplicato — risolvi prima la situazione in QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1900,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorate{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Storna",
-      "voidedVerb": "stornate"
+      "voidedVerb": "stornate",
+      "quickbooks": "Invia a QuickBooks",
+      "quickbooksQueued": "{{enqueued}} in coda per QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate",
+      "quickbooksQueuedFailed": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate, {{failed}} non accodate",
+      "quickbooksFailed": "Impossibile accodare l'invio a QuickBooks. Riprova."
     },
     "bulkDelete": {
       "message": "Eliminare {{count}} fatture selezionate? Verranno eliminate solo le fatture in stato DRAFT; l'operazione non può essere annullata.",
@@ -1898,6 +2084,8 @@
       "defaultMarkup": "Ricarico predefinito (%)",
       "defaultTaxRate": "Aliquota fiscale predefinita (%)",
       "description": "Valuta, imposte, numerazione e termini applicati a nuovi preventivi e fatture per tutti i clienti.",
+      "deviceAppendix": "Includi l'appendice dei dispositivi fatturati nei PDF delle fatture",
+      "deviceAppendixHelp": "Aggiunge una pagina con tutti i dispositivi conteggiati su ogni riga della fattura. Disattivata per impostazione predefinita; la scelta viene congelata all'emissione.",
       "documentPageSize": "Formato pagina",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Lettera",

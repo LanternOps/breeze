@@ -16,9 +16,9 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
-import { eq } from 'drizzle-orm';
+import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { invoices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding } from '../db/schema';
+import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding } from '../db/schema';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
@@ -51,6 +51,22 @@ export interface InvoiceBranding {
    *  for drafts (no link exists) and when minting fails — the PDF renders
    *  without the line rather than failing. */
   payOnlineUrl?: string | null;
+}
+
+export const APPENDIX_ROW_CAP = 2000;
+
+/** One invoice line's billed devices, ready to draw. `flagged` rows are already
+ *  filtered out in SQL — they were not charged. */
+export interface InvoiceAppendixLine {
+  lineId: string;
+  description: string;
+  devices: { hostname: string; deviceRole: string; countedAs: 'included' | 'overage' }[];
+}
+
+export interface InvoiceDeviceAppendix {
+  lines: InvoiceAppendixLine[];
+  /** Rows beyond APPENDIX_ROW_CAP that were not printed. 0 = nothing truncated. */
+  omitted: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +314,12 @@ export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): In
  * %PDF- buffer assertion can run without a database. renderInvoicePdf() loads
  * the data and calls this.
  */
-export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRow[], branding: InvoiceBranding): Promise<Buffer> {
+export function renderInvoicePdfBuffer(
+  invoice: InvoiceRow,
+  lines: InvoiceLineRow[],
+  branding: InvoiceBranding,
+  appendix?: InvoiceDeviceAppendix | null,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
       const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
@@ -457,6 +478,50 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
         doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(footer, left, Math.max(y, doc.page.height - 110), { width: contentWidth });
       }
 
+      // ---- #3205 W07: "Billed devices" appendix -------------------------------
+      // Only `included` and `overage` rows reach here (loadDeviceAppendix filters
+      // `flagged` in SQL): a device that was NOT charged must never appear on the
+      // customer's document, where its presence would read as a charge. Flagged
+      // devices are operator evidence and live on the internal invoice detail.
+      if (appendix && appendix.lines.length > 0) {
+        doc.addPage();
+        let ay = 50;
+        doc.fillColor('#111827').fontSize(14).font('Helvetica-Bold').text('Billed devices', left, ay);
+        ay += 22;
+        doc.fillColor('#6b7280').fontSize(9).font('Helvetica')
+          .text('The devices counted on each line of this invoice at the time it was generated.', left, ay, { width: contentWidth });
+        ay += 20;
+        const colRoleX = left + contentWidth * 0.55;
+        const colCountedX = left + contentWidth * 0.78;
+        for (const group of appendix.lines) {
+          if (ay > doc.page.height - 140) { doc.addPage(); ay = 50; }
+          doc.fillColor('#1f2937').fontSize(10).font('Helvetica-Bold')
+            .text(`${group.description} — ${group.devices.length}`, left, ay, { width: contentWidth });
+          ay += 15;
+          doc.fillColor('#9ca3af').fontSize(8).font('Helvetica-Bold');
+          doc.text('Hostname', left, ay);
+          doc.text('Role', colRoleX, ay);
+          doc.text('Counted as', colCountedX, ay, { width: contentWidth * 0.22, align: 'right' });
+          ay += 12;
+          for (const d of group.devices) {
+            // Same page-break idiom as the line table above.
+            if (ay > doc.page.height - 140) { doc.addPage(); ay = 50; }
+            doc.fillColor('#1f2937').fontSize(9).font('Helvetica');
+            doc.text(d.hostname, left, ay, { width: contentWidth * 0.52, ellipsis: true });
+            doc.text(d.deviceRole, colRoleX, ay, { width: contentWidth * 0.2, ellipsis: true });
+            doc.fillColor('#6b7280')
+              .text(d.countedAs === 'overage' ? 'Overage' : 'Included', colCountedX, ay, { width: contentWidth * 0.22, align: 'right' });
+            ay += 12;
+          }
+          ay += 8;
+        }
+        if (appendix.omitted > 0) {
+          if (ay > doc.page.height - 120) { doc.addPage(); ay = 50; }
+          doc.fillColor('#6b7280').fontSize(9).font('Helvetica-Oblique')
+            .text(`… and ${appendix.omitted} more devices — see the invoice in Breeze.`, left, ay, { width: contentWidth });
+        }
+      }
+
       doc.end();
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -468,12 +533,72 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
 // DB-backed: load, render+store, read.
 // ---------------------------------------------------------------------------
 
+/**
+ * #3205 W07: the "Billed devices" appendix rows for one invoice.
+ *
+ * The `counted_as <> 'flagged'` filter is IN THE SQL, applied BEFORE the cap
+ * (ruling 4 + Codex item 10): flagged devices were not charged, so printing them
+ * on the customer's document would read as a charge — and filtering after the
+ * cap would let a line with 1,900 billed and 500 flagged devices spend its cap
+ * on rows that are never printed and then falsely claim truncation.
+ */
+async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppendix> {
+  // Exact printable total under the SAME filter, so the truncation line can name
+  // a real number. One extra count on a render is cheap; a truncation line that
+  // names a wrong number is worse than an extra query.
+  const [printableTotal] = await db.select({ n: count() }).from(invoiceLineDevices)
+    .where(and(eq(invoiceLineDevices.invoiceId, invoiceId), ne(invoiceLineDevices.countedAs, 'flagged')));
+  const rows = await db
+    .select({
+      lineId: invoiceLineDevices.invoiceLineId,
+      description: invoiceLines.description,
+      sortOrder: invoiceLines.sortOrder,
+      hostname: invoiceLineDevices.hostname,
+      deviceRole: invoiceLineDevices.deviceRole,
+      countedAs: invoiceLineDevices.countedAs,
+    })
+    .from(invoiceLineDevices)
+    .innerJoin(invoiceLines, eq(invoiceLines.id, invoiceLineDevices.invoiceLineId))
+    .where(and(
+      eq(invoiceLineDevices.invoiceId, invoiceId),
+      ne(invoiceLineDevices.countedAs, 'flagged'),
+    ))
+    // Match billingEvidence.ts's canonical code-unit ordering exactly; relying
+    // on the database's locale collation would reorder mixed-case hostnames.
+    .orderBy(asc(invoiceLines.sortOrder), sql`${invoiceLineDevices.hostname} COLLATE "C"`, asc(invoiceLineDevices.id))
+    .limit(APPENDIX_ROW_CAP);
+
+  const omitted = Math.max(0, Number(printableTotal?.n ?? 0) - APPENDIX_ROW_CAP);
+  const byLine = new Map<string, InvoiceAppendixLine>();
+  for (const r of rows) {
+    let entry = byLine.get(r.lineId);
+    if (!entry) { entry = { lineId: r.lineId, description: r.description ?? '', devices: [] }; byLine.set(r.lineId, entry); }
+    entry.devices.push({ hostname: r.hostname, deviceRole: r.deviceRole, countedAs: r.countedAs as 'included' | 'overage' });
+  }
+  return { lines: [...byLine.values()], omitted };
+}
+
 /** Load the invoice, its lines, and branding (partner name + portal logo/colors). */
-async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: InvoiceRow; lines: InvoiceLineRow[]; branding: InvoiceBranding } | null> {
+async function loadInvoiceForRender(invoiceId: string): Promise<{
+  invoice: InvoiceRow;
+  lines: InvoiceLineRow[];
+  branding: InvoiceBranding;
+  appendix: InvoiceDeviceAppendix | null;
+} | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
   const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  // #3205 W07 decision 14a: the renderer reads the STAMP, never the partner row —
+  // a change to the partner default cannot alter what an issued invoice renders.
+  // A DRAFT has no stamp yet (device_appendix is still the raw override, NULL =
+  // inherit), so preview resolves the inheritance; once issued it is a settled
+  // boolean. Do NOT collapse these two branches into one `?? partner…`
+  // expression — that would silently un-freeze every issued invoice.
+  const includeDeviceAppendix = invoice.status === 'draft'
+    ? (invoice.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false)
+    : invoice.deviceAppendix === true;
+  const appendix = includeDeviceAppendix ? await loadDeviceAppendix(invoiceId) : null;
   const [branding] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, invoice.orgId)).limit(1);
   // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
   // the From block still renders (issued docs use the frozen column).
@@ -483,6 +608,7 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
   return {
     invoice,
     lines,
+    appendix,
     branding: {
       // Seller-snapshot fallback before the document-type literal (#2151), so
       // the invoice PDF degrades the same way the quote side does
@@ -538,7 +664,7 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
       console.error(`[invoicePdf] could not mint public link for PDF of invoice ${invoiceId} — rendering without the pay-online line`, err);
     }
   }
-  const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding);
+  const pdf = await renderInvoicePdfBuffer(loaded.invoice, loaded.lines, loaded.branding, loaded.appendix);
   const sha256 = createHash('sha256').update(pdf).digest('hex');
 
   // Preview-only for a draft: render bytes but never persist a stale artifact or

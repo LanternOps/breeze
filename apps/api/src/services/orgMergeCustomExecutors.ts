@@ -51,8 +51,9 @@
  * `fleet_findings`, `ai_agents` or `incidents`: their registry notes each
  * record the cascade, the credential material, the RESTRICT child or the case
  * file that a delete would take with it. `reports` deletes only the duplicate
- * DEFINITION, never a `report_runs` row — those are generated artifacts the
- * customer can download, so they are re-homed onto the surviving definition.
+ * DEFINITION, never a `report_runs` or `report_schedule_recipients` row — those
+ * children are re-homed onto the surviving definition (after recipient
+ * collisions are deduplicated).
  */
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -117,8 +118,13 @@ function keyMatch(key: readonly string[]): SQL {
 }
 
 /** `EXISTS (survivor row colliding with the outer loser row `t`)`. */
-function collidesWithSurvivor(parent: string, key: readonly string[], survivor: string): SQL {
-  return sql`EXISTS (SELECT 1 FROM ${sql.identifier(parent)} s WHERE s.org_id = ${uuid(survivor)} AND ${keyMatch(key)})`;
+function collidesWithSurvivor(
+  parent: string,
+  key: readonly string[],
+  survivor: string,
+  whereBoth?: SQL,
+): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${sql.identifier(parent)} s WHERE s.org_id = ${uuid(survivor)} AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``})`;
 }
 
 /**
@@ -135,6 +141,7 @@ async function rehomeChildrenThenDelete(
   children: readonly ChildRef[],
   loser: string,
   survivor: string,
+  whereBoth?: SQL,
 ): Promise<{ dropped: number; rehomed: Array<{ table: string; count: number }> }> {
   const p = sql.identifier(parent);
   const rehomed: Array<{ table: string; count: number }> = [];
@@ -145,7 +152,7 @@ async function rehomeChildrenThenDelete(
       UPDATE ${sql.identifier(child.table)} AS c
          SET ${col} = s.id
         FROM ${p} t
-        JOIN ${p} s ON s.org_id = ${uuid(survivor)} AND ${keyMatch(key)}
+        JOIN ${p} s ON s.org_id = ${uuid(survivor)} AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
        WHERE t.org_id = ${uuid(loser)}
          AND c.${col} = t.id`);
     if (n > 0) rehomed.push({ table: child.table, count: n });
@@ -154,17 +161,21 @@ async function rehomeChildrenThenDelete(
   const dropped = await run(sql`
     DELETE FROM ${p} t
      WHERE t.org_id = ${uuid(loser)}
-       AND ${collidesWithSurvivor(parent, key, survivor)}`);
+       AND ${collidesWithSurvivor(parent, key, survivor, whereBoth)}`);
 
   return { dropped, rehomed };
 }
 
 /** Read-only `count(*)` mirror of `rehomeChildrenThenDelete`'s DELETE, for `previewOrgMerge`. */
-function collidingRowCount(parent: string, key: readonly string[]): (loser: string, survivor: string) => SQL {
+function collidingRowCount(
+  parent: string,
+  key: readonly string[],
+  whereBoth?: SQL,
+): (loser: string, survivor: string) => SQL {
   return (loser, survivor) => sql`
     SELECT count(*)::int AS n FROM ${sql.identifier(parent)} t
      WHERE t.org_id = ${uuid(loser)}
-       AND ${collidesWithSurvivor(parent, key, survivor)}`;
+       AND ${collidesWithSurvivor(parent, key, survivor, whereBoth)}`;
 }
 
 /** `network_monitors: 3, snmp_devices: 1` — stable order, for the summary note. */
@@ -650,6 +661,15 @@ const mergeFleetFindings: CustomMergeExecutor = async (loser, survivor) => {
 // no user disabled it, the merge did, and the note below is what tells the
 // operator. The partner-wide rows (org_id IS NULL) are out of merge scope
 // entirely, so `ai_agents_partner_kind_uq` cannot collide.
+//
+// Task 17 (A2-7, #4192) — a repoint alone would hand the survivor org a
+// `supervisedActionKeys` grant nobody on the survivor ever earned, while the
+// evidence that justified it (`ai_agent_op_evidence`) stays behind on the dead
+// loser shell (leave-for-erasure, `orgMergeRegistry.ts`). So every loser-org
+// agent's `act_assets.supervisedActionKeys` is cleared to `[]` BEFORE the
+// repoint — the survivor keeps the agent's configuration but must re-earn
+// graduated authority under its own evidence. Scoped to `org_id = loser`
+// only, never `org_id IS NULL`, so partner-wide rows are untouched.
 // ---------------------------------------------------------------------------
 const mergeAiAgents: CustomMergeExecutor = async (loser, survivor) => {
   const disabled = await run(sql`
@@ -665,13 +685,32 @@ const mergeAiAgents: CustomMergeExecutor = async (loser, survivor) => {
             AND s.disabled_at IS NULL
             AND s.kind = t.kind
        )`);
+  // Deliberately NOT scoped to `disabled_at IS NULL`: the disable-collision
+  // UPDATE immediately above excludes any agent it just disabled (and any
+  // agent disabled before the merge) from THIS statement if it were, and
+  // `buildRepoint` below repoints every loser-org agent unconditionally
+  // regardless of disabled_at — so a disabled agent's graduated keys would
+  // otherwise ride into the survivor org untouched, evidence and all, while
+  // the operator note above tells them to "re-enable it manually". Every
+  // loser-org agent's keys must be cleared, disabled or not.
+  const clearedKeys = await run(sql`
+    UPDATE ai_agents
+       SET act_assets = jsonb_set(coalesce(act_assets, '{}'::jsonb), '{supervisedActionKeys}', '[]'::jsonb),
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND jsonb_array_length(coalesce(act_assets -> 'supervisedActionKeys', '[]'::jsonb)) > 0`);
   const moved = await run(buildRepoint('ai_agents', loser, survivor));
   return {
     moved,
     dropped: 0,
-    notes: disabled > 0
-      ? [`ai_agents: disabled ${disabled} agent from the merged-away org that duplicated an active survivor agent of the same kind (configuration kept — re-enable it manually if it was the one you wanted)`]
-      : [],
+    notes: [
+      ...(disabled > 0
+        ? [`ai_agents: disabled ${disabled} agent from the merged-away org that duplicated an active survivor agent of the same kind (configuration kept — re-enable it manually if it was the one you wanted)`]
+        : []),
+      ...(clearedKeys > 0
+        ? [`ai_agents: cleared graduated supervised action keys on ${clearedKeys} agent(s) from the merged-away org — a survivor org must re-earn them (evidence is leave-for-erasure)`]
+        : []),
+    ],
   };
 };
 
@@ -785,11 +824,13 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
-// reports — `reports_source_ai_agent_schedule_uniq (org_id,
+// reports — two partial unique indexes can collide during an org merge:
+// `reports_source_ai_agent_schedule_uniq (org_id,
 // source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`
-// (P2-3, #4190). A partner-wide narrative schedule mints one system-managed
-// definition per org, so two orgs under the same partner both hold a row for
-// the SAME schedule id; a plain repoint collides on 23505 and aborts the merge.
+// and `reports_portal_self_service_org_type_uniq (org_id, type) WHERE
+// portal_self_service = true`. The first is a partner-wide narrative definition;
+// the second is the canonical customer-portal definition for each report type.
+// A plain repoint collides on 23505 and aborts the merge.
 //
 // `report_runs.report_id` is NOT NULL with a NO ACTION FK (verified against
 // pg_constraint), so a dedupe DELETE would raise 23503 instead — and even if it
@@ -799,33 +840,111 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // simply continues there. `ai_agent_runs.report_run_id` keeps pointing at the
 // same (untouched) report_runs rows, so run traces stay linked.
 //
-// The key deliberately carries no keyWhere: `keyMatch` compares with a plain
+// The narrative key deliberately carries no keyWhere: `keyMatch` compares with a plain
 // `=`, which is NULL-blind, so ordinary reports (NULL
 // source_ai_agent_schedule_id) never match each other — exactly the semantics
-// of the partial index this mirrors.
+// of the partial index it mirrors. The portal pass needs an explicit predicate
+// on both aliases because its key (`type`) is always non-NULL.
 // ---------------------------------------------------------------------------
 const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
+// Mirrors reports_portal_self_service_org_type_uniq (org_id, type)
+// WHERE portal_self_service = true.
+const PORTAL_REPORT_KEY = ['type'] as const;
+const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_self_service = true`;
+
+async function rehomeReportChildrenThenDelete(
+  loser: string,
+  survivor: string,
+  key: readonly string[],
+  whereBoth?: SQL,
+): Promise<{
+  dropped: number;
+  reportRunsRehomed: number;
+  recipientsDeduplicated: number;
+  recipientsRehomed: number;
+}> {
+  const reportRunsRehomed = await run(sql`
+    UPDATE report_runs AS c
+       SET report_id = s.id
+      FROM reports t
+      JOIN reports s
+        ON s.org_id = ${uuid(survivor)}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
+     WHERE t.org_id = ${uuid(loser)}
+       AND c.report_id = t.id`);
+
+  const recipientsDeduplicated = await run(sql`
+    DELETE FROM report_schedule_recipients AS c
+     USING reports t
+      JOIN reports s
+        ON s.org_id = ${uuid(survivor)}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
+     WHERE t.org_id = ${uuid(loser)}
+       AND c.report_id = t.id
+       AND EXISTS (
+         SELECT 1
+           FROM report_schedule_recipients existing
+          WHERE existing.report_id = s.id
+            AND existing.contact_id = c.contact_id
+       )`);
+
+  const recipientsRehomed = await run(sql`
+    UPDATE report_schedule_recipients AS c
+       SET report_id = s.id
+      FROM reports t
+      JOIN reports s
+        ON s.org_id = ${uuid(survivor)}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
+     WHERE t.org_id = ${uuid(loser)}
+       AND c.report_id = t.id`);
+
+  const dropped = await run(sql`
+    DELETE FROM reports t
+     WHERE t.org_id = ${uuid(loser)}
+       AND ${collidesWithSurvivor(
+         'reports',
+         key,
+         survivor,
+         whereBoth,
+       )}`);
+
+  return {
+    dropped,
+    reportRunsRehomed,
+    recipientsDeduplicated,
+    recipientsRehomed,
+  };
+}
 
 const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
-  const { dropped, rehomed } = await rehomeChildrenThenDelete(
-    'reports',
-    REPORTS_KEY,
-    [{ table: 'report_runs', column: 'report_id' }],
+  const narrative = await rehomeReportChildrenThenDelete(
     loser,
     survivor,
+    REPORTS_KEY,
+  );
+  const portal = await rehomeReportChildrenThenDelete(
+    loser,
+    survivor,
+    PORTAL_REPORT_KEY,
+    PORTAL_REPORT_WHERE_BOTH,
   );
   const moved = await run(buildRepoint('reports', loser, survivor));
+  const notes: string[] = [];
+  if (narrative.dropped > 0) {
+    notes.push(
+      `reports: dropped ${narrative.dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
+      + ` and re-homed its children onto the survivor's definition (report_runs: ${narrative.reportRunsRehomed}; report_schedule_recipients: ${narrative.recipientsDeduplicated} deduplicated, ${narrative.recipientsRehomed} re-homed)`,
+    );
+  }
+  if (portal.dropped > 0) {
+    notes.push(
+      `reports: dropped ${portal.dropped} duplicate portal self-service report definition from the merged-away org and re-homed its children onto the survivor's canonical definition (report_runs: ${portal.reportRunsRehomed}; report_schedule_recipients: ${portal.recipientsDeduplicated} deduplicated, ${portal.recipientsRehomed} re-homed)`,
+    );
+  }
   return {
     moved,
-    dropped,
-    notes: dropped > 0
-      ? [
-        `reports: dropped ${dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
-        + (rehomed.length > 0
-          ? ` and re-homed its generated reports onto the survivor's definition (${describeRehomed(rehomed)})`
-          : ''),
-      ]
-      : [],
+    dropped: narrative.dropped + portal.dropped,
+    notes,
   };
 };
 
@@ -934,7 +1053,18 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),
   pam_signer_groups: collidingRowCount('pam_signer_groups', ['name']),
-  reports: collidingRowCount('reports', REPORTS_KEY),
+  reports: (loser, survivor) => sql`
+    SELECT count(*)::int AS n FROM reports t
+     WHERE t.org_id = ${uuid(loser)}
+       AND (
+         ${collidesWithSurvivor('reports', REPORTS_KEY, survivor)}
+         OR ${collidesWithSurvivor(
+           'reports',
+           PORTAL_REPORT_KEY,
+           survivor,
+           PORTAL_REPORT_WHERE_BOTH,
+         )}
+       )`,
   pax8_orders: (loser, survivor) => sql`
     SELECT count(*)::int AS n FROM pax8_orders AS t
      WHERE t.org_id = ${uuid(loser)}

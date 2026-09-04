@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { buildPamActuationCommand } from './pamActuationCommandPayload';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from '../services/partnerTrust.commands';
 
 const PAM_QUEUE_NAME = 'pam-actuation';
 
@@ -97,6 +98,18 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
       await tx.execute(sql`
         UPDATE pam_actuations SET observed_state = 'failed',
           failure_code = ${built.failureCode}, updated_at = now()
+        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+      `);
+      return 'blocked';
+    }
+
+    try {
+      await assertDeviceExecuteAllowed(actuation.device_id, built.commandType, null);
+    } catch (error) {
+      if (!(error instanceof TrustDeniedError)) throw error;
+      await tx.execute(sql`
+        UPDATE pam_actuations SET observed_state = 'failed',
+          failure_code = ${error.code}, updated_at = now()
         WHERE id = ${actuation.id} AND generation = ${actuation.generation}
       `);
       return 'blocked';

@@ -43,8 +43,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   // common path needs no client fetch at all.
   //
   // The fetch below is the fallback for an API that predates that field. It
-  // reads GET /portal/branding, which resolves by verified custom domain and so
-  // 404s on the shared hosted domain — fine as a fallback, not as the source.
+  // reads GET /portal/branding, which is authenticated and org-scoped; it 404s
+  // only when the org has never saved portal settings, in which case defaults
+  // apply — fine as a fallback, not as the source.
   const payloadBranding = detail?.branding;
   const [fetchedBranding, setFetchedBranding] = useState<BrandingConfig | null>(null);
   const branding: DocBranding | null = payloadBranding
@@ -313,6 +314,14 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                     <td className="px-4 py-3 text-foreground sm:px-5">
                       {title}
                       {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                      {l.ticketNumber && (
+                        <div
+                          className="mt-0.5 text-xs text-muted-foreground"
+                          data-testid={`invoice-line-ticket-${index}`}
+                        >
+                          Ticket #{l.ticketNumber}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

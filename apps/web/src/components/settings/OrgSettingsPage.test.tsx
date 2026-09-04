@@ -42,6 +42,9 @@ vi.mock('./OrgRemoteAccessSettings', () => ({
   },
 }));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
+vi.mock('./ContactsCard', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="contacts-card">{orgId}</div>,
+}));
 vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
 vi.mock('../extensions/ExtensionSlotHost', () => ({
   default: (props: Record<string, unknown>) => (
@@ -404,6 +407,18 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     // EXACT documented shape — no name/slug/status/settings/etc. leak through.
     expect(props.context).toEqual({ contractVersion: 1, organizationId: 'org-1' });
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
+  });
+
+  it('deep-links #contacts to the Contacts tab and hands it the tab organization (#3258 W04)', async () => {
+    window.location.hash = '#contacts';
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^contacts$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    // The card fetches for the org whose settings are open, NOT the globally
+    // selected one — the two differ whenever an admin opens one tenant while
+    // another is selected in the header.
+    expect(screen.getByTestId('contacts-card')).toHaveTextContent('org-1');
   });
 
   it('offers the compact section select for narrow viewports', async () => {

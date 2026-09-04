@@ -40,13 +40,21 @@ const blockingEnd = ciSuccess.indexOf('; then', blockingStart) + '; then'.length
 const blockingCondition = ciSuccess.slice(blockingStart, blockingEnd);
 const conditionalChecks = ciSuccess.slice(blockingEnd);
 
-// smoke-test is deliberately non-blocking on PRs and required on main pushes via the IS_PR guard.
-const PR_EXEMPT_JOBS = new Set(['smoke-test']);
+// smoke-test and guided-setup-smoke are deliberately non-blocking on PRs and required on main
+// pushes via the IS_PR guard (both boot a full stack; guided-setup-smoke also runs the real
+// self-host installer + systemd unit on the runner).
+const PR_EXEMPT_JOBS = new Set(['smoke-test', 'guided-setup-smoke']);
 
 const UNGATED_JOBS = new Set([
   'ci-success', // the aggregate itself
   'main-red-alert', // runs after ci-success, alerts on a red main
   'rust-check-windows', // deliberately excluded, documented at its job definition: path-filtered and usually skipped
+  // Deliberately non-blocking WHILE IT EARNS TRUST, not a gap: it builds three dev images
+  // and boots a six-service stack (pg+redis+api+web+portal+caddy) to run the #3906 portal
+  // hydration guard, so an infra hiccup there must not red a PR yet. The promotion
+  // criterion — a week of green, then move it into ci-success needs: with an env var and a
+  // blocking assertion — is recorded at its job definition in ci.yml.
+  'portal-dev-e2e',
   'check-migrations', // KNOWN GAP, not policy - see comment below
   'lint-agent', // KNOWN GAP
   'test-agent-race', // KNOWN GAP
@@ -105,6 +113,15 @@ describe('ci-success gating contract', () => {
       'The smoke-test PR exemption changed shape and must be re-reviewed.',
     ).toContain(
       `if [[ "\${IS_PR}" != "true" ]] && [[ "\${SMOKE_TEST_RESULT}" != "success" ]]; then`,
+    );
+  });
+
+  it('guided-setup-smoke is still guarded on main pushes', () => {
+    expect(
+      conditionalChecks,
+      'The guided-setup-smoke PR exemption changed shape and must be re-reviewed.',
+    ).toContain(
+      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then`,
     );
   });
 

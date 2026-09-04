@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { ImpactWeightOverrides } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -7,6 +8,10 @@ export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'int
 // mode until the fleet drains or the window closes, then severed + `churned`.
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned', 'offboarding']);
 export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
+export const partnerTrustStateEnum = pgEnum('partner_trust_state', ['probation', 'trusted', 'restricted']);
+export type PartnerTrustState = (typeof partnerTrustStateEnum.enumValues)[number];
+export const ipClassEnum = pgEnum('ip_class', ['residential', 'business', 'hosting', 'vpn', 'tor', 'unknown']);
+export type IpClass = (typeof ipClassEnum.enumValues)[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
 // 'quick_support' is the hidden per-partner org that holds ephemeral Quick
 // Support devices and support_sessions rows. Exactly one per partner
@@ -40,6 +45,12 @@ export const partners = pgTable('partners', {
   // accepted. Dedicated column, not settings JSONB — the settings cards replace
   // sub-objects wholesale (#3597), and a column keeps gate === read-back.
   autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
+  // P2-6 (#4193). PARTIAL overrides of DEFAULT_IMPACT_WEIGHTS (@breeze/shared);
+  // NULL means "defaults". Dedicated column, not a partners.settings
+  // sub-object — settings cards replace sub-objects wholesale (#3597) and
+  // would silently drop the weights. Never read directly — always through
+  // resolveImpactWeights().
+  aiImpactWeights: jsonb('ai_impact_weights').$type<ImpactWeightOverrides | null>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
@@ -50,6 +61,22 @@ export const partners = pgTable('partners', {
   // signups already record mcp_origin_ip/mcp_origin_user_agent above.
   signupIp: varchar('signup_ip', { length: 45 }),
   signupUserAgent: text('signup_user_agent'),
+  // Partner trust probation (spec 2026-09-02). Lifecycle stays in `status`;
+  // this is the capability axis. Default 'trusted' grandfathers every
+  // pre-existing partner; register-partner sets 'probation' under enforce.
+  trustState: partnerTrustStateEnum('trust_state').notNull().default('trusted'),
+  trustChangedAt: timestamp('trust_changed_at', { withTimezone: true }),
+  // FK partners_trust_changed_by_fkey is defined in the SQL migration because
+  // users.ts imports partners from this file, making a Drizzle reference cyclic.
+  trustChangedBy: uuid('trust_changed_by'),
+  trustReason: text('trust_reason'),
+  trustReviewRequestedAt: timestamp('trust_review_requested_at', { withTimezone: true }),
+  // Lifetime count of agent enrollments made while in probation. Never
+  // decremented: deleting a device must not recycle the probation quota.
+  probationEnrollments: integer('probation_enrollments').notNull().default(0),
+  signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
+  signupIpAsn: integer('signup_ip_asn'),
+  signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),
@@ -100,6 +127,12 @@ export const partners = pgTable('partners', {
   // added or imported. Partners can opt out if their jurisdiction treats hardware
   // as non-taxable or they prefer to set taxability item-by-item.
   autoTaxHardware: boolean('auto_tax_hardware').notNull().default(true),
+  // #3205 W07: partner default for the "Billed devices" appendix on invoice
+  // PDFs. A dedicated column, for the reason autoEmailInvoiceOnQuoteAccept
+  // states: settings cards replace sub-objects wholesale (#3597), and a column
+  // keeps gate === read-back with no #3608 stored-false ambiguity. Resolved
+  // ONCE at issue onto invoices.device_appendix; never read at render time.
+  invoiceDeviceAppendix: boolean('invoice_device_appendix').notNull().default(false),
   // Partner-authored AI copy style for enrich/polish (NULL = built-in house
   // format: generic customer-friendly name + "• "-bulleted spec description).
   catalogAiStyle: text('catalog_ai_style'),

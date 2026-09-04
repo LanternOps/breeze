@@ -80,6 +80,8 @@ export const SENTRY_EVENT_CODES = [
   // --- integrations -----------------------------------------------------
   /** QuickBooks home-currency capture lost its compare-and-set (benign race). */
   'accounting_home_currency_cas_lost',
+  /** The Intuit webhook route was reached with QBO_WEBHOOK_VERIFIER_TOKEN unset. */
+  'accounting_webhook_verifier_token_missing',
   /** Inbound mail arrived with no usable provider sender-auth verdict. */
   'inbound_email_sender_auth_unverified',
   /** Inbound mail lost the message-id claim race and duplicated a ticket. */
@@ -98,6 +100,27 @@ export const SENTRY_EVENT_CODES = [
   'ai_billing_org_partner_missing',
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
+  /**
+   * Every in-memory AI session was mid-turn when the LRU cap was reached, so
+   * nothing could be evicted and MAX_ACTIVE_SESSIONS was exceeded. Throttled by
+   * the caller; a sustained stream means real capacity exhaustion.
+   */
+  'ai_session_cap_all_in_flight',
+  /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
+  'ai_budget_alert_no_recipients',
+  /** An AI budget alert event never became visible before its retries ran out. */
+  'ai_budget_alert_event_not_visible',
+
+  // --- ai agent tool registry -------------------------------------------
+  /**
+   * `createBreezeMcpServer`'s `onlyTools` (verdict/sweep tool pinning)
+   * contained a name that matched no registered tool — always a programming
+   * error (a typo in a hardcoded profile allowlist, or a tool renamed
+   * without updating it), never request input (#4447). Thrown in test/dev;
+   * in production the run degrades to the matched subset rather than
+   * failing, so this is the only signal an operator gets.
+   */
+  'ai_agent_onlytools_unknown_name',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */

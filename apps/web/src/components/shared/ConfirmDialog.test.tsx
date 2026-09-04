@@ -247,3 +247,19 @@ describe('ConfirmDialog — double-click safety (#3705)', () => {
     });
   });
 });
+
+describe('ConfirmDialog focus while loading', () => {
+  it('keeps the confirm button focusable (aria-disabled) so focus never drops to body mid-request', () => {
+    const { rerender } = render(
+      <ConfirmDialog open onClose={() => {}} onConfirm={() => {}} title="t" message="m" isLoading={false} confirmTestId="cd-confirm" />,
+    );
+    const confirm = screen.getByTestId('cd-confirm');
+    confirm.focus();
+    rerender(
+      <ConfirmDialog open onClose={() => {}} onConfirm={() => {}} title="t" message="m" isLoading confirmTestId="cd-confirm" />,
+    );
+    expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    expect(confirm).not.toBeDisabled();
+    expect(document.activeElement).toBe(confirm);
+  });
+});

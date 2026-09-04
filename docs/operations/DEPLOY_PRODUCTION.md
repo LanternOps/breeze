@@ -56,6 +56,7 @@ Set at least these values in `.env.prod`:
 - `METRICS_SCRAPE_TOKEN`
 - `PUBLIC_API_URL` (example: `https://app.example.com/api/v1`)
 - `GRAFANA_ADMIN_PASSWORD`
+- `POSTGRES_EXPORTER_DSN` (required when the monitoring overlay is enabled — `ENABLE_MONITORING=true`, the default for `scripts/prod/deploy.sh`; this stack has no local `postgres` service, so point it at the same managed database as `DATABASE_URL`, in `postgres_exporter`'s DSN form: `postgresql://user:password@host:port/dbname?sslmode=require`)
 
 ### Obtaining image digests
 

@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
@@ -41,10 +42,12 @@
     "auditTrail": "Trace d’audit",
     "eventLogs": "Journaux d’événements",
     "partner": "Partenaire",
+    "billing": "Facturation",
     "organizations": "Organisations",
     "aiUsageBudget": "Utilisation et budget de l’IA",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
+    "aiImpact": "Impact de l’IA",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -63,6 +66,7 @@
     "sectionExtensions": "Modules d'extension",
     "variables": "Variables",
     "llmProviderCatalog": "Catalogue des fournisseurs LLM",
+    "aiKillSwitch": "Coupe-circuit IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",

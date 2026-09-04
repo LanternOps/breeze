@@ -243,7 +243,9 @@
       "critical": "Critical",
       "important": "Important",
       "moderate": "Moderate",
-      "low": "Low"
+      "low": "Low",
+      "unrated": "Unrated",
+      "unratedNote": "Will not auto-approve"
     },
     "approval": {
       "pending": "Pending",

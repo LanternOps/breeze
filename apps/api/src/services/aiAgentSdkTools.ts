@@ -27,8 +27,10 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
-import { ACTOR_TYPES, INVOICE_STATUSES } from '@breeze/shared';
+import { CONTACT_ROLES } from './contacts/types';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
+import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -219,6 +221,9 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
+  // AI agent governance (P2-5, #4192). Base tier 3 — there is no lower-tier
+  // action on this tool, and its single action is four_eyes in guardrails.
+  manage_ai_agents: 3,
   // Billing / quoting / catalog / contracts (#3156). Same #2605 failure mode as
   // the vulnerability tools: registered in the aiTools execution registry (all
   // Tier 2 there) and reachable by external MCP clients, but never listed here
@@ -387,7 +392,7 @@ function makeHandler(
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
       let check:
-        | { allowed: true; context?: ToolExecutionContext }
+        | { allowed: true; intentId?: string; context?: ToolExecutionContext }
         | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
@@ -398,7 +403,20 @@ function makeHandler(
         const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
-      if (check.allowed) verifiedContext = check.context;
+      // P2-5 (#4192): `intentId` is set by createSessionPreToolUse ONLY after
+      // it won the approved -> executing CAS on a durable intent, i.e. this
+      // invocation IS that intent's inline release — the same fact the durable
+      // worker carries as `intent.id`. Carried on the context (not on args,
+      // not on auth — see toolExecutionContext.ts) so a handler that may only
+      // run as an approved release can name the approval it is executing.
+      // Left entirely absent for an ordinary chat call, which keeps the
+      // three-argument executeTool call below unchanged for every tool that
+      // neither verified anything nor went through an intent.
+      if (check.allowed) {
+        verifiedContext = check.intentId
+          ? { ...check.context, actionIntentId: check.intentId }
+          : check.context;
+      }
       if (!check.allowed) {
         const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
         await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
@@ -1048,6 +1066,34 @@ function extraToolResultText(result: SdkToolResult): string {
   return JSON.stringify(result);
 }
 
+/** Levenshtein edit distance — cheapest way to surface a likely-intended
+ *  tool name for a typo without pulling in a fuzzy-match dependency. */
+function levenshteinDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dp: number[][] = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 0; i < rows; i++) dp[i]![0] = i;
+  for (let j = 0; j < cols; j++) dp[0]![j] = j;
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      dp[i]![j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1]![j - 1]!
+        : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
+    }
+  }
+  return dp[rows - 1]![cols - 1]!;
+}
+
+/** The `limit` registered tool names nearest (by edit distance) to `name` —
+ *  used to make an unmatched `onlyTools` entry's likely typo self-evident. */
+function nearestToolNames(name: string, candidates: readonly string[], limit = 3): string[] {
+  return [...candidates]
+    .map((candidate) => ({ candidate, distance: levenshteinDistance(name, candidate) }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit)
+    .map(({ candidate }) => candidate);
+}
+
 /**
  * Creates an SDK MCP server instance with all Breeze tools.
  * Auth context is fetched lazily via the getAuth thunk so all tool handlers
@@ -1070,6 +1116,21 @@ function extraToolResultText(result: SdkToolResult): string {
  * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
  * them to be filtered against. The name-collision guard below is unchanged:
  * it still runs against the full, unfiltered registry.
+ *
+ * `onlyTools` is populated only internally, from hardcoded profile
+ * allowlists (see `aiAgents/runLoop.ts`'s `onlyTools` computation) — never
+ * from request input — so a name in it that matches no registered tool is
+ * always a programming error: a typo in the allowlist, or a tool renamed in
+ * the registry without updating it. (#4447) Since every caller is internal,
+ * that condition throws outside production (test/dev), so the bug is caught
+ * before it ships; in production it degrades to the matched subset rather
+ * than failing a live run, but logs via `console.error` and Sentry-captures
+ * (event code `ai_agent_onlytools_unknown_name`) so it does not vanish the
+ * way the old silent `.filter()` did. The Sentry capture is best-effort, not
+ * guaranteed delivery: on a self-hosted install with no `SENTRY_DSN`,
+ * `captureMessage` is a documented no-op (see `sentry.ts`) and the
+ * `console.error` line is the only surviving signal — an operator has to be
+ * watching API logs, not a Sentry inbox, to catch it there.
  */
 export function createBreezeMcpServer(
   getAuth: () => AuthContext,
@@ -2240,7 +2301,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_organizations',
-      'Create and manage organizations and sites (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (not yet supported — returns guidance). create_org, update_org, and create_site require approval.',
+      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId required; at least one of name/email/phone/mobile required — mirrors contacts_identifiable_chk; optional title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
       {
         action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
         orgId: uuid.optional(),
@@ -2248,8 +2309,30 @@ export function createBreezeMcpServer(
         status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
         address: z.record(z.string(), z.unknown()).optional(),
         email: z.string().email().max(255).optional(),
+        siteId: uuid.optional(),
+        phone: z.string().max(64).optional(),
+        mobile: z.string().max(64).optional(),
+        title: z.string().max(255).optional(),
+        roles: z.array(z.enum(CONTACT_ROLES)).optional(),
+        isPrimary: z.boolean().optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ai_agents',
+      'Govern the autonomous AI agents for the current organization. Action: authorize_supervised_key — grant the organization\'s agent of the given kind a pre-authorized action key (opKey, e.g. "manage_services:restart") so future agent runs may execute it without raising an approval. The key must already sit inside the partner baseline ceiling and the agent must have earned it on recent evidence. Requires a SECOND approver (four-eyes). orgId must be the CURRENT organization — it is not a target selector, and naming any other organization is rejected both when the approval is raised and again before it executes.',
+      {
+        action: z.enum(['authorize_supervised_key']),
+        kind: z.enum(AI_AGENT_KINDS),
+        opKey: z.string().min(3).max(120),
+        // Required, and re-checked against the intent's own org at creation and
+        // again at execution. It is here so the approval can PIN this org's
+        // authorized-key list (services/actionIntents/effectDigest.ts), not so
+        // a caller can choose a target.
+        orgId: uuid,
+      },
+      makeHandler('manage_ai_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Billing, quoting, catalog and contract tools (#3156). Identical failure
@@ -2380,6 +2463,7 @@ export function createBreezeMcpServer(
           'delete_draft',
           'add_line',
           'remove_line',
+          'update_line',
           'activate',
           'pause',
           'resume',
@@ -2669,6 +2753,33 @@ export function createBreezeMcpServer(
   const registeredTools = options?.onlyTools
     ? tools.filter((t) => options.onlyTools!.has(t.name))
     : tools;
+
+  // #4447: a name in onlyTools that matches no registered tool used to be
+  // dropped here with no signal at all. See this function's docstring for
+  // why every caller being internal means this is always a bug, not a
+  // runtime condition, and for the throw/log-and-capture split below.
+  if (options?.onlyTools) {
+    const matchedNames = new Set(registeredTools.map((t) => t.name));
+    const unknownNames = [...options.onlyTools].filter((name) => !matchedNames.has(name));
+    if (unknownNames.length > 0) {
+      const allNames = tools.map((t) => t.name);
+      const detail = unknownNames
+        .map((name) => {
+          const nearest = nearestToolNames(name, allNames);
+          return `"${name}" (nearest: ${nearest.length > 0 ? nearest.join(', ') : 'no close match'})`;
+        })
+        .join('; ');
+      const message = `[createBreezeMcpServer] onlyTools referenced unknown tool name(s): ${detail}`;
+      if (process.env.NODE_ENV !== 'production') {
+        throw new Error(message);
+      }
+      console.error(message);
+      captureMessage('onlyTools referenced unknown tool name(s)', {
+        eventCode: 'ai_agent_onlytools_unknown_name',
+        level: 'error',
+      });
+    }
+  }
 
   return createSdkMcpServer({
     name: 'breeze',

@@ -2,7 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, type AlertVerdictOutcome } from '@breeze/shared';
+import {
+  AI_AGENT_ALERT_VERDICT_OP_KEY, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, type AlertVerdictOutcome,
+} from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000e1';
 const RUN_ID = '00000000-0000-4000-8000-0000000000e2';
@@ -13,12 +15,23 @@ const PRIOR_VERDICT_ID = '00000000-0000-4000-8000-0000000000e8';
 const INTENT_ID = '00000000-0000-4000-8000-0000000000e9';
 const USER_ID = '00000000-0000-4000-8000-0000000000ea';
 const GROUP_ID = '00000000-0000-4000-8000-0000000000eb';
+const OTHER_USER_ID = '00000000-0000-4000-8000-0000000000ec';
+const AGENT_ID = '00000000-0000-4000-8000-0000000000ed';
+const RULE_ID = '00000000-0000-4000-8000-0000000000ee';
+const ROOT_ALERT_ID = '00000000-0000-4000-8000-0000000000ef';
 
 const state = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
   selectWheres: [] as unknown[],
+  // Task 7 (#4192) — `recordVerdictFeedback`'s locking SELECT. Recorded the
+  // same way `narrativeReport.test.ts` does: one boolean per `select()`
+  // call, pushed when its `.for(...)` builder method fires (or not).
+  selectForUpdate: [] as boolean[],
   insertReturningQueue: [] as (unknown[] | undefined)[],
   insertValues: [] as Record<string, unknown>[],
+  // Task 7 — the `ON CONFLICT ("source_id") ... DO UPDATE` clause
+  // `upsertVerdictFeedbackEvidenceQuery` passes to `.onConflictDoUpdate(...)`.
+  insertConflicts: [] as (Record<string, unknown> | undefined)[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
   updateReturningQueue: [] as (unknown[] | undefined)[],
@@ -36,8 +49,10 @@ const state = vi.hoisted(() => ({
 function resetDbState(): void {
   state.selectQueue = [];
   state.selectWheres = [];
+  state.selectForUpdate = [];
   state.insertReturningQueue = [];
   state.insertValues = [];
+  state.insertConflicts = [];
   state.updateSets = [];
   state.updateWheres = [];
   state.updateReturningQueue = [];
@@ -51,6 +66,7 @@ function resetDbState(): void {
 vi.mock('../../db', () => {
   function selectBuilder() {
     state.selectCount += 1;
+    let forUpdate = false;
     const builder: Record<string, unknown> = {
       from: vi.fn(() => builder),
       innerJoin: vi.fn(() => builder),
@@ -60,9 +76,14 @@ vi.mock('../../db', () => {
       }),
       orderBy: vi.fn(() => builder),
       limit: vi.fn(() => builder),
+      for: vi.fn((mode: string) => {
+        forUpdate = mode === 'update';
+        return builder;
+      }),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve()
           .then(() => {
+            state.selectForUpdate.push(forUpdate);
             if (state.selectQueue.length === 0) throw new Error('no queued select rows');
             return state.selectQueue.shift();
           })
@@ -82,6 +103,15 @@ vi.mock('../../db', () => {
         then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
           Promise.resolve(state.insertReturningQueue.shift() ?? []).then(resolve, reject),
       })),
+      // `upsertVerdictFeedbackEvidenceQuery` (Task 7, opEvidence.ts) — the
+      // single `verdict_feedback` evidence row is upserted, never a plain
+      // insert. Returns `builder` itself (unexecuted) so the bare `await`
+      // in `upsertVerdictFeedbackEvidence` resolves through the SAME `then`
+      // as every other bare insert below.
+      onConflictDoUpdate: vi.fn((clause: Record<string, unknown>) => {
+        state.insertConflicts.push(clause);
+        return builder;
+      }),
       // Bare (non-`.returning()`) insert — `persistAlertVerdict`'s write
       // ordering awaits `.values(...)` directly. Rejects with the queued
       // `insertThrow` error when set (see its own docstring on `state`).
@@ -779,6 +809,7 @@ describe('projectAlertAiVerdictSummary', () => {
       rationale: 'Disk usage climbing steadily with no recovery.',
       patternKind: 'daily',
       feedback: 'up',
+      feedbackBy: USER_ID,
       suggestedIntentId: INTENT_ID,
       createdAt: '2026-09-22T10:00:00.000Z',
     });
@@ -807,6 +838,7 @@ describe('projectAlertAiVerdictSummary', () => {
 
     expect(dto.patternKind).toBeNull();
     expect(dto.feedback).toBeNull();
+    expect(dto.feedbackBy).toBeNull();
     expect(dto.suggestedIntentId).toBeNull();
   });
 });
@@ -826,50 +858,114 @@ describe('latestVerdictForGroup', () => {
 });
 
 describe('recordVerdictFeedback', () => {
-  // Carry-in B (PR-A review, feedback-route hardening). The write is an
-  // atomic CAS UPDATE (`WHERE id = ... AND (feedback_by IS NULL OR
-  // feedback_by = <this user>)`) — race-safe against a second user writing
-  // concurrently, not just a read-then-write check. A follow-up SELECT
-  // (only reached when the CAS matched zero rows) distinguishes 'not_found'
-  // from 'conflict'.
-  it('writes feedback and returns ok+orgId via a single atomic CAS UPDATE — no follow-up SELECT on the happy path', async () => {
-    state.updateReturningQueue.push([{ id: VERDICT_ROW_ID, orgId: ORG_ID }]);
+  // Task 7 (#4192). The old atomic-CAS-UPDATE approach (`WHERE id = ... AND
+  // (feedback_by IS NULL OR feedback_by = <this user>)`) is replaced by a
+  // `SELECT ... FOR UPDATE` lock + plain UPDATE (Deviation 12): the lock
+  // makes the same-row race impossible between the read and the write, so
+  // the conflict check moves INSIDE the lock instead of living in the WHERE
+  // clause — strictly stronger than the CAS, which still needed a
+  // non-atomic follow-up SELECT to tell 'not_found' from 'conflict'.
+  const verdictRow = (overrides: Record<string, unknown> = {}) => ({
+    id: VERDICT_ROW_ID,
+    orgId: ORG_ID,
+    runId: RUN_ID,
+    alertId: ALERT_ID,
+    correlationGroupId: null,
+    feedback: null,
+    feedbackBy: null,
+    createdAt: new Date('2026-08-15T00:00:00.000Z'),
+    ...overrides,
+  });
+
+  it('an up-vote writes the update and one feedback_up evidence row keyed to the verdict\'s own createdAt', async () => {
+    state.selectQueue.push([verdictRow()]);
+    state.selectQueue.push([{ agentId: AGENT_ID }]);
+    state.selectQueue.push([{ ruleId: RULE_ID }]);
 
     const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
 
     expect(result).toEqual({ status: 'ok', orgId: ORG_ID });
+    // The locking SELECT actually used FOR UPDATE.
+    expect(state.selectForUpdate[0]).toBe(true);
+    expect(state.updateCount).toBe(1);
     expect(state.updateSets[0]).toMatchObject({ feedback: 'up', feedbackBy: USER_ID });
-    expect(state.selectCount).toBe(0);
-    // The CAS predicate — id-scoped (no app-layer org predicate; RLS is the
-    // boundary) AND (feedback_by IS NULL OR feedback_by = this user), so
-    // NO ONE's feedback yet AND this same user's own prior feedback both
-    // satisfy it in ONE statement — is asserted via compiled SQL, not a
-    // substring-on-column-name check, per the repo's rule against vacuous
-    // Drizzle where-clause assertions.
-    const { sql: compiled, params } = dialect.sqlToQuery(state.updateWheres[0] as SQL);
-    const normalized = compiled.replace(/\s+/g, ' ').trim();
-    expect(normalized).toBe(
-      '("ai_alert_verdicts"."id" = $1 and '
-      + '("ai_alert_verdicts"."feedback_by" is null or "ai_alert_verdicts"."feedback_by" = $2))'
-    );
-    expect(params).toEqual([VERDICT_ROW_ID, USER_ID]);
+    expect(state.insertCount).toBe(1);
+    expect(state.insertValues[0]).toMatchObject({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      namespace: 'alert_verdict',
+      opKey: AI_AGENT_ALERT_VERDICT_OP_KEY,
+      ruleId: RULE_ID,
+      sourceKind: 'verdict_feedback',
+      sourceId: VERDICT_ROW_ID,
+      metric: 'feedback_up',
+      runId: RUN_ID,
+      // The FIXED bucket — the verdict's own creation, not the vote's.
+      occurredAt: new Date('2026-08-15T00:00:00.000Z'),
+    });
   });
 
-  it('returns not_found when the id does not exist (or is RLS-denied) — CAS matches nothing, follow-up SELECT finds nothing', async () => {
-    state.updateReturningQueue.push([]);
-    state.selectQueue.push([]);
+  it('the same user re-voting down UPDATEs the single feedback row\'s metric in place via ON CONFLICT DO UPDATE', async () => {
+    // Same user (USER_ID) already voted — feedback_by is already theirs.
+    state.selectQueue.push([verdictRow({ feedback: 'up', feedbackBy: USER_ID })]);
+    state.selectQueue.push([{ agentId: AGENT_ID }]);
+    state.selectQueue.push([{ ruleId: RULE_ID }]);
 
     const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'down');
 
-    expect(result).toEqual({ status: 'not_found' });
+    expect(result).toEqual({ status: 'ok', orgId: ORG_ID });
+    // Exactly one evidence write attempt, upserted (not a second insert) —
+    // the ON CONFLICT ("source_id") ... DO UPDATE clause itself (the
+    // mechanism that keeps this to exactly one row under a real unique
+    // index) is asserted against the real dialect in
+    // opEvidence.test.ts ('upsertVerdictFeedbackEvidenceQuery — compiled
+    // SQL'), not re-derived from this file's opaque mocked clause object.
+    expect(state.insertCount).toBe(1);
+    expect(state.insertConflicts[0]).toMatchObject({ set: { metric: 'feedback_down' } });
+    expect(state.insertValues[0]).toMatchObject({ sourceId: VERDICT_ROW_ID, metric: 'feedback_down' });
   });
 
-  it('returns conflict+orgId when the row already carries ANOTHER user\'s feedback — CAS matches nothing, follow-up SELECT finds the row', async () => {
-    state.updateReturningQueue.push([]);
-    state.selectQueue.push([{ orgId: ORG_ID }]);
+  it('a different user gets conflict and writes nothing', async () => {
+    state.selectQueue.push([verdictRow({ feedback: 'up', feedbackBy: OTHER_USER_ID })]);
 
     const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'down');
 
     expect(result).toEqual({ status: 'conflict', orgId: ORG_ID });
+    expect(state.selectCount).toBe(1);
+    expect(state.updateCount).toBe(0);
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('a missing verdict gets not_found and writes nothing', async () => {
+    state.selectQueue.push([]);
+
+    const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
+
+    expect(result).toEqual({ status: 'not_found' });
+    expect(state.updateCount).toBe(0);
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('a group verdict resolves rule_id through the group\'s root_alert_id', async () => {
+    state.selectQueue.push([verdictRow({ alertId: null, correlationGroupId: GROUP_ID })]);
+    state.selectQueue.push([{ agentId: AGENT_ID }]);
+    state.selectQueue.push([{ rootAlertId: ROOT_ALERT_ID }]);
+    state.selectQueue.push([{ ruleId: RULE_ID }]);
+
+    await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
+
+    expect(state.insertValues[0]).toMatchObject({ ruleId: RULE_ID });
+  });
+
+  it('a group with a null root_alert_id yields ruleId: null and skips the extra alert lookup', async () => {
+    state.selectQueue.push([verdictRow({ alertId: null, correlationGroupId: GROUP_ID })]);
+    state.selectQueue.push([{ agentId: AGENT_ID }]);
+    state.selectQueue.push([{ rootAlertId: null }]);
+
+    await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
+
+    expect(state.insertValues[0]).toMatchObject({ ruleId: null });
+    // verdict lock + run + group — no fourth SELECT for an alert that isn't there.
+    expect(state.selectCount).toBe(3);
   });
 });

@@ -16,28 +16,48 @@
  *      `accessiblePartnerIds: []` — so the read silently returns ZERO ROWS,
  *      not an error.
  *
- * The fix (services/configPolicyOwnership.ts) is a matched pair:
- * `policyOwnershipCondition` (dual-axis join predicate) plus
- * `withPartnerWideVisibility` (a scoped system-context escape around ONLY the
- * policy join). This test proves both halves for all four resolvers by
- * invoking them exactly as the agent heartbeat path does: inside a real
- * org-scoped `withDbAccessContext`, against the real breeze_app RLS-forced
- * connection.
+ * The original fix (#2930) was a matched pair: `policyOwnershipCondition` (the
+ * dual-axis join predicate) plus `withPartnerWideVisibility`, a scoped
+ * system-context escape around ONLY the policy join.
+ *
+ * **#4673 W03 replaced the second half.** The escape is deleted. Its job is now
+ * done by the database: `<table>_partner_wide_select` (W01) adds a SELECT-ONLY
+ * policy `org_id IS NULL AND partner_id = public.breeze_current_partner_id()`
+ * across the configuration-policy chain, and W02 populates
+ * `breeze.current_partner_id` on agent contexts from the device org's partner.
+ * So the agent reads its own MSP's partner-wide config on its OWN connection —
+ * no second pooled connection (the #1105 starvation shape) and no RLS bypass
+ * (the #2417 cross-tenant shape).
+ *
+ * This test proves both halves for all four resolvers by invoking them exactly
+ * as the agent heartbeat path does: inside a real org-scoped
+ * `withDbAccessContext`, against the real breeze_app RLS-forced connection.
+ *
+ * The `partnerWideBlindContext` cases are what make it a real proof rather than
+ * a tautology. They run the same resolvers under a context with
+ * `currentPartnerId: null` and require the partner-wide policy to be INVISIBLE.
+ * That fails if the system-context escape is ever reintroduced — under an
+ * escape the GUC is irrelevant and the row resolves regardless. Together the
+ * two halves pin: visible with the GUC, invisible without it, therefore the
+ * RLS branch (not an escape) is what is doing the work.
  *
  * If this test file were deleted: a regression that reintroduces a bare
- * `eq(configurationPolicies.orgId, device.orgId)` join, or that drops the
- * `withPartnerWideVisibility` escape, would compile fine, pass every unit
- * test (which mock the DB and never exercise RLS), and pass
+ * `eq(configurationPolicies.orgId, device.orgId)` join, that drops
+ * `currentPartnerId` from the agent context, or that reintroduces the escape,
+ * would compile fine, pass every unit test (which mock the DB and never
+ * exercise RLS), and pass
  * configurationPolicyPartnerResolution.integration.test.ts (which resolves
- * under a SYSTEM-scope AuthContext, so the RLS escape is never exercised).
- * Partner-wide policies would silently stop reaching agents for event_log,
- * monitoring, PAM, and patch-source config — exactly the bug #2930 fixed.
+ * under a SYSTEM-scope AuthContext, where every RLS branch short-circuits
+ * true). Partner-wide policies would silently stop reaching agents for
+ * event_log, monitoring, PAM, and patch-source config — exactly the bug #2930
+ * fixed — or would keep reaching them through a connection-doubling bypass.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { extractRowCount } from '../../db/rowCount';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -50,6 +70,7 @@ import {
 } from '../../db/schema';
 import {
   buildEventLogConfigUpdate,
+  buildHelperConfigUpdate,
   buildMonitoringConfigUpdate,
   buildPamConfigUpdate,
   buildPatchSourceConfigUpdate,
@@ -67,18 +88,41 @@ const SYSTEM_CTX: DbAccessContext = {
   userId: null,
 };
 
-// The realistic agent-facing shape: an org-scoped request context.
-// accessiblePartnerIds: [] is the crux of the bug — an org token never
-// carries partner-axis access, so breeze_has_partner_access is false and a
-// partner-owned policy is invisible unless the resolver escapes to a system
-// context for the policy join (withPartnerWideVisibility).
-function orgContext(orgId: string): DbAccessContext {
+// The realistic agent-facing shape, as `agentAuthMiddleware` builds it since
+// #4673 W02: an org-scoped request context that carries the DEVICE ORG'S OWN
+// partner in `currentPartnerId` while `accessiblePartnerIds` stays [].
+//
+// The two fields are different axes and must not be conflated.
+// `accessiblePartnerIds` gates `breeze_has_partner_access`, which admits
+// partner-axis WRITES — an agent never gets it. `currentPartnerId` feeds the
+// `breeze.current_partner_id` GUC, which only the SELECT-only
+// `<table>_partner_wide_select` policies read. That branch is now the ONLY
+// thing making a partner-owned policy legible here: W03 deleted the nested
+// system-context escape (`withPartnerWideVisibility`) these resolvers used to
+// take. `partnerWideBlindContext` below pins that by omitting the GUC.
+function orgContext(orgId: string, partnerId: string): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId: partnerId,
+  };
+}
+
+// The SAME context minus `currentPartnerId` — i.e. what an agent context looked
+// like BEFORE W02. Used by the "the RLS branch is load-bearing" cases below: if
+// a system-context escape were ever reintroduced (or survived), a partner-owned
+// policy would resolve under this context too, and those assertions fail.
+function partnerWideBlindContext(orgId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+    currentPartnerId: null,
   };
 }
 
@@ -206,6 +250,25 @@ async function seedPamPolicy(
   });
 }
 
+async function seedHelperPolicy(
+  owner: { orgId: string | null; partnerId: string | null },
+  inlineSettings: Record<string, unknown>,
+) {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [policy] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: owner.orgId, partnerId: owner.partnerId, name: `helper policy ${randomUUID()}`, status: 'active' })
+      .returning();
+    createdPolicies.push(policy!.id);
+    await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id,
+      featureType: 'helper',
+      inlineSettings,
+    });
+    return policy!.id;
+  });
+}
+
 async function seedPatchPolicy(
   owner: { orgId: string | null; partnerId: string | null },
   exclusiveWindowsUpdate: boolean,
@@ -241,11 +304,12 @@ async function purgeCaches(deviceId: string) {
     `eventlog:settings:device:${deviceId}`,
     `monitoring:settings:device:${deviceId}`,
     `pam:settings:device:${deviceId}`,
+    `helper:settings:device:${deviceId}`,
   );
 }
 
 describe('agent-facing config-policy resolvers honour partner-wide policies (#2930)', () => {
-  describe('partner-owned policy resolves under an ORG-SCOPED context (the RLS escape)', () => {
+  describe('partner-owned policy resolves under an ORG-SCOPED context (the *_partner_wide_select RLS branch)', () => {
     it('buildEventLogConfigUpdate resolves a partner-owned policy', async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
@@ -256,7 +320,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const policyId = await seedEventLogPolicy({ orgId: null, partnerId: partner.id }, 555);
       await assign(policyId, 'partner', partner.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildEventLogConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildEventLogConfigUpdate(device.id));
 
       // 555 is not the default (100) — proves the partner-owned policy
       // resolved rather than a silent fallback to EVENT_LOG_DEFAULTS.
@@ -274,7 +338,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const policyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 999);
       await assign(policyId, 'partner', partner.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildMonitoringConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildMonitoringConfigUpdate(device.id));
 
       expect(result).not.toBeNull();
       expect(result!.check_interval_seconds).toBe(999);
@@ -292,7 +356,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const policyId = await seedPamPolicy({ orgId: null, partnerId: partner.id }, true);
       await assign(policyId, 'partner', partner.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildPamConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildPamConfigUpdate(device.id));
 
       expect(result.uacInterceptionEnabled).toBe(true);
     });
@@ -307,7 +371,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const policyId = await seedPatchPolicy({ orgId: null, partnerId: partner.id }, true);
       await assign(policyId, 'partner', partner.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildPatchSourceConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildPatchSourceConfigUpdate(device.id));
 
       expect(result.exclusiveWindowsUpdate).toBe(true);
     });
@@ -334,14 +398,14 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const patchPolicyId = await seedPatchPolicy({ orgId: null, partnerId: partner.id }, true);
       await assign(patchPolicyId, 'partner', partner.id);
 
-      const eventLogA = await withDbAccessContext(orgContext(orgA!.id), () => buildEventLogConfigUpdate(deviceA.id));
-      const eventLogB = await withDbAccessContext(orgContext(orgB!.id), () => buildEventLogConfigUpdate(deviceB.id));
-      const monitoringA = await withDbAccessContext(orgContext(orgA!.id), () => buildMonitoringConfigUpdate(deviceA.id));
-      const monitoringB = await withDbAccessContext(orgContext(orgB!.id), () => buildMonitoringConfigUpdate(deviceB.id));
-      const pamA = await withDbAccessContext(orgContext(orgA!.id), () => buildPamConfigUpdate(deviceA.id));
-      const pamB = await withDbAccessContext(orgContext(orgB!.id), () => buildPamConfigUpdate(deviceB.id));
-      const patchA = await withDbAccessContext(orgContext(orgA!.id), () => buildPatchSourceConfigUpdate(deviceA.id));
-      const patchB = await withDbAccessContext(orgContext(orgB!.id), () => buildPatchSourceConfigUpdate(deviceB.id));
+      const eventLogA = await withDbAccessContext(orgContext(orgA!.id, partner.id), () => buildEventLogConfigUpdate(deviceA.id));
+      const eventLogB = await withDbAccessContext(orgContext(orgB!.id, partner.id), () => buildEventLogConfigUpdate(deviceB.id));
+      const monitoringA = await withDbAccessContext(orgContext(orgA!.id, partner.id), () => buildMonitoringConfigUpdate(deviceA.id));
+      const monitoringB = await withDbAccessContext(orgContext(orgB!.id, partner.id), () => buildMonitoringConfigUpdate(deviceB.id));
+      const pamA = await withDbAccessContext(orgContext(orgA!.id, partner.id), () => buildPamConfigUpdate(deviceA.id));
+      const pamB = await withDbAccessContext(orgContext(orgB!.id, partner.id), () => buildPamConfigUpdate(deviceB.id));
+      const patchA = await withDbAccessContext(orgContext(orgA!.id, partner.id), () => buildPatchSourceConfigUpdate(deviceA.id));
+      const patchB = await withDbAccessContext(orgContext(orgB!.id, partner.id), () => buildPatchSourceConfigUpdate(deviceB.id));
 
       expect(eventLogA.max_events_per_cycle).toBe(555);
       expect(eventLogB.max_events_per_cycle).toBe(555);
@@ -367,7 +431,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const orgPolicyId = await seedEventLogPolicy({ orgId: org!.id, partnerId: null }, 222);
       await assign(orgPolicyId, 'organization', org!.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildEventLogConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildEventLogConfigUpdate(device.id));
 
       expect(result.max_events_per_cycle).toBe(222);
     });
@@ -385,7 +449,7 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const orgPolicyId = await seedPamPolicy({ orgId: org!.id, partnerId: null }, false);
       await assign(orgPolicyId, 'organization', org!.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildPamConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildPamConfigUpdate(device.id));
 
       expect(result.uacInterceptionEnabled).toBe(false);
     });
@@ -414,10 +478,10 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       const patchPolicyId = await seedPatchPolicy({ orgId: null, partnerId: partnerP1.id }, true);
       await assign(patchPolicyId, 'partner', partnerP1.id);
 
-      const eventLogQ = await withDbAccessContext(orgContext(orgQ!.id), () => buildEventLogConfigUpdate(deviceQ.id));
-      const monitoringQ = await withDbAccessContext(orgContext(orgQ!.id), () => buildMonitoringConfigUpdate(deviceQ.id));
-      const pamQ = await withDbAccessContext(orgContext(orgQ!.id), () => buildPamConfigUpdate(deviceQ.id));
-      const patchQ = await withDbAccessContext(orgContext(orgQ!.id), () => buildPatchSourceConfigUpdate(deviceQ.id));
+      const eventLogQ = await withDbAccessContext(orgContext(orgQ!.id, partnerQ.id), () => buildEventLogConfigUpdate(deviceQ.id));
+      const monitoringQ = await withDbAccessContext(orgContext(orgQ!.id, partnerQ.id), () => buildMonitoringConfigUpdate(deviceQ.id));
+      const pamQ = await withDbAccessContext(orgContext(orgQ!.id, partnerQ.id), () => buildPamConfigUpdate(deviceQ.id));
+      const patchQ = await withDbAccessContext(orgContext(orgQ!.id, partnerQ.id), () => buildPatchSourceConfigUpdate(deviceQ.id));
 
       // No policy of Q's own partner matched -> defaults across the board,
       // NOT partner P1's values (555 / 999 / true / true).
@@ -470,10 +534,189 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       });
       await assign(policyId, 'partner', partner.id);
 
-      const result = await withDbAccessContext(orgContext(org!.id), () => buildEventLogConfigUpdate(device.id));
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () => buildEventLogConfigUpdate(device.id));
 
       expect(result.max_events_per_cycle).toBe(EVENT_LOG_DEFAULTS.maxEventsPerCycle);
       expect(result.max_events_per_cycle).not.toBe(DISTINCTIVE_MAX_EVENTS);
+    });
+  });
+
+  describe('the *_partner_wide_select branch is what makes it work — not a system escape (#4673 W03)', () => {
+    // RED-FIRST GATE. Before W03 these four resolvers wrapped their policy join
+    // in `withPartnerWideVisibility`, a nested
+    // `runOutsideDbContext(() => withSystemDbAccessContext(...))`. Under that
+    // escape `breeze.current_partner_id` is irrelevant — the query runs as
+    // scope 'system' on a second connection and sees EVERY tenant's rows — so
+    // every "INVISIBLE" assertion below would have failed (the partner-wide
+    // policy would resolve anyway). They pass only because the read now happens
+    // on the caller's own RLS-forced connection, where the SELECT-only branch
+    // is the sole grant and a NULL GUC makes `partner_id = NULL` never true.
+    //
+    // This is also the regression gate for W02: drop `currentPartnerId` from
+    // agentAuth's context and the positive cases above go red, instead of
+    // silently degrading real agents to defaults with no error.
+    it('event_log: a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      const policyId = await seedEventLogPolicy({ orgId: null, partnerId: partner.id }, 555);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildEventLogConfigUpdate(device.id),
+      );
+      expect(blind.max_events_per_cycle).toBe(EVENT_LOG_DEFAULTS.maxEventsPerCycle);
+      expect(blind.max_events_per_cycle).not.toBe(555);
+
+      // Same device, same policy, same process — only the GUC differs.
+      await purgeCaches(device.id);
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildEventLogConfigUpdate(device.id),
+      );
+      expect(sighted.max_events_per_cycle).toBe(555);
+    });
+
+    it('monitoring: a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      const policyId = await seedMonitoringPolicy({ orgId: null, partnerId: partner.id }, 999);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      expect(blind).toBeNull();
+
+      await purgeCaches(device.id);
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildMonitoringConfigUpdate(device.id),
+      );
+      // The watches read is a SEPARATE query, chained through settings_id ->
+      // feature link -> configuration_policies. It used to share one escape
+      // with the policy join; now it needs its own
+      // `config_policy_monitoring_watches_partner_wide_select` branch. A
+      // non-empty watches array is the proof that branch exists and matches —
+      // without it this resolves the settings row and then returns null.
+      expect(sighted).not.toBeNull();
+      expect(sighted!.check_interval_seconds).toBe(999);
+      expect(sighted!.watches).toHaveLength(1);
+    });
+
+    it('pam: a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      const policyId = await seedPamPolicy({ orgId: null, partnerId: partner.id }, true);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildPamConfigUpdate(device.id),
+      );
+      expect(blind.uacInterceptionEnabled).toBe(PAM_DEFAULTS.uacInterceptionEnabled);
+
+      await purgeCaches(device.id);
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildPamConfigUpdate(device.id),
+      );
+      expect(sighted.uacInterceptionEnabled).toBe(true);
+    });
+
+    it('patch source: a partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedPatchPolicy({ orgId: null, partnerId: partner.id }, true);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildPatchSourceConfigUpdate(device.id),
+      );
+      expect(blind.exclusiveWindowsUpdate).toBe(false);
+
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildPatchSourceConfigUpdate(device.id),
+      );
+      expect(sighted.exclusiveWindowsUpdate).toBe(true);
+    });
+
+    it('helper settings: a partner-wide policy resolves, and is INVISIBLE without breeze.current_partner_id', async () => {
+      // buildHelperConfigUpdate is the FIFTH agent-facing resolver whose escape
+      // W03 removed, and the only one this suite did not already cover. Its
+      // settings live in `config_policy_feature_links.inlineSettings` (JSONB) —
+      // there is no `config_policy_helper_settings` table — so the grant comes
+      // from `config_policy_feature_links_partner_wide_select`.
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      // Both fields differ from what the no-policy path produces: that path
+      // returns HELPER_DEFAULTS with `enabled` from organizations.settings.helper
+      // (unset here, so false) and `showTrayIcon: true`.
+      const policyId = await seedHelperPolicy(
+        { orgId: null, partnerId: partner.id },
+        { enabled: true, showTrayIcon: false },
+      );
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildHelperConfigUpdate(device.id, org!.id),
+      );
+      expect(blind.enabled).toBe(false);
+      expect(blind.showTrayIcon).toBe(true);
+
+      await purgeCaches(device.id);
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildHelperConfigUpdate(device.id, org!.id),
+      );
+      expect(sighted.enabled).toBe(true);
+      expect(sighted.showTrayIcon).toBe(false);
+    });
+
+    it('writes stay locked: the org context still cannot UPDATE or DELETE the partner-wide policy', async () => {
+      // The branch is FOR SELECT only. Postgres never consults FOR SELECT
+      // policies when computing UPDATE/DELETE target rows, so the row stays
+      // untargetable — it is HIDDEN from the write, which is a silent 0 rows,
+      // not a 42501. Asserting the row count is the only way to see that; an
+      // `expect(...).rejects` here would be vacuous.
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const policyId = await seedEventLogPolicy({ orgId: null, partnerId: partner.id }, 555);
+
+      await withDbAccessContext(orgContext(org!.id, partner.id), async () => {
+        const updated = await db.execute(
+          sql`update configuration_policies set name = 'hijacked' where id = ${policyId}`,
+        );
+        expect(extractRowCount(updated)).toBe(0);
+
+        const deleted = await db.execute(
+          sql`delete from configuration_policies where id = ${policyId}`,
+        );
+        expect(extractRowCount(deleted)).toBe(0);
+      });
+
+      // ...and the row is still there, unchanged.
+      const [row] = await withDbAccessContext(SYSTEM_CTX, () =>
+        db
+          .select({ name: configurationPolicies.name })
+          .from(configurationPolicies)
+          .where(eq(configurationPolicies.id, policyId)),
+      );
+      expect(row?.name).not.toBe('hijacked');
     });
   });
 });

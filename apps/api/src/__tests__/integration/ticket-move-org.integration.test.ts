@@ -26,6 +26,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { randomUUID } from 'node:crypto';
 import {
+  contacts,
   tickets,
   ticketComments,
   ticketAlertLinks,
@@ -43,6 +44,8 @@ import {
   aiAgents,
   aiAgentRuns,
   users,
+  deviceVulnerabilities,
+  vulnerabilities,
 } from '../../db/schema';
 import { moveTicketOrg, TicketServiceError } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
@@ -290,6 +293,46 @@ describe('moveTicketOrg — service-level integration', () => {
 
     const movedLink = await readAlertLink(alertLink.id);
     expect(movedLink?.orgId).toBe(orgB.id);
+  });
+
+  it('#4596: the deferred ticket/org FKs are re-enforced after the move, not left deferred', async () => {
+    // moveTicketOrg issues `SET CONSTRAINTS time_entries_ticket_org_fk,
+    // ticket_parts_ticket_org_fk DEFERRED` so the tickets UPDATE can precede
+    // the child rewrites. SET CONSTRAINTS is transaction-local, so the
+    // constraints must be IMMEDIATE again for everyone else the moment that
+    // transaction commits. Without this test a regression that leaked the
+    // deferral (e.g. issuing it outside the tx) would still show a green move
+    // suite while silently reopening the hole this wave closes.
+    const { orgA, orgB, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    // The move itself succeeded and both children followed.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    expect((await readTimeEntry(timeEntry.id))?.orgId).toBe(orgB.id);
+    expect((await readTicketPart(ticketPart.id))?.orgId).toBe(orgB.id);
+
+    // …and a fresh forge against the MOVED ticket is still refused, in a new
+    // transaction that issued no SET CONSTRAINTS of its own.
+    const forgeCtx: DbAccessContext = {
+      scope: 'organization',
+      orgId: orgA.id,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [],
+      userId: actor.userId,
+    };
+    await expect(
+      withDbAccessContext(forgeCtx, () =>
+        db.insert(ticketParts).values({
+          ticketId: ticket.id,
+          orgId: orgA.id, // the SOURCE org — the ticket now lives in orgB
+          description: 'post-move forge',
+          quantity: '1.00',
+          unitPrice: '0',
+          currencyCode: 'USD',
+        }),
+      ),
+    ).rejects.toMatchObject({ cause: { code: '23503' } });
   });
 
   it('rejects a cross-partner target org with status 400', async () => {
@@ -691,5 +734,443 @@ describe('moveTicketOrg — ticket_drafts cleanup + scope_ticket_id tombstone (C
     await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgC.id, actor));
 
     expect((await readTicket(ticket.id))?.orgId).toBe(orgC.id);
+  });
+});
+
+// ── #3258 W03 review C1: the requester contact does not move with the ticket ──
+
+describe('moveTicketOrg — requester contact detach (#3258 W03)', () => {
+  it('moves a contact-linked ticket without 23503 and leaves the link null', async () => {
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const adminDb = getTestDb() as any;
+
+    const [contact] = await adminDb
+      .insert(contacts)
+      .values({ orgId: orgA.id, email: `requester-${uid()}@example.test`, name: 'Requester Person' })
+      .returning();
+    await adminDb
+      .update(tickets)
+      .set({ requesterContactId: contact.id, submitterEmail: contact.email, submitterName: contact.name })
+      .where(eq(tickets.id, ticket.id));
+
+    // `tickets_requester_contact_org_fk` is DEFERRABLE INITIALLY IMMEDIATE and
+    // this transaction issues no `SET CONSTRAINTS ... DEFERRED`, so it is
+    // checked the instant the org_id UPDATE completes. Before the fix this
+    // threw 23503 and NO part of the move landed.
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    const moved = await readTicket(ticket.id);
+    expect(moved?.orgId).toBe(orgB.id);
+    expect(moved?.requesterContactId).toBeNull();
+    // The point-in-time snapshot is deliberately untouched — the move drops the
+    // link to a live contact row, not the record of who filed the ticket.
+    expect(moved?.submitterEmail).toBe(contact.email);
+    expect(moved?.submitterName).toBe('Requester Person');
+
+    // The contact stays in its own organization; nothing about it was moved.
+    const [after] = await adminDb.select().from(contacts).where(eq(contacts.id, contact.id));
+    expect(after.orgId).toBe(orgA.id);
+  });
+});
+
+// ── #4524: the ai_agent_runs ↔ ticket pointer pair must be severed on a move ──
+
+/**
+ * Seeds one `ai_agent_runs` row pointing at `ticketId`. Unlike
+ * `seedTicketScopedIntent` (which needs a run only as an intent's requester
+ * and leaves `ticket_id` NULL), this is the shape #4524 is about: a
+ * trigger_kind='ticket' run whose `ticket_id` names the ticket.
+ *
+ * `deviceId` is parameterised because ticket-triggered runs are normally
+ * device-LESS (the ticket axis stamps ticket_id and leaves device_id NULL),
+ * while a device-triggered run can also carry a ticket_id — the ticket-keyed
+ * detach must reach both, and a `WHERE device_id IS NULL` narrowing must not
+ * pass.
+ */
+async function seedRunOnTicket(
+  orgId: string,
+  agentId: string,
+  ticketId: string,
+  deviceId: string | null = null,
+): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const [run] = await adminDb
+    .insert(aiAgentRuns)
+    .values({
+      agentId,
+      orgId,
+      triggerKind: 'ticket',
+      dedupeKey: `move-org-run-${uid()}`,
+      modeAtStart: 'shadow',
+      policySnapshot: { schemaVersion: 1 },
+      ticketId,
+      deviceId,
+    })
+    .returning();
+  return { id: run.id };
+}
+
+async function readRun(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, id)).limit(1);
+  return row as (typeof aiAgentRuns.$inferSelect) | undefined;
+}
+
+async function readComment(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(ticketComments).where(eq(ticketComments.id, id)).limit(1);
+  return row as (typeof ticketComments.$inferSelect) | undefined;
+}
+
+/** A second ticket in the SAME source org, used as the "must not be touched" control. */
+async function seedSiblingTicket(orgId: string, partnerId: string): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const unique = uid();
+  const [row] = await adminDb
+    .insert(tickets)
+    .values({
+      orgId,
+      partnerId,
+      ticketNumber: `MO-SIB-${unique}`,
+      subject: `sibling ticket ${unique}`,
+      source: 'manual',
+    })
+    .returning();
+  return { id: row.id };
+}
+
+describe('moveTicketOrg — ai_agent_runs.ticket_id detach (#4524)', () => {
+  it('nulls ticket_id on every run pointing at the moved ticket, leaves the run in the source org, and spares runs on other tickets', async () => {
+    const { orgA, orgB, partner, actor, ticket, device } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const sibling = await seedSiblingTicket(orgA.id, partner.id);
+
+    // Device-LESS ticket run: the canonical trigger_kind='ticket' shape.
+    const ticketRun = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+    // Same ticket, but the run also names the device — proves the detach is
+    // keyed on ticket_id, not narrowed to device-less rows.
+    const deviceTicketRun = await seedRunOnTicket(orgA.id, agent.id, ticket.id, device.id);
+    // Control: a run on a DIFFERENT ticket that never leaves orgA. Rejects a
+    // blanket "null every ticket_id in the org".
+    const siblingRun = await seedRunOnTicket(orgA.id, agent.id, sibling.id, null);
+
+    // Fixture guard: the pointers exist before the move, so a post-move NULL
+    // is the detach and not an insert that never landed.
+    expect((await readRun(ticketRun.id))?.ticketId).toBe(ticket.id);
+    expect((await readRun(deviceTicketRun.id))?.ticketId).toBe(ticket.id);
+    expect((await readRun(siblingRun.id))?.ticketId).toBe(sibling.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+
+    // Both runs on the departed ticket are severed, and both STAY in the
+    // source org (org_id is trigger-immutable; run history never follows a
+    // move — owner decision 2026-08-23).
+    const movedRunA = await readRun(ticketRun.id);
+    expect(movedRunA?.ticketId).toBeNull();
+    expect(movedRunA?.orgId).toBe(orgA.id);
+    const movedRunB = await readRun(deviceTicketRun.id);
+    expect(movedRunB?.ticketId).toBeNull();
+    expect(movedRunB?.orgId).toBe(orgA.id);
+
+    // The sibling ticket never moved, so its run keeps its pointer.
+    const untouched = await readRun(siblingRun.id);
+    expect(untouched?.ticketId).toBe(sibling.id);
+    expect((await readTicket(sibling.id))?.orgId).toBe(orgA.id);
+  });
+
+  it('severs the pointer under a REAL partner-scoped RLS context, not just system scope', async () => {
+    // The route runs under withDbAccessContext, never withSystemDbAccessContext.
+    // ai_agent_runs is FORCE ROW LEVEL SECURITY with a breeze_has_org_access
+    // policy, so a detach that only works for `breeze.scope=system` would be a
+    // silent zero-row no-op on the one path that actually matters. Every other
+    // case in this file uses system scope, which cannot catch that.
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgA.id, orgB.id],
+      accessiblePartnerIds: [partner.id],
+      userId: actor.userId,
+    };
+    await withDbAccessContext(partnerCtx, () => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    const after = await readRun(run.id);
+    expect(after?.ticketId).toBeNull();
+    expect(after?.orgId).toBe(orgA.id);
+  });
+
+  it('nulls the reverse pointer ticket_comments.agent_run_id on comments that travel with the ticket', async () => {
+    // ticket_comments has no org_id (child-via-parent tenancy), so every
+    // comment follows the ticket into the target org while the run it names
+    // stays behind — the same reverse-pointer class #3828 fixed for
+    // metric_anomaly_incidents.agent_run_id on the device axis.
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+    const adminDb = getTestDb() as any;
+
+    const [aiComment] = await adminDb
+      .insert(ticketComments)
+      .values({
+        ticketId: ticket.id,
+        authorType: 'internal',
+        commentType: 'comment',
+        content: 'Proposed next step from triage.',
+        isPublic: false,
+        originPrincipalKind: 'ai_agent',
+        agentRunId: run.id,
+      })
+      .returning();
+    expect(aiComment.agentRunId).toBe(run.id);
+
+    // Control: an AI comment on a DIFFERENT ticket in the SAME source org.
+    // Rejects a detach scoped by org rather than by the moved ticket — e.g.
+    // `WHERE ticket_id IN (SELECT id FROM tickets WHERE org_id = source)`,
+    // which the single-comment case alone would pass.
+    const sibling = await seedSiblingTicket(orgA.id, partner.id);
+    const siblingRun = await seedRunOnTicket(orgA.id, agent.id, sibling.id, null);
+    const [siblingComment] = await adminDb
+      .insert(ticketComments)
+      .values({
+        ticketId: sibling.id,
+        authorType: 'internal',
+        commentType: 'comment',
+        content: 'Triage note on a ticket that never moves.',
+        isPublic: false,
+        originPrincipalKind: 'ai_agent',
+        agentRunId: siblingRun.id,
+      })
+      .returning();
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    const after = await readComment(aiComment.id);
+    expect(after?.agentRunId).toBeNull();
+    // The sibling ticket never moved, so its comment keeps its run link.
+    expect((await readComment(siblingComment.id))?.agentRunId).toBe(siblingRun.id);
+    // Only the cross-org link is dropped. The comment itself, its content and
+    // its non-user provenance (which is what the helpdesk loop guard actually
+    // keys on) all survive the move.
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.content).toBe('Proposed next step from triage.');
+    expect(after?.originPrincipalKind).toBe('ai_agent');
+  });
+
+  it('rolls the detach back with the rest of the transaction when the currency guard blocks the move', async () => {
+    // The detach runs BEFORE assertTicketMoveCurrencyCompatible (deliberately —
+    // see the lock-order note at the statement), so a blocked move must unwind
+    // it along with everything else. Verified discriminating by mutation: hoist
+    // the detach out of db.transaction (its own withSystemDbAccessContext, as a
+    // "tidier" refactor might) and ONLY this case fails — every other test in
+    // this block still passes while the pointer is severed on a move that never
+    // happened. Note that swapping `tx` for `db` is NOT that mutation: `db` is
+    // an AsyncLocalStorage-bound proxy (db/index.ts) that resolves to the same
+    // pinned connection inside the callback, so it stays transactional.
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, partner, actor, ticket, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+
+    // Nothing moved — and the pointer is still there, because the ticket is
+    // still the source org's.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+    const after = await readRun(run.id);
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.orgId).toBe(orgA.id);
+  });
+});
+
+// ── #4645: device_vulnerabilities.ticket_id must not survive a ticket move ──
+
+/**
+ * Seeds one `vulnerabilities` catalog row (global reference data, not
+ * org-scoped) — a fixture prerequisite `device_vulnerabilities.vulnerability_id`
+ * requires (NOT NULL FK).
+ */
+async function seedVulnCatalogEntry(): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb
+    .insert(vulnerabilities)
+    .values({
+      cveId: `CVE-2099-${uid().replace(/[^0-9a-z]/gi, '').slice(0, 12)}`,
+      source: 'nvd',
+      description: 'move-org test vulnerability',
+      severity: 'high',
+      cvssVersion: '3.1',
+      cvssScore: '8.0',
+      knownExploited: false,
+      patchAvailable: true,
+      rawPayload: { test: true },
+    })
+    .returning({ id: vulnerabilities.id });
+  return { id: row.id };
+}
+
+/** Seeds one `device_vulnerabilities` finding for `deviceId`, optionally pointing `ticketId` at a remediation ticket. */
+async function seedFinding(
+  orgId: string,
+  deviceId: string,
+  vulnerabilityId: string,
+  ticketId: string | null,
+): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb
+    .insert(deviceVulnerabilities)
+    .values({
+      orgId,
+      deviceId,
+      vulnerabilityId,
+      status: 'open',
+      detectedAt: new Date(),
+      ticketId,
+    })
+    .returning({ id: deviceVulnerabilities.id });
+  return { id: row.id };
+}
+
+async function readFinding(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(deviceVulnerabilities).where(eq(deviceVulnerabilities.id, id)).limit(1);
+  return row as (typeof deviceVulnerabilities.$inferSelect) | undefined;
+}
+
+describe('moveTicketOrg — device_vulnerabilities.ticket_id detach (#4645)', () => {
+  it('nulls ticket_id on a finding whose device stays in the source org, and spares a finding on a sibling ticket', async () => {
+    const { orgA, orgB, partner, actor, ticket, device } = await seedMoveOrgFixture();
+    const vuln = await seedVulnCatalogEntry();
+
+    const finding = await seedFinding(orgA.id, device.id, vuln.id, ticket.id);
+
+    // Control: a second finding, on the SAME device, whose ticket_id points
+    // at a DIFFERENT (sibling) ticket that never moves. Rejects a blanket
+    // "null every ticket_id on this device" — the detach must be keyed on
+    // the moved ticket, not the device.
+    const sibling = await seedSiblingTicket(orgA.id, partner.id);
+    const siblingFinding = await seedFinding(orgA.id, device.id, vuln.id, sibling.id);
+
+    // Fixture guard: pointers are live before the move.
+    expect((await readFinding(finding.id))?.ticketId).toBe(ticket.id);
+    expect((await readFinding(siblingFinding.id))?.ticketId).toBe(sibling.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+
+    // The finding's own org_id is device-derived and untouched by a ticket
+    // move — only the stale ticket_id link is severed.
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId).toBeNull();
+    expect(after?.orgId).toBe(orgA.id);
+    expect(after?.deviceId).toBe(device.id);
+
+    // The sibling ticket never moved, so its finding keeps its pointer.
+    const siblingAfter = await readFinding(siblingFinding.id);
+    expect(siblingAfter?.ticketId).toBe(sibling.id);
+  });
+
+  it('leaves ticket_id intact when the finding already lives in the destination org', async () => {
+    // Precision check on the `org_id IS DISTINCT FROM targetOrgId` guard: a
+    // finding whose device is ALREADY in the ticket's destination org is not
+    // stale after the move, so its link must survive untouched.
+    const { orgA, orgB, actor, ticket } = await seedMoveOrgFixture();
+    const siteB = await createSite({ orgId: orgB.id });
+    const adminDb = getTestDb() as any;
+    const [deviceB] = await adminDb
+      .insert(devices)
+      .values({
+        orgId: orgB.id,
+        siteId: siteB.id,
+        agentId: `move-org-device-b-${uid()}`,
+        hostname: `host-b-${uid()}`,
+        osType: 'windows',
+        osVersion: '10.0.19041',
+        architecture: 'x64',
+        agentVersion: '0.1.0',
+      })
+      .returning();
+    const vuln = await seedVulnCatalogEntry();
+    const finding = await seedFinding(orgB.id, deviceB.id, vuln.id, ticket.id);
+
+    expect((await readFinding(finding.id))?.ticketId).toBe(ticket.id);
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId, 'the finding already lived in the ticket\'s destination org — not stale').toBe(ticket.id);
+    expect(after?.orgId).toBe(orgB.id);
+  });
+
+  it('severs the pointer under a REAL partner-scoped RLS context, not just system scope', async () => {
+    // The route runs under withDbAccessContext, never withSystemDbAccessContext.
+    // device_vulnerabilities is FORCE ROW LEVEL SECURITY, so a detach that only
+    // works for `breeze.scope=system` would be a silent zero-row no-op on the
+    // one path that actually matters — same hazard the ai_agent_runs sibling
+    // test above (#4524) exists to catch for that table.
+    const { orgA, orgB, partner, actor, ticket, device } = await seedMoveOrgFixture();
+    const vuln = await seedVulnCatalogEntry();
+    const finding = await seedFinding(orgA.id, device.id, vuln.id, ticket.id);
+
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgA.id, orgB.id],
+      accessiblePartnerIds: [partner.id],
+      userId: actor.userId,
+    };
+    await withDbAccessContext(partnerCtx, () => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId).toBeNull();
+    expect(after?.orgId).toBe(orgA.id);
+  });
+
+  it('rolls the detach back with the rest of the transaction when the currency guard blocks the move', async () => {
+    // The detach runs BEFORE assertTicketMoveCurrencyCompatible (same
+    // placement as the ai_agent_runs detach beside it), so a blocked move
+    // must unwind it along with everything else. Verified discriminating by
+    // mutation, same as the ai_agent_runs rollback test above: hoisting the
+    // detach out of db.transaction would fail ONLY this case.
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, partner, actor, ticket, device, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    const vuln = await seedVulnCatalogEntry();
+    const finding = await seedFinding(orgA.id, device.id, vuln.id, ticket.id);
+
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+
+    // Nothing moved — and the pointer is still there, because the ticket is
+    // still the source org's.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.orgId).toBe(orgA.id);
   });
 });

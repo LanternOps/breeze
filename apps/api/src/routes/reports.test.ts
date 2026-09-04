@@ -37,6 +37,7 @@ const siteScopeState = vi.hoisted(() => {
     result: {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: unrestrictedScope,
         principalUserId: userId,
         capturedAt,
@@ -172,7 +173,12 @@ vi.mock('../db/schema', () => ({
     executionScopeUserId: 'reports.executionScopeUserId',
     executionScopeFingerprint: 'reports.executionScopeFingerprint',
     executionScopeCapturedAt: 'reports.executionScopeCapturedAt',
-    executionScopePrincipalKind: 'reports.executionScopePrincipalKind'
+    executionScopePrincipalKind: 'reports.executionScopePrincipalKind',
+    portalSelfService: 'reports.portalSelfService'
+  },
+  portalBranding: {
+    orgId: 'portalBranding.orgId',
+    enableReports: 'portalBranding.enableReports'
   },
   reportRuns: {
     id: 'reportRuns.id',
@@ -263,6 +269,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     permissionState.last = { resource, action };
     if (permissionState.deny) {
@@ -693,8 +700,11 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
     vi.mocked(db.select).mockImplementation(() =>
       selectChain([{ id: 'rep-1', orgId: ORG_ID, type: 'device_inventory', name: 'Inv', config: {}, format: 'csv' }])
     );
+    const insertValuesMock = vi.fn(() => ({
+      returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]),
+    }));
     vi.mocked(db.insert).mockReturnValue({
-      values: () => ({ returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]) })
+      values: insertValuesMock,
     } as any);
 
     const res = await app.request('/reports/rep-1/generate', { method: 'POST' });
@@ -705,6 +715,13 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
     expect(completedSet).toBeDefined();
     expect(completedSet.result).toBeDefined();
     expect(completedSet.outputUrl).toBe('/api/reports/runs/run-1/download');
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedByKind: 'user',
+        requestedByUserId: 'user-123',
+        requestedByPortalUserId: null,
+      }),
+    );
   });
 });
 
@@ -715,6 +732,7 @@ describe('generateReport dispatch — security_compliance_posture', () => {
 
   it('routes to the posture generator', async () => {
     const executionAuthority = {
+      principalKind: 'user' as const,
       scope: { version: 1 as const, kind: 'unrestricted' as const, orgId: 'org-1' },
       principalUserId: 'user-1',
       capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -747,6 +765,7 @@ describe('report definition scope enforcement', () => {
     return {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: kind === 'restricted'
           ? { version: 1, kind, orgId: ORG_ID, siteIds: siteIds ?? [] }
           : { version: 1, kind, orgId: ORG_ID },
@@ -1265,7 +1284,8 @@ describe('report definition scope enforcement', () => {
       'executionScopeUserId',
       'executionScopeFingerprint',
       'executionScopeCapturedAt',
-      'executionScopePrincipalKind'
+      'executionScopePrincipalKind',
+      'portalSelfService'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
@@ -1445,6 +1465,174 @@ describe('report definition scope enforcement', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('returns portalSelfService and refuses deletion while portal reports are enabled', async () => {
+    const definition = definitionMetadata({ portalSelfService: true });
+    let brandingCondition: unknown;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((condition) => {
+            brandingCondition = condition;
+            return { limit: vi.fn().mockResolvedValue([{ enableReports: true }]) };
+          })
+        })
+      } as any);
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue(undefined)
+      } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([definition])
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'DELETE'
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'portal_self_service_report'
+    });
+    expect(conditionHas(
+      brandingCondition,
+      'eq',
+      'portalBranding.orgId',
+      (value) => value === ORG_ID,
+    )).toBe(true);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('allows deletion of a portal self-service report while portal reports are disabled', async () => {
+    const definition = definitionMetadata({
+      portalSelfService: true,
+      name: 'Portal report',
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([{ enableReports: false }]));
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue(undefined)
+      } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([definition])
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'DELETE'
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(db.delete).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses PUT on a portal self-service definition while portal reports are enabled', async () => {
+    const definition = definitionMetadata({ portalSelfService: true });
+    let brandingCondition: unknown;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((condition) => {
+            brandingCondition = condition;
+            return { limit: vi.fn().mockResolvedValue([{ enableReports: true }]) };
+          })
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed by the MSP' })
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'portal_self_service_report'
+    });
+    expect(conditionHas(
+      brandingCondition,
+      'eq',
+      'portalBranding.orgId',
+      (value) => value === ORG_ID,
+    )).toBe(true);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('allows PUT on a portal self-service definition while portal reports are disabled', async () => {
+    const definition = definitionMetadata({ portalSelfService: true });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([{ enableReports: false }]));
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...definition, name: 'Renamed by the MSP' }])
+        })
+      })
+    } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed by the MSP' })
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses POST /:id/generate on a portal self-service definition while portal reports are enabled', async () => {
+    const definition = {
+      ...definitionMetadata({ portalSelfService: true }),
+      name: 'Customer portal — Executive summary',
+      type: 'executive_summary',
+      config: {},
+      format: 'pdf',
+    };
+    let brandingCondition: unknown;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((condition) => {
+            brandingCondition = condition;
+            return { limit: vi.fn().mockResolvedValue([{ enableReports: true }]) };
+          })
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}/generate`, {
+      method: 'POST'
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'portal_self_service_report'
+    });
+    expect(conditionHas(
+      brandingCondition,
+      'eq',
+      'portalBranding.orgId',
+      (value) => value === ORG_ID,
+    )).toBe(true);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
   it('reauthorizes with a fresh complete authority snapshot atomically', async () => {
     const metadata = definitionMetadata({
       executionScopeKind: 'legacy_unscoped',
@@ -1503,6 +1691,7 @@ describe('reports routes', () => {
     siteScopeState.result = {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
         principalUserId: '44444444-4444-4444-8444-444444444444',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2027,6 +2216,7 @@ describe('reports routes', () => {
       return {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId, siteIds },
           principalUserId: USER_ID,
           capturedAt: CAPTURED_AT,
@@ -2039,6 +2229,7 @@ describe('reports routes', () => {
       return {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'unrestricted', orgId },
           principalUserId: USER_ID,
           capturedAt: CAPTURED_AT,
@@ -2272,6 +2463,7 @@ describe('reports routes', () => {
       siteScopeState.result = {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
           principalUserId: 'user-123',
           capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2298,6 +2490,7 @@ describe('reports routes', () => {
       siteScopeState.result = {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
           principalUserId: 'user-123',
           capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2355,6 +2548,7 @@ describe('report run immutable scope enforcement', () => {
     return {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: kind === 'restricted'
           ? { version: 1, kind, orgId, siteIds }
           : { version: 1, kind, orgId },

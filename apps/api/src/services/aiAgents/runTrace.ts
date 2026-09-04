@@ -25,6 +25,7 @@ import type {
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
 import { projectNarrative } from './narrativeReport';
+import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -38,6 +39,7 @@ import {
   type AiAgentRunTraceEntryDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
+  type TicketTriageSkip,
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
@@ -159,6 +161,28 @@ export interface RunTraceNarrativeArtifactInput {
 export interface RunTraceDraftRowInput {
   id: string;
   kind: 'reply' | 'resolution_note';
+  /**
+   * Issue #4467 — the row's live `content`. Read here so `mapTicketProposal`
+   * can derive `draftReply`/`draftResolutionNote` from this SAME query
+   * rather than always echoing `TicketProposalOutcome.draftReply`/
+   * `draftResolutionNote` (the persisted-at-proposal-time text), which could
+   * go stale the moment the draft is edited on the ticket's "AI draft"
+   * surface after it's written. Never placed on the wire DTO's
+   * `draftsWritten` entries themselves (see that field's own docstring) —
+   * it feeds the derivation only, so the content is exposed exactly once.
+   */
+  content: string;
+  /**
+   * Issue #4467 review round 1 — more than one row of the SAME `kind` can be
+   * linked to one run_id (the `draft` tool executor supersedes-then-inserts
+   * on every call, including its own unique-violation retry path; the
+   * `ticket_drafts_active_uq` uniqueness is scoped to `(ticket_id, kind)`,
+   * not `(run_id, kind)`). `state` lets `pickDraftText` prefer the row that
+   * is still `active` over a `superseded`/`consumed`/`discarded` one sharing
+   * this run_id + kind, rather than picking whichever the query happened to
+   * return first.
+   */
+  state: 'active' | 'consumed' | 'discarded' | 'superseded';
 }
 
 /** The safe-projected subset of one linked `action_intents` row. */
@@ -231,24 +255,67 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * than a misleadingly-present empty list. `draftsWritten` is the caller's
  * live `ticket_drafts` query result (`RunTraceDraftRowInput[]`), same
  * undefined-when-empty treatment.
+ *
+ * Issue #4467: `draftReply`/`draftResolutionNote` used to be projected
+ * straight off `proposal` — the text the model proposed, frozen at proposal
+ * time — independently of `draftsWritten`, which reads live off
+ * `ticket_drafts`. The two are two representations of the SAME draft and
+ * could disagree: once a draft is written, a technician can edit its content
+ * on the ticket's "AI draft" surface (`TicketWorkbench.tsx`), or a retry can
+ * supersede it, and the run-detail page would keep showing the now-stale
+ * originally-proposed text forever. `pickDraftText` below makes the live
+ * `ticket_drafts` row (via `draftRows`, the same query `draftsWritten` is
+ * built from) authoritative for its kind whenever one exists — a derivation
+ * off ONE source, not a second copy kept in sync — falling back to the
+ * proposal's own text only pre-write, when no row exists yet (a draft intent
+ * left `pending_approval` hasn't released into a `ticket_drafts` row — see
+ * `RunTraceDraftRowInput`'s docstring — so the proposal text is the only
+ * preview available before a technician approves it).
+ *
+ * Issue #4462: `skipped` is `outcome.ticketTriageSkipped` verbatim (already
+ * the safe, display-string-only shape `persistTicketTriage` built — see
+ * `TicketTriageSkip`'s own docstring), undefined-when-empty like its two
+ * siblings above.
  */
+/**
+ * Issue #4467 review round 1 — more than one `draftRows` entry can share the
+ * same `kind` for a single run (see `RunTraceDraftRowInput.state`'s
+ * docstring), so picking the first match isn't safe by construction. Prefers
+ * the row that is still `active` for this kind; if none is (every write of
+ * that kind was later superseded/consumed/discarded, or the route's query
+ * ordering changes), falls back to `draftRows[0]` of that kind — the route
+ * orders `draftRows` newest-first (`ORDER BY created_at DESC`), so that's
+ * the most recently written row, the next-best approximation of "current".
+ */
+function pickDraftText(
+  proposalText: string | undefined,
+  draftRows: RunTraceDraftRowInput[],
+  kind: 'reply' | 'resolution_note',
+): string | undefined {
+  const matches = draftRows.filter((row) => row.kind === kind);
+  const written = matches.find((row) => row.state === 'active') ?? matches[0];
+  return written ? written.content : proposalText;
+}
+
 function mapTicketProposal(
   proposal: TicketProposalOutcome,
   intentIds: string[],
   draftRows: RunTraceDraftRowInput[],
+  skipped: TicketTriageSkip[] | undefined,
 ): AiAgentRunTicketProposalDto {
   return {
     version: proposal.version,
     summary: proposal.summary,
     fields: proposal.fields,
     device: proposal.device,
-    draftReply: proposal.draftReply,
-    draftResolutionNote: proposal.draftResolutionNote,
+    draftReply: pickDraftText(proposal.draftReply, draftRows, 'reply'),
+    draftResolutionNote: pickDraftText(proposal.draftResolutionNote, draftRows, 'resolution_note'),
     notes: proposal.notes,
     intentIds: intentIds.length > 0 ? intentIds : undefined,
     draftsWritten: draftRows.length > 0
       ? draftRows.map((row) => ({ kind: row.kind, draftId: row.id }))
       : undefined,
+    skipped: skipped && skipped.length > 0 ? skipped : undefined,
   };
 }
 
@@ -334,6 +401,13 @@ export function buildRunTrace(
     status: run.status,
     summary: run.summary,
     runVerdict: outcome.runVerdict ?? null,
+    // The SAME helper the runs list and the agents list use — not a second
+    // count derived from `trace`/`sweep` below. `runVerdict` alone understates
+    // a run (a sweep that found six problems and could execute none of them
+    // still rolls up `no_action`), and the detail page's own override was the
+    // only place that knew it; carrying the server's answer here is what lets
+    // the list surfaces say the same thing. See runFindings.ts.
+    findingsToReview: countFindingsToReview(run.outcome),
     turnCount: run.turnCount,
     costCents: run.costCents,
     errorCode: run.errorCode,
@@ -346,7 +420,9 @@ export function buildRunTrace(
     trace: buildTraceEntries(outcome),
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
-    ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal, run.intentIds, draftRows) : null,
+    ticketProposal: outcome.ticketProposal
+      ? mapTicketProposal(outcome.ticketProposal, run.intentIds, draftRows, outcome.ticketTriageSkipped)
+      : null,
     // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
     // run and for a verdict-profile run that has not (yet, or ever)
     // produced one — see `projectAlertVerdict`'s own safe-projection

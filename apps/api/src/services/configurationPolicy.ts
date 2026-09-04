@@ -1,4 +1,4 @@
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import {
@@ -184,11 +184,23 @@ export interface EffectiveConfiguration {
  *
  * This app-layer condition keeps partner-owned policies visible to
  * partner-scoped reads that filter by `auth.orgCondition` (which would
- * otherwise exclude org_id IS NULL rows). RLS is STRICTER, not identical:
- * breeze_has_partner_access only passes for partner-scope callers, so
- * org-scope tokens (which also carry a partnerId) never see partner-wide
- * rows — see configurationPoliciesPartnerRls.integration.test.ts. The branch
- * is therefore gated on partner scope so app and DB agree.
+ * otherwise exclude org_id IS NULL rows).
+ *
+ * Relationship to RLS, as of #2468: the DB no longer blocks an org token from
+ * READING its own partner's partner-wide rows —
+ * `configuration_policies_partner_wide_select`
+ * (2026-10-05-110000-config-policy-partner-wide-select.sql) grants exactly
+ * that, SELECT-only. So this function is now the STRICTER of the two layers,
+ * not the looser one: it still excludes `org_id IS NULL` rows for every
+ * non-partner scope. That gate is deliberate and load-bearing — the org-scoped
+ * list/get/update/delete endpoints and the AI tools all route through here, and
+ * relaxing it would silently start showing (and offering to edit) the MSP's
+ * shared policies in org-scoped UI. Do NOT relax it on the assumption that RLS
+ * is the backstop for reads; RLS is only the backstop for WRITES, which stay
+ * gated on breeze_has_partner_access.
+ *
+ * Read-visibility contracts: configPolicyPartnerWideSelect.integration.test.ts
+ * (DB layer) and configurationPoliciesPartnerRls.integration.test.ts.
  */
 export function policyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);
@@ -526,6 +538,9 @@ async function decomposeInlineSettings(
         scheduleDayOfMonth: parsed.scheduleDayOfMonth,
         rebootPolicy: parsed.rebootPolicy,
         rebootDelayMinutes: parsed.rebootDelayMinutes,
+        rebootAllowDeferral: parsed.rebootAllowDeferral,
+        rebootMaxDeferrals: parsed.rebootMaxDeferrals,
+        rebootDeferralMinutes: parsed.rebootDeferralMinutes,
         exclusiveWindowsUpdate: parsed.exclusiveWindowsUpdate,
       });
       break;
@@ -994,6 +1009,9 @@ async function assembleInlineSettings(
         scheduleDayOfMonth: row.scheduleDayOfMonth,
         rebootPolicy: row.rebootPolicy,
         rebootDelayMinutes: row.rebootDelayMinutes,
+        rebootAllowDeferral: row.rebootAllowDeferral,
+        rebootMaxDeferrals: row.rebootMaxDeferrals,
+        rebootDeferralMinutes: row.rebootDeferralMinutes,
         exclusiveWindowsUpdate: row.exclusiveWindowsUpdate,
       };
     }
@@ -1853,13 +1871,20 @@ async function resolveEffectiveConfigWithExecutor(
   // join returns ZERO partner-wide policies, which is exactly the "partner-wide
   // policy never reaches the device" symptom.
   //
-  // The SAME-CONNECTION variant is required here, not `withPartnerWideVisibility`:
+  // The SAME-CONNECTION widening is required here, not a system-context escape:
   // `executor` is a transaction on the preview/diff path, and a system escape
   // would run on a different connection that cannot see that transaction's
   // uncommitted proposed assignments. `org.partnerId` was read one step above
   // under the CALLER's own RLS context, so this widens by exactly the device's
   // own partner and nothing else. Steps 1-3 stay in the caller's context on
   // purpose — they are the tenancy boundary.
+  //
+  // #4673 W03 note: the `*_partner_wide_select` branches would now cover this
+  // read on their own for callers whose context carries `currentPartnerId`.
+  // The widening is kept because it is not equivalent — it also admits
+  // partner-AXIS rows, and it is what makes the contract hold for a
+  // hand-built context that omits `currentPartnerId`. Retiring it is a
+  // separate, reviewable change.
   const rows = await withDevicePartnerPolicyVisibility(
     executor,
     org?.partnerId ?? null,
@@ -2092,25 +2117,31 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
  * backup_configs destination id). Routes use this to pick the right inline
  * settings schema for backup links.
  *
- * Pure existence probe, deliberately run in a system context: a PARTNER-WIDE
- * profile is RLS-invisible to an org-scoped token, so under the caller's context
- * an org admin linking one would have it misclassified as a legacy destination
- * id and rejected with a nonsense error. Tenancy of the link is enforced
- * separately by validateFeaturePolicyExists, which matches on the owner axis.
+ * Existence probe, run in the CALLER'S OWN context (#4673 W03). It used to
+ * escape to a system context because a PARTNER-WIDE profile (org_id NULL) was
+ * RLS-invisible to an org-scoped token, so an org admin linking one would have
+ * it misclassified as a legacy destination id and rejected with a nonsense
+ * error. `backup_profiles_partner_wide_select` (W01) now grants that read to the
+ * profile's own partner, and `breeze.current_partner_id` is set on every user,
+ * bearer and partner-API context — so the escape is no longer needed.
+ *
+ * Deliberate TIGHTENING: escaped, this probe saw EVERY tenant's profiles and
+ * relied on validateFeaturePolicyExists to re-tenant the link. Under the
+ * caller's own context a FOREIGN partner's profile now reads as absent, so the
+ * id falls through to the legacy-destination branch and
+ * validateFeaturePolicyExists rejects it — the same outcome, reached one step
+ * earlier and without an RLS bypass. Tenancy of the link is still enforced
+ * there, on the owner axis; this probe only picks the inline settings schema.
  */
 export async function isBackupProfileReference(
   featurePolicyId: string | null | undefined
 ): Promise<boolean> {
   if (!featurePolicyId) return false;
-  const [row] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ id: backupProfiles.id })
-        .from(backupProfiles)
-        .where(eq(backupProfiles.id, featurePolicyId))
-        .limit(1)
-    )
-  );
+  const [row] = await db
+    .select({ id: backupProfiles.id })
+    .from(backupProfiles)
+    .where(eq(backupProfiles.id, featurePolicyId))
+    .limit(1);
   return !!row;
 }
 
@@ -2179,35 +2210,34 @@ export async function validateFeaturePolicyExists(
         sql`(${backupProfiles.orgId} IS NULL AND ${backupProfiles.partnerId} = ${partnerId})`
       );
     }
-    // Both lookups are self-tenanted by the owner axis above, and run in a
-    // system context: a partner-wide profile (org_id NULL) is RLS-invisible to
-    // an org-scoped token, so validating in the caller's context would reject a
+    // Both lookups run in the CALLER'S OWN context (#4673 W03) and are
+    // self-tenanted by the owner axis above. They used to escape to a system
+    // context because a partner-wide profile (org_id NULL) was RLS-invisible to
+    // an org-scoped token, so validating in the caller's context rejected a
     // legitimate org-policy → partner-wide-profile link as "not found".
+    // `backup_profiles_partner_wide_select` (W01) grants exactly that read to
+    // the profile's own partner, which is the only partner these conditions can
+    // name: `owner.partnerId` comes from the config policy the caller already
+    // loaded under RLS, or from that policy's org via resolvePartnerIdForOrg.
+    // `backup_configs` is org-only and needs no branch — the org-equality
+    // condition already matches what breeze_has_org_access admits.
     if (profileConditions.length > 0) {
-      const [profile] = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db
-            .select({ id: backupProfiles.id })
-            .from(backupProfiles)
-            .where(and(eq(backupProfiles.id, featurePolicyId), or(...profileConditions)))
-            .limit(1)
-        )
-      );
+      const [profile] = await db
+        .select({ id: backupProfiles.id })
+        .from(backupProfiles)
+        .where(and(eq(backupProfiles.id, featurePolicyId), or(...profileConditions)))
+        .limit(1);
       if (profile) {
         return { valid: true };
       }
     }
     const ownerOrgId = owner.orgId;
     if (ownerOrgId) {
-      const [config] = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db
-            .select({ id: backupConfigs.id })
-            .from(backupConfigs)
-            .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, ownerOrgId)))
-            .limit(1)
-        )
-      );
+      const [config] = await db
+        .select({ id: backupConfigs.id })
+        .from(backupConfigs)
+        .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, ownerOrgId)))
+        .limit(1);
       if (config) {
         return { valid: true };
       }

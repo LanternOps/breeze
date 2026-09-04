@@ -77,6 +77,15 @@ type AgentRunRef = {
 // Errors
 // ---------------------------------------------------------------------------
 
+/**
+ * The one tool whose `orgId` ARGUMENT must equal the intent's own resolved
+ * org. A bare literal rather than an import from
+ * `services/aiToolsAiAgentGovernance.ts`: that module reaches the whole
+ * `aiTools` registry graph, and this file is imported by the release worker.
+ * Kept as a named constant so it is greppable from both ends.
+ */
+const ORG_PINNED_ARG_TOOL = 'manage_ai_agents';
+
 export class ActionIntentError extends Error {
   constructor(message: string, public code: string) {
     super(message);
@@ -434,8 +443,9 @@ function resolvePolicyDecisionState(args: {
   // pre-authorization was written against the run-bound target — extending
   // it to a target the operator's per-agent authorization never saw is a
   // wider grant than it was reviewed as. Act-mode auto-execution for sweeps
-  // arrives with P2-5, behind its own review, and is expected to REPLACE
-  // this line rather than route around it.
+  // is roadmap #4442 (explicitly OUT of P2-5, quorum 2026-09-01), behind
+  // its own review, and is expected to REPLACE this line rather than route
+  // around it.
   if (args.hasScope) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
@@ -794,6 +804,21 @@ export async function createActionIntent(
     throw new ActionIntentError(resolvedOrg.error ?? 'Organization context required', 'org_resolution_failed');
   }
   const orgId = resolvedOrg.orgId;
+  // P2-5 (#4192): `manage_ai_agents.orgId` is an ADDRESS, not a target
+  // selector. It exists only so the effect-digest resolver — which receives
+  // `(args, database)` and recomputes under a system context with no ambient
+  // org — can name the org whose supervised-key list is being pinned
+  // (services/actionIntents/effectDigest.ts). Rejected HERE rather than in
+  // the promote route because BOTH creation paths funnel through this
+  // function: the route and the chat/MCP `tool()` declaration. The executor
+  // re-asserts the same equality against this row's own immutable `org_id`
+  // before it writes, so neither check is load-bearing alone.
+  if (input.toolName === ORG_PINNED_ARG_TOOL && input.input.orgId !== orgId) {
+    throw new ActionIntentError(
+      `"${ORG_PINNED_ARG_TOOL}" must name the organization the request is authorized for`,
+      'org_argument_mismatch',
+    );
+  }
   const requesterId = auth.user.id;
   // Tier-3 supervised/four_eyes classification (Task 1's checkGuardrails).
   // Pre-existing tools that haven't been classified yet (approvalScope
@@ -1822,7 +1847,49 @@ export async function cancelActionIntent(
     throw new ActionIntentAuthorizationError(`Not authorized to cancel action intent ${intentId}`);
   }
 
-  const ok = await transitionIntent(intentId, ['pending_approval', 'approved'], 'cancelled');
+  // Inlined rather than reusing `transitionIntent` (the shared CAS primitive
+  // below): cancel is the only caller that needs an outbox row written
+  // atomically with the CAS, and `transitionIntent` is shared by
+  // intentReleaseWorker.ts / aiAgentSdk.ts release paths that don't. Same
+  // predicate transitionIntent would apply for this call
+  // (`from: ['pending_approval', 'approved']`, `to: 'cancelled'`, no deadline
+  // fold), just with the outbox write folded into the same
+  // withSystemDbAccessContext transaction (#4798) — without this, a
+  // requester already told "approved and is now running" was never told a
+  // subsequent cancel happened, because intentReleaseWorker.ts's outbox
+  // consumer never saw an event for it.
+  let ok: boolean;
+  try {
+    ok = await withSystemDbAccessContext(async () => {
+      const rows = await db
+        .update(actionIntents)
+        .set({ status: 'cancelled' })
+        .where(and(eq(actionIntents.id, intentId), inArray(actionIntents.status, ['pending_approval', 'approved'])))
+        .returning({ id: actionIntents.id });
+      if (rows.length === 0) return false;
+      await db.insert(intentOutbox).values({
+        intentId,
+        eventType: 'intent_cancelled',
+        // Ids only, no argument content (spec §3.2) — matches the
+        // intent_created/intent_approved/intent_rejected/intent_expired rows.
+        payload: { intentId, orgId: intent.orgId },
+      });
+      return true;
+    });
+  } catch (err) {
+    // Same posture as createActionIntent's transaction catch: the CAS and
+    // the outbox insert share one Postgres transaction (both run through the
+    // same withSystemDbAccessContext callback), so a thrown insert rolls the
+    // status flip back too — there is no committed 'cancelled' row with a
+    // missing outbox event to reconcile. Logged and re-thrown as a typed,
+    // retryable error rather than a bare exception so a caller (once wired
+    // to a route) sees a real failure, never a false success.
+    console.error('[intentService] cancel action intent transaction failed (rolled back):', err);
+    throw new ActionIntentError(
+      `Failed to cancel action intent ${intentId} (CAS / outbox)`,
+      'cancel_failed',
+    );
+  }
   if (ok) {
     return { ok: true, status: 'cancelled' };
   }

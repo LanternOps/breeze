@@ -438,11 +438,18 @@ describe('org merge engine SQL against real Postgres', () => {
         // that table is `leave-for-erasure` (its org_id is trigger-immutable),
         // and its agent_id FK is ON DELETE RESTRICT, so this row is exactly
         // what makes a dedupe DELETE impossible and the disable path necessary.
+        //
+        // Task 17 (A2-7, #4192): BOTH loser agents carry graduated
+        // `act_assets.supervisedActionKeys`. `agentLTriage` collides and gets
+        // disabled by the merge in the same call — it must STILL lose its
+        // keys (that's the whole point of not scoping the clear-keys UPDATE
+        // to `disabled_at IS NULL`). `agentLPatch` is never disabled and
+        // exercises the plain non-zero-row clear path.
         await db.execute(sql`
-          INSERT INTO ai_agents (id, org_id, kind, name, created_by, enabled, mode) VALUES
-            (${agentLTriage}::uuid, ${L}::uuid, 'triage',   'L triage', ${U}::uuid, true, 'act'),
-            (${agentLPatch}::uuid,  ${L}::uuid, 'patch',    'L patch',  ${U}::uuid, true, 'act'),
-            (${agentSTriage}::uuid, ${S}::uuid, 'triage',   'S triage', ${U}::uuid, true, 'act')`);
+          INSERT INTO ai_agents (id, org_id, kind, name, created_by, enabled, mode, act_assets) VALUES
+            (${agentLTriage}::uuid, ${L}::uuid, 'triage',   'L triage', ${U}::uuid, true, 'act', '{"supervisedActionKeys":["manage_services:restart","x:y"]}'::jsonb),
+            (${agentLPatch}::uuid,  ${L}::uuid, 'patch',    'L patch',  ${U}::uuid, true, 'act', '{"supervisedActionKeys":["patch:apply"]}'::jsonb),
+            (${agentSTriage}::uuid, ${S}::uuid, 'triage',   'S triage', ${U}::uuid, true, 'act', '{}'::jsonb)`);
         await db.execute(sql`
           INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot)
           VALUES (${runL}::uuid, ${agentLTriage}::uuid, ${L}::uuid, 'manual', ${`dk-${suffix}`}, 'act', '{}'::jsonb)`);
@@ -513,6 +520,23 @@ describe('org merge engine SQL against real Postgres', () => {
         expect(agents.moved).toBe(2); // both loser agents move; NEITHER is deleted
         expect(agents.dropped).toBe(0);
         expect(agents.notes.join('\n')).toMatch(/disabled 1 agent/);
+        // Both loser agents carried graduated keys (one of them on the agent
+        // this SAME call just disabled) — the note must report 2, and it must
+        // be reported even though one of the two rows is disabled.
+        expect(agents.notes.join('\n')).toMatch(
+          /cleared graduated supervised action keys on 2 agent\(s\) from the merged-away org — a survivor org must re-earn them \(evidence is leave-for-erasure\)/,
+        );
+        const clearedKeyRows = (await db.execute(sql`
+          SELECT id, act_assets -> 'supervisedActionKeys' AS keys
+            FROM ai_agents WHERE id IN (${agentLTriage}::uuid, ${agentLPatch}::uuid) ORDER BY id`)) as unknown as Array<{
+          id: string; keys: unknown;
+        }>;
+        // Real-Postgres proof of the non-zero-row path: both rows — the
+        // disabled one AND the active one — now read an empty array, not
+        // just a non-zero row count from the mock.
+        for (const row of clearedKeyRows) {
+          expect(row.keys).toEqual([]);
+        }
         const agentRows = (await db.execute(sql`
           SELECT kind, count(*)::int AS total, count(*) FILTER (WHERE disabled_at IS NULL)::int AS active
             FROM ai_agents WHERE org_id = ${S}::uuid GROUP BY 1 ORDER BY 1`)) as unknown as Array<{
@@ -667,6 +691,9 @@ describe('org merge engine SQL against real Postgres', () => {
       reportL: randomUUID(), reportS: randomUUID(),
       reportPlainL: randomUUID(), reportPlainS: randomUUID(),
       runL: randomUUID(), runS: randomUUID(), agentRunL: randomUUID(),
+      sharedContact: randomUUID(), loserOnlyContact: randomUUID(),
+      sharedRecipientL: randomUUID(), sharedRecipientS: randomUUID(),
+      loserOnlyRecipient: randomUUID(),
     };
     let asserted = 0;
 
@@ -851,6 +878,10 @@ describe('org merge engine SQL against real Postgres', () => {
           INSERT INTO ai_agent_schedules (id, org_id, partner_id, agent_id, kind, cron, sweep_kinds)
           VALUES (${ids.scheduleP}::uuid, NULL, ${P}::uuid, ${ids.agentP}::uuid, 'narrative', '0 6 * * 1', '{}')`);
         await db.execute(sql`
+          INSERT INTO contacts (id, org_id, name, email) VALUES
+            (${ids.sharedContact}::uuid, ${L}::uuid, 'Shared narrative recipient', ${`narr-shared-${suffix}@example.com`}),
+            (${ids.loserOnlyContact}::uuid, ${L}::uuid, 'Loser-only narrative recipient', ${`narr-only-${suffix}@example.com`})`);
+        await db.execute(sql`
           INSERT INTO reports (id, org_id, name, type, source_ai_agent_schedule_id) VALUES
             (${ids.reportL}::uuid, ${L}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
             (${ids.reportS}::uuid, ${S}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
@@ -866,14 +897,47 @@ describe('org merge engine SQL against real Postgres', () => {
         await db.execute(sql`
           INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, profile, report_run_id)
           VALUES (${ids.agentRunL}::uuid, ${ids.agentP}::uuid, ${L}::uuid, 'schedule', ${`narr-${suffix}`}, 'shadow', '{}'::jsonb, 'narrative', ${ids.runL}::uuid)`);
+        await db.execute(sql`
+          INSERT INTO report_schedule_recipients (id, report_id, org_id, contact_id) VALUES
+            (${ids.sharedRecipientL}::uuid, ${ids.reportL}::uuid, ${L}::uuid, ${ids.sharedContact}::uuid),
+            (${ids.sharedRecipientS}::uuid, ${ids.reportS}::uuid, ${S}::uuid, ${ids.sharedContact}::uuid),
+            (${ids.loserOnlyRecipient}::uuid, ${ids.reportL}::uuid, ${L}::uuid, ${ids.loserOnlyContact}::uuid)`);
+        // Model the point in the merge after contacts have moved but before the
+        // recipient registry step repoints org_id. The composite FKs are
+        // deferred for this same intermediate state in the portal collision
+        // fixture below.
+        await db.execute(sql`
+          UPDATE contacts SET org_id = ${S}::uuid
+           WHERE id IN (${ids.sharedContact}::uuid, ${ids.loserOnlyContact}::uuid)`);
 
         const reportsOut = await CUSTOM_EXECUTORS.reports!(L, S);
         // Exactly ONE definition dropped (the narrative duplicate) — never the
         // ordinary report, whose key is NULL.
         expect(reportsOut.dropped).toBe(1);
         expect(reportsOut.moved).toBe(1);
-        expect(reportsOut.notes.join('\n')).toMatch(/re-homed its generated reports/);
+        expect(reportsOut.notes.join('\n')).toMatch(/re-homed its children onto the survivor's definition/);
         expect(reportsOut.notes.join('\n')).toMatch(/report_runs: 1/);
+        expect(reportsOut.notes.join('\n')).toMatch(
+          /report_schedule_recipients: 1 deduplicated, 1 re-homed/,
+        );
+        const narrativeRecipients = (await db.execute(sql`
+          SELECT id, report_id, contact_id
+            FROM report_schedule_recipients
+           WHERE id IN (
+             ${ids.sharedRecipientL}::uuid,
+             ${ids.sharedRecipientS}::uuid,
+             ${ids.loserOnlyRecipient}::uuid
+           )
+           ORDER BY id`)) as unknown as Array<{
+          id: string; report_id: string; contact_id: string;
+        }>;
+        expect(narrativeRecipients).toHaveLength(2);
+        expect(narrativeRecipients.map((row) => row.id).sort()).toEqual(
+          [ids.sharedRecipientS, ids.loserOnlyRecipient].sort(),
+        );
+        expect(narrativeRecipients.every((row) => row.report_id === ids.reportS)).toBe(true);
+        expect(narrativeRecipients.find((row) => row.id === ids.loserOnlyRecipient)?.report_id).toBe(ids.reportS);
+        expect(narrativeRecipients.filter((row) => row.contact_id === ids.sharedContact)).toHaveLength(1);
         // The loser's generated artifact survives, re-homed by id onto the
         // survivor's definition — a count alone would pass on an orphan.
         const runRow = (await db.execute(sql`
@@ -930,6 +994,95 @@ describe('org merge engine SQL against real Postgres', () => {
       if (!(err instanceof Rollback)) throw err;
     }
     expect(asserted).toBe(6);
+  }, 120_000);
+
+  it('merges colliding portal report definitions without duplicating recipients', async () => {
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const reportL = randomUUID();
+    const reportS = randomUUID();
+    const runL = randomUUID();
+    const runS = randomUUID();
+    const sharedContact = randomUUID();
+    const loserOnlyContact = randomUUID();
+    const sharedRecipientL = randomUUID();
+    const sharedRecipientS = randomUUID();
+    const loserOnlyRecipient = randomUUID();
+
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          INSERT INTO partners (id, name, slug)
+          VALUES (${P}::uuid, 'Portal reports merge', ${`portal-reports-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`portal-l-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`portal-s-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO contacts (id, org_id, name, email) VALUES
+            (${sharedContact}::uuid, ${L}::uuid, 'Shared recipient', ${`shared-${P}@example.com`}),
+            (${loserOnlyContact}::uuid, ${L}::uuid, 'Loser-only recipient', ${`only-${P}@example.com`})`);
+        await db.execute(sql`
+          INSERT INTO reports (id, org_id, name, type, portal_self_service) VALUES
+            (${reportL}::uuid, ${L}::uuid, 'Portal executive summary', 'executive_summary', true),
+            (${reportS}::uuid, ${S}::uuid, 'Portal executive summary', 'executive_summary', true)`);
+        await db.execute(sql`
+          INSERT INTO report_runs (id, report_id, status) VALUES
+            (${runL}::uuid, ${reportL}::uuid, 'completed'),
+            (${runS}::uuid, ${reportS}::uuid, 'completed')`);
+
+        // Model the merge transaction after contacts have been repointed but
+        // before the recipient registry step. The composite contact/report FKs
+        // are deferred so this load-bearing intermediate state is legal.
+        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+        await db.execute(sql`
+          INSERT INTO report_schedule_recipients (id, report_id, org_id, contact_id) VALUES
+            (${sharedRecipientL}::uuid, ${reportL}::uuid, ${L}::uuid, ${sharedContact}::uuid),
+            (${sharedRecipientS}::uuid, ${reportS}::uuid, ${S}::uuid, ${sharedContact}::uuid),
+            (${loserOnlyRecipient}::uuid, ${reportL}::uuid, ${L}::uuid, ${loserOnlyContact}::uuid)`);
+        await db.execute(sql`
+          UPDATE contacts SET org_id = ${S}::uuid
+           WHERE id IN (${sharedContact}::uuid, ${loserOnlyContact}::uuid)`);
+
+        const out = await CUSTOM_EXECUTORS.reports!(L, S);
+        expect(out.dropped).toBe(1);
+        expect(out.notes.join('\n')).toMatch(/report_schedule_recipients: 1 deduplicated, 1 re-homed/);
+
+        expect(getOrgMergePolicies().get('report_schedule_recipients')).toEqual({ kind: 'repoint' });
+        await db.execute(buildRepoint('report_schedule_recipients', L, S));
+        await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
+
+        const definitions = (await db.execute(sql`
+          SELECT id FROM reports
+           WHERE org_id = ${S}::uuid
+             AND type = 'executive_summary'
+             AND portal_self_service = true`)) as unknown as Array<{ id: string }>;
+        expect(definitions).toEqual([{ id: reportS }]);
+
+        const recipients = (await db.execute(sql`
+          SELECT id, report_id, contact_id FROM report_schedule_recipients
+           WHERE org_id = ${S}::uuid AND report_id = ${reportS}::uuid
+           ORDER BY id`)) as unknown as Array<{ id: string; report_id: string; contact_id: string }>;
+        expect(recipients).toHaveLength(2);
+        expect(recipients.map((row) => row.contact_id).sort()).toEqual(
+          [sharedContact, loserOnlyContact].sort(),
+        );
+        expect(recipients.find((row) => row.id === loserOnlyRecipient)?.report_id).toBe(reportS);
+        expect(recipients.some((row) => row.id === sharedRecipientL)).toBe(false);
+
+        const runs = (await db.execute(sql`
+          SELECT id, report_id FROM report_runs
+           WHERE id IN (${runL}::uuid, ${runS}::uuid)
+           ORDER BY id`)) as unknown as Array<{ id: string; report_id: string }>;
+        expect(runs).toHaveLength(2);
+        expect(runs.every((row) => row.report_id === reportS)).toBe(true);
+
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
   }, 120_000);
 
   it('moves automation binding ownership and its expected org atomically', async () => {
@@ -997,32 +1150,128 @@ describe('org merge engine SQL against real Postgres', () => {
     const S = randomUUID();
     const conn = randomUUID();
     const item = randomUUID();
+    // A SECOND, unrelated partner — proves the orphan sweep is scoped to the
+    // merging partner and never touches (or miscounts) another partner's rows.
+    const Q = randomUUID();
+    const orgQ = randomUUID();
+    const connQ = randomUUID();
 
     try {
       await withSystemDbAccessContext(async () => {
+        // Both partners inserted together first: a partner-export lock
+        // hierarchy guard (breeze_partner_export_lock_partners_exclusive)
+        // rejects taking a new partner lock after an organization lock has
+        // already been acquired in the same transaction, so every partner
+        // row must exist before any organization insert touches either one.
         await db.execute(sql`
           INSERT INTO partners (id, name, slug)
-          VALUES (${P}::uuid, 'QBO mapping merge', ${`qbo-mapping-${P.slice(0, 8)}`})`);
+          VALUES
+            (${P}::uuid, 'QBO mapping merge', ${`qbo-mapping-${P.slice(0, 8)}`}),
+            (${Q}::uuid, 'QBO mapping merge — foreign partner', ${`qbo-mapping-foreign-${Q.slice(0, 8)}`})`);
         await db.execute(sql`
           INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
           VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`loser-${L.slice(0, 8)}`}, 'active', 'USD'),
-                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD')`);
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD'),
+                 (${orgQ}::uuid, ${Q}::uuid, 'Foreign Org', ${`foreign-org-${orgQ.slice(0, 8)}`}, 'active', 'USD')`);
         await db.execute(sql`
           INSERT INTO accounting_connections (id, partner_id, provider, environment, status, home_currency)
-          VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
+          VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD'),
+                 (${connQ}::uuid, ${Q}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
         await db.execute(sql`
           INSERT INTO catalog_items (id, partner_id, item_type, name, unit_price, cost_currency)
           VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 100.00, 'USD')`);
+
+        // A SECOND, unrelated partner (Q) with its own ALREADY-orphaned invoice
+        // mapping (source invoice deleted up front, before the merge under
+        // test even starts) — proves the orphan sweep is scoped to the
+        // merging partner (P) and never touches (or miscounts) another
+        // partner's rows.
+        const foreignOrphanInvoiceSource = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoices (id, partner_id, org_id, currency_code, status)
+          VALUES (${foreignOrphanInvoiceSource}::uuid, ${Q}::uuid, ${orgQ}::uuid, 'USD', 'sent')`);
+        await db.execute(sql`
+          INSERT INTO accounting_entity_mappings
+            (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
+          VALUES
+            (${connQ}::uuid, ${Q}::uuid, 'invoice', ${foreignOrphanInvoiceSource}::uuid, 'Invoice', 'qbo-inv-foreign-orphan', 'confirmed', 'synced')`);
+        await db.execute(sql`DELETE FROM invoices WHERE id = ${foreignOrphanInvoiceSource}::uuid`);
+
+        // Phase C: a real invoice + payment under the LOSER org. During a real
+        // merge these are REPOINTED (not deleted) by the plain-repoint walk
+        // before runPostPassFixups ever runs (REPOINT_TABLES in
+        // orgMergeRegistry.ts), so their id never changes and their mappings
+        // stay valid. This test calls runPostPassFixups directly (no repoint
+        // walk), so the invoice is still under L's org_id here — that's fine,
+        // the fixup only cares whether the invoice/payment ROW exists, not
+        // which org currently owns it.
+        const invoiceLoser = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoices (id, partner_id, org_id, currency_code, status)
+          VALUES (${invoiceLoser}::uuid, ${P}::uuid, ${L}::uuid, 'USD', 'sent')`);
+        const paymentLoser = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoice_payments (id, invoice_id, org_id, amount, method, received_at)
+          VALUES (${paymentLoser}::uuid, ${invoiceLoser}::uuid, ${L}::uuid, 50.00, 'card', now())`);
+
+        // Two ORPHAN-TO-BE mapping rows. A trigger
+        // (validate_accounting_mapping_entity_partner) rejects an INSERT
+        // naming an invoice/payment id that doesn't exist yet, so a genuine
+        // orphan can only arise the way it would in production: the mapping
+        // is created against a REAL row, and that row is deleted afterward
+        // through some other path (the trigger only fires on writes to
+        // accounting_entity_mappings itself, never on invoices/invoice_payments
+        // deletes). Simulate that here: create real rows, map them, then
+        // delete the underlying rows out from under the mappings.
+        const orphanInvoiceSource = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoices (id, partner_id, org_id, currency_code, status)
+          VALUES (${orphanInvoiceSource}::uuid, ${P}::uuid, ${S}::uuid, 'USD', 'sent')`);
+        const orphanPaymentInvoice = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoices (id, partner_id, org_id, currency_code, status)
+          VALUES (${orphanPaymentInvoice}::uuid, ${P}::uuid, ${S}::uuid, 'USD', 'sent')`);
+        const orphanPaymentSource = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoice_payments (id, invoice_id, org_id, amount, method, received_at)
+          VALUES (${orphanPaymentSource}::uuid, ${orphanPaymentInvoice}::uuid, ${S}::uuid, 50.00, 'card', now())`);
+
         await db.execute(sql`
           INSERT INTO accounting_entity_mappings
             (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
           VALUES
             (${conn}::uuid, ${P}::uuid, 'org', ${L}::uuid, 'Customer', 'qbo-cust-loser', 'confirmed', 'synced'),
             (${conn}::uuid, ${P}::uuid, 'org', ${S}::uuid, 'Customer', 'qbo-cust-survivor', 'confirmed', 'synced'),
-            (${conn}::uuid, ${P}::uuid, 'catalog_item', ${item}::uuid, 'Item', 'qbo-item-1', 'confirmed', 'synced')`);
+            (${conn}::uuid, ${P}::uuid, 'catalog_item', ${item}::uuid, 'Item', 'qbo-item-1', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'invoice', ${invoiceLoser}::uuid, 'Invoice', 'qbo-inv-loser', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'payment', ${paymentLoser}::uuid, 'Payment', 'qbo-pay-loser', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'invoice', ${orphanInvoiceSource}::uuid, 'Invoice', 'qbo-inv-orphan', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'payment', ${orphanPaymentSource}::uuid, 'Payment', 'qbo-pay-orphan', 'confirmed', 'synced')`);
+
+        // Delete the source rows AFTER the mapping is created (past the
+        // trigger's write-time check) to leave two genuine orphans. Deleting
+        // orphanInvoiceSource has no payment child; deleting
+        // orphanPaymentInvoice cascades and removes orphanPaymentSource too
+        // (invoice_payments.invoice_id is ON DELETE CASCADE), which is exactly
+        // how a real payment mapping would be orphaned — its invoice, not the
+        // payment row directly, is what goes away.
+        await db.execute(sql`DELETE FROM invoices WHERE id = ${orphanInvoiceSource}::uuid`);
+        await db.execute(sql`DELETE FROM invoices WHERE id = ${orphanPaymentInvoice}::uuid`);
 
         const fixups = await runPostPassFixups(L, S, P);
-        expect(fixups.dropped).toBe(1);
+        // org row (loser) + orphan invoice + orphan payment = 3. Must NOT
+        // include the foreign partner's already-orphaned row — the sweep is
+        // scoped to partner P only.
+        expect(fixups.dropped).toBe(3);
+
+        // Cross-tenant isolation: partner Q's orphaned mapping must survive
+        // partner P's merge untouched. An unscoped sweep would delete this row
+        // and silently fold a foreign partner's cleanup into P's merge summary
+        // (misattributed counts, small cross-tenant signal in org_merge_events).
+        const foreignRows = (await db.execute(sql`
+          SELECT remote_entity_id FROM accounting_entity_mappings
+           WHERE integration_id = ${connQ}::uuid`)) as unknown as Array<{ remote_entity_id: string }>;
+        expect(foreignRows.map((r) => r.remote_entity_id)).toEqual(['qbo-inv-foreign-orphan']);
 
         const rows = (await db.execute(sql`
           SELECT breeze_entity_type, breeze_entity_id, remote_entity_id
@@ -1034,13 +1283,27 @@ describe('org merge engine SQL against real Postgres', () => {
           remote_entity_id: string;
         }>;
 
-        // Loser row gone; the survivor's own mapping and the partner-scoped
-        // catalog_item mapping untouched. Deleted rather than repointed: the
-        // survivor already claims its own QuickBooks Customer, so a repoint
-        // would collide on accounting_entity_mappings_breeze_uniq, and the
-        // survivor must reconcile fresh rather than inherit a stale claim.
-        expect(rows.map((r) => r.remote_entity_id)).toEqual(['qbo-cust-survivor', 'qbo-item-1']);
+        // Loser org-row gone; the survivor's own mapping and the
+        // partner-scoped catalog_item mapping untouched. Deleted rather than
+        // repointed: the survivor already claims its own QuickBooks Customer,
+        // so a repoint would collide on accounting_entity_mappings_breeze_uniq,
+        // and the survivor must reconcile fresh rather than inherit a stale
+        // claim.
+        //
+        // The invoice/payment mapping rows naming REAL rows (qbo-inv-loser,
+        // qbo-pay-loser) survive — invoices move with the org, they are never
+        // deleted by a merge, so their mapping stays valid regardless of which
+        // org currently owns the row. Only the two ORPHAN rows (naming
+        // nonexistent invoice/payment ids) are gone.
+        expect(rows.map((r) => r.remote_entity_id)).toEqual([
+          'qbo-cust-survivor',
+          'qbo-inv-loser',
+          'qbo-item-1',
+          'qbo-pay-loser',
+        ]);
         expect(rows.some((r) => r.breeze_entity_id === L)).toBe(false);
+        expect(rows.some((r) => r.remote_entity_id === 'qbo-inv-orphan')).toBe(false);
+        expect(rows.some((r) => r.remote_entity_id === 'qbo-pay-orphan')).toBe(false);
 
         throw new Rollback('done');
       });

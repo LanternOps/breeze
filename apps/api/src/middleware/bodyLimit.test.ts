@@ -148,9 +148,10 @@ describe('bodyLimitForPath', () => {
   });
 
   // Regression for #3482: quote block/cover image uploads. The UI advertises
-  // "PNG, JPEG, or WebP, up to 5 MB" and the route registers its own 5MB+64KB
-  // bodyLimit, but the global gate ran first and 413'd anything over 1MB with
-  // the generic "Request body too large".
+  // "PNG or JPEG, up to 5 MB" (WebP dropped in #3483 — pdfkit can't embed it)
+  // and the route registers its own 5MB+64KB bodyLimit, but the global gate
+  // ran first and 413'd anything over 1MB with the generic "Request body too
+  // large".
   it('carves out quote image uploads at the route 5MB cap (#3482)', () => {
     expect(bodyLimitForPath('/api/v1/quotes/11111111-1111-4111-8111-111111111111/images')).toEqual({
       rule: 'image-upload',

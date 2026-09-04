@@ -54,6 +54,15 @@ describe('Org lifecycle foundations contract', () => {
     // Merge (Wave 2) runs SET CONSTRAINTS ALL DEFERRED and re-points parent+child
     // org_id in separate statements. A non-deferrable composite FK here breaks it.
     // New composite (x, org_id) FKs MUST be declared DEFERRABLE INITIALLY IMMEDIATE.
+    //
+    // This reads LIVE pg_constraint state in a database shared with every other
+    // file in the shard, so it can only be trusted if no earlier test repairs
+    // deferrability it did not itself break. `reapplyOrgIdFkDeferrability`
+    // (db-utils.ts) therefore takes an explicit constraint-name list: its earlier
+    // whole-database sweep silently repaired the three non-deferrable FKs shipped
+    // by 2026-10-01-100000-ai-agents-graduation-evidence.sql, and this assertion
+    // read green in CI for days while failing on every fresh database. Never widen
+    // that helper back to a sweep, and never repair schema state from here.
     expect(offenders).toEqual([]);
   });
 });

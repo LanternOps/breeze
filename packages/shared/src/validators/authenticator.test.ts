@@ -5,6 +5,8 @@ import {
   approvalProofSchema,
   authenticatorPolicySchema,
   mobileHwKeyRegisterSchema,
+  mobileAttestationChallengeSchema,
+  mobileAttestationVerifySchema,
 } from './authenticator';
 
 describe('assertionProofSchema', () => {
@@ -123,5 +125,117 @@ describe('authenticatorPolicySchema (Phase 4)', () => {
     const r = authenticatorPolicySchema.safeParse({ floorOverrides: { high: 3 }, requireEnrollment: true, enforceFrom: null });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.floorOverrides).toEqual({ high: 3 });
+  });
+});
+
+// --- #1374 W02: attested mobile registration (challenge/verify) ------------
+
+describe('mobileAttestationChallengeSchema', () => {
+  it('accepts ios and android', () => {
+    expect(mobileAttestationChallengeSchema.safeParse({ platform: 'ios' }).success).toBe(true);
+    expect(
+      mobileAttestationChallengeSchema.safeParse({ registerGrantId: 'g-1', platform: 'android' }).success,
+    ).toBe(true);
+  });
+  it('rejects an unknown platform', () => {
+    expect(mobileAttestationChallengeSchema.safeParse({ platform: 'web' }).success).toBe(false);
+  });
+  it('is strict — a stray field is rejected', () => {
+    expect(
+      mobileAttestationChallengeSchema.safeParse({ platform: 'ios', isPlatformBound: true }).success,
+    ).toBe(false);
+  });
+});
+
+describe('mobileAttestationVerifySchema', () => {
+  const valid = {
+    attemptId: 'a-1',
+    publicKey: 'spki',
+    publicKeyAlg: 'ES256',
+    label: 'iPhone',
+    popSignature: 'sig',
+    attestation: { platform: 'ios', attestationObject: 'cbor', keyId: 'kid' },
+  };
+
+  it('accepts a well-formed iOS body', () => {
+    expect(mobileAttestationVerifySchema.safeParse(valid).success).toBe(true);
+  });
+
+  it('accepts a well-formed Android body, with and without a Play Integrity token', () => {
+    expect(
+      mobileAttestationVerifySchema.safeParse({
+        ...valid,
+        attestation: { platform: 'android', certificateChain: ['a', 'b'], playIntegrityToken: 'jwt' },
+      }).success,
+    ).toBe(true);
+    expect(
+      mobileAttestationVerifySchema.safeParse({
+        ...valid,
+        attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an unknown attestation platform', () => {
+    expect(
+      mobileAttestationVerifySchema.safeParse({ ...valid, attestation: { platform: 'web' } }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unsupported publicKeyAlg', () => {
+    expect(mobileAttestationVerifySchema.safeParse({ ...valid, publicKeyAlg: 'HS256' }).success).toBe(false);
+    expect(mobileAttestationVerifySchema.safeParse({ ...valid, publicKeyAlg: 'none' }).success).toBe(false);
+  });
+
+  it('is strict — a stray field is rejected, not silently kept', () => {
+    // The whole point of this wave: a client may no longer assert anything
+    // about platform-binding, so this must be a 400 rather than a dropped field.
+    expect(mobileAttestationVerifySchema.safeParse({ ...valid, isPlatformBound: true }).success).toBe(false);
+    expect(
+      mobileAttestationVerifySchema.safeParse({ ...valid, platformBoundBasis: 'ios_se_p256_app_attest' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('is strict INSIDE the attestation branch too', () => {
+    expect(
+      mobileAttestationVerifySchema.safeParse({
+        ...valid,
+        attestation: { platform: 'ios', attestationObject: 'cbor', keyId: 'kid', securityLevel: 'StrongBox' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a full android chain — a lone self-signed leaf proves nothing', () => {
+    expect(
+      mobileAttestationVerifySchema.safeParse({
+        ...valid,
+        attestation: { platform: 'android', certificateChain: ['leaf'] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects missing required fields', () => {
+    for (const field of ['attemptId', 'publicKey', 'publicKeyAlg', 'label', 'popSignature', 'attestation']) {
+      const body: Record<string, unknown> = { ...valid };
+      delete body[field];
+      expect(mobileAttestationVerifySchema.safeParse(body).success).toBe(false);
+    }
+  });
+
+  it('rejects a blank/whitespace label', () => {
+    expect(mobileAttestationVerifySchema.safeParse({ ...valid, label: '   ' }).success).toBe(false);
+  });
+
+  it('bounds the unbounded-by-default client blobs', () => {
+    expect(
+      mobileAttestationVerifySchema.safeParse({ ...valid, publicKey: 'x'.repeat(8193) }).success,
+    ).toBe(false);
+    expect(
+      mobileAttestationVerifySchema.safeParse({
+        ...valid,
+        attestation: { platform: 'android', certificateChain: Array(9).fill('c') },
+      }).success,
+    ).toBe(false);
   });
 });

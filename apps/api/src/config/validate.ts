@@ -624,6 +624,14 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
+    // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
+    // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
+    // a sharper reason: this flag is a break-glass revert for a critical-tier
+    // approval bypass, so a typo must fail boot rather than leave an operator
+    // guessing which way it resolved.
+    BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: z.string().optional(),
+
     // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
     // (default) = today's all-in-one process. Read at runtime by
     // breezeRole() in env.ts. Validated here for format only — absence means
@@ -700,6 +708,10 @@ const envObjectSchema = z
     QBO_CLIENT_SECRET: z.string().optional(),
     QBO_REDIRECT_URI: z.string().optional(),
     QBO_ENVIRONMENT: z.string().optional(),
+    // Optional at boot: only the webhook route needs it to verify inbound CDC
+    // signatures, and a region without the Intuit webhook configured relies
+    // on the 15-minute reconcile sweep instead.
+    QBO_WEBHOOK_VERIFIER_TOKEN: z.string().optional(),
 
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
@@ -1719,6 +1731,25 @@ const envSchema = envObjectSchema
         path: ['ABUSE_SIGNALS_ENABLED'],
         message:
           'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
+      });
+    }
+
+    // BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED (#1374 L4 attestation gate).
+    // Same treatment as AGENT_AUTO_PROMOTE above. The runtime reader keeps
+    // enforcement ON for an unrecognized value (fail closed), so the ONLY
+    // symptom of a typo without this guard would be an operator who believes
+    // they performed a break-glass revert and did not.
+    const attestationEnforcedRaw = (
+      data.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED ?? ''
+    ).trim().toLowerCase();
+    if (attestationEnforcedRaw && !boolValues.has(attestationEnforcedRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED'],
+        message:
+          'BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to true (an L4/critical-tier approval requires a trusted platform_bound_basis). ' +
+          'Set false ONLY as a break-glass revert — it re-opens the critical-tier bypass for every legacy mobile approver key.',
       });
     }
 

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
@@ -14,6 +15,8 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
+import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
@@ -47,6 +50,7 @@ import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isV
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
+import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
@@ -54,9 +58,12 @@ import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } fro
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
+import { resolveImportPartnerId } from './importScope';
+import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
+import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -441,6 +448,7 @@ const partnerPublicColumns = () => ({
   billingTermsAndConditions: partners.billingTermsAndConditions,
   defaultMarkupPercent: partners.defaultMarkupPercent,
   autoTaxHardware: partners.autoTaxHardware,
+  invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   createdAt: partners.createdAt,
@@ -479,6 +487,11 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   // without this a create carrying the alias persists a key the resolver ignores
   // (silent no-op the alias-fold set out to kill).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  // #4520: this handler inserts partners directly rather than going through
+  // createPartner(), so it has to apply the shared new-partner defaults itself —
+  // otherwise it mints `{}`-settings partners that the inbound readers' legacy
+  // absent-means-enabled fallback treats as opted IN (the #3608 regression).
+  data.settings = applyNewPartnerDefaultSettings(data.settings);
 
   const clash = await db
     .select({ id: partners.id })
@@ -689,6 +702,7 @@ const partnerSettingsSchema = z.object({
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+    alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
@@ -918,6 +932,18 @@ orgRoutes.patch(
     };
   }
 
+  // Normalise aiBudgets.alertThresholdPercents (sorted, deduped) before
+  // persisting — this partner-wide write path is the equivalent of PUT
+  // /ai/budget's per-org normalisation, and skipping it here would let the
+  // partner-wide rungs be stored in whatever order the client submitted them,
+  // which downstream isDeepStrictEqual-based lock comparisons are sensitive to.
+  if (body.settings?.aiBudgets?.alertThresholdPercents != null) {
+    newSettings.aiBudgets = {
+      ...((newSettings.aiBudgets as Record<string, unknown> | undefined) ?? {}),
+      alertThresholdPercents: normalizeAlertThresholds(body.settings.aiBudgets.alertThresholdPercents),
+    };
+  }
+
   // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
   // future auto-triage path will route mail INTO that org. A cross-partner id
   // here would route a partner's inbound mail to an org outside their tenant.
@@ -1015,6 +1041,21 @@ orgRoutes.patch(
   // next token mint without waiting for the 60s TTL.
   clearPartnerScopePolicyCache(partner.id);
   clearPartnerAllowlistCache(partner.id);
+
+  // Caps or rungs changed fleet-wide: re-evaluate every org off-request (spec
+  // §4.2 #3). Compare the value actually PERSISTED (post-normalisation) against
+  // what was stored, not merely `!== undefined`: the settings card re-posts the
+  // whole aiBudgets block on every save, so a presence check fans a full
+  // partner-wide evaluation — one per org, each opening its own DB context —
+  // out of an edit to some unrelated field. `isDeepStrictEqual` matches the
+  // comparison `assertNotLocked` (services/effectiveSettings.ts) already uses
+  // on this same JSONB, and normalisation above makes a reordered rung array a
+  // true no-op rather than a spurious change.
+  if (body.settings?.aiBudgets !== undefined && !isDeepStrictEqual(newSettings.aiBudgets, currentSettings.aiBudgets)) {
+    void enqueueAiBudgetEvaluationForPartner(auth.partnerId as string).catch((err: unknown) => {
+      console.error('[orgs] aiBudgets fan-out enqueue failed:', err instanceof Error ? err.message : err);
+    });
+  }
 
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
@@ -1695,26 +1736,6 @@ const commitOrgImportSchema = z.object({
   mode: z.enum(['skip', 'update']).default('skip'),
 });
 
-function resolveImportPartnerId(
-  auth: AuthContext,
-  bodyPartnerId: string | undefined,
-): { partnerId: string } | { error: string; status: 400 | 403 } {
-  if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return { error: 'Partner context required to import organizations', status: 400 };
-    }
-    if (bodyPartnerId && bodyPartnerId !== auth.partnerId) {
-      return { error: 'Access denied to this partner', status: 403 };
-    }
-    return { partnerId: auth.partnerId };
-  }
-  const partnerId = bodyPartnerId ?? auth.partnerId;
-  if (!partnerId) {
-    return { error: 'partnerId is required for system scope', status: 400 };
-  }
-  return { partnerId };
-}
-
 // The import creates SITES as well as orgs, so it is gated on sites:write in
 // addition to orgs:write (#3242). Preview carries the same gate for an early,
 // honest failure — a preview a caller could never commit is a trap.
@@ -1722,7 +1743,7 @@ orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgW
   const auth = c.get('auth') as AuthContext;
   const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
 
-  const resolved = resolveImportPartnerId(auth, bodyPartnerId);
+  const resolved = resolveImportPartnerId(auth, bodyPartnerId, 'organizations');
   if ('error' in resolved) {
     return c.json({ error: resolved.error }, resolved.status);
   }
@@ -1735,7 +1756,7 @@ orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, re
   const auth = c.get('auth') as AuthContext;
   const { rows, mode, partnerId: bodyPartnerId } = c.req.valid('json');
 
-  const resolved = resolveImportPartnerId(auth, bodyPartnerId);
+  const resolved = resolveImportPartnerId(auth, bodyPartnerId, 'organizations');
   if ('error' in resolved) {
     return c.json({ error: resolved.error }, resolved.status);
   }
@@ -2288,6 +2309,10 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
+// Audit-log retention policy (audit_retention_policies) — see routes/orgAuditRetentionSettings.ts
+registerOrgAuditRetentionSettingsRoutes(orgRoutes);
+// First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
+registerOrgContactsRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;

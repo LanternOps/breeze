@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { users } from '../db/schema';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
-import { revokeAllUserTokens } from './tokenRevocation';
+import { revokeAllUserTokens, type RevokeAllUserTokensOptions } from './tokenRevocation';
 import { clearPermissionCache } from './permissions';
 import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
 import { captureException } from './sentry';
@@ -155,11 +155,14 @@ export interface PostCommitCleanupResult {
  * Logging is structured and bounded to the userId + error message/name —
  * never the raw token/JTI/reason payloads that triggered the mutation.
  */
-export async function runPostCommitCleanup(userId: string): Promise<PostCommitCleanupResult> {
+export async function runPostCommitCleanup(
+  userId: string,
+  options?: RevokeAllUserTokensOptions,
+): Promise<PostCommitCleanupResult> {
   const result: PostCommitCleanupResult = { redisOk: true, permissionCacheOk: true, oauthOk: true };
 
   try {
-    await revokeAllUserTokens(userId);
+    await revokeAllUserTokens(userId, options);
   } catch (err) {
     result.redisOk = false;
     console.error('[auth-lifecycle] Redis token cutoff failed (durable revocation already committed)', {

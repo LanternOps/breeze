@@ -12,6 +12,25 @@
 #   ACME_EMAIL          Email for ACME / Let's Encrypt account.
 #                       Only used when CADDY_SITE_ADDRESS is a domain.
 #                       Ignored for :80 (no TLS).
+#
+#   CADDY_LOCAL_CERTS   Empty (default) or the literal `local_certs`.
+#                       Set it to `local_certs` when CADDY_SITE_ADDRESS is a
+#                       domain that Let's Encrypt CANNOT reach — an internal
+#                       name that only resolves on a LAN/VPN, or a host whose
+#                       ports 80/443 are not open to the internet. Caddy then
+#                       issues every certificate from its own internal CA
+#                       instead of attempting an ACME order that must fail.
+#                       Without it, the failed order leaves Caddy with no
+#                       certificate for the SNI and it aborts the TLS handshake
+#                       with alert 80 (internal_error), which browsers surface
+#                       as ERR_SSL_PROTOCOL_ERROR / SSL_ERROR_INTERNAL_ERROR_ALERT
+#                       rather than as a cert warning you can click through.
+#                       Trust the CA root on each client to silence the warning:
+#                         docker compose exec caddy \
+#                           cat /data/caddy/pki/authorities/local/root.crt
+#                       Leave it EMPTY for any internet-reachable deployment,
+#                       including hosted production — an empty value expands to
+#                       a blank line and adapts to byte-identical JSON.
 
 # --- Global options ---------------------------------------------------------
 # Production traffic chain for Cloudflare Tunnel deployments:
@@ -20,6 +39,15 @@
 # supply client-IP headers. Self-hosted reverse-proxy deployments can override
 # CADDY_TRUSTED_PROXIES with their exact proxy CIDRs.
 {
+  # Opt-in internal CA. Expands to the bare global option `local_certs` when
+  # CADDY_LOCAL_CERTS is set to it, and to nothing at all when the variable is
+  # empty or unset — a blank line inside the global options block, which the
+  # Caddyfile adapter discards. Kept as a bare placeholder (rather than an
+  # `import`ed snippet or a `tls internal` line in the site block) because that
+  # is the smallest form that adapts cleanly in BOTH states; verified against
+  # caddy:2-alpine with `caddy adapt`, where the empty case produced JSON
+  # byte-identical to this file before the placeholder existed.
+  {$CADDY_LOCAL_CERTS}
   servers {
     trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32 ::1/128}
     client_ip_headers {$CADDY_CLIENT_IP_HEADERS:CF-Connecting-IP X-Forwarded-For}
@@ -306,46 +334,19 @@
   # hostname/cert. The portal app emits /portal-prefixed URLs (Astro `base`), so we
   # keep the prefix (handle, not handle_path). Must come BEFORE the web catch-all.
   # API calls stay on the /api/* block above (same-origin → no CORS).
+  #
+  # This one path rule covers dev as well as prod. A production build emits bundled
+  # assets under /portal/_astro/*; in dev the portal's Vite server is mounted at the
+  # same base (the `breeze:portal-dev-base` plugin in apps/portal/astro.config.mjs
+  # plus the HTML rewrite in apps/portal/src/middleware.ts), so its module-graph
+  # URLs — /portal/src/*, /portal/@fs/*, /portal/@vite/client,
+  # /portal/node_modules/.vite/deps/* — match here too. #3906 first tried to route
+  # those unprefixed by sniffing the Referer; that could never work (island dynamic
+  # `import()` sends no Referer, and nested imports send the importing module's own
+  # unprefixed URL), which is why the portal is routed on path alone.
   @portal path /portal /portal/*
   handle @portal {
     encode zstd gzip
-    reverse_proxy portal:4322
-  }
-
-  # --- Dev-only: portal client-island module URLs (#3906) ---
-  # apps/portal/astro.config.mjs sets `base: /portal`, but that only prefixes
-  # *page* routes. Astro's dev server (Vite) does NOT honor `base` for the
-  # raw module-graph URLs the `astro-island` runtime fetches to hydrate a
-  # `client:load` island — e.g. `/src/components/portal/PublicQuoteView.tsx`,
-  # `/@fs/*`, `/@vite/*`, `/node_modules/.vite/*`. In dev those unprefixed
-  # requests fell through to the web catch-all below (web:4321), which has no
-  # such file: a silent 404, so the island never hydrated even though the
-  # SSR'd markup still looked correct (portal e2e specs were asserting
-  # against dead markup — see project memory
-  # portal_dev_island_hydration_404.md). A production build serves portal's
-  # own bundled assets already prefixed under /portal/*, so this has never
-  # been a prod issue.
-  #
-  # The web app is ALSO Astro + React islands and serves the SAME class of
-  # raw dev paths for its OWN islands, so this can't be routed by path alone
-  # — that would steal web's dev assets. Gate on the Referer (the browser
-  # sends it on these module-graph fetches, pointing at the page that
-  # requested them) so only requests that came from a /portal page reach the
-  # portal dev server.
-  #
-  # CADDY_PORTAL_DEV_ASSETS is unset in production — docker-compose.yml sets
-  # no such var for the caddy service, so `{env.CADDY_PORTAL_DEV_ASSETS}` is
-  # "" there and this matcher can never fire (same env-gate pattern as
-  # @remoteAccessClosed above). Only docker-compose.override.yml.dev sets it
-  # to "1", for the code-mounted dev portal (Dockerfile.portal.dev) used by
-  # both plain dev-mode and wt-stack/worktree stacks (which layer on top of
-  # .dev — see scripts/dev/wt-stack/compose.ts).
-  @portalDevAssets {
-    expression {env.CADDY_PORTAL_DEV_ASSETS} == "1"
-    header_regexp Referer ^https?://[^/]+(?::\d+)?/portal(?:/|$)
-    path /src/* /@fs/* /@vite/* /node_modules/.vite/*
-  }
-  handle @portalDevAssets {
     reverse_proxy portal:4322
   }
 

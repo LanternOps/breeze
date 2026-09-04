@@ -536,6 +536,7 @@
     "feedbackThanks": "Geri bildiriminiz için teşekkürler",
     "feedbackTaken": "Bu değerlendirme için zaten geri bildirim verildi",
     "feedbackFailed": "Geri bildirim kaydedilemedi",
+    "feedbackBy": "Geri bildiren: {{name}}",
     "hideNoise": "Yapay zeka tarafından işaretlenen gürültüyü gizle",
     "suggestionPending": "Yapay zeka bir eylem önerdi — Onaylar'da inceleyin",
     "none": "Henüz yapay zeka değerlendirmesi yok"

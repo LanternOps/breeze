@@ -677,7 +677,12 @@ export default function RemoteTerminal({
   return (
     <div
       className={cn(
-        'flex flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
+        // flex-1 min-h-0 (#4510): lets the pane grow to fill a flex-column
+        // parent's available height (RemoteToolsPage's terminal tab panel)
+        // instead of shrinking to the header + the inner 400px floor below.
+        // Inert when the parent isn't a flex container (e.g. RemoteTerminalPage,
+        // which sizes this via the `className` prop instead).
+        'flex flex-1 min-h-0 flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
         isFullscreen && 'fixed inset-4 z-50',
         className
       )}
@@ -758,13 +763,10 @@ export default function RemoteTerminal({
       </div>
 
       {/* Terminal Container */}
-      <div className={cn('relative flex-1 flex flex-col', isFullscreen && 'min-h-0')}>
+      <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={terminalContainerRef}
-          className={cn(
-            'flex-1 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
-            isFullscreen && 'min-h-0'
-          )}
+          className="flex-1 min-h-0 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden"
           onClick={() => terminalRef.current?.focus()}
         />
         {/* Disconnect overlay (issue #2871): a dead session must be unmissable,

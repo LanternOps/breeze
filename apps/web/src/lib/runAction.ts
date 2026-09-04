@@ -1,5 +1,6 @@
 import { showToast } from '../components/shared/Toast';
 import { extractApiError, isApiFailure } from './apiError';
+import { dispatchTrustDenied, isTrustDenial } from './trustProbation';
 
 export class ActionError extends Error {
   code?: string;
@@ -81,7 +82,17 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       const friendly = opts.friendly(friendlyKey);
       if (friendly) message = friendly;
     }
-    showToast({ message, type: 'error' });
+    if (response.status === 403 && isTrustDenial(data)) {
+      // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
+      // up (it calls preventDefault()), it owns showing the denial and a
+      // generic toast on top would be redundant noise. If nothing handled
+      // it — the banner isn't mounted on this page — fall back to the
+      // normal error toast so the failure is never silent.
+      const handled = dispatchTrustDenied(data);
+      if (!handled) showToast({ message, type: 'error' });
+    } else {
+      showToast({ message, type: 'error' });
+    }
     throw new ActionError(message, response.status, code, data);
   }
 

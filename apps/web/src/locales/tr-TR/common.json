@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
@@ -41,10 +42,12 @@
     "auditTrail": "Denetim İzi",
     "eventLogs": "Olay Günlükleri",
     "partner": "Ortak",
+    "billing": "Faturalandırma",
     "organizations": "Organizasyonlar",
     "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
     "aiAgents": "Yapay Zeka Aracıları",
     "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
+    "aiImpact": "Yapay Zeka Etkisi",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -63,6 +66,7 @@
     "sectionSettings": "Ayarlar",
     "sectionExtensions": "Uzantılar",
     "llmProviderCatalog": "LLM Sağlayıcı Kataloğu",
+    "aiKillSwitch": "Yapay Zeka Acil Durdurma Anahtarı",
     "sectionAi": "Yapay Zeka",
     "sectionFleetManagement": "Filo Yönetimi",
     "sectionBilling": "Faturalama",

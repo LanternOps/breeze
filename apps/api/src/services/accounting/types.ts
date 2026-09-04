@@ -33,6 +33,8 @@ export interface RemoteCustomer extends RemoteEntity {
   shipAddr?: RemoteAddress;
   active?: boolean;
   syncToken?: string;
+  /** QBO CurrencyRef.value, surfaced from listing/create responses (multi-currency §11). */
+  currencyCode?: string;
 }
 
 export interface RemoteItem extends RemoteEntity {
@@ -53,6 +55,13 @@ export interface RemoteRef {
   id: string;
   syncToken?: string;
   docNumber?: string;
+  /**
+   * QBO CurrencyRef.value, surfaced on a CREATE response so callers get the
+   * realm-assigned currency symmetrically with listRemoteCustomers/
+   * mapQboCustomer (multi-currency §11). Not populated by every provider
+   * method — currently only upsertCustomer's Customer create response.
+   */
+  currencyCode?: string;
 }
 
 /** A previously-synced remote entity, for update-vs-create decisions. */
@@ -117,6 +126,15 @@ export interface AccountingInvoicePayload {
   taxTotal: string;
   total: string;
   lines: readonly AccountingInvoiceLinePayload[];
+  /**
+   * Present on a re-push/retry: the previously-pushed QBO Invoice this call
+   * should sparse-update instead of create (spec §"Provider upsert semantics
+   * for invoices" — Breeze invoices are immutable post-issue, so an update
+   * only re-sends the same content after a partial failure). Embedded here
+   * rather than as a fourth `pushInvoice` argument because the provider
+   * method's parameter tuple is a pinned type contract (types.test.ts).
+   */
+  mapping: AccountingEntityMapping | null;
 }
 
 /**
@@ -131,22 +149,56 @@ export interface AccountingVoidInvoicePayload {
   currencyCode: string;
 }
 
+export interface InvoicePushResult extends RemoteRef {
+  /** QBO's TxnTaxDetail.TotalTax from the response, major-unit string, null if absent. */
+  remoteTaxTotal: string | null;
+  /** QBO's TotalAmt from the response, major-unit string, null if absent. */
+  remoteTotal: string | null;
+}
+
+export interface RealmSettings {
+  homeCurrency: string | null;
+  multiCurrencyEnabled: boolean | null;
+}
+
+export interface ChangeSetPaymentLine {
+  remoteInvoiceId: string;
+  remotePaymentId: string;
+  /**
+   * Provider-reported INTEGER MINOR UNITS. Convert exactly once, and only via
+   * normalizeAccountingPayment (accountingCurrency.ts) — multi-currency §11.
+   */
+  amountMinor: number;
+  /** Provider-reported ISO 4217 code for this payment. */
+  currency: string;
+  /** ISO date (YYYY-MM-DD) from Payment.TxnDate. */
+  txnDate: string;
+  /** QBO Payment SyncToken at CDC read time — the applier's "QBO edited it" signal. */
+  remotePaymentSyncToken: string | null;
+  /** PaymentMethodRef.name; null when the realm did not expand the ref. */
+  paymentMethodName: string | null;
+  /** PaymentRefNum (cheque number etc.); null when absent. */
+  paymentRefNum: string | null;
+}
+
 export interface ChangeSet {
+  /** The instant the CDC window ends. Becomes the connection's next cdc_cursor. */
   cursor: Date;
-  payments: Array<{
-    remoteInvoiceId: string;
-    remotePaymentId: string;
-    /**
-     * Provider-reported INTEGER MINOR UNITS. Before applying, assert that
-     * `currency` equals the target invoice's stamped currency and convert
-     * exactly once with `fromMinorUnits` — see
-     * services/accounting/accountingCurrency.ts (multi-currency §11).
-     */
-    amountMinor: number;
-    /** Provider-reported ISO 4217 code for this payment. */
-    currency: string;
-    txnDate: string;
-  }>;
+  payments: ChangeSetPaymentLine[];
+  /** QBO Payment ids the realm reports as status:"Deleted", plus voided (TotalAmt 0) payments. */
+  deletedPayments: string[];
+  /** QBO Invoice ids the realm reports as status:"Deleted" or voided. */
+  deletedInvoices: string[];
+  /**
+   * "This window could NOT be fully enumerated" — belt and braces (final-review
+   * finding A). The provider re-reads a truncated CDC entity through `/query`;
+   * this stays `false` when that backfill drained the entity, and flips `true`
+   * when it could not (a QBO error, or the page cap). A `true` here is DIRTY for
+   * the worker exactly like a failed item: the CDC cursor is held and the window
+   * replays, because advancing past a truncated window loses every change QBO
+   * withheld — permanently, since nothing else ever re-reads it.
+   */
+  overflowed: boolean;
 }
 
 export interface AccountingProvider {
@@ -155,12 +207,13 @@ export interface AccountingProvider {
   exchangeCode(code: string, realmId: string): Promise<ConnectionTokens>;
   refresh(refreshToken: string): Promise<ConnectionTokens>;
   /**
-   * The realm/organization's home currency, normalized to an uppercase
-   * three-letter code, or null when the provider does not report one.
+   * The realm/organization's settings relevant to invoice push: home currency
+   * (normalized to an uppercase three-letter code, or null when the provider
+   * does not report one) and whether multi-currency is enabled on the realm.
    * NOT restricted to Breeze's curated supported-currency list — it is a cache
    * of an external fact (multi-currency §11).
    */
-  fetchHomeCurrency(conn: AccountingConnection): Promise<string | null>;
+  fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings>;
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
   listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
   listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
@@ -178,7 +231,7 @@ export interface AccountingProvider {
     conn: AccountingConnection,
     invoice: AccountingInvoicePayload,
     lineMappings: readonly AccountingInvoiceLineMapping[],
-  ): Promise<RemoteRef>;
+  ): Promise<InvoicePushResult>;
   voidInvoice(
     conn: AccountingConnection,
     invoice: AccountingVoidInvoicePayload,
@@ -187,3 +240,19 @@ export interface AccountingProvider {
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
 }
+
+/**
+ * The exact `accounting_entity_mappings.last_error` sentinel
+ * `markInvoiceDeletedRemotely` (accountingPaymentPull.ts) writes when the
+ * reconcile worker sees QuickBooks deleted/voided an invoice Breeze pushed
+ * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so it can
+ * never collide with the `PAYMENT_PULL_ERROR_PREFIX` bucket.
+ *
+ * Kept here — a leaf module with no other imports — rather than in
+ * accountingPaymentPull.ts (which imports invoiceService, which would need
+ * this constant too) or invoiceService.ts (imported by accountingPaymentPull.ts),
+ * either of which would create a cycle. Both the writer and every reader
+ * (accountingInvoicePush.ts's push guard, invoiceService.ts's summary) import
+ * this single constant instead of duplicating or string-matching the literal.
+ */
+export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';

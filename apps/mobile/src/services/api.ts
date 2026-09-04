@@ -18,6 +18,7 @@ import {
 import { beginSessionInvalidation } from './sessionAuthority';
 import { noteServerDate } from './serverClock';
 import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
+import { createTokenRefresher } from './tokenRefresh';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -72,6 +73,9 @@ export interface Alert {
   message: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   type: string;
+  /** Rule-template category (e.g. "Security", "Performance"); absent for
+   * alerts created without a rule. */
+  category?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -151,10 +155,24 @@ export type LoginResult =
   | { kind: 'mfaRequired'; challenge: MfaChallenge }
   | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
-export interface ApiError {
-  message: string;
+/**
+ * A real `Error` subclass (mirrors `TimeEntryError` in `./timeEntries`) so
+ * `err instanceof Error` narrowing at call sites actually matches. Before
+ * #4747 this was a plain `interface` and every throw site threw an object
+ * literal cast `as ApiError`, so `instanceof Error` was always false and the
+ * server's message never reached the user (ChangePasswordSheet,
+ * errorReporting) — it silently fell back to a generic string instead.
+ */
+export class ApiError extends Error {
   code?: string;
   statusCode?: number;
+
+  constructor(params: { message: string; code?: string; statusCode?: number }) {
+    super(params.message);
+    this.name = 'ApiError';
+    this.code = params.code;
+    this.statusCode = params.statusCode;
+  }
 }
 
 interface ListResponse<T> {
@@ -267,6 +285,12 @@ type MobileAlertRecord = {
   acknowledgedBy?: string | null;
   resolvedAt?: string | null;
   type?: string;
+  /**
+   * The rule's alert-template category, joined server-side (#4535). Alerts
+   * created without a rule carry no category, hence nullable rather than
+   * always-present.
+   */
+  category?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -344,6 +368,19 @@ export async function getAuthImageHeaders(): Promise<Record<string, string>> {
 }
 
 // Request helper
+/**
+ * Whether a 401 on this request should be answered with a token refresh. Only
+ * the auth endpoints are excluded: a 401 from /auth/login is bad credentials,
+ * and /auth/refresh must never trigger itself. /auth/me is a normal session
+ * probe (cold-start revalidation) and does refresh.
+ */
+function canRefreshFor(prefix: string, endpoint: string): boolean {
+  if (prefix !== API_CORE_PREFIX) return true;
+  const path = endpoint.split('?')[0];
+  return !path.startsWith('/auth/') || path === '/auth/me';
+}
+
+
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
@@ -364,12 +401,18 @@ async function requestWithPrefix<T>(
   const nativeAuthIssuer = prefix === API_CORE_PREFIX
     && NATIVE_AUTH_ISSUER_ENDPOINTS.has(endpoint);
   let retriedBindingBootstrap = false;
+  // One refresh-and-retry per request. Set by the 401 branch below; the token
+  // read prefers it so the retry cannot race a slow keychain write and re-send
+  // the token that just expired.
+  let retriedAuth = false;
+  let refreshedToken: string | null = null;
 
   while (true) {
     assertCurrentSession(capturedGeneration);
-    const token = Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
-      ? sessionContext.bearerToken ?? null
-      : await getToken();
+    const token = refreshedToken
+      ?? (Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
+        ? sessionContext.bearerToken ?? null
+        : await getToken());
     const method = (options.method ?? 'GET').toUpperCase();
     const multipart = isFormData(options.body);
     const headers: Record<string, string> = {
@@ -459,6 +502,26 @@ async function requestWithPrefix<T>(
     if (!response.ok) {
       const body = await response.json().catch(() => ({} as Record<string, unknown>));
       assertCurrentSession(capturedGeneration);
+      // Access tokens live JWT_EXPIRES_IN (15 minutes in production) and the
+      // refresh cookie lives days. Until this branch existed only the AI chat
+      // path refreshed, so every other screen hard-401'd a quarter of an hour
+      // after sign-in and the cold-start revalidation then signed the user
+      // out. Refresh once and replay; a second 401 is final. The auth
+      // endpoints themselves are excluded so /auth/refresh can never recurse.
+      if (
+        response.status === 401
+        && !retriedAuth
+        && token
+        && canRefreshFor(prefix, endpoint)
+      ) {
+        retriedAuth = true;
+        const fresh = await refreshAccessToken();
+        assertCurrentSession(capturedGeneration);
+        if (fresh) {
+          refreshedToken = fresh;
+          continue;
+        }
+      }
       const code = typeof body.code === 'string' ? body.code : undefined;
       if (code === DEVICE_BLOCKED_CODE) {
         const reason = typeof body.reason === 'string' ? body.reason : null;
@@ -480,8 +543,7 @@ async function requestWithPrefix<T>(
         assertCurrentSession(capturedGeneration);
       }
 
-      const error: ApiError = { message, code, statusCode: response.status };
-      throw error;
+      throw new ApiError({ message, code, statusCode: response.status });
     }
 
     const text = await response.text();
@@ -494,10 +556,10 @@ async function requestWithPrefix<T>(
 
 function assertCurrentSession(capturedGeneration: number): void {
   if (capturedGeneration === currentSessionGeneration()) return;
-  throw {
+  throw new ApiError({
     message: 'Response belongs to a superseded session',
     code: 'session_superseded',
-  } as ApiError;
+  });
 }
 
 async function request<T>(
@@ -535,6 +597,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     message: alert.message,
     severity: normalizedSeverity,
     type: alert.type || 'alert',
+    category: alert.category ?? undefined,
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),
@@ -595,14 +658,14 @@ export async function login(email: string, password: string): Promise<LoginResul
   if (response.mfaRequired) {
     const challenge = parseMfaChallengePayload(response);
     if (!challenge) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+      throw new ApiError({ message: 'Invalid MFA challenge from server' });
     }
     return { kind: 'mfaRequired', challenge };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid login response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid login response' });
   }
 
   return {
@@ -625,7 +688,7 @@ export async function verifyMfa(
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid MFA response' });
   }
 
   return { token, user: response.user, registerGrant: response.authenticatorRegisterGrantId ?? null };
@@ -697,19 +760,26 @@ export async function refreshToken(): Promise<{ token: string }> {
     });
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
-    throw { message: 'Failed to refresh token' } as ApiError;
+    throw new ApiError({ message: 'Failed to refresh token' });
   }
   // Callers such as aiChat persist the returned token. Refuse to hand them a
   // response that began before logout advanced the generation, otherwise the
   // caller could reinstall access authority after local teardown completed.
   if (generation !== currentSessionGeneration()) {
-    throw {
+    throw new ApiError({
       message: 'Refresh response belongs to a superseded session',
       code: 'session_superseded',
-    } as ApiError;
+    });
   }
   return { token };
 }
+
+/**
+ * The app's single token refresher: the request core calls it on a 401 and
+ * aiChat reopens its stream through it, so concurrent 401s share one
+ * /auth/refresh. See tokenRefresh.ts for why it is built here.
+ */
+export const refreshAccessToken = createTokenRefresher(refreshToken);
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   await requestWithPrefix('/auth/change-password', API_CORE_PREFIX, {

@@ -1,11 +1,24 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
-export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+import { executionRowStatusConfig as statusConfig } from './executionStatus';
+import type { ExecutionStatus } from '@breeze/shared';
+export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
+
+// #2698: per-run summary of the script custom-field write-back. Mirrors
+// `ScriptCustomFieldWriteSummary` in apps/api/src/db/schema/scripts.ts — kept
+// as a local type rather than a cross-package import since apps/web does not
+// depend on apps/api. `rejected.reason` is one of the
+// CustomFieldWriteRejection values documented in
+// apps/api/src/services/customFields/scriptWriteBack.ts.
+export type ScriptCustomFieldWriteResult = {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+};
 
 export type ScriptExecution = {
   id: string;
@@ -20,6 +33,10 @@ export type ScriptExecution = {
   stdout?: string;
   stderr?: string;
   duration?: number; // in seconds
+  // NULL/absent for every run that emitted no `::breeze:custom-fields::`
+  // marker. Only present once the execution-detail endpoint has been fetched
+  // (the list endpoint omits it, same as stdout/stderr).
+  customFieldResult?: ScriptCustomFieldWriteResult | null;
 };
 
 type ExecutionHistoryProps = {
@@ -28,14 +45,6 @@ type ExecutionHistoryProps = {
   pageSize?: number;
   showScriptName?: boolean;
   timezone?: string;
-};
-
-const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  failed: { label: 'status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
-  timeout: { label: 'status.timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -202,10 +211,13 @@ export default function ExecutionHistory({
           >
             <option value="all">{t('executionHistory.filters.allStatus')}</option>
             <option value="pending">{t('executionHistory.status.pending')}</option>
+            <option value="queued">{t('executionHistory.status.queued')}</option>
             <option value="running">{t('executionHistory.status.running')}</option>
+            <option value="cancelling">{t('executionHistory.status.cancelling')}</option>
             <option value="completed">{t('executionHistory.status.completed')}</option>
             <option value="failed">{t('executionHistory.status.failed')}</option>
             <option value="timeout">{t('executionHistory.status.timeout')}</option>
+            <option value="cancelled">{t('executionHistory.status.cancelled')}</option>
           </select>
           <select
             value={dateFilter}

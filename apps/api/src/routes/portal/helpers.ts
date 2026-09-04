@@ -9,6 +9,7 @@ import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
 import { getRedis } from '../../services/redis';
 import { portalBase } from '../../services/portalUrl';
 import type { PortalSession } from './schemas';
+import { isSameOriginRequest } from '../../services/requestTransport';
 import {
   PORTAL_SESSION_COOKIE_NAME,
   PORTAL_SESSION_COOKIE_PATH,
@@ -18,15 +19,22 @@ import {
   PORTAL_CSRF_COOKIE_PATH,
   PORTAL_SESSION_CAP,
   PORTAL_RESET_TOKEN_CAP,
-  PORTAL_RATE_BUCKET_CAP,
   STATE_SWEEP_INTERVAL_MS,
-  RATE_LIMIT_SWEEP_INTERVAL_MS,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
   INVITE_TTL_MS,
   INVITE_TTL_SECONDS,
   PORTAL_INVITE_TOKEN_CAP,
 } from './schemas';
+import {
+  capMapByOldest,
+  checkRateLimit,
+  portalRateLimitBuckets,
+} from '../../services/portal/rateLimit';
+
+// The rate limiter moved to services/portal/rateLimit.ts (see its header);
+// re-exported so the auth routes and tests keep importing it from here.
+export { capMapByOldest, checkRateLimit, portalRateLimitBuckets };
 
 // ============================================
 // In-memory state
@@ -35,15 +43,7 @@ import {
 export const portalSessions = new Map<string, PortalSession>();
 export const portalResetTokens = new Map<string, { userId: string; expiresAt: Date; createdAt: Date }>();
 export const portalInviteTokens = new Map<string, { portalUserId: string; expiresAt: Date; createdAt: Date }>();
-export const portalRateLimitBuckets = new Map<string, {
-  count: number;
-  resetAtMs: number;
-  blockedUntilMs: number;
-  lastSeenAtMs: number;
-}>();
-
 let lastStateSweepAtMs = 0;
-let lastRateLimitSweepAtMs = 0;
 
 // ============================================
 // Utility functions
@@ -286,27 +286,6 @@ export function getCookieValue(cookieHeader: string | undefined, name: string): 
 // Map cap / sweep helpers
 // ============================================
 
-export function capMapByOldest<T>(
-  map: Map<string, T>,
-  cap: number,
-  getAgeMs: (value: T) => number
-) {
-  if (map.size <= cap) {
-    return;
-  }
-
-  const overflow = map.size - cap;
-  const entries = Array.from(map.entries())
-    .sort(([, left], [, right]) => getAgeMs(left) - getAgeMs(right));
-
-  for (let i = 0; i < overflow; i++) {
-    const key = entries[i]?.[0];
-    if (key) {
-      map.delete(key);
-    }
-  }
-}
-
 export function sweepPortalState(nowMs: number = Date.now()) {
   if (nowMs - lastStateSweepAtMs < STATE_SWEEP_INTERVAL_MS) {
     return;
@@ -337,103 +316,9 @@ export function sweepPortalState(nowMs: number = Date.now()) {
   capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (token) => token.createdAt.getTime());
 }
 
-function sweepRateLimitBuckets(nowMs: number = Date.now()) {
-  if (nowMs - lastRateLimitSweepAtMs < RATE_LIMIT_SWEEP_INTERVAL_MS) {
-    return;
-  }
-
-  lastRateLimitSweepAtMs = nowMs;
-
-  for (const [key, bucket] of portalRateLimitBuckets.entries()) {
-    const stale = bucket.resetAtMs <= nowMs && bucket.blockedUntilMs <= nowMs;
-    const idleTooLong = nowMs - bucket.lastSeenAtMs > RATE_LIMIT_SWEEP_INTERVAL_MS * 6;
-    if (stale || idleTooLong) {
-      portalRateLimitBuckets.delete(key);
-    }
-  }
-
-  capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (bucket) => bucket.lastSeenAtMs);
-}
-
 // ============================================
-// Rate limiting
+// Rate limiting (implementation: services/portal/rateLimit.ts)
 // ============================================
-
-export async function checkRateLimit(
-  key: string,
-  config: { windowMs: number; maxAttempts: number; blockMs: number },
-  nowMs: number = Date.now()
-): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (!redis) {
-      if (process.env.NODE_ENV === 'production') {
-        return { allowed: false, retryAfterSeconds: 60 };
-      }
-      return { allowed: true, retryAfterSeconds: 0 };
-    }
-
-    const blockKey = PORTAL_REDIS_KEYS.rlBlock(key);
-    const blockTtl = await redis.ttl(blockKey);
-    if (blockTtl > 0) {
-      return { allowed: false, retryAfterSeconds: blockTtl };
-    }
-
-    const attemptsKey = PORTAL_REDIS_KEYS.rlAttempts(key);
-    const windowSeconds = Math.ceil(config.windowMs / 1000);
-    const count = await redis.incr(attemptsKey);
-    if (count === 1) {
-      await redis.expire(attemptsKey, windowSeconds);
-    }
-
-    if (count > config.maxAttempts) {
-      const blockSeconds = Math.ceil(config.blockMs / 1000);
-      await redis.setex(blockKey, blockSeconds, '1');
-      return { allowed: false, retryAfterSeconds: blockSeconds };
-    }
-
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-
-  sweepRateLimitBuckets(nowMs);
-
-  let bucket = portalRateLimitBuckets.get(key);
-  if (!bucket || bucket.resetAtMs <= nowMs) {
-    bucket = {
-      count: 0,
-      resetAtMs: nowMs + config.windowMs,
-      blockedUntilMs: 0,
-      lastSeenAtMs: nowMs
-    };
-  }
-
-  if (bucket.blockedUntilMs > nowMs) {
-    bucket.lastSeenAtMs = nowMs;
-    portalRateLimitBuckets.set(key, bucket);
-    capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil((bucket.blockedUntilMs - nowMs) / 1000))
-    };
-  }
-
-  bucket.count += 1;
-  bucket.lastSeenAtMs = nowMs;
-
-  if (bucket.count > config.maxAttempts) {
-    bucket.blockedUntilMs = nowMs + config.blockMs;
-    portalRateLimitBuckets.set(key, bucket);
-    capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil(config.blockMs / 1000))
-    };
-  }
-
-  portalRateLimitBuckets.set(key, bucket);
-  capMapByOldest(portalRateLimitBuckets, PORTAL_RATE_BUCKET_CAP, (entry) => entry.lastSeenAtMs);
-  return { allowed: true, retryAfterSeconds: 0 };
-}
 
 export async function clearRateLimitKeys(keys: string[]) {
   if (PORTAL_USE_REDIS) {
@@ -542,8 +427,10 @@ export function validatePortalCookieCsrfRequest(c: Context): string | null {
     return 'Invalid CSRF token';
   }
 
+  // Same-origin requests (tunnel / LAN name outside the allowlist) are not
+  // CSRF — see services/requestTransport.ts isSameOriginRequest.
   const origin = c.req.header('origin');
-  if (origin && !isAllowedOrigin(origin)) {
+  if (origin && !isAllowedOrigin(origin) && !isSameOriginRequest(c, origin)) {
     return 'Invalid request origin';
   }
 

@@ -7,6 +7,7 @@ import {
   Bell,
   Building2,
   CheckCircle2,
+  Contact,
   Copy,
   Check,
   CreditCard,
@@ -19,8 +20,10 @@ import {
   Puzzle,
   ScrollText,
   Shield,
-  Ticket
+  Ticket,
+  Archive
 } from 'lucide-react';
+import ContactsCard from './ContactsCard';
 import ContractsList from '../contracts/ContractsList';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
@@ -34,6 +37,7 @@ import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
@@ -44,8 +48,8 @@ import Pax8OrgTab from '../organizations/Pax8OrgTab';
 import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
 type TabKey =
-  | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
+  | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
+  | 'approval-security' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
   | 'extensions';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
@@ -55,6 +59,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     label: 'orgSettingsPage.nav.organization',
     items: [
       { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
+      { key: 'contacts', hash: 'contacts', label: 'orgSettingsPage.nav.contacts', description: 'orgSettingsPage.nav.contactsDescription', icon: Contact },
       { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
       { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
@@ -75,6 +80,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
       { key: 'approval-security', hash: 'approval-security', label: 'orgSettingsPage.nav.approvalSecurity', description: 'orgSettingsPage.nav.approvalSecurityDescription', icon: Fingerprint },
       { key: 'remote-access', hash: 'remote-access', label: 'orgSettingsPage.nav.remoteAccess', description: 'orgSettingsPage.nav.remoteAccessDescription', icon: Monitor },
       { key: 'event-logs', hash: 'event-logs', label: 'orgSettingsPage.nav.eventLogs', description: 'orgSettingsPage.nav.eventLogsDescription', icon: ScrollText },
+      { key: 'audit-retention', hash: 'audit-retention', label: 'orgSettingsPage.nav.auditRetention', description: 'orgSettingsPage.nav.auditRetentionDescription', icon: Archive },
     ],
   },
   {
@@ -582,6 +588,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             locked={locked}
           />
         );
+      case 'audit-retention':
+        return effectiveOrgId ? (
+          <OrgAuditRetentionSettings
+            orgId={effectiveOrgId}
+            onDirty={handleDirty}
+            onSave={() => handleSave()}
+          />
+        ) : null;
       case 'remote-access':
         // No onDirty: every control on this tab persists immediately through
         // its own request, so the tab never holds unsaved draft state.
@@ -595,6 +609,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             onDirty={handleDirty}
             onSave={() => handleSave()}
           />
+        ) : null;
+      case 'contacts':
+        // No onDirty: the card persists every change through its own request,
+        // so this tab never holds unsaved draft state.
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-contacts">
+            <ContactsCard orgId={effectiveOrgId} />
+          </div>
         ) : null;
       case 'contracts':
         return effectiveOrgId ? (

@@ -111,6 +111,12 @@ export interface AiAgentLimits {
   maxTriageRunsPerHour: number;
   triageBudgetCentsPerRun: number;
   triageMaxTurns: number;
+  /**
+   * v9 (P2-5) — verified-evidence count a colon key must reach before it
+   * becomes promote-eligible. Merged with `max`, not `min`: a partner
+   * raising the bar must not be undercut by an org lowering it.
+   */
+  promoteThreshold: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -151,6 +157,9 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxTriageRunsPerHour: 30,
   triageBudgetCentsPerRun: 10,
   triageMaxTurns: 6,
+  // Promotion threshold (phase 2 P2-5) — see AiAgentLimits.promoteThreshold's
+  // docstring. Merged with max, not min (effectivePolicy.ts).
+  promoteThreshold: 20,
 });
 
 export interface AiAgentTriggers {
@@ -406,7 +415,7 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v7 snapshot. Every site that
  * switches on `schemaVersion` must tolerate 1 through 7.
  *
- * v8 (this bump, P2-4): triage-profile counters/budget/turns —
+ * v8 (P2-4): triage-profile counters/budget/turns —
  * `effective.limits` gained `maxConcurrentTriageRuns`, `maxTriageRunsPerHour`,
  * `triageBudgetCentsPerRun`, `triageMaxTurns`. Same rule as every prior bump:
  * a v1-v7 in-flight run's snapshot lacks these fields and MUST still
@@ -414,12 +423,18 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * snapshot. Every site that switches on `schemaVersion` must tolerate 1
  * through 8. (`triggers.ticketAutonomousWrites`, added the same wave, does
  * NOT bump this version — see that field's own docstring.)
+ *
+ * v9 (this bump, P2-5): `promoteThreshold` — see `AiAgentLimits.promoteThreshold`'s
+ * docstring. Same rule as every prior bump: a v1-v8 in-flight run's snapshot
+ * lacks this field and MUST still execute; read sites fall back to
+ * `AI_AGENT_LIMIT_DEFAULTS.promoteThreshold` for a pre-v9 snapshot. Every
+ * site that switches on `schemaVersion` must tolerate 1 through 9.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 8 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 9 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), or 8 (current). Read sites must tolerate all eight. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), or 9 (current). Read sites must tolerate all nine. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -491,6 +506,37 @@ export interface AiAgentDto {
   disabledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The agent's most recent run, as the LIST route projects it (`loadLastRuns`
+   * in apps/api/src/routes/aiAgents.ts batches one query for the whole page).
+   *
+   * Optional because only the list route computes them; `null` — which that
+   * route always sends, computed or not — means "this agent has never run in
+   * an org this caller can see". The settings page used to declare its own
+   * `AgentListItem = AiAgentDto & {...}` for exactly these two fields, which
+   * made the DTO a description of the wire shape that the wire did not match.
+   */
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
+  /**
+   * How many things that most recent run left for a human to look at — the
+   * same number `AiAgentRunListItemDto.findingsToReview` carries, from the
+   * same helper (`countFindingsToReview` / `findingsToReviewSql`,
+   * apps/api/src/services/aiAgents/runFindings.ts), computed over the SAME
+   * `DISTINCT ON` row `lastRunStatus` above comes from.
+   *
+   * `lastRunStatus` alone understates the agent: a sweep that found six
+   * problems and was allowed to execute none of them reports `completed`, so
+   * the settings list showed a healthy-looking agent sitting on unread
+   * findings. `null` — never 0 — when there is no visible last run at all,
+   * matching its two siblings; 0 means "there IS a last run and it left
+   * nothing to review".
+   *
+   * Optional for the same reason as its siblings: only the list route
+   * computes it, and every other route that returns an `AiAgentDto` answers
+   * `null` rather than omitting the key.
+   */
+  lastRunFindingsToReview?: number | null;
 }
 
 /**

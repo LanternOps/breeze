@@ -209,6 +209,43 @@ export const heartbeatSchema = z.object({
     detectedAt: z.string().datetime({ offset: true }).optional().catch(undefined)
   }).optional().catch(undefined),
   pendingReboot: z.boolean().optional().catch(undefined),
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // THREE-WAY on purpose, and the server persists each case differently:
+  //   absent  -> no news. A pre-#3207 agent omits the key entirely and must
+  //              never wipe the console's view of a live schedule.
+  //   null    -> news: nothing is scheduled any more (cancelled, or the
+  //              restart already fired). Clears the stored columns.
+  //   object  -> the current schedule.
+  // `.nullish()` (not `.optional()`) is what keeps null distinguishable from
+  // absent; the outer `.catch(undefined)` degrades a malformed snapshot to
+  // "no news" rather than 400-ing a heartbeat over an informational field.
+  //
+  // `scheduledAt` is the only REQUIRED member: it is the anchor of the whole
+  // snapshot, so a bad timestamp must invalidate the object rather than store
+  // a restart with no time. Every other member degrades to undefined (stored
+  // NULL) independently.
+  rebootStatus: z.object({
+    scheduledAt: z.string().datetime({ offset: true }),
+    deadline: z.string().datetime({ offset: true }).optional().catch(undefined),
+    // Bounded pattern rather than a hard enum. The agent echoes back whatever
+    // `source` the server put on the schedule_reboot command ('patch_job',
+    // 'maintenance_window', or the agent's own 'manual' default), so an enum
+    // here would silently drop the ENTIRE snapshot the first time a new
+    // server-side producer ships ahead of an API deploy — and it would buy no
+    // provenance anyway, since a compromised agent can claim any allowed
+    // value. The console maps known tokens to localized labels and falls back
+    // to a generic label for anything else, so this is never rendered raw.
+    // Width matches devices.reboot_source varchar(32).
+    source: z.string().regex(/^[a-z0-9_]{1,32}$/).optional().catch(undefined),
+    // Upper bound mirrors MAX_REBOOT_DEFERRALS in services/patchRebootHandler
+    // (10) — inlined rather than imported to keep this schema module free of
+    // the db-touching service graph. The devices CHECK constraints deliberately
+    // enforce only non-negativity, so raising that ceiling later is an API-side
+    // change, not a migration.
+    deferralsUsed: z.number().int().min(0).max(10).optional().catch(undefined),
+    maxDeferrals: z.number().int().min(0).max(10).optional().catch(undefined),
+  }).nullish().catch(undefined),
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
   deviceRole: z.enum(DEVICE_ROLES).optional().catch(undefined),

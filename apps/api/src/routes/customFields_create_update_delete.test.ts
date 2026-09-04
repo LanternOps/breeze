@@ -39,7 +39,7 @@ vi.mock('../db/schema', () => ({
     options: 'options',
     required: 'required',
     defaultValue: 'defaultValue',
-    deviceTypes: 'deviceTypes',
+    deviceTypes: 'deviceTypes', scriptWrite: 'scriptWrite',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt'
   }
@@ -76,7 +76,7 @@ function makeField(overrides: Record<string, unknown> = {}) {
     options: null,
     required: false,
     defaultValue: null,
-    deviceTypes: null,
+    deviceTypes: null, scriptWrite: false,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     ...overrides
@@ -333,6 +333,56 @@ describe('customFields routes', () => {
       const body = await res.json();
       expect(body.data.deviceTypes).toEqual(['windows', 'macos']);
     });
+
+    it('accepts a dropdown created with the shared {label,value} choices shape', async () => {
+      const created = makeField({
+        name: 'Contract Tier',
+        fieldKey: 'contract_tier',
+        type: 'dropdown',
+        options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Contract Tier',
+          fieldKey: 'contract_tier',
+          type: 'dropdown',
+          options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('preserves text minLength/maxLength instead of stripping them', async () => {
+      let inserted: any;
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockImplementation((v: any) => {
+          inserted = v;
+          return { returning: vi.fn().mockResolvedValue([makeField({ name: 'Asset Tag', fieldKey: 'asset_tag', options: v.options })]) };
+        })
+      } as any);
+
+      await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Asset Tag',
+          fieldKey: 'asset_tag',
+          type: 'text',
+          options: { minLength: 3, maxLength: 32 }
+        })
+      });
+
+      expect(inserted.options).toEqual({ minLength: 3, maxLength: 32 });
+    });
   });
 
   // ----------------------------------------------------------------
@@ -407,6 +457,110 @@ describe('customFields routes', () => {
   // ----------------------------------------------------------------
   // DELETE /:id - Delete custom field
   // ----------------------------------------------------------------
+  describe('scriptWrite (#2698)', () => {
+    /**
+     * These assert what the ROUTE hands the database, not what the mocked
+     * database hands back — a `.returning()` mock would echo any value and
+     * pass vacuously whether or not the route wired the column through.
+     */
+    it('defaults scriptWrite to false on create', async () => {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeField()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: false }));
+    });
+
+    it('passes scriptWrite true through to the insert', async () => {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeField({ scriptWrite: true })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text', scriptWrite: true
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: true }));
+      expect((await res.json()).data.scriptWrite).toBe(true);
+    });
+
+    it('rejects a non-boolean scriptWrite', async () => {
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text', scriptWrite: 'yes'
+        })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('toggles scriptWrite on update', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeField()])
+          })
+        })
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeField({ scriptWrite: true })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/custom-fields/${FIELD_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scriptWrite: true })
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: true }));
+      expect((await res.json()).data.scriptWrite).toBe(true);
+    });
+
+    it('leaves scriptWrite untouched when the update omits it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeField()])
+          })
+        })
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeField({ name: 'Renamed' })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/custom-fields/${FIELD_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.not.objectContaining({ scriptWrite: expect.anything() }));
+    });
+  });
+
   describe('DELETE /custom-fields/:id', () => {
     it('should delete a custom field', async () => {
       vi.mocked(db.select).mockReturnValueOnce({

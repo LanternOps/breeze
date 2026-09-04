@@ -1,8 +1,10 @@
-import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets
+  invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
+  accountingEntityMappings, accountingConnections
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -14,6 +16,10 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
+import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+import type { MappingSyncStatus } from './accounting/accountingMappingService';
+import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -82,7 +88,7 @@ export function requireInvoiceAccess(actor: InvoiceActor, inv: { orgId: string; 
 /** Either the ambient `db` handle or a `db.transaction` callback handle. */
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
+export async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
   const rows = await dbc.select().from(invoices).where(eq(invoices.id, id)).limit(1);
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return rows[0];
@@ -349,6 +355,13 @@ export async function addContractLine(
     taxable: boolean;        // used on non-catalog path
     catalogItemId?: string | null;
     sourceId?: string | null; // contract_line id
+    /**
+     * #3205 W04: per-unit cost basis for a DERIVED line (an overage) that
+     * inherits its origin line's basis, so computeInvoiceProfit does not report
+     * it as pure margin. Honoured on the NON-CATALOG path only — on the catalog
+     * path the price resolver stays authoritative for cost as well as price.
+     */
+    costBasis?: string | null;
     /** The owning CONTRACT id — durable lineage (#3778). REQUIRED: a
      *  source_type='contract' line without it is a 500-worthy bug, never a
      *  silent insert, because the ACTIVE-contract restamp keys on this column. */
@@ -435,6 +448,8 @@ export async function addContractLine(
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
         throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
       }
+      costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
+      if (costBasis != null) assertRepresentable(costBasis, inv.currencyCode);
     }
 
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
@@ -612,26 +627,105 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
   return { invoice: updated, audit: { orgId: inv.orgId, invoiceId, oldDueDate, newDueDate: dueDate } };
 }
 
+export interface InvoiceAccountingSync {
+  provider: 'quickbooks';
+  syncStatus: MappingSyncStatus;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  remoteDocNumber: string | null;
+  /**
+   * True when this mapping row carries the `markInvoiceDeletedRemotely`
+   * marker (#4544) — the reconcile worker saw QuickBooks delete/void an
+   * invoice Breeze previously pushed. Computed here, server-side, from the
+   * one place that knows the exact sentinel `lastError` string
+   * (`INVOICE_REMOTE_DELETED_ERROR`), so the web layer never has to
+   * string-match `lastError` to decide whether re-pushing is safe.
+   */
+  remoteDeleted: boolean;
+}
+
+/**
+ * QuickBooks push status for this invoice's `accounting_entity_mappings` row
+ * (Phase C, Task 5). `accounting_entity_mappings` is a partner-axis (shape 3)
+ * RLS table — this is a plain read through the ambient `db` (the caller's
+ * request-scoped context), so it deliberately does NOT escalate to a system
+ * context: an org-scoped token has no partner access and the read returns no
+ * rows, which this function reports as `null` (fail closed) with no special-
+ * casing needed. The join to `accounting_connections` scopes the mapping to
+ * THIS partner's QuickBooks connection (never another provider/partner's row
+ * with a colliding breezeEntityId, which the schema's uniqueness constraints
+ * make impossible anyway, but the join keeps the read self-contained).
+ */
+async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): Promise<InvoiceAccountingSync | null> {
+  const rows = await db
+    .select({
+      syncStatus: accountingEntityMappings.syncStatus,
+      lastSyncedAt: accountingEntityMappings.lastSyncedAt,
+      lastError: accountingEntityMappings.lastError,
+      remoteDocNumber: accountingEntityMappings.remoteDocNumber,
+    })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, partnerId),
+      eq(accountingConnections.provider, 'quickbooks'),
+    ))
+    .where(and(
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'invoice'),
+      eq(accountingEntityMappings.breezeEntityId, invoiceId),
+    ))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    provider: 'quickbooks',
+    syncStatus: row.syncStatus as MappingSyncStatus,
+    lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
+    lastError: row.lastError,
+    remoteDocNumber: row.remoteDocNumber,
+    remoteDeleted: row.lastError === INVOICE_REMOTE_DELETED_ERROR,
+  };
+}
+
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
+  // out of listInvoices and the customer projection.
+  const evidenceCounts = await db
+    .select({ lineId: invoiceLineDevices.invoiceLineId, n: count() })
+    .from(invoiceLineDevices)
+    .where(eq(invoiceLineDevices.invoiceId, invoiceId))
+    .groupBy(invoiceLineDevices.invoiceLineId);
+  const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
+  const linesWithDeviceCount = lines.map((line) => ({
+    ...line,
+    deviceCount: deviceCountByLine.get(line.id) ?? 0,
+  }));
   // Whether this invoice's partner can collect online (gates the "Send payment
   // link" UI). Partner-axis read under a partner/system request scope, so the
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
   // (e.g. Stripe unconfigured) just means "not connected".
   const conn = await getConnection(inv.partnerId).catch(() => null);
   const connected = conn?.status === 'connected';
+  // Best-effort, same fail-closed rationale as the Stripe lookup above: a
+  // lookup failure (e.g. no accounting connection row) must never fail the
+  // whole invoice detail load.
+  const accountingSync = await getInvoiceAccountingSync(invoiceId, inv.partnerId).catch(() => null);
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
+    accountingSync,
   };
 }
 
 export type CustomerInvoiceLine = {
+  ticketNumber: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -670,6 +764,7 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 >;
 
 type CustomerInvoiceLineSource = {
+  ticketNumber?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -681,6 +776,7 @@ type CustomerInvoiceLineSource = {
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
+    ticketNumber: line.ticketNumber ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -725,13 +821,21 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
+    ticketNumber: tickets.ticketNumber,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
-  }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
+  }).from(invoiceLines).leftJoin(tickets, and(
+    eq(tickets.id, invoiceLines.ticketId),
+    eq(tickets.orgId, inv.orgId),
+  )).where(and(
+    eq(invoiceLines.invoiceId, invoiceId),
+    eq(invoiceLines.orgId, inv.orgId),
+    eq(invoiceLines.customerVisible, true),
+  )).orderBy(invoiceLines.sortOrder);
   const lines = rows.map(toCustomerInvoiceLine);
   // partnerId rides OUTSIDE the serialized header: the portal route needs it
   // for the partner-name branding lookup, but CustomerInvoiceHeader is the
@@ -774,6 +878,7 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    invoiceDeviceAppendix?: boolean;
     autoEmailInvoiceOnQuoteAccept?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
@@ -799,6 +904,7 @@ export async function updatePartnerBillingSettings(
     set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
+  if (patch.invoiceDeviceAppendix !== undefined) set.invoiceDeviceAppendix = patch.invoiceDeviceAppendix;
   if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
@@ -815,6 +921,7 @@ export async function updatePartnerBillingSettings(
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
+    invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
     autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
@@ -1227,6 +1334,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // carries. Pure key addition using the `partner` row read above (after
       // all locks): no new read, no new lock class.
       documentLocale: inv.documentLocale ?? resolvePartnerDocumentLocale(partner),
+      // #3205 W07 decision 14a: resolve the appendix choice ONCE, here, and write
+      // a concrete boolean. After this the column is a settled fact, not an
+      // override-or-inherit tri-state, and loadInvoiceForRender reads ONLY this
+      // column — so a later change to the partner default cannot alter what a
+      // sanctioned re-render produces. Same two-writer rule document_locale
+      // follows, for the same reason.
+      deviceAppendix: inv.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false,
       updatedAt: issueDate
     }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
     // Guarded write: impossible to miss while we hold the row lock and asserted
@@ -1275,6 +1389,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     await enqueueInvoicePdfRender(invoiceId);
   } catch (err) {
     console.error('[invoiceService] enqueueInvoicePdfRender failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+  }
+  // Auto-push to QuickBooks (Phase C, Task 4). enqueueAccountingInvoicePush is
+  // itself Redis-outage-safe (try/catch + Sentry) — the worker decides whether
+  // this partner is even connected/pushMode:'auto'; the try/catch here is the
+  // same defensive belt-and-braces as the PDF render above.
+  try {
+    await enqueueAccountingInvoicePush(invoiceId, inv.partnerId);
+  } catch (err) {
+    console.error('[invoiceService] enqueueAccountingInvoicePush failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
   }
   return getOwnedInvoiceOr404(invoiceId);
 }
@@ -1416,6 +1539,14 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       reference: pay.reference,
       recordedBy: pay.recordedBy,
     };
+    // Clear the 'payment' accounting_entity_mappings row for this
+    // invoice_payments id FIRST, inside this same transaction. breeze_entity_id
+    // is polymorphic (no FK, so nothing cascades — see orgMerge.runPostPassFixups'
+    // orphan-sweep comment): deleting the payment row first would strand the
+    // mapping, and a later QuickBooks CDC delivery for that Payment would then
+    // read as "already applied" and silently skip re-recording it. Zero rows is
+    // the normal case (a manual or Stripe payment has no accounting mapping).
+    await clearPaymentMappingForInvoicePayment(tx, paymentId);
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
@@ -1440,12 +1571,43 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
     .from(invoiceStripePayments)
     .where(and(eq(invoiceStripePayments.invoiceId, invoiceId), eq(invoiceStripePayments.status, 'succeeded')));
   const stripeIds = new Set(linked.map((r) => r.invoicePaymentId).filter((x): x is string => !!x));
-  return rows.map((r) => ({ ...r, source: stripeIds.has(r.id) ? ('stripe' as const) : ('manual' as const) }));
+  // QuickBooks-sourced payments (Phase D pull-back) carry a 'payment' mapping row
+  // keyed on the invoice_payments id. Same purpose as the Stripe badge: the UI
+  // must not offer a hand-void on a row QuickBooks owns — voiding it here would
+  // just be re-pulled on the next CDC sweep. Partner-scoped for the same reason
+  // every other accounting_entity_mappings read is: RLS is stricter than the app
+  // layer, and this read must never depend on it alone.
+  const paymentIds = rows.map((r) => r.id);
+  const qboLinked = paymentIds.length === 0 ? [] : await db
+    .select({ breezeEntityId: accountingEntityMappings.breezeEntityId })
+    .from(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.partnerId, inv.partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      inArray(accountingEntityMappings.breezeEntityId, paymentIds),
+    ));
+  const qboIds = new Set(qboLinked.map((r) => r.breezeEntityId));
+  // Stripe wins a (structurally impossible) double link: it is the badge that
+  // gates the destructive hand-void affordance.
+  return rows.map((r) => ({
+    ...r,
+    source: stripeIds.has(r.id)
+      ? ('stripe' as const)
+      : qboIds.has(r.id) ? ('quickbooks' as const) : ('manual' as const),
+  }));
 }
 
 // ---------------------------------------------------------------------------
 // Void + reissue + overdue sweep + viewed (Task 3.8)
 // ---------------------------------------------------------------------------
+
+// #3205 W07: same body as contractService.ts's chunksOf — two callers in two
+// services is this repo's existing pattern; not extracted to a shared util.
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 /**
  * Void an issued invoice and optionally reissue it as a fresh draft.
@@ -1550,7 +1712,15 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // make sense in the currency they were rounded in. document_locale is
     // likewise NOT copied: it is an issue-time snapshot, restamped when this
     // draft issues (#3777).
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    const [draft] = await db.insert(invoices).values({
+      partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes,
+      currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId,
+      // #3205 W07 decision 15a: copied verbatim. document_locale is NOT copied
+      // (it is an issue-time snapshot, restamped when this draft issues);
+      // evidence_version IS, because the evidence itself is being cloned — a
+      // clone must not read as a pre-W07 invoice.
+      evidenceVersion: inv.evidenceVersion,
+    }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
     // Cloned from the rows LOCKED in step 2 — not re-read unlocked.
@@ -1566,19 +1736,64 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
     });
-    const oldToNew = new Map<string, string>();
+    // Mint every new line id UP FRONT — parents AND children — so the map is
+    // complete and order-independent before a single row is written.
+    //
+    // The old shape built the map POSITIONALLY from `.returning({ id })`
+    // (`parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id))`), which
+    // assumes RETURNING comes back in input order. Postgres does not promise
+    // that. Today the consequence would be invisible (the map only re-pointed
+    // parentLineId among sibling bundle rows); attach billing evidence to it and
+    // a reordered RETURNING silently files device rows under the WRONG line.
+    // Pre-generated uuids remove the assumption instead of adding a second one.
+    // The children insert also never returned ids at all, so the map was
+    // parents-only — evidence on a bundle child had nowhere to go.
+    const oldToNew = new Map<string, string>(srcLines.map((l) => [l.id, randomUUID()]));
+    const newId = (oldLineId: string): string => {
+      const id = oldToNew.get(oldLineId);
+      // The old child clone used `oldToNew.get(l.parentLineId!) ?? null`, which
+      // silently PROMOTED a child to a top-level line when its parent was
+      // missing. Throw instead.
+      if (!id) throw new InvoiceServiceError(`Reissue clone: no mapping for line ${oldLineId}`, 500, 'INVALID_STATE');
+      return id;
+    };
     const parents = srcLines.filter((l) => l.parentLineId === null);
     if (parents.length) {
-      const inserted = await db.insert(invoiceLines).values(parents.map((l) => cloneValues(l, null))).returning({ id: invoiceLines.id });
-      parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id));
+      await db.insert(invoiceLines).values(parents.map((l) => ({ id: newId(l.id), ...cloneValues(l, null) })));
     }
     const children = srcLines.filter((l) => l.parentLineId !== null);
     if (children.length) {
-      await db.insert(invoiceLines).values(children.map((l) => cloneValues(l, oldToNew.get(l.parentLineId!) ?? null)));
+      await db.insert(invoiceLines).values(
+        children.map((l) => ({ id: newId(l.id), ...cloneValues(l, newId(l.parentLineId!)) })),
+      );
+    }
+
+    // #3205 W07: clone the evidence through the SAME map. Device pointers are
+    // copied VERBATIM — device_id, hostname, device_role, site_id, counted_as —
+    // so a row detached before the reissue (deleted or moved device) stays
+    // detached on the clone rather than being resurrected.
+    const srcEvidence = await db.select().from(invoiceLineDevices)
+      .where(eq(invoiceLineDevices.invoiceId, invoiceId));
+    for (const chunk of chunksOf(srcEvidence, 500)) {
+      await db.insert(invoiceLineDevices).values(chunk.map((e) => ({
+        invoiceLineId: newId(e.invoiceLineId), invoiceId: draft!.id, orgId: e.orgId,
+        deviceId: e.deviceId, hostname: e.hostname, deviceRole: e.deviceRole,
+        siteId: e.siteId, countedAs: e.countedAs,
+      })));
     }
   }));
 
   await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: voidedOrgId, partnerId: voidedPartnerId, actorUserId: actor.userId });
+  // Auto-void in QuickBooks (Phase C, Task 4). Fire-and-forget, own try/catch —
+  // mirrors the issue-side push hook. VOID jobs process regardless of
+  // pushMode: books must not keep a voided invoice open in QuickBooks just
+  // because auto-push is off (voidInvoiceInAccounting itself no-ops when the
+  // invoice was never pushed).
+  try {
+    await enqueueAccountingInvoiceVoid(invoiceId, voidedPartnerId);
+  } catch (err) {
+    console.error('[invoiceService] enqueueAccountingInvoiceVoid failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+  }
 
   if (opts.reissue && draftId) {
     await recomputeInvoiceTotals(draftId);

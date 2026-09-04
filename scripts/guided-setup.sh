@@ -12,6 +12,7 @@ YES_MODE="false"
 NO_UP="false"
 DRY_RUN="${BREEZE_SETUP_DRY_RUN:-false}"
 INSTALL_SYSTEMD_ONLY="false"
+RENDER_SYSTEMD_DIR=""
 DOWNLOAD_MODE="ask"
 SECRET_MODE="${BREEZE_SETUP_SECRET_MODE:-}"
 STORAGE_MODE="${BREEZE_SETUP_STORAGE_MODE:-}"
@@ -37,7 +38,9 @@ PROXY_BIND_HOST="${BREEZE_SETUP_PROXY_BIND_HOST:-127.0.0.1}"
 PROXY_TARGET_HOST="${BREEZE_SETUP_PROXY_TARGET_HOST:-}"
 API_HOST_PORT="${BREEZE_SETUP_API_HOST_PORT:-3001}"
 WEB_HOST_PORT="${BREEZE_SETUP_WEB_HOST_PORT:-4321}"
-SELECTED_BREEZE_VERSION=""
+# BREEZE_SETUP_VERSION preselects the release (skips the GitHub/GHCR lookups) —
+# used by CI to run the installer against locally built images.
+SELECTED_BREEZE_VERSION="${BREEZE_SETUP_VERSION:-}"
 BACK_STATUS=42
 BOOTSTRAP_ENV_KEYS=(
   BREEZE_BOOTSTRAP_ADMIN_EMAIL
@@ -77,12 +80,19 @@ Options:
   --no-up              Generate/validate .env but do not pull images or start Compose.
   --dry-run            Exercise the full guided flow without Docker or systemd changes.
   --install-systemd    Install/update the Linux systemd boot service, then exit.
+  --render-systemd-unit DIR
+                       Write the systemd unit and Compose boot helper to DIR without
+                       installing anything (no root needed), then exit. Used by CI to
+                       verify the generated unit with systemd-analyze.
   -y, --yes            Accept safe defaults and non-destructive prompts.
   -h, --help           Show this help.
 
 Environment overrides:
   BREEZE_SETUP_REMOTE_BASE   Override raw GitHub base URL for template testing.
   BREEZE_SETUP_GITHUB_REPO   GitHub repo for latest release lookup.
+  BREEZE_SETUP_VERSION       Preselect the Breeze version/tag; skips the GitHub
+                             release lookup and the GHCR image check (for pinned,
+                             air-gapped, or locally built images).
   BREEZE_SETUP_SECRET_MODE   Secret workflow: auto or manual.
   BREEZE_SETUP_STORAGE_MODE  Storage mode: docker or local.
   BREEZE_SETUP_DRY_RUN       Exercise prompts without Docker/systemd changes: true or false.
@@ -124,6 +134,11 @@ while [[ $# -gt 0 ]]; do
       INSTALL_SYSTEMD_ONLY="true"
       shift
       ;;
+    --render-systemd-unit)
+      RENDER_SYSTEMD_DIR="${2:-}"
+      [[ -n "${RENDER_SYSTEMD_DIR}" ]] || { echo "--render-systemd-unit requires a directory." >&2; exit 2; }
+      shift 2
+      ;;
     -y|--yes)
       YES_MODE="true"
       shift
@@ -162,6 +177,13 @@ WORK_DIR="$(cd "${WORK_DIR}" && pwd)"
 
 if [[ -z "${ENV_FILE}" ]]; then
   ENV_FILE="${WORK_DIR}/.env"
+fi
+
+# systemd requires absolute ExecStart= paths, and the helper installer derives
+# its directory from this value, so a relative override can never work.
+if [[ "${SYSTEMD_HELPER_FILE}" != /* ]]; then
+  echo "BREEZE_SETUP_SYSTEMD_HELPER_FILE must be an absolute path (got: ${SYSTEMD_HELPER_FILE})." >&2
+  exit 2
 fi
 
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
@@ -663,8 +685,17 @@ run_privileged() {
   fail "Root privileges are required. Rerun with sudo or install the systemd unit manually."
 }
 
-write_boot_helper() {
-  local compose_array file helper_dir helper_tmp
+# systemd expands %-specifiers (%h, %i, ...) in unit paths and command lines,
+# so a literal % in a path must be written as %%.
+systemd_escape_specifiers() {
+  printf '%s' "${1//%/%%}"
+}
+
+# Prints the Compose boot helper script to stdout. Kept separate from the
+# privileged install so CI (--render-systemd-unit) can exercise the exact text
+# self-hosters get.
+render_boot_helper() {
+  local compose_array file
 
   compose_array=$'compose=(\n  docker\n  compose\n'
   for file in "${COMPOSE_FILES[@]}"; do
@@ -675,9 +706,7 @@ write_boot_helper() {
   compose_array+="  $(bash_source_quote "${ENV_FILE}")"$'\n'
   compose_array+=')'
 
-  helper_dir="${SYSTEMD_HELPER_FILE%/*}"
-  helper_tmp="$(mktemp)"
-  cat > "${helper_tmp}" <<EOF
+  cat <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -739,9 +768,57 @@ case "\${1:-up}" in
     ;;
 esac
 EOF
+}
+
+write_boot_helper() {
+  local helper_dir helper_tmp
+
+  helper_dir="${SYSTEMD_HELPER_FILE%/*}"
+  helper_tmp="$(mktemp)"
+  render_boot_helper > "${helper_tmp}"
   run_privileged install -d -m 0755 "${helper_dir}"
   run_privileged install -m 0755 "${helper_tmp}" "${SYSTEMD_HELPER_FILE}"
   rm -f "${helper_tmp}"
+}
+
+# Prints the systemd unit to stdout. Every directive here is validated by
+# scripts/check-guided-setup-systemd-unit.sh (systemd-analyze verify in CI):
+# a unit that systemd rejects surfaces as "bad unit file setting" only at the
+# self-hoster's `systemctl enable --now`, which has already shipped twice
+# (#4201: Type=oneshot + Restart=, then a quoted WorkingDirectory=).
+render_systemd_unit() {
+  cat <<EOF
+[Unit]
+Description=Breeze RMM Docker Compose startup repair
+Requires=docker.service
+Wants=network-online.target
+After=docker.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+WorkingDirectory=$(systemd_escape_specifiers "${WORK_DIR}")
+ExecStart=$(systemd_escape_specifiers "$(shell_quote "${SYSTEMD_HELPER_FILE}")")
+ExecStop=$(systemd_escape_specifiers "$(shell_quote "${SYSTEMD_HELPER_FILE}")") down
+RemainAfterExit=yes
+TimeoutStartSec=15min
+TimeoutStopSec=3min
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# --render-systemd-unit DIR: write both generated files unprivileged and stop.
+render_systemd_artifacts() {
+  local dir="$1" helper_name
+
+  helper_name="${SYSTEMD_HELPER_FILE##*/}"
+  mkdir -p "${dir}"
+  render_boot_helper > "${dir}/${helper_name}"
+  chmod 0755 "${dir}/${helper_name}"
+  render_systemd_unit > "${dir}/${SYSTEMD_SERVICE_NAME}.service"
+  log "Rendered ${dir}/${SYSTEMD_SERVICE_NAME}.service and ${dir}/${helper_name} (nothing installed)."
 }
 
 install_systemd_boot_service() {
@@ -758,33 +835,22 @@ install_systemd_boot_service() {
   write_boot_helper
   unit_file="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
   unit_tmp="$(mktemp)"
-
-  cat > "${unit_tmp}" <<EOF
-[Unit]
-Description=Breeze RMM Docker Compose startup repair
-Requires=docker.service
-Wants=network-online.target
-After=docker.service network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=oneshot
-WorkingDirectory=$(shell_quote "${WORK_DIR}")
-ExecStart=$(shell_quote "${SYSTEMD_HELPER_FILE}")
-ExecStop=$(shell_quote "${SYSTEMD_HELPER_FILE}") down
-RemainAfterExit=yes
-TimeoutStartSec=15min
-TimeoutStopSec=3min
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  render_systemd_unit > "${unit_tmp}"
 
   run_privileged install -m 0644 "${unit_tmp}" "${unit_file}"
   rm -f "${unit_tmp}"
   run_privileged systemctl daemon-reload
   run_privileged systemctl enable --now "${SYSTEMD_SERVICE_NAME}.service"
-  log "${C_OK}Installed ${SYSTEMD_HELPER_FILE} and enabled ${SYSTEMD_SERVICE_NAME}.service.${C_RESET}"
+  # `enable --now` exits 0 when the enable succeeds even if the start did not
+  # (a rejected unit prints "Failed to start ... bad unit file setting" and the
+  # script used to carry on to "Guided setup complete" — #4201). Verify the
+  # unit is actually running before claiming success.
+  if ! systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}.service"; then
+    warn "${SYSTEMD_SERVICE_NAME}.service was installed but is not active:"
+    systemctl status "${SYSTEMD_SERVICE_NAME}.service" --no-pager -l 2>&1 | sed 's/^/  /' >&2 || true
+    fail "The reboot-startup service failed to start. Fix the unit (journalctl -u ${SYSTEMD_SERVICE_NAME}.service) or rerun with --install-systemd; the Breeze stack itself is unaffected."
+  fi
+  log "${C_OK}Installed ${SYSTEMD_HELPER_FILE}; ${SYSTEMD_SERVICE_NAME}.service is enabled and active.${C_RESET}"
 }
 
 configure_boot_start() {
@@ -3529,6 +3595,10 @@ apply_reverse_proxy_env() {
       set_env_value "TRUSTED_PROXY_CIDRS" "${REVERSE_PROXY_EXTERNAL_CIDRS}"
       set_env_value "CADDY_TRUSTED_PROXIES" ""
       set_env_value "CADDY_CLIENT_IP_HEADERS" ""
+      # The bundled Caddy is not the TLS terminator in these modes, so an
+      # internal-CA choice left over from a previous caddy-mode run must not
+      # survive a switch.
+      set_env_value "CADDY_LOCAL_CERTS" ""
       set_env_value "BREEZE_EXTERNAL_PROXY" "${REVERSE_PROXY_LABEL}"
       set_env_value "BREEZE_PROXY_TARGET_HOST" "${PROXY_TARGET_HOST}"
       set_env_value "BREEZE_PROXY_BIND_HOST" "${PROXY_BIND_HOST}"
@@ -3540,6 +3610,157 @@ apply_reverse_proxy_env() {
       fail "Unknown reverse proxy mode: ${REVERSE_PROXY_MODE}"
       ;;
   esac
+}
+
+# Caddy asks Let's Encrypt for a certificate whenever its site address is a
+# domain name. That only works when the domain resolves PUBLICLY to this host
+# and ports 80/443 are reachable from the internet. When it does not — an
+# internal name like breeze.corp.example that only answers on a LAN or VPN, or a
+# host behind a firewall — the ACME order fails, Caddy is left with no
+# certificate for the SNI, and it aborts the TLS handshake with alert 80
+# (internal_error). Browsers render that as ERR_SSL_PROTOCOL_ERROR (Chrome) or
+# SSL_ERROR_INTERNAL_ERROR_ALERT (Firefox): it reads as a broken server, not as
+# a certificate warning the operator can click through, and the only clue is
+# `tls.obtain` in `docker logs breeze-caddy`. So ask up front and switch Caddy
+# to its internal CA (CADDY_LOCAL_CERTS=local_certs) when the answer is no.
+#
+# Skipped for localhost and bare IPv4 addresses: Caddy never attempts ACME for
+# either, so it already falls back to its internal CA without being told to.
+# The templates this script downloads are pinned to the SELECTED release tag,
+# while the script itself is whatever the operator fetched — usually newer. The
+# internal-CA opt-in needs two template edits to take effect: the compose
+# `caddy` service must pass CADDY_LOCAL_CERTS through, and the Caddyfile's
+# global options block must carry the `{$CADDY_LOCAL_CERTS}` placeholder.
+# Against a tag that predates both, writing CADDY_LOCAL_CERTS=local_certs to
+# .env is a silent no-op: Caddy still attempts the ACME order, fails it, and
+# aborts the handshake with SSL_ERROR_INTERNAL_ERROR_ALERT — exactly the
+# symptom the prompt exists to prevent (reported on v0.109.0 templates).
+#
+# So backfill the two lines when they are missing. Idempotent: a template that
+# already carries the wiring is left byte-for-byte alone (no backup either).
+ensure_caddy_local_certs_template_support() {
+  [[ "${REVERSE_PROXY_MODE}" == "caddy" ]] || return 0
+
+  if [[ -f "${COMPOSE_FILE}" ]] && ! grep -q 'CADDY_LOCAL_CERTS' "${COMPOSE_FILE}"; then
+    backfill_compose_caddy_local_certs
+  fi
+
+  if [[ -f "${CADDYFILE_FILE}" ]] && ! grep -q '{\$CADDY_LOCAL_CERTS' "${CADDYFILE_FILE}"; then
+    backfill_caddyfile_local_certs_placeholder
+  fi
+}
+
+# Adds `CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}` directly after the
+# `ACME_EMAIL:` line of the `caddy` service — the same block and indentation the
+# current docker-compose.yml uses. Anchored on the service, not on the first
+# ACME_EMAIL in the file, so a future service that also takes ACME_EMAIL cannot
+# receive the line by mistake.
+backfill_compose_caddy_local_certs() {
+  local tmp
+
+  if ! grep -Eq '^  caddy:[[:space:]]*$' "${COMPOSE_FILE}"; then
+    fail "${COMPOSE_FILE} does not contain the packaged Caddy service; cannot enable the internal CA. Restore a fresh Compose file with --download."
+  fi
+
+  tmp="$(mktemp "${COMPOSE_FILE}.tmp.XXXXXX")"
+  backup_file "${COMPOSE_FILE}"
+
+  if ! awk '
+    /^  caddy:[[:space:]]*$/ { in_caddy = 1; print; next }
+    in_caddy && /^  [a-z][a-z0-9_-]*:[[:space:]]*$/ { in_caddy = 0 }
+    {
+      print
+      if (in_caddy && !done && /^      ACME_EMAIL:/) {
+        print "      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}"
+        done = 1
+      }
+    }
+  ' "${COMPOSE_FILE}" > "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to add CADDY_LOCAL_CERTS to the caddy service; ${COMPOSE_FILE} was left unchanged."
+  fi
+
+  [[ -s "${tmp}" ]] || fail_compose_rewrite "${tmp}" "Generated Compose file was empty; ${COMPOSE_FILE} was left unchanged."
+  assert_generated_compose_contains "${tmp}" '      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}' "the CADDY_LOCAL_CERTS pass-through on the caddy service"
+  if ! mv "${tmp}" "${COMPOSE_FILE}"; then
+    rm -f "${tmp}"
+    fail "Failed to replace ${COMPOSE_FILE} with the CADDY_LOCAL_CERTS-enabled Compose file."
+  fi
+  log "Added CADDY_LOCAL_CERTS pass-through to the caddy service in ${COMPOSE_FILE} (release template predates the internal-CA option)."
+}
+
+# Inserts the bare `{$CADDY_LOCAL_CERTS}` placeholder as the first entry of the
+# global options block — the block that opens the file with a lone `{`. A bare
+# placeholder expands to `local_certs` when set and to a blank line when empty,
+# which the Caddyfile adapter discards; see docker/Caddyfile.prod.
+backfill_caddyfile_local_certs_placeholder() {
+  local tmp
+
+  if ! grep -Eq '^\{[[:space:]]*$' "${CADDYFILE_FILE}"; then
+    fail "${CADDYFILE_FILE} has no global options block; cannot enable the internal CA. Restore a fresh Caddyfile with --download."
+  fi
+
+  tmp="$(mktemp "${CADDYFILE_FILE}.tmp.XXXXXX")"
+  backup_file "${CADDYFILE_FILE}"
+
+  if ! awk '
+    {
+      print
+      if (!done && /^\{[[:space:]]*$/) {
+        print "  {$CADDY_LOCAL_CERTS}"
+        done = 1
+      }
+    }
+  ' "${CADDYFILE_FILE}" > "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to add the CADDY_LOCAL_CERTS placeholder; ${CADDYFILE_FILE} was left unchanged."
+  fi
+
+  if [[ ! -s "${tmp}" ]] || ! grep -Fq -- '  {$CADDY_LOCAL_CERTS}' "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Generated Caddyfile is missing the CADDY_LOCAL_CERTS placeholder; ${CADDYFILE_FILE} was left unchanged."
+  fi
+  if ! mv "${tmp}" "${CADDYFILE_FILE}"; then
+    rm -f "${tmp}"
+    fail "Failed to replace ${CADDYFILE_FILE} with the CADDY_LOCAL_CERTS-enabled Caddyfile."
+  fi
+  log "Added the CADDY_LOCAL_CERTS placeholder to ${CADDYFILE_FILE} (release template predates the internal-CA option)."
+}
+
+configure_caddy_local_certs() {
+  local domain="$1"
+  local existing default_answer
+
+  [[ "${REVERSE_PROXY_MODE}" == "caddy" ]] || return 0
+  [[ "${domain}" != "localhost" ]] || return 0
+  if is_ipv4_address "${domain}"; then
+    return 0
+  fi
+
+  # An operator who already chose the internal CA keeps it on a re-run, including
+  # under --yes (ask_yes_no returns the default without prompting in that mode).
+  existing="$(get_env_value "CADDY_LOCAL_CERTS")"
+  if [[ -n "${existing}" ]]; then
+    default_answer="no"
+  else
+    default_answer="yes"
+  fi
+
+  subsection "Certificates"
+  if ask_yes_no "Can Let's Encrypt reach this domain? It needs public DNS pointing at this host and ports 80 and 443 open from the internet." "${default_answer}"; then
+    if [[ -n "${existing}" ]]; then
+      set_env_value "CADDY_LOCAL_CERTS" ""
+      log "Caddy will request public certificates from Let's Encrypt for ${domain}."
+    fi
+    return 0
+  fi
+
+  ensure_caddy_local_certs_template_support
+  set_env_value "CADDY_LOCAL_CERTS" "local_certs"
+  log "Caddy will issue certificates for ${domain} from its own internal CA instead of Let's Encrypt."
+  log "Browsers will warn on every visit until that CA root is trusted on each machine. Export it with:"
+  log "  docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt"
+  log "PUBLIC_APP_URL must still be https://${domain} — the site is HTTPS either way."
 }
 
 configure_core_env() {
@@ -3558,6 +3779,7 @@ configure_core_env() {
     acme_email="admin@${domain}"
   fi
   acme_email="$(prompt_value "ACME_EMAIL" "Email for certificate registration notices" "${acme_email}" true)"
+  configure_caddy_local_certs "${domain}"
 
   app_url="$(prompt_origin "PUBLIC_APP_URL" "Public app URL" "https://${domain}" true)"
   dashboard_url="$(prompt_origin "DASHBOARD_URL" "Dashboard URL" "${app_url}" true)"
@@ -4093,6 +4315,11 @@ main() {
   section "Breeze Guided Setup"
   log "Working directory: ${WORK_DIR}"
   log "Environment file: ${ENV_FILE}"
+
+  if [[ -n "${RENDER_SYSTEMD_DIR}" ]]; then
+    render_systemd_artifacts "${RENDER_SYSTEMD_DIR}"
+    return
+  fi
 
   if [[ "${INSTALL_SYSTEMD_ONLY}" == "true" ]]; then
     install_systemd_only

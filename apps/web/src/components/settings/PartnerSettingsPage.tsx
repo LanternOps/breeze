@@ -207,6 +207,11 @@ export default function PartnerSettingsPage() {
   const [defaultsData, setDefaultsData] = useState<InheritableDefaultSettings>({});
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
+  // The AI Budgets tab's alert-threshold box can hold text that does not parse;
+  // it never reaches `aiBudgetsData`, so saving while it is red would persist
+  // the previous ladder and report success (#4388 W03). The input reports true
+  // again when it unmounts, so leaving the tab never strands the Save button.
+  const [aiBudgetsValid, setAiBudgetsValid] = useState(true);
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
@@ -544,7 +549,7 @@ export default function PartnerSettingsPage() {
             {t('partnerSettingsPage.selfSaving')}
           </p>
         ) : (
-          <button type="button" onClick={handleSave} disabled={saving || !isDirty}
+          <button type="button" onClick={handleSave} disabled={saving || !isDirty || !aiBudgetsValid}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? t('common:states.saving') : t('partnerSettingsPage.saveSettings')}
@@ -655,7 +660,7 @@ export default function PartnerSettingsPage() {
 
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
             </section>
           )}
 

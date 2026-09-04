@@ -30,15 +30,23 @@ a process cannot read the row, it behaves as killed.
 Each write increments `epoch` (monotonic, audit-traceable). The admin `GET`
 below bypasses the cache and always shows database truth.
 
-## Path 1 — Admin API (preferred)
+## Path 1 — Admin console UI (preferred)
 
-Requires a **platform admin** session; **MFA is additionally required for the
-POST** (the GET is readable without it).
+Platform admins can flip the switch from **Administration → AI Kill Switch**
+in the web console (`/admin/ai-kill-switch`), backed by the same API as Path
+1a below. The page shows the current state, epoch, and last reason/provenance,
+and requires a reason on every flip (surfaced as a friendly prompt if MFA
+step-up is needed).
 
 > **Production caveat (flagged 2026-08-26): production currently has ZERO
 > platform admins in both regions**, so all `/admin/*` surfaces — including
 > this one — are unreachable there today. Until a platform admin exists, the
 > SQL fallback below is the only usable production path.
+
+## Path 1a — Admin API
+
+Requires a **platform admin** session; **MFA is additionally required for the
+POST** (the GET is readable without it).
 
 ```bash
 # Inspect current state (killed, epoch, reason, provenance)
@@ -126,6 +134,27 @@ reuses an epoch can be mistaken for stale state.
 container restart to change). The DB row is the **operational** switch: fast
 (≤5s), auditable, reversible without a deploy. In an incident, flip the DB row
 first; reach for the env flag only if the database itself is suspect.
+
+## Before enabling policy-decide (`BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`)
+
+The kill switch's **Policy-decided release** bullet above governs the flag
+while it is on; this note governs what must be true *before* flipping it on
+in the first place.
+
+Partner-row `actAssets.supervisedActionKeys` is a **ceiling**, not an
+inherited grant (P2-5, C3): with no org-level `ai_agents` row, the effective
+supervised-key set for that org is `[]`, regardless of what the partner
+baseline names. An org only gets a policy-decidable key once an org row
+grants it — either an operator writes one directly, or the graduation
+promotion flow (`manage_ai_agents:authorize_supervised_key`, Tier-3
+four-eyes) appends it after enough verified evidence accrues.
+
+So before flipping `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` on for a partner,
+every org under it that should actually get unattended policy decisions
+needs its own `ai_agents` row carrying the intended `supervisedActionKeys` —
+setting the key on the partner-wide baseline alone authorizes nothing. The
+flag is re-read live on every decision (`policyDecide.ts`), so this is a
+data-readiness check, not a deploy-ordering one.
 
 ## After restoring
 

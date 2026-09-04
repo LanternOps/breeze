@@ -22,7 +22,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/sentry', () => ({ captureException: captureExceptionMock }));
 
-import { resolveUserDisplayNames, withAlertActorNames } from './actorNames';
+import { withAlertActorNames } from './actorNames';
 
 const ADMIN_ID = '9cea2f85-2da1-445d-88cc-7c404d7504c4';
 const TECH_ID = '1f0e3f2c-9a2b-4c7d-9f10-8f6a2b3c4d5e';
@@ -54,13 +54,25 @@ beforeEach(() => {
   withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
 });
 
-describe('resolveUserDisplayNames', () => {
-  it('does not touch the database when there is no actor id to resolve', async () => {
+// resolveUserDisplayNames is intentionally module-private (#3983): it's an
+// RLS-bypassing name oracle and withAlertActorNames is its only legitimate
+// caller. Exercise its behavior only through that public entry point so a
+// future contributor can't reach for it directly off a passing test.
+describe('resolveUserDisplayNames (via withAlertActorNames)', () => {
+  it('does not touch the database when no row carries a resolvable actor id', async () => {
     mockUsersQuery([]);
 
-    const names = await resolveUserDisplayNames([null, undefined, '']);
+    const [alert] = await withAlertActorNames([
+      { id: 'alert-1', acknowledgedBy: null, resolvedBy: undefined, dismissedBy: '' },
+    ]);
 
-    expect(names.size).toBe(0);
+    expect(alert).toEqual(
+      expect.objectContaining({
+        acknowledgedByName: null,
+        resolvedByName: null,
+        dismissedByName: null,
+      })
+    );
     expect(selectMock).not.toHaveBeenCalled();
     expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
   });
@@ -68,10 +80,17 @@ describe('resolveUserDisplayNames', () => {
   it('selects only id + name and filters on the distinct actor ids', async () => {
     mockUsersQuery([{ id: ADMIN_ID, name: 'Breeze Admin' }]);
 
-    // ADMIN_ID appears three times — the query must ask for it once.
-    const names = await resolveUserDisplayNames([ADMIN_ID, ADMIN_ID, null, ADMIN_ID]);
+    // ADMIN_ID appears three times across these rows — the query must ask for
+    // it once.
+    const enriched = await withAlertActorNames([
+      { id: 'alert-1', acknowledgedBy: ADMIN_ID, resolvedBy: null },
+      { id: 'alert-2', acknowledgedBy: ADMIN_ID, resolvedBy: ADMIN_ID },
+    ]);
 
-    expect(names.get(ADMIN_ID)).toBe('Breeze Admin');
+    expect(enriched.map((row) => row.acknowledgedByName)).toEqual([
+      'Breeze Admin',
+      'Breeze Admin',
+    ]);
 
     // Assert the compiled SQL, not just that `where` was called: a mock-only
     // assertion would pass on an empty or wrong-column predicate.
@@ -87,7 +106,7 @@ describe('resolveUserDisplayNames', () => {
   it('reads users in a system DB context, outside any request context', async () => {
     mockUsersQuery([{ id: ADMIN_ID, name: 'Breeze Admin' }]);
 
-    await resolveUserDisplayNames([ADMIN_ID]);
+    await withAlertActorNames([{ id: 'alert-1', acknowledgedBy: ADMIN_ID }]);
 
     // `users` RLS hides partner-level staff (org_id NULL) from org-scoped
     // callers, so the lookup must escape the request context or the name comes
@@ -203,5 +222,21 @@ describe('withAlertActorNames', () => {
 
     await expect(withAlertActorNames([])).resolves.toEqual([]);
     expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  // #4445 — the alerts route runs a second withAlertActorNames call on
+  // pseudo-rows built from live verdicts (`{ id: verdict.id, feedbackBy }`)
+  // so the verdict badge can show who already voted. Same generic mechanism
+  // as acknowledgedBy/resolvedBy/dismissedBy, just a different id field.
+  it('resolves feedbackBy to feedbackByName for a verdict pseudo-row', async () => {
+    mockUsersQuery([{ id: TECH_ID, name: 'Dana Tech' }]);
+
+    const [row] = await withAlertActorNames([
+      { id: 'verdict-1', feedbackBy: TECH_ID },
+    ]);
+
+    expect(row).toEqual(
+      expect.objectContaining({ feedbackBy: TECH_ID, feedbackByName: 'Dana Tech' })
+    );
   });
 });

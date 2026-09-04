@@ -219,6 +219,12 @@ func (s *Store) Entry(actuationID string) (LedgerEntry, bool) {
 	return entry, ok
 }
 
+// LoadError reports the sticky failure from reading the ledger at startup, if
+// any. Entries() cannot express it: an unreadable ledger yields an empty
+// slice, which is indistinguishable from a device that never actuated. Any
+// caller that draws a conclusion FROM emptiness must consult this first.
+func (s *Store) LoadError() error { return s.loadErr }
+
 func (s *Store) Entries() []LedgerEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()

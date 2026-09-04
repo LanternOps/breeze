@@ -24,7 +24,7 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 const line: InvoiceDetailData['lines'][number] = {
   id: 'l1', invoiceId: 'inv-1', sourceType: 'catalog', parentLineId: null, catalogItemId: 'c1',
   name: null, description: 'Widget', quantity: '1.00', unitPrice: '1000.00', costBasis: '600.00', revenueAllocation: '1000.00',
-  taxable: false, customerVisible: true, lineTotal: '1000.00', isUnapprovedTime: false, sortOrder: 0,
+  taxable: false, customerVisible: true, lineTotal: '1000.00', isUnapprovedTime: false, sortOrder: 0, deviceCount: 0,
 };
 
 function detail(inv: Partial<InvoiceDetailData['invoice']> = {}): InvoiceDetailData {

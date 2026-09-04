@@ -75,6 +75,7 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { assertReportExecutionPreflight } from './reportGenerationService';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -91,6 +92,7 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
+  type UserReportExecutionAuthority,
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -154,11 +156,11 @@ async function aiLiveReportAuthority(
   orgId: string,
   action: ReportAction,
 ): Promise<
-  (Omit<ReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
+  (Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
 > {
   const result = await resolveRequestReportAuthority(auth, orgId, action);
   if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
-  return result.authority as Omit<ReportExecutionAuthority, 'scope'> & {
+  return result.authority as Omit<UserReportExecutionAuthority, 'scope'> & {
     scope: LiveSiteScopeV1;
   };
 }
@@ -1256,16 +1258,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
-        const affectedMemberships = await db.select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .where(eq(deviceGroupMemberships.groupId, existing.id));
-
-        await db.transaction(async (tx) => {
-          await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
-          await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
-          await tx.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
-        });
-        await scheduleAiGroupPeripheralReconciliation(affectedMemberships.map(({ deviceId }) => deviceId));
+        let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+        try {
+          result = await deleteDeviceGroup(existing.id, existing.orgId);
+        } catch (err) {
+          if (err instanceof DeviceGroupDeleteError) return JSON.stringify({ error: err.message, code: err.code });
+          throw err;
+        }
+        await scheduleAiGroupPeripheralReconciliation(result.affectedDeviceIds);
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
@@ -2185,6 +2185,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               return JSON.stringify({ error: 'Report not found or access denied' });
             }
             executionAuthority = {
+              principalKind: 'user',
               scope: effectiveScope,
               principalUserId: access.authority.principalUserId,
               capturedAt: access.authority.capturedAt,
@@ -2220,6 +2221,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const [run] = await db.insert(reportRuns).values({
             reportId,
             status: 'pending',
+            requestedByKind: 'user',
+            requestedByUserId: auth.user.id,
+            requestedByPortalUserId: null,
             ...persistedSiteScopeValues(executionAuthority),
           }).returning();
           runId = run?.id ?? null;

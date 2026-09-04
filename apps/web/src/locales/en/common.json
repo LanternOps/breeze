@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
@@ -41,10 +42,12 @@
     "auditTrail": "Audit Trail",
     "eventLogs": "Event Logs",
     "partner": "Partner",
+    "billing": "Billing",
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
+    "aiImpact": "AI Impact",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -63,6 +66,7 @@
     "sectionSettings": "Settings",
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
+    "aiKillSwitch": "AI Kill Switch",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",

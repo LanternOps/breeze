@@ -38,6 +38,11 @@ import { captureMessage } from '../services/sentry';
 import { createReportThrottle } from '../utils/reportThrottle';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
+import {
+  assertDeviceExecuteAllowed,
+  TrustDeniedError,
+} from '../services/partnerTrust.commands';
+import { trustDenyBody } from '../services/partnerTrust';
 // Shared with the web device routes rather than re-declared locally. This file
 // used to carry a byte-identical private copy, which is precisely why the #2968
 // uuid guard — added to the shared helper — silently did not apply to
@@ -849,10 +854,17 @@ mobileRoutes.get(
         deviceId: alerts.deviceId,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
-        deviceStatus: devices.status
+        deviceStatus: devices.status,
+        // Alerts carry no type/category of their own — only a rule reference.
+        // The category one hop away on the rule's template is the closest
+        // thing mobile has to a meaningful alert "type" (#4535). Nullable:
+        // alerts can be created without a rule.
+        category: alertTemplates.category
       })
       .from(alerts)
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+      .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
       .where(whereCondition)
       .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
       .limit(fetchLimit)
@@ -879,6 +891,7 @@ mobileRoutes.get(
       triggeredAt: alert.triggeredAt,
       acknowledgedAt: alert.acknowledgedAt,
       resolvedAt: alert.resolvedAt,
+      category: alert.category ?? null,
       device: alert.deviceId ? {
         id: alert.deviceId,
         hostname: alert.deviceHostname,
@@ -1315,16 +1328,33 @@ mobileRoutes.post(
       }, 202);
     }
 
-    const cmdResult = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId: device.id,
-        type: data.action,
-        payload: { source: 'mobile' },
-        status: 'pending',
-        createdBy: auth.user.id
-      })
-      .returning();
+    let cmdResult;
+    try {
+      await assertDeviceExecuteAllowed(device.id, data.action, auth.user.id);
+      cmdResult = await db
+        .insert(deviceCommands)
+        .values({
+          deviceId: device.id,
+          type: data.action,
+          payload: { source: 'mobile' },
+          status: 'pending',
+          createdBy: auth.user.id
+        })
+        .returning();
+    } catch (e) {
+      if (e instanceof TrustDeniedError) {
+        return c.json(
+          trustDenyBody({
+            allow: false,
+            code: e.code,
+            capability: 'device_execute',
+            reason: e.reason,
+          }, false),
+          403,
+        );
+      }
+      throw e;
+    }
     const cmd = cmdResult[0];
 
     if (!cmd) {

@@ -27,7 +27,7 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import { db } from '../db';
-import { assertNotLocked } from './effectiveSettings';
+import { assertNotLocked, getEffectiveAiBudget, getEffectiveOrgSettings } from './effectiveSettings';
 
 /**
  * assertNotLocked issues two sequential reads, each shaped
@@ -191,5 +191,106 @@ describe('assertNotLocked', () => {
     primeSelect([{ partnerId: 'partner-1' }], [{ settings: PARTNER_AUTO_ENROLLMENT_OFF }]);
 
     await expect(assertNotLocked('org-1', 'defaults', {})).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * getEffectiveOrgSettings and getEffectiveAiBudget each issue three sequential
+ * reads, every one shaped `db.select(...).from(t).where(cond).then(rows => rows[0])`:
+ *   1. the org row (partnerId [+ settings])
+ *   2. the partner row (settings JSONB) — via readWithPartnerAxisVisibility,
+ *      which under this mock invokes its callback synchronously, so it lands
+ *      in the same call order as a plain `await`
+ *   3. the org's `ai_budgets` table row
+ * `getEffectiveAiBudget` fires (2) and (3) inside a `Promise.all([...])`, but
+ * array literals evaluate left-to-right, so the db.select() call order is
+ * identical to getEffectiveOrgSettings's sequential version.
+ */
+function primeSelectSeq(...rowSets: unknown[][]) {
+  let call = 0;
+  vi.mocked(db.select).mockImplementation((() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve(rowSets[call++] ?? [])),
+    })),
+  })) as never);
+}
+
+function mockOrg(overrides: { partnerId: string }) {
+  return [{ partnerId: overrides.partnerId, settings: {} }];
+}
+
+function mockPartnerSettings(settings: Record<string, unknown>) {
+  return [{ settings }];
+}
+
+function mockOrgBudgetRow(overrides: Record<string, unknown>) {
+  return [overrides];
+}
+
+describe('getEffectiveAiBudget alertThresholdPercents (#4388)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('defaults to [50,80,95] when neither org row nor partner sets it', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: null }),
+    );
+
+    const budget = await getEffectiveAiBudget('org1');
+    expect(budget.alertThresholdPercents).toEqual([50, 80, 95]);
+  });
+
+  it('keeps an explicit empty array (warnings off) instead of falling back to the default', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: [] }),
+    );
+
+    const budget = await getEffectiveAiBudget('org1');
+    expect(budget.alertThresholdPercents).toEqual([]);
+  });
+
+  it('partner JSONB overrides the org row and locks the field', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { alertThresholdPercents: [90] } }),
+      mockOrgBudgetRow({ alertThresholdPercents: [50] }),
+    );
+
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).alertThresholdPercents).toEqual([90]);
+    expect(locked).toContain('aiBudgets.alertThresholdPercents');
+  });
+
+  // Regression for the #4388 review finding: `{ ...AI_BUDGET_DEFAULTS }` is a
+  // shallow copy, so without an explicit fresh-array override, every org with
+  // no org-row/partner override for `alertThresholdPercents` would receive
+  // the SAME array object, process-wide, for the lifetime of the process — a
+  // caller mutating one org's result in place (`.push()`) would silently
+  // corrupt the default thresholds seen by every other org.
+  it('returns a fresh alertThresholdPercents array on every call, not a shared reference', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: null }),
+    );
+    const first = await getEffectiveAiBudget('org1');
+
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: null }),
+    );
+    const second = await getEffectiveAiBudget('org2');
+
+    expect(first.alertThresholdPercents).toEqual(second.alertThresholdPercents);
+    expect(first.alertThresholdPercents).not.toBe(second.alertThresholdPercents);
+
+    first.alertThresholdPercents.push(1);
+    expect(second.alertThresholdPercents).toEqual([50, 80, 95]);
   });
 });

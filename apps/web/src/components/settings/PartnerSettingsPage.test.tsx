@@ -737,3 +737,89 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
     expect(screen.queryByText('Loading partner settings...')).toBeNull();
   });
 });
+
+// #4388 W03: the partner ladder is inheritable. Omitting the key means "orgs
+// decide", which is a different instruction to the API than any array value.
+// The distinction only exists in the serialised PATCH body.
+describe('PartnerSettingsPage AI Budgets tab', () => {
+  const partnerWithLadder = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+      aiBudgets: { enabled: true, monthlyBudgetCents: 5000, alertThresholdPercents: [50, 80] },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerWithLadder));
+  });
+
+  const patchedSettings = () => {
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    return body.settings as Record<string, Record<string, unknown>>;
+  };
+
+  it('drops alertThresholdPercents from the payload when the ladder is cleared', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const input = await screen.findByTestId('partner-ai-budget-thresholds-input');
+    expect((input as HTMLInputElement).value).toBe('50, 80');
+    await user.clear(input);
+    await user.tab();
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const settings = patchedSettings();
+    expect(settings.aiBudgets).toBeDefined();
+    // Enabled still round-trips, so this is an omitted key, not an omitted tab.
+    expect(settings.aiBudgets.enabled).toBe(true);
+    expect(settings.aiBudgets).not.toHaveProperty('alertThresholdPercents');
+  });
+
+  it('blocks Save while the ladder text does not parse', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    // Commit a real edit first, so the tab is dirty and the Save button is
+    // enabled for a reason other than the one under test.
+    const input = await screen.findByTestId('partner-ai-budget-thresholds-input');
+    await user.clear(input);
+    await user.type(input, '60, 90');
+    await user.tab();
+    const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+
+    await user.clear(input);
+    await user.type(input, '100');
+    await user.tab();
+
+    expect(screen.getByTestId('partner-ai-budget-thresholds-error')).not.toBeNull();
+    expect(saveBtn.disabled).toBe(true);
+  });
+});

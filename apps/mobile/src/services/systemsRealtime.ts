@@ -86,9 +86,8 @@ async function defaultFetchTicket(): Promise<{ ticket: string; baseUrl: string }
   // Lazy-import RN-only modules so this file is importable from a node test runner.
   const SecureStore = await import('expo-secure-store');
   const { getServerUrl } = await import('./serverConfig');
-  // fetchWithTimeout is itself RN-free, but keep it on the lazy path so this
-  // module's "no static RN-adjacent imports" rule stays a single, simple rule.
-  const { fetchWithTimeout } = await import('./fetchWithTimeout');
+  // authedFetch pulls in api.ts (RN-adjacent), so it must stay on the lazy path.
+  const { fetchWithAuthRefresh } = await import('./authedFetch');
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   let token: string | null = null;
@@ -105,7 +104,7 @@ async function defaultFetchTicket(): Promise<{ ticket: string; baseUrl: string }
   const url = `${baseUrl}${API_CORE_PREFIX}/events/ws-ticket?allOrgs=1`;
   let res: Response;
   try {
-    res = await fetchWithTimeout(url, {
+    res = await fetchWithAuthRefresh(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -26,6 +26,7 @@ const {
   emitAlertStateFeedbackMock,
   writeRouteAuditMock,
   executeScriptOnDevicesMock,
+  assertDeviceExecuteAllowedMock,
   rateLimitState,
   authState
 } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ const {
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
   writeRouteAuditMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  assertDeviceExecuteAllowedMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
@@ -108,6 +110,11 @@ vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: executeScriptOnDevicesMock
 }));
 
+vi.mock('../services/partnerTrust.commands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/partnerTrust.commands')>()),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
+
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitAlertStateFeedback: emitAlertStateFeedbackMock
 }));
@@ -152,19 +159,24 @@ const mockSelectOrderChain = (result: unknown) => ({
   })
 });
 
-const mockSelectLeftJoinChain = (result: unknown) => ({
-  from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            offset: vi.fn().mockResolvedValue(result)
-          })
-        })
+// Supports any number of chained `.leftJoin(...)` calls before `.where(...)` —
+// the inbox query joins devices, alert_rules and alert_templates in sequence
+// (#4535), so a fixed single-leftJoin shape would throw
+// "leftJoin is not a function" on the second call.
+const mockSelectLeftJoinChain = (result: unknown) => {
+  const joinable: { leftJoin: unknown; where: unknown } = {} as never;
+  joinable.leftJoin = vi.fn().mockReturnValue(joinable);
+  joinable.where = vi.fn().mockReturnValue({
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue(result)
       })
     })
-  })
-});
+  });
+  return {
+    from: vi.fn().mockReturnValue(joinable)
+  };
+};
 
 const objectContains = (value: unknown, needle: string, seen = new WeakSet<object>()): boolean => {
   if (typeof value === 'string') return value === needle;
@@ -237,6 +249,7 @@ describe('mobile routes', () => {
     rateLimitState.allowed = true;
     vi.mocked(db.transaction).mockReset();
     executeScriptOnDevicesMock.mockReset();
+    assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
     _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
@@ -707,7 +720,8 @@ describe('mobile routes', () => {
               deviceId: '11111111-2222-4333-8444-555555555555',
               deviceHostname: 'host-1',
               deviceOsType: 'linux',
-              deviceStatus: 'online'
+              deviceStatus: 'online',
+              category: 'Security'
             },
             {
               id: 'alert-2',
@@ -722,7 +736,10 @@ describe('mobile routes', () => {
               deviceId: null,
               deviceHostname: null,
               deviceOsType: null,
-              deviceStatus: null
+              deviceStatus: null,
+              // Alerts can be created without a rule, so the joined category
+              // is nullable.
+              category: null
             }
           ]) as any
         );
@@ -737,6 +754,11 @@ describe('mobile routes', () => {
       expect(body.pagination.total).toBe(2);
       expect(body.data[0].device).toBeDefined();
       expect(body.data[1].device).toBeNull();
+      // The alert category comes from the rule's template (#4535) — the
+      // client mapper needs it to show something other than the always-'alert'
+      // constant the removed TYPE row used to display.
+      expect(body.data[0].category).toBe('Security');
+      expect(body.data[1].category).toBeNull();
     });
 
     it('should require organization context for org scope', async () => {
@@ -782,32 +804,39 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
+            // devices -> alert_rules -> alert_templates: three chained
+            // leftJoins before the where clause (#4535).
             leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn((where: unknown) => {
-                captured.rowsWhere = where;
-                return {
-                  orderBy: vi.fn().mockReturnValue({
-                    limit: vi.fn().mockReturnValue({
-                      offset: vi.fn().mockResolvedValue([
-                        {
-                          id: 'alert-allowed',
-                          orgId: 'org-123',
-                          status: 'active',
-                          severity: 'critical',
-                          title: 'Allowed alert',
-                          message: 'Allowed device alert',
-                          triggeredAt: new Date(),
-                          acknowledgedAt: null,
-                          resolvedAt: null,
-                          deviceId: DEVICE_ALLOWED,
-                          deviceHostname: 'allowed-host',
-                          deviceOsType: 'linux',
-                          deviceStatus: 'online'
-                        }
-                      ])
-                    })
+              leftJoin: vi.fn().mockReturnValue({
+                leftJoin: vi.fn().mockReturnValue({
+                  where: vi.fn((where: unknown) => {
+                    captured.rowsWhere = where;
+                    return {
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([
+                            {
+                              id: 'alert-allowed',
+                              orgId: 'org-123',
+                              status: 'active',
+                              severity: 'critical',
+                              title: 'Allowed alert',
+                              message: 'Allowed device alert',
+                              triggeredAt: new Date(),
+                              acknowledgedAt: null,
+                              resolvedAt: null,
+                              deviceId: DEVICE_ALLOWED,
+                              deviceHostname: 'allowed-host',
+                              deviceOsType: 'linux',
+                              deviceStatus: 'online',
+                              category: null
+                            }
+                          ])
+                        })
+                      })
+                    };
                   })
-                };
+                })
               })
             })
           })
@@ -1679,8 +1708,43 @@ describe('mobile routes', () => {
       expect('ignoredParameters' in body).toBe(false);
     });
 
-    it.skip('should submit device action commands', async () => {
-      // Skipped: Complex command submission mock required
+    it('returns a trust probation denial without inserting a device command', async () => {
+      const { TrustDeniedError } = await import('../services/partnerTrust.commands');
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: mobileDeviceId, orgId: 'org-123', status: 'online', siteId: null }
+        ]) as any
+      );
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_PROBATION',
+          'probation_default_deny',
+          mobileDeviceId,
+          'reboot',
+        ),
+      );
+
+      const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reboot' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_PROBATION',
+        capability: 'device_execute',
+        reason: 'probation_default_deny',
+      });
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('should submit device action commands when trust allows execution', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online' }
@@ -1701,6 +1765,11 @@ describe('mobile routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commandId).toBe('cmd-1');
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
     });
 
     // #3409 PR0 Task 3: the org-equality invariant itself now lives inside

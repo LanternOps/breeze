@@ -87,6 +87,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // routes/devices/events.ts builds module-level SQL fragments from auditLogs at import time (#4835).
+  auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },
   devices: { id: 'id', orgId: 'orgId' },
   deviceCommands: { deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },

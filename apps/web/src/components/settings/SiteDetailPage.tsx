@@ -554,7 +554,23 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               </section>
 
               <section className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">{t('siteForm.primaryContact')}</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">{t('siteForm.primaryContact')}</h2>
+                  {/* This editor still writes the site's single primary contact
+                      (server-side it lands through the compatibility
+                      projection). Everyone ELSE at this customer lives on the
+                      organization's Contacts tab, so point there rather than
+                      growing a second contact list here. */}
+                  {site?.orgId && (
+                    <a
+                      data-testid="site-detail-all-contacts-link"
+                      href={`/settings/organizations/${site.orgId}#contacts`}
+                      className="text-sm text-primary underline hover:opacity-80"
+                    >
+                      {t('siteDetailPage.allContactsLink')}
+                    </a>
+                  )}
+                </div>
                 <div className="mt-4 grid gap-4 md:grid-cols-3">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t('common:labels.name')}</label>
