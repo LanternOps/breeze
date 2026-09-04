@@ -664,6 +664,7 @@
     "retry": "Retry",
     "activities": "Activities",
     "total": "total)",
+    "totalAtLeast": "{{count}}+",
     "searchActivities": "Search activities...",
     "all": "All",
     "success": "Success",
@@ -683,7 +684,8 @@
     "details": "Details",
     "showing": "Showing",
     "text": "–",
-    "of": "of"
+    "of": "of",
+    "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Failed to fetch filesystem status",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Failed to delete group",
     "billedByContracts": "This group is billed by {{count}} contract(s): {{names}}. Remove those contract lines first.",
     "billedByContractsCount": "This group is billed by {{count}} contract(s). Remove those contract lines first.",
+    "quotedByQuotes": "This group is priced by {{count}} open quote(s): {{names}}. Remove those quote lines first.",
+    "quotedByQuotesCount": "This group is priced by {{count}} open quote(s). Remove those quote lines first.",
     "failedToRunScriptOnGroups": "Failed to run script on groups",
     "failedToApplyPolicyToGroups": "Failed to apply policy to groups",
     "failedToMoveDevice": "Failed to move device",

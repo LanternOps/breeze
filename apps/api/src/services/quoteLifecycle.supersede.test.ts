@@ -17,7 +17,7 @@ const forCalls: Array<{ mode: unknown; afterWhereIndex: number }> = [];
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'limit', 'orderBy', 'returning', 'update', 'delete', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'limit', 'orderBy', 'returning', 'update', 'delete', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.where = vi.fn((predicate: unknown) => { whereCalls.push(predicate); return chain; });
     chain.for = vi.fn((mode: unknown) => {
@@ -139,7 +139,7 @@ function queueRevisionThroughClaim(opts: {
   queueResult([{ id: quote.id }]);            // child row lock (FOR UPDATE)
   queueResult([quote]);                        // getQuote: quote row
   queueResult([]);                             // getQuote: blocks
-  queueResult([lineRow]);                      // getQuote: lines
+  queueResult([{ line: lineRow, deviceGroup: null, site: null }]); // getQuote: lines
   queueResult([]);                             // getQuote: no staged Pax8 order
   if (quote.revisionOfQuoteId) {
     queueResult([{ id: quote.revisionOfQuoteId, quoteNumber: 'Q-2026-0042', siteId: null }]); // parent

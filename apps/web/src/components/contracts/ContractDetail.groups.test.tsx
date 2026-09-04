@@ -39,7 +39,7 @@ const groupLine = {
   id: 'cl-live', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device_group' as const,
   description: 'Managed group', catalogItemId: null, unitPrice: '12.00', manualQuantity: null,
   includedQuantity: null, overageMode: null, overageUnitPrice: null,
-  siteId: null, site: null, deviceRoles: null, deviceGroupId: 'group-1', deviceGroupName: 'Live Servers',
+  siteId: null, siteName: null, site: null, deviceRoles: null, deviceGroupId: 'group-1', deviceGroupName: 'Live Servers',
   deviceGroup: { id: 'group-1', name: 'Live Servers', type: 'dynamic' as const },
   taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
 };

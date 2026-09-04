@@ -406,6 +406,8 @@ describe('partnerApiAuthMiddleware', () => {
       scopes: ['organizations:read', 'devices:read'],
       accessibleOrgIds: [ORG_1, ORG_2],
       rateLimit: 600,
+      principalExpiresAt: null,
+      sourceCidrs: [],
     });
     expect(withResolvedDbAccessContext).toHaveBeenCalledOnce();
     expect(mocks.partnerContexts).toEqual([{

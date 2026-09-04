@@ -14,10 +14,13 @@ import {
   configPolicyAssignments,
   configurationPolicies,
   deviceGroupMemberships,
+  organizations,
 } from '../db/schema';
-import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { buildResolveAlertCas } from './alertService';
+import { policyOwnershipCondition } from './configPolicyOwnership';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -61,6 +64,31 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
 
   if (!device) return DISABLED_SETTINGS;
 
+  // The device org's partner. Needed twice below: a `level='partner'` assignment
+  // targets `partners.id`, and a partner-wide policy carries `org_id NULL`.
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+
+  // Not reachable by the schema: `devices.org_id` is NOT NULL with an FK to
+  // `organizations.id`, and `organizations.partner_id` is itself NOT NULL. So an
+  // empty result means the invariant broke (org deleted mid-evaluation, or a
+  // caller whose context cannot see its own device's org). Say it out loud —
+  // falling through quietly would resolve in exactly the org-only way #3963
+  // exists to fix, just one join upstream, and be indistinguishable from
+  // "correctly found no policy". Resolution continues so warranty alerting
+  // degrades rather than throwing.
+  if (!org) {
+    console.error(
+      `[warranty] org ${device.orgId} for device ${deviceId} did not resolve; partner-wide warranty policies cannot apply to this evaluation`
+    );
+    captureException(
+      new Error(`warranty: organizations row missing for device org ${device.orgId}`)
+    );
+  }
+
   // Get device group IDs
   const groupRows = await db
     .select({ groupId: deviceGroupMemberships.groupId })
@@ -68,9 +96,36 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
   const groupIds = groupRows.map((r) => r.groupId);
 
-  // Find warranty feature links from active policies assigned to this device
-  // Priority: device > device_group > site > organization > partner (closest wins)
-  const targetIds = [deviceId, ...groupIds, device.siteId, device.orgId].filter(Boolean) as string[];
+  // Find warranty feature links from active policies assigned to this device.
+  // Priority: device > device_group > site > organization > partner (closest wins).
+  //
+  // `config_policy_assignments.targetId` is POLYMORPHIC — its referent depends on
+  // `level` ('device' → devices.id, 'device_group' → device_groups.id, 'site' →
+  // sites.id, 'organization' → organizations.id, 'partner' → **partners.id**).
+  // So every id is matched against its OWN level rather than thrown into one
+  // `inArray` bag; that bag had no partner id in it at all, which is why a
+  // partner-level warranty assignment could never match (#3963, same shape as
+  // #3954/#3962). This mirrors `resolveDeviceEventLogSettings` in
+  // routes/agents/helpers.ts, the canonical hierarchy resolver.
+  const targetConditions: SQL[] = [
+    and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId))!,
+    and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId))!,
+  ];
+  if (groupIds.length > 0) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'device_group'), inArray(configPolicyAssignments.targetId, groupIds))!
+    );
+  }
+  if (device.siteId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId))!
+    );
+  }
+  if (org?.partnerId) {
+    targetConditions.push(
+      and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId))!
+    );
+  }
 
   const rows = await db
     .select({
@@ -91,7 +146,12 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
       and(
         eq(configPolicyFeatureLinks.featureType, 'warranty'),
         eq(configurationPolicies.status, 'active'),
-        inArray(configPolicyAssignments.targetId, targetIds)
+        // Ownership axis, distinct from the assignment axis above: a
+        // partner-wide policy is `org_id NULL` + `partner_id` set (#1724), so a
+        // resolver must admit both shapes. Warranty was the one hierarchy
+        // resolver that never got the #2930 predicate.
+        policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
+        or(...targetConditions)
       )
     );
 

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
-import { and, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
 import {
@@ -71,28 +71,56 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-// Keyset cursor: opaque base64url JSON {ts,id}. Optional and additive — when
+// Keyset cursor: opaque base64url JSON {key,id}. Optional and additive — when
 // not supplied, page/limit semantics are unchanged. When supplied, paginates
-// past the (timestamp,id) pair on the ordering column.
+// past the (key,id) pair on the route's chosen ordering column.
+//
+// `key` is carried as a raw, already-serialized string and never re-parsed
+// into a JS `Date` here — `Date` only holds millisecond precision, so
+// round-tripping a Postgres `timestamp` (microsecond precision) through one
+// truncates it and can skip rows whose actual value sits between the
+// truncated cursor and the next real boundary (#3770). Callers that key on a
+// timestamp column are responsible for reading it back as raw text (see
+// `/alerts/inbox`'s `triggeredAtKey`) rather than a parsed `Date`; callers
+// that key on a NOT NULL string column (e.g. `/devices`'s `hostname`, ported
+// from `routes/devices/core.ts`) just pass the string through.
 // Exported for unit testing.
-export type CursorTuple = { ts: Date; id: string };
-export function encodeCursor(ts: Date | string | null | undefined, id: string): string | null {
-  if (!ts || !id) return null;
-  const iso = ts instanceof Date ? ts.toISOString() : ts;
-  return Buffer.from(JSON.stringify({ ts: iso, id }), 'utf8').toString('base64url');
+export type CursorTuple = { key: string; id: string };
+export function encodeCursor(key: string | null | undefined, id: string | null | undefined): string | null {
+  if (!key || !id) return null;
+  return Buffer.from(JSON.stringify({ key, id }), 'utf8').toString('base64url');
 }
 export function decodeCursor(raw: string | undefined): CursorTuple | null {
   if (!raw) return null;
   try {
     const json = Buffer.from(raw, 'base64url').toString('utf8');
-    const parsed = JSON.parse(json) as { ts?: unknown; id?: unknown };
-    if (typeof parsed.ts !== 'string' || typeof parsed.id !== 'string' || !UUID_REGEX.test(parsed.id)) return null;
-    const ts = new Date(parsed.ts);
-    if (Number.isNaN(ts.getTime())) return null;
-    return { ts, id: parsed.id };
+    const parsed = JSON.parse(json) as { key?: unknown; id?: unknown };
+    if (typeof parsed.key !== 'string' || parsed.key.length === 0) return null;
+    if (typeof parsed.id !== 'string' || !UUID_REGEX.test(parsed.id)) return null;
+    return { key: parsed.key, id: parsed.id };
   } catch {
     return null;
   }
+}
+
+// `/alerts/inbox` keys on a timestamp column, so on top of the structural
+// checks above, reject a cursor whose `key` doesn't even parse as a
+// timestamp — otherwise it reaches the raw SQL comparison in the route and
+// Postgres 500s on the bad cast instead of a clean "start over".
+//
+// Matches the EXACT shape `to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.US')` emits
+// on the encode side (4-digit year, fixed-width fields, 6-digit
+// microseconds) rather than deferring to `new Date(...)` parseability —
+// `Date` accepts a much wider grammar than Postgres `timestamp` does, so a
+// crafted `key` like `-271821-04-20T00:00:00.000Z` parses fine as a `Date`
+// (round-trips through `.getTime()` with no NaN) but sits nowhere near
+// Postgres's actual range and 500s on `::timestamp` instead of failing this
+// check.
+const TIMESTAMP_CURSOR_KEY_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/;
+export function decodeTimestampCursor(raw: string | undefined): CursorTuple | null {
+  const cursor = decodeCursor(raw);
+  if (!cursor) return null;
+  return TIMESTAMP_CURSOR_KEY_RE.test(cursor.key) ? cursor : null;
 }
 
 /**
@@ -785,6 +813,18 @@ mobileRoutes.delete(
 //   - Cursor: opaque `cursor` from a prior response's `nextCursor`; keyset on
 //     (triggered_at DESC, id DESC). Stable under concurrent inserts and cheap
 //     on deep pages. When `cursor` is supplied, `page` is ignored.
+//
+// `nextCursor` is computed on EVERY response, cursor or not — including the
+// very first page/limit request (#3770). `triggered_at` is NOT NULL and
+// write-once (never updated after insert), so ordering never needs a
+// NULLS-LAST branch or an immutable-column swap the way `/devices` does
+// below. It DOES need full precision: Postgres keeps six fractional digits,
+// but a JS `Date` — what a plain Drizzle column read produces — only holds
+// three, so round-tripping the cursor through one can truncate a boundary
+// and skip rows sitting between the truncated value and the next real one.
+// `triggeredAtKey` reads the same column back as raw microsecond text via
+// `to_char` instead, and that text — never a `Date` — is what goes into the
+// token and the keyset predicate.
 mobileRoutes.get(
   '/alerts/inbox',
   requireScope('organization', 'partner', 'system'),
@@ -794,7 +834,7 @@ mobileRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const cursor = decodeCursor(query.cursor);
+    const cursor = decodeTimestampCursor(query.cursor);
 
     const orgCheck = await getOrgIdsForAuth(auth, query.orgId);
     if (orgCheck.error) {
@@ -827,7 +867,7 @@ mobileRoutes.get(
 
     if (cursor) {
       conditions.push(
-        sql`(${alerts.triggeredAt} < ${cursor.ts.toISOString()} OR (${alerts.triggeredAt} = ${cursor.ts.toISOString()} AND ${alerts.id} < ${cursor.id}))`
+        sql`(${alerts.triggeredAt} < ${cursor.key}::timestamp OR (${alerts.triggeredAt} = ${cursor.key}::timestamp AND ${alerts.id} < ${cursor.id}::uuid))`
       );
     }
 
@@ -839,7 +879,10 @@ mobileRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    const fetchLimit = cursor ? limit + 1 : limit;
+    // Always over-fetch by one to know whether another page exists — not
+    // gated on `cursor`, or a cold-start caller's first response could never
+    // carry a usable `nextCursor` (#3770).
+    const fetchLimit = limit + 1;
     const alertRows = await db
       .select({
         id: alerts.id,
@@ -849,6 +892,9 @@ mobileRoutes.get(
         title: alerts.title,
         message: alerts.message,
         triggeredAt: alerts.triggeredAt,
+        // Full microsecond-precision text of the same column, for the cursor
+        // only — see the route comment above. Never surfaced in `data`.
+        triggeredAtKey: sql<string>`to_char(${alerts.triggeredAt}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`,
         acknowledgedAt: alerts.acknowledgedAt,
         resolvedAt: alerts.resolvedAt,
         deviceId: alerts.deviceId,
@@ -870,15 +916,12 @@ mobileRoutes.get(
       .limit(fetchLimit)
       .offset(cursor ? 0 : offset);
 
-    let trimmedRows = alertRows;
+    const hasMore = alertRows.length > limit;
+    const trimmedRows = hasMore ? alertRows.slice(0, limit) : alertRows;
     let nextCursor: string | null = null;
-    if (cursor) {
-      const hasMore = alertRows.length > limit;
-      trimmedRows = hasMore ? alertRows.slice(0, limit) : alertRows;
-      const last = trimmedRows[trimmedRows.length - 1];
-      if (hasMore && last) {
-        nextCursor = encodeCursor(last.triggeredAt, last.id);
-      }
+    const last = trimmedRows[trimmedRows.length - 1];
+    if (hasMore && last) {
+      nextCursor = encodeCursor(last.triggeredAtKey, last.id);
     }
 
     const data = trimmedRows.map(alert => ({
@@ -1120,10 +1163,23 @@ mobileRoutes.post(
 // GET /devices - Get simplified device list for mobile
 //
 // Pagination is dual-mode (additive):
-//   - Legacy: page+limit; response carries `total` so callers can show "N of M".
-//   - Cursor: opaque `cursor` from a prior response's `nextCursor`; keyset on
-//     (last_seen_at DESC, id DESC). Stable under concurrent inserts and cheap
-//     on deep pages. When `cursor` is supplied, `page` is ignored.
+//   - Legacy: an EXPLICIT `?page=N` (no `cursor`); response carries `total`
+//     so callers can show "N of M". Keeps the pre-existing `last_seen_at
+//     DESC` order, and never returns a `nextCursor` — this contract doesn't
+//     upgrade into cursor mode mid-walk (ordering differs — see below).
+//   - Cursor: the DEFAULT — no `page` given, or an explicit `cursor` from a
+//     prior response's `nextCursor`. Keyset on `(hostname ASC, id ASC)`,
+//     ported from `routes/devices/core.ts`'s cursor mode rather than
+//     `last_seen_at`, because `last_seen_at` is both nullable (Postgres
+//     sorts NULLs first on DESC with no NULLS LAST clause, so never-checked-
+//     in devices would lead the walk) and mutable (every heartbeat rewrites
+//     it, so a device can cross the page boundary mid-walk and be skipped
+//     entirely). `hostname` is NOT NULL and effectively immutable, so the
+//     keyset is stable under concurrent heartbeats. This is a genuine
+//     ordering change for any caller that doesn't pass `page` (#3770) —
+//     intentional; the mobile client already re-sorts this list client-side
+//     (see `screens/devices/deviceListFilters.ts`) and never reads
+//     `nextCursor` today, so it is unaffected either way.
 mobileRoutes.get(
   '/devices',
   requireScope('organization', 'partner', 'system'),
@@ -1133,6 +1189,9 @@ mobileRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
+    // Cursor mode is the default (matches `routes/devices/core.ts`): an
+    // explicit `?page=N` with no `cursor` opts into the legacy contract.
+    const isCursorMode = query.page === undefined || query.cursor !== undefined;
     const cursor = decodeCursor(query.cursor);
 
     const orgCheck = await getOrgIdsForAuth(auth, query.orgId);
@@ -1169,8 +1228,10 @@ mobileRoutes.get(
     }
 
     if (cursor) {
+      // Tuple comparison on a NOT NULL pair needs no NULLS branch — unlike
+      // the previous `last_seen_at` keyset, there's only one phase to walk.
       conditions.push(
-        sql`(${devices.lastSeenAt} < ${cursor.ts.toISOString()} OR (${devices.lastSeenAt} = ${cursor.ts.toISOString()} AND ${devices.id} < ${cursor.id}))`
+        sql`(${devices.hostname}, ${devices.id}) > (${cursor.key}, ${cursor.id}::uuid)`
       );
     }
 
@@ -1182,7 +1243,12 @@ mobileRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    const fetchLimit = cursor ? limit + 1 : limit;
+    // Over-fetch by one to know whether another page exists — not gated on
+    // `cursor` (a cold-start caller's first response could otherwise never
+    // carry a usable `nextCursor`, #3770), but legacy `?page=N` never mints
+    // one anyway (see above), so there's nothing to gain from the extra row
+    // there. Matches devices/core.ts's identical guard.
+    const fetchLimit = isCursorMode ? limit + 1 : limit;
     const deviceRows = await db
       .select({
         id: devices.id,
@@ -1196,18 +1262,20 @@ mobileRoutes.get(
       })
       .from(devices)
       .where(whereCondition)
-      .orderBy(desc(devices.lastSeenAt), desc(devices.id))
+      .orderBy(...(isCursorMode ? [asc(devices.hostname), asc(devices.id)] : [desc(devices.lastSeenAt), desc(devices.id)]))
       .limit(fetchLimit)
       .offset(cursor ? 0 : offset);
 
-    let items = deviceRows;
+    const hasMore = deviceRows.length > limit;
+    const items = hasMore ? deviceRows.slice(0, limit) : deviceRows;
+    // Legacy `?page=N` never returns a nextCursor — its order (`last_seen_at
+    // DESC`) doesn't match the keyset above, so a cursor minted from it would
+    // silently switch a walking client onto a different ordering (#3770).
     let nextCursor: string | null = null;
-    if (cursor) {
-      const hasMore = deviceRows.length > limit;
-      items = hasMore ? deviceRows.slice(0, limit) : deviceRows;
+    if (isCursorMode) {
       const last = items[items.length - 1];
       if (hasMore && last) {
-        nextCursor = encodeCursor(last.lastSeenAt, last.id);
+        nextCursor = encodeCursor(last.hostname, last.id);
       }
     }
 

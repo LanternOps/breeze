@@ -60,6 +60,12 @@ export type RemoteTerminalProps = {
 // server's 40s deadline, and SERVER_SILENCE_TIMEOUT_MS must stay above the
 // server's ping interval — otherwise healthy idle sessions get killed on
 // whichever side drifted.
+// Identifies the single <style> element carrying xterm's stylesheet. The CSS
+// is inlined into this component's chunk (see initTerminal), so it has to be
+// attached to the document exactly once no matter how many times the terminal
+// mounts.
+const XTERM_STYLE_ELEMENT_ID = 'xterm-css';
+
 const CLIENT_PING_INTERVAL_MS = 20_000;
 const SERVER_SILENCE_TIMEOUT_MS = 45_000;
 const LIVENESS_CHECK_INTERVAL_MS = 5_000;
@@ -151,8 +157,46 @@ export default function RemoteTerminal({
       const { FitAddon } = await import('@xterm/addon-fit');
       const { WebLinksAddon } = await import('@xterm/addon-web-links');
 
-      // Import CSS
-      await import('@xterm/xterm/css/xterm.css');
+      // xterm's stylesheet ships INSIDE this lazy chunk (`?inline` hands us
+      // the CSS as a string) instead of as a separate hashed .css asset, and
+      // that is the actual fix for #4152.
+      //
+      // A plain `import '@xterm/xterm/css/xterm.css'` compiles to Vite's
+      // preload helper injecting a `<link rel=stylesheet>` and awaiting its
+      // `load` event — a promise that REJECTS on `error`. It does reject in
+      // the field: after an upgrade a stale hashed URL returns the SPA's
+      // index.html, which `nosniff` refuses to treat as CSS. Awaited bare,
+      // that lone rejection unwound the rest of init and left a permanently
+      // dead pane. Worse, the helper memoises attempted deps in a
+      // module-level `seen` map, so the remount that appeared to "fix" it
+      // (a tab round-trip) merely SKIPPED the stylesheet — the terminal came
+      // back styleless, and xterm.css is not decorative: it positions
+      // `.xterm-viewport`, absolutely stacks the `.xterm-screen` canvases and
+      // hides `.xterm-helper-textarea`, the offscreen textarea that captures
+      // keyboard/IME input.
+      //
+      // Inlining removes the whole failure class: there is no second asset to
+      // go stale, and the CSS cannot arrive without the JS that needs it. The
+      // catch is defence in depth only — a styling problem must never again be
+      // able to take the session down with it.
+      try {
+        const { default: xtermCss } = await import('@xterm/xterm/css/xterm.css?inline');
+        // Idempotent: remounts (every Remote Tools tab switch is one) and the
+        // second terminal on a split view must not stack duplicate <style>
+        // elements. Injecting a <style> is CSP-legal here — apps/web already
+        // carries style-src 'unsafe-inline' for xterm's runtime inline styles.
+        if (xtermCss && !document.getElementById(XTERM_STYLE_ELEMENT_ID)) {
+          const style = document.createElement('style');
+          style.id = XTERM_STYLE_ELEMENT_ID;
+          style.textContent = xtermCss;
+          document.head.appendChild(style);
+        }
+      } catch (cssError) {
+        console.warn(
+          'Terminal stylesheet failed to load; continuing with an unstyled terminal:',
+          cssError
+        );
+      }
 
       const fitAddon = new FitAddon();
       const webLinksAddon = new WebLinksAddon();
@@ -220,6 +264,16 @@ export default function RemoteTerminal({
       setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
+      // Release the one-shot guard so the user can retry without remounting.
+      // It is only otherwise cleared by unmount cleanup, which is why a failed
+      // cold mount used to need a tab round-trip to recover (#4152).
+      initStartedRef.current = false;
+      // Surface the failure. Without this the pane keeps the initial
+      // 'disconnected' status while `autoConnectAttempted` stays false (the
+      // auto-connect effect is gated on `terminalReady`, which never flips),
+      // so the retry overlay's condition is never satisfied and the user is
+      // left with an empty pane and nothing to click.
+      setStatus('failed');
       onErrorRef.current?.(tRef.current('remoteTerminal.errors.initialize'));
     }
   }, []);
@@ -650,6 +704,22 @@ export default function RemoteTerminal({
     }
   }, [terminalReady, status, sessionId, autoConnectAttempted, connect]);
 
+  // The overlay's button has to serve two different broken states. When a
+  // session died, the terminal object still exists and reconnecting is the
+  // whole job. When init itself failed there is no terminal at all, and
+  // connect() early-returns on the null `terminalRef` — so the button silently
+  // did nothing (#4152). Re-run init in that case; the auto-connect effect
+  // takes it from there once `terminalReady` flips, which is also why the
+  // status has to go back to 'disconnected' (that effect is gated on it).
+  const handleOverlayRetry = useCallback(() => {
+    if (terminalRef.current) {
+      void connect();
+      return;
+    }
+    setStatus('disconnected');
+    void initTerminal();
+  }, [connect, initTerminal]);
+
   // Format connection duration
   const getConnectionDuration = () => {
     if (!connectionTime) return '';
@@ -791,7 +861,7 @@ export default function RemoteTerminal({
               <button
                 type="button"
                 data-testid="terminal-overlay-reconnect"
-                onClick={connect}
+                onClick={handleOverlayRetry}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
                 <RefreshCw className="h-4 w-4" />

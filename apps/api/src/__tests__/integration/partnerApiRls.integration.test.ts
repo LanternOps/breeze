@@ -1,4 +1,5 @@
 import './setup';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -17,6 +18,7 @@ import {
   customFieldDefinitions,
   deviceGroups,
   devices,
+  enrollmentKeys,
   partnerExportConfigurationOrgState,
   partnerExportDeviceMaterialState,
   partnerExportSiteMaterialState,
@@ -34,6 +36,7 @@ import {
 } from '../../routes/partnerApi/cursor';
 import { partnerDeviceRoutes } from '../../routes/partnerApi/devices';
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
+import { partnerProvisioningRoutes } from '../../routes/partnerApi/provisioning';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
 import {
@@ -41,6 +44,7 @@ import {
   type PartnerExportResource,
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
+import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 
@@ -119,6 +123,171 @@ interface SeededPartner {
 }
 
 describe('partner reconstruction export RLS traversal', () => {
+  runDb('enrollment_keys allows an in-partner write and rejects a cross-partner forge as breeze_app', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const contextA = partnerContext(partnerA);
+
+    const [allowed] = await withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerA.orgs[0]!.id,
+      siteId: partnerA.sites[0]!.id,
+      name: 'Partner API allowed RLS proof',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }).returning({ id: enrollmentKeys.id }));
+    expect(allowed?.id).toBeTruthy();
+
+    await expect(withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerB.orgs[0]!.id,
+      siteId: partnerB.sites[0]!.id,
+      name: 'Cross-partner forge',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }))).rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
+  });
+  runDb('creates an enrollment key through actual Partner API auth and forced RLS', async () => {
+    await ensureAppRole();
+    const [partnerA] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const observedRoles: Array<{ who: string; bypass: boolean }> = [];
+    const app = actualPartnerApiApp(observedRoles);
+    const mintBody = {
+      orgId: partnerA.orgs[0]!.id,
+      siteId: partnerA.sites[0]!.id,
+      name: 'Actual route RLS proof',
+      // Opt in, so this test still exercises the per-key secret path. The
+      // default path (no per-key secret) is asserted separately below.
+      issueEnrollmentSecret: true,
+    };
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify(mintBody),
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret: string; enrollmentSecretSource: string;
+    };
+    expect(body.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecretSource).toBe('per_key');
+    const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.data.id)).limit(1);
+    expect(stored).toMatchObject({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, createdBy: null });
+    expect(stored?.key).not.toBe(body.key);
+    expect(stored?.keySecretHash).not.toBe(body.enrollmentSecret);
+    expect(observedRoles).toContainEqual({ who: 'breeze_app', bypass: false });
+
+    const replay = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify(mintBody),
+    });
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      data: { id: body.data.id },
+      // Derived from the stored row, so it survives the credential being
+      // unrecoverable on the replay path.
+      enrollmentSecretSource: 'per_key',
+      idempotencyReplay: true,
+    });
+  });
+
+  /**
+   * The default contract, against a real database.
+   *
+   * `enrollment_keys.key_secret_hash` is a switch on the agent enrollment path:
+   * once set, that key REQUIRES the per-key secret and the deployment's global
+   * AGENT_ENROLLMENT_SECRET no longer satisfies it. This endpoint shipped in
+   * v0.105.1 never writing that column, so what is asserted here — a persisted
+   * NULL, and no `enrollmentSecret` in the body — is the contract every partner
+   * already minting through this route depends on.
+   */
+  runDb('leaves key_secret_hash NULL unless the caller opts in', async () => {
+    await ensureAppRole();
+    const [partnerA] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, name: 'Global-secret enrollment key' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret?: string; enrollmentSecretSource: string;
+    };
+    expect(body.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(body).not.toHaveProperty('enrollmentSecret');
+    expect(body.enrollmentSecretSource).toBe('global');
+
+    const [stored] = await getTestDb().select().from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, body.data.id)).limit(1);
+    expect(stored?.keySecretHash).toBeNull();
+  });
+
+  /**
+   * Cross-partner mint refusal at the ROUTE level, not by a direct-DB forge.
+   *
+   * The forge test above proves the RLS backstop. This proves the layer a real
+   * caller actually reaches: a genuine principal of partner A, authenticated
+   * through the real middleware, naming an org that belongs to partner B. It
+   * must be refused before any insert, and partner B's org must be untouched.
+   */
+  runDb('refuses a cross-partner mint through actual Partner API auth', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+    const victimOrgId = partnerB.orgs[0]!.id;
+
+    const before = await getTestDb().select({ id: enrollmentKeys.id }).from(enrollmentKeys)
+      .where(eq(enrollmentKeys.orgId, victimOrgId));
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({ orgId: victimOrgId, name: 'Cross-partner route mint' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'partner_provisioning_org_access_denied' });
+
+    // Nothing was minted into the other partner's org.
+    const after = await getTestDb().select({ id: enrollmentKeys.id }).from(enrollmentKeys)
+      .where(eq(enrollmentKeys.orgId, victimOrgId));
+    expect(after).toHaveLength(before.length);
+  });
+
+  /**
+   * The other half of the same boundary: a site that exists, but under the
+   * other partner. `siteId` is not covered by the accessible-org check, so it
+   * needs its own proof that the route validates site-to-org ownership rather
+   * than trusting the caller.
+   */
+  runDb('refuses a cross-partner siteId even when the org is accessible', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({
+        orgId: partnerA.orgs[0]!.id,
+        siteId: partnerB.sites[0]!.id,
+        name: 'Cross-partner site mint',
+      }),
+    });
+    expect(response.status, await response.clone().text()).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'partner_provisioning_site_mismatch' });
+  });
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
     const [partnerA, partnerB] = await seedInterleavedPartners();
@@ -900,12 +1069,18 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.featureLinks.push(featureLink);
 }
 
-async function issueKey(partnerId: string, userId: string): Promise<string> {
+async function issueKey(
+  partnerId: string,
+  userId: string,
+  scopes: readonly PartnerServicePrincipalScope[] = ALL_SCOPES,
+): Promise<string> {
   const admin = getTestDb();
   const [principal] = await admin.insert(partnerServicePrincipals).values({
     partnerId,
     name: `Reconstruction export ${crypto.randomUUID()}`,
-    scopes: [...ALL_SCOPES],
+    scopes: [...scopes],
+    sourceCidrs: scopes.includes('enrollment-keys:write') ? ['127.0.0.1/32', '::1/128'] : [],
+    expiresAt: scopes.includes('enrollment-keys:write') ? new Date(Date.now() + 86_400_000) : null,
     createdBy: userId,
     updatedBy: userId,
   }).returning();
@@ -935,6 +1110,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerInventoryRoutes);
   app.route('/', partnerRelationshipRoutes);
   app.route('/', partnerConfigurationRoutes);
+  app.route('/', partnerProvisioningRoutes);
   return app;
 }
 

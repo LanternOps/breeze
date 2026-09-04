@@ -767,10 +767,33 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
+	// This mirrors heartbeat.handleScriptInner's ScriptExecution — the daemon
+	// re-marshals the raw command payload over IPC and this process rebuilds
+	// the execution, so anything the daemon reads off the payload and this
+	// site does not is silently lost for every runAs=user run.
+	//
+	// #4882: ScriptID and Parameters were exactly that. Without Parameters,
+	// buildEnvironment emitted no BREEZE_PARAM_* and SubstituteParameters had
+	// nothing to substitute, so a parameterised script failed with its own
+	// "parameter is required" error in user context while the identical run in
+	// SYSTEM context succeeded. ParametersFromPayload is the one decoder both
+	// sites now use.
+	//
+	// Two fields are deliberately absent:
+	//
+	//   - SecretEnv. BREEZE_VAR_* is a SYSTEM-context-only capability;
+	//     runAsSupportsSecrets (#3409) refuses a secret-bearing runAs=user run
+	//     on the daemon before it forwards anything, and the helper must not
+	//     become a second delivery route for it.
+	//   - RunAs. This process IS the target user, so the execution is already
+	//     in the right context; forwarding runAs="user" would make
+	//     executor.configureRunAs reject its own delivery.
 	script := executor.ScriptExecution{
 		ID:         cmd.CommandID,
+		ScriptID:   getStringOrDefault(payload, "scriptId", ""),
 		ScriptType: getStringOrDefault(payload, "language", "bash"),
 		Script:     getStringOrDefault(payload, "content", ""),
+		Parameters: executor.ParametersFromPayload(payload["parameters"]),
 		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
 	}
 

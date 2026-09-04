@@ -28,15 +28,28 @@ import { type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quo
 import { GhostRow, EditableLineRow, ReadonlyLineRow, type LineRevealRequest } from './QuoteLineRows';
 import { ContractBlockEditor } from './QuoteContractBlockEditor';
 import { TableBlockEditor, CalloutBlockEditor } from './QuoteStructuredBlockEditor';
+import { BILLABLE_DEVICE_ROLES, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
+import type { QuoteDeviceSetType } from '@breeze/shared';
+
+type DeviceSetForm = {
+  contractLineType?: QuoteDeviceSetType;
+  deviceRoles?: Exclude<DeviceRole, 'unknown'>[];
+  deviceGroupId?: string;
+  siteId?: string;
+  includedQuantity?: number;
+  overageMode?: 'bill' | 'flag';
+  overageUnitPrice?: number;
+};
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 export function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, mixedCadence, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
+  block, quoteId, orgId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, mixedCadence, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
   moveTargets, onMoveLineToBlock, revealRequest, hasDirtyLines, onDropLine,
   selectionActive, isLineSelected, onToggleLineSelected, onSetBlockSelection,
 }: {
   block: QuoteBlock;
   quoteId: string;
+  orgId: string;
   lines: QuoteLine[];
   currency: string;
   taxRate: string | null;
@@ -64,7 +77,7 @@ export function BlockCard({
   onImportAddPax8: (blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) => void;
   onAddManual: (
     blockId: string,
-    form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: { name: string; description: string; quantity?: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean } & DeviceSetForm,
   ) => Promise<boolean>;
   onEditLine: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
@@ -108,9 +121,43 @@ export function BlockCard({
   const [taxable, setTaxable] = useState(false);
   const [recurrence, setRecurrence] = useState<QuoteLineRecurrence>('one_time');
   const [saveToCatalog, setSaveToCatalog] = useState(false);
+  const [deviceSetOn, setDeviceSetOn] = useState(false);
+  const [deviceSetType, setDeviceSetType] = useState<QuoteDeviceSetType>('per_device');
+  const [deviceRoles, setDeviceRoles] = useState<Exclude<DeviceRole, 'unknown'>[]>([]);
+  const [deviceGroupId, setDeviceGroupId] = useState('');
+  const [deviceSiteId, setDeviceSiteId] = useState('');
+  const [allowanceOn, setAllowanceOn] = useState(false);
+  const [includedQuantity, setIncludedQuantity] = useState('');
+  const [overageMode, setOverageMode] = useState<'bill' | 'flag'>('bill');
+  const [overageUnitPrice, setOverageUnitPrice] = useState('');
+  const [deviceGroups, setDeviceGroups] = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
   // What the last auto-fill touched, for the "Auto-filled: …" summary line.
   // Cleared when the form resets (successful add) or a new query starts.
   const [autoFilled, setAutoFilled] = useState<string[] | null>(null);
+
+  const clearDeviceSet = () => {
+    setDeviceSetOn(false); setDeviceSetType('per_device'); setDeviceRoles([]); setDeviceGroupId(''); setDeviceSiteId('');
+    setAllowanceOn(false); setIncludedQuantity(''); setOverageMode('bill'); setOverageUnitPrice('');
+  };
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([
+      Promise.resolve(fetchWithAuth(`/device-groups?orgId=${orgId}&limit=200`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
+      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${orgId}`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
+    ]).then(([groups, orgSites]) => {
+      if (!alive) return;
+      setDeviceGroups(groups); setSites(orgSites);
+    }).catch(() => { if (alive) { setDeviceGroups([]); setSites([]); } });
+    return () => { alive = false; };
+  }, [orgId]);
+
+  const descriptorIncomplete = deviceSetOn && (
+    (deviceSetType === 'per_device_role' && deviceRoles.length === 0)
+    || (deviceSetType === 'per_device_group' && !deviceGroupId)
+    || (allowanceOn && (!/^[1-9]\d*$/.test(includedQuantity)
+      || (overageMode === 'bill' && !/^\d+(\.\d{1,2})?$/.test(overageUnitPrice))))
+  );
 
   // Two-way price ↔ markup% coupling (cost is always an input, never derived).
   // Whichever of price/markup the user set last stays authoritative: editing it
@@ -295,18 +342,32 @@ export function BlockCard({
   const submitManual = async () => {
     const errs: { qty?: string; price?: string; cost?: string } = {};
     const qtyNum = Number(qty);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) errs.qty = t('quotes.editor.errors.quantityWholeGreaterThanZero');
+    if (!deviceSetOn && (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum))) errs.qty = t('quotes.editor.errors.quantityWholeGreaterThanZero');
     const priceNum = Number(price);
     if (!Number.isFinite(priceNum) || priceNum < 0) errs.price = t('quotes.editor.errors.unitPriceZeroOrMore');
     if (cost.trim() !== '' && (!Number.isFinite(Number(cost)) || Number(cost) < 0)) errs.cost = t('quotes.editor.errors.costZeroOrMore');
     setManualErrors(errs);
     if (Object.keys(errs).length > 0) return;
-    const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, cost, sku, partNumber, taxable, recurrence, saveToCatalog });
+    if (descriptorIncomplete) return;
+    const ok = await onAddManual(block.id, {
+      name, description: desc, ...(deviceSetOn ? {} : { quantity: qty }), unitPrice: price, cost, sku, partNumber, taxable, recurrence, saveToCatalog,
+      ...(deviceSetOn ? {
+        contractLineType: deviceSetType,
+        ...(deviceSetType === 'per_device_role' ? { deviceRoles } : {}),
+        ...(deviceSetType === 'per_device_group' ? { deviceGroupId } : {}),
+        ...((deviceSetType === 'per_device' || deviceSetType === 'per_device_role') && deviceSiteId ? { siteId: deviceSiteId } : {}),
+        ...(allowanceOn ? {
+          includedQuantity: Number(includedQuantity), overageMode,
+          ...(overageMode === 'bill' ? { overageUnitPrice: Number(overageUnitPrice) } : {}),
+        } : {}),
+      } : {}),
+    });
     // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
     // user's input to correct rather than wiping it.
     if (ok) {
       setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setCost(''); setMarkup(''); setSku(''); setPartNumber('');
       setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); setAutoFilled(null);
+      clearDeviceSet();
       priceAuthority.current = 'price';
     }
   };
@@ -786,7 +847,7 @@ export function BlockCard({
                         className="min-h-9 w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </label>
-                    <label className="block">
+                    {!deviceSetOn && <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.qty')}</span>
                       <input
                         type="number" min="1" step="1" value={qty}
@@ -801,7 +862,7 @@ export function BlockCard({
                           {manualErrors.qty}
                         </span>
                       )}
-                    </label>
+                    </label>}
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.unitPrice')}</span>
                       <input
@@ -822,7 +883,11 @@ export function BlockCard({
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.billing')}</span>
                       <select
                         value={recurrence}
-                        onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
+                        onChange={(e) => {
+                          const next = e.target.value as QuoteLineRecurrence;
+                          setRecurrence(next);
+                          if (next === 'one_time') clearDeviceSet();
+                        }}
                         data-testid={`quote-manual-recurrence-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
@@ -832,6 +897,54 @@ export function BlockCard({
                       </select>
                     </label>
                   </div>
+                {recurrence !== 'one_time' && (
+                    <div className="space-y-3 rounded-md border bg-muted/20 p-3" data-testid={`quote-manual-device-set-${block.id}`}>
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        <input type="checkbox" checked={deviceSetOn} onChange={(e) => e.target.checked ? setDeviceSetOn(true) : clearDeviceSet()} data-testid={`quote-manual-device-set-toggle-${block.id}`} />
+                        {t('quotes.editor.deviceSet.toggle')}
+                      </label>
+                      {deviceSetOn && (
+                        <>
+                          <label className="block text-xs text-muted-foreground">{t('quotes.editor.deviceSet.typeLabel')}
+                            <select value={deviceSetType} onChange={(e) => { setDeviceSetType(e.target.value as QuoteDeviceSetType); setDeviceRoles([]); setDeviceGroupId(''); setDeviceSiteId(''); }} data-testid={`quote-manual-device-set-type-${block.id}`} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground">
+                              {(['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const).map((type) => <option key={type} value={type}>{t(/* i18n-dynamic */ `quotes.editor.deviceSet.types.${type}`)}</option>)}
+                            </select>
+                          </label>
+                          {deviceSetType === 'per_device_role' && (
+                            <fieldset><legend className="mb-1 text-xs text-muted-foreground">{t('quotes.editor.deviceSet.rolesLabel')}</legend>
+                              <div className="flex flex-wrap gap-2">{BILLABLE_DEVICE_ROLES.map((role) => <label key={role} className="flex items-center gap-1 text-xs"><input type="checkbox" checked={deviceRoles.includes(role)} onChange={() => setDeviceRoles((r) => r.includes(role) ? r.filter((x) => x !== role) : [...r, role])} />{getDeviceRoleLabel(role)}</label>)}</div>
+                            </fieldset>
+                          )}
+                          {deviceSetType === 'per_device_group' && (
+                            <label className="block text-xs text-muted-foreground">{t('quotes.editor.deviceSet.groupLabel')}
+                              <select value={deviceGroupId} onChange={(e) => setDeviceGroupId(e.target.value)} data-testid={`quote-manual-device-set-group-${block.id}`} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground"><option value="" />{deviceGroups.map((g) => <option key={g.id} value={g.id}>{g.name} · {g.type === 'dynamic' ? 'Dynamic' : 'Static'}</option>)}</select>
+                            </label>
+                          )}
+                          {(deviceSetType === 'per_device' || deviceSetType === 'per_device_role') && (
+                            <label className="block text-xs text-muted-foreground">{t('quotes.editor.deviceSet.siteLabel')}
+                              <select value={deviceSiteId} onChange={(e) => setDeviceSiteId(e.target.value)} data-testid={`quote-manual-device-set-site-${block.id}`} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground"><option value="">{t('quotes.editor.deviceSet.allSites')}</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                            </label>
+                          )}
+                          <p className="text-xs text-muted-foreground">{t('quotes.editor.deviceSet.quantityAuto')}</p>
+                          <fieldset className="space-y-2" data-testid={`quote-manual-device-set-allowance-group-${block.id}`}>
+                            <legend className="sr-only">{t('quotes.editor.deviceSet.includedLabel')}</legend>
+                            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={allowanceOn} onChange={(e) => setAllowanceOn(e.target.checked)} data-testid={`quote-manual-device-set-allowance-${block.id}`} />{t('quotes.editor.deviceSet.includedLabel')}</label>
+                            {allowanceOn && <div className="grid gap-2 sm:grid-cols-3">
+                              <label className="text-xs text-muted-foreground">{t('quotes.editor.deviceSet.includedLabel')}<input type="number" min="1" step="1" value={includedQuantity} onChange={(e) => setIncludedQuantity(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-foreground" /></label>
+                              <fieldset className="space-y-1 text-xs text-muted-foreground">
+                                <legend>{t('quotes.editor.deviceSet.overageModeLabel')}</legend>
+                                <div className="flex flex-wrap gap-3 text-sm text-foreground">
+                                  <label className="inline-flex items-center gap-1.5"><input type="radio" name={`quote-manual-overage-mode-${block.id}`} checked={overageMode === 'bill'} onChange={() => setOverageMode('bill')} />{t('quotes.editor.deviceSet.overageBill')}</label>
+                                  <label className="inline-flex items-center gap-1.5"><input type="radio" name={`quote-manual-overage-mode-${block.id}`} checked={overageMode === 'flag'} onChange={() => setOverageMode('flag')} />{t('quotes.editor.deviceSet.overageFlag')}</label>
+                                </div>
+                              </fieldset>
+                              {overageMode === 'bill' && <label className="text-xs text-muted-foreground">{t('quotes.editor.deviceSet.overagePriceLabel')}<input type="number" min="0" step="0.01" value={overageUnitPrice} onChange={(e) => setOverageUnitPrice(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-foreground" /></label>}
+                            </div>}
+                          </fieldset>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {/* Internal-only cost & identity fields (never shown to the customer).
                       Divider + top padding sets them apart from the customer-facing
                       fields above so the two groups don't read as one dense block. */}
@@ -910,7 +1023,7 @@ export function BlockCard({
                       // A line needs a name OR a description (mirrors the API + addManual
                       // refine). Gating on description alone silently blocked valid
                       // name-only lines like a titled SKU with no prose.
-                      disabled={addLineBusy || (!name.trim() && !desc.trim())}
+                      disabled={addLineBusy || (!name.trim() && !desc.trim()) || descriptorIncomplete}
                       aria-busy={addLineBusy}
                       data-testid={`quote-manual-add-${block.id}`}
                       className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"

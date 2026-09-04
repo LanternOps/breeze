@@ -60,6 +60,14 @@ export default function PartnerServicePrincipalsPage() {
   const [keyName, setKeyName] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
 
+  // enrollment-keys:write mints device-join credentials, so the API returns 403
+  // and a SQL CHECK rejects the row unless the principal carries both a future
+  // expiry and a non-empty source-CIDR allowlist. Gate Save on the same pair so
+  // the operator sees the requirement before the request fails.
+  const writeScopeMissingRestrictions = draft.scopes.includes('enrollment-keys:write') && (
+    !draft.expiresAt || !draft.sourceCidrs.split(/[\n,]/).some((value) => value.trim().length > 0)
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(false);
@@ -196,7 +204,7 @@ export default function PartnerServicePrincipalsPage() {
   return <><div className="space-y-6" data-testid="partner-service-principals-page">
     <div className="flex items-start justify-between gap-4">
       <div><h1 className="text-xl font-semibold">{t('partnerServicePrincipals.title')}</h1><p className="text-sm text-muted-foreground">{t('partnerServicePrincipals.description')}</p></div>
-      <button className="rounded bg-primary px-4 py-2 text-sm text-primary-foreground" onClick={openCreate}>{t('partnerServicePrincipals.create')}</button>
+      <button data-testid="create-principal" className="rounded bg-primary px-4 py-2 text-sm text-primary-foreground" onClick={openCreate}>{t('partnerServicePrincipals.create')}</button>
     </div>
 
     {principals.length === 0 && <p className="rounded border p-6 text-center text-muted-foreground">{t('partnerServicePrincipals.empty')}</p>}
@@ -218,10 +226,10 @@ export default function PartnerServicePrincipalsPage() {
       <h2 className="font-semibold">{editing === 'new' ? t('partnerServicePrincipals.create') : t('partnerServicePrincipals.edit')}</h2>
       <label className="block text-sm">{t('partnerServicePrincipals.name')}<input className="mt-1 w-full rounded border bg-background p-2" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.principalDescription')}<textarea className="mt-1 w-full rounded border bg-background p-2" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
-      <fieldset><legend className="text-sm">{t('partnerServicePrincipals.scopes')}</legend><div className="mt-1 grid grid-cols-2 gap-1">{AVAILABLE_SCOPES.map((scope) => <label key={scope} className="text-xs"><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={(event) => setDraft({ ...draft, scopes: event.target.checked ? [...draft.scopes, scope] : draft.scopes.filter((item) => item !== scope) })} /> {scope}</label>)}</div></fieldset>
+      <fieldset><legend className="text-sm">{t('partnerServicePrincipals.scopes')}</legend><div className="mt-1 grid grid-cols-2 gap-1">{AVAILABLE_SCOPES.map((scope) => <label key={scope} className="text-xs"><input type="checkbox" data-testid={`scope-checkbox-${scope}`} checked={draft.scopes.includes(scope)} onChange={(event) => setDraft({ ...draft, scopes: event.target.checked ? [...draft.scopes, scope] : draft.scopes.filter((item) => item !== scope) })} /> {scope}</label>)}</div>{writeScopeMissingRestrictions && <p data-testid="write-scope-restrictions-required" className="mt-1 text-xs text-destructive">{t('partnerServicePrincipals.writeScopeRestrictionsRequired')}</p>}</fieldset>
       <label className="block text-sm">{t('partnerServicePrincipals.sourceCidrs')}<textarea className="mt-1 w-full rounded border bg-background p-2 font-mono" value={draft.sourceCidrs} onChange={(event) => setDraft({ ...draft, sourceCidrs: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.expiresAt')}<input type="datetime-local" className="mt-1 w-full rounded border bg-background p-2" value={draft.expiresAt} onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></label>
-      <div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
+      <div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="save-principal" disabled={writeScopeMissingRestrictions} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
     </div></div>}
 
     {issueTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('partnerServicePrincipals.issueKey')}</h2><label className="block text-sm">{t('partnerServicePrincipals.keyName')}<input aria-label={t('partnerServicePrincipals.keyName')} className="mt-1 w-full rounded border bg-background p-2" value={keyName} onChange={(event) => setKeyName(event.target.value)} /></label><div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => { setIssueTarget(null); setKeyName(''); }}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="confirm-issue-key" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => void issueKey()}>{t('partnerServicePrincipals.issue')}</button></div></div></div>}

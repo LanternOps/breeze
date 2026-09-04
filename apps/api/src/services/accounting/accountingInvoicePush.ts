@@ -314,7 +314,7 @@ async function persistInvoiceCurrencyMismatchErrorInOwnContext(
     });
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', invoiceId, partnerId,
+      service: 'accountingInvoicePush', invoice_id: invoiceId, partner_id: partnerId,
     });
   }
 }
@@ -372,12 +372,12 @@ async function markInvoiceMappingError(mappingId: string, partnerId: string, mes
       captureException(
         new Error(`markInvoiceMappingError matched no accounting_entity_mappings row (id=${mappingId})`),
         undefined,
-        { service: 'accountingInvoicePush', mappingId, partnerId },
+        { service: 'accountingInvoicePush', accounting_mapping_id: mappingId, partner_id: partnerId },
       );
     }
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', mappingId, partnerId,
+      service: 'accountingInvoicePush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
   }
 }
@@ -399,7 +399,7 @@ async function markInvoiceMappingErrorInOwnContext(
     await runInDbContext(() => markInvoiceMappingError(mappingId, partnerId, message));
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', mappingId, partnerId,
+      service: 'accountingInvoicePush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
   }
 }
@@ -780,7 +780,7 @@ export async function pushInvoiceToAccounting(
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', mappingId: mappingRow.id, invoiceId: inv.id,
+      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: inv.id,
     });
     // Phase 2 (failure) — own short context so the marker COMMITS before the throw.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
@@ -803,7 +803,7 @@ export async function pushInvoiceToAccounting(
     }));
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
-      service: 'accountingInvoicePush', mappingId: mappingRow.id, remoteEntityId: result.id,
+      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, remote_entity_id: result.id,
     });
     const message = `QuickBooks accepted the invoice sync (remote id ${result.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
     // Best-effort: the row is currently stuck at sync_status='pending' with no
@@ -924,7 +924,7 @@ export async function voidInvoiceInAccounting(
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', mappingId: mappingRow.id, invoiceId,
+      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
     });
     // Own short context so the marker COMMITS before the throw below.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);

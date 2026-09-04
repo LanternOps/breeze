@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
@@ -15,6 +15,7 @@ import type { MfaChallenge, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
+import { discoverOrgSso, type SsoDiscoveryProvider } from '../../lib/ssoDiscovery';
 import { parseMfaChallengeResponse } from '../../lib/mfaChallenge';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
@@ -187,6 +188,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // form that's collapsed behind it (see the enforceSSO comment below).
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [ssoBootstrapping, setSsoBootstrapping] = useState(false);
+  // Org-axis SSO for the address currently in the email field (#3229). Null
+  // until an entered address resolves to an org that MANDATES SSO; the server
+  // answers null for every other case, so this is only ever set when the
+  // password form would be refused anyway.
+  const [orgSso, setOrgSso] = useState<SsoDiscoveryProvider | null>(null);
+  const [orgSsoDismissed, setOrgSsoDismissed] = useState(false);
+  // The address the in-flight/last discovery was for, so retyping the same
+  // address (tab out, tab back) does not re-spend the rate-limit budget.
+  const lastDiscoveredEmail = useRef<string | null>(null);
+  // Monotonic request id. A slow answer for an address the user has already
+  // replaced must never overwrite the answer for the address on screen.
+  const discoverySeq = useRef(0);
 
   const login = useAuthStore((state) => state.login);
 
@@ -358,6 +371,38 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     return true;
   };
 
+  const handleEmailSettled = useCallback((raw: string) => {
+    const email = raw.trim().toLowerCase();
+    // Cheap syntactic gate: the API 400s anything that isn't an address, and a
+    // half-typed one is a wasted request against a limited budget.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+    if (lastDiscoveredEmail.current === email) return;
+    lastDiscoveredEmail.current = email;
+
+    const seq = ++discoverySeq.current;
+    void discoverOrgSso(email).then((provider) => {
+      if (seq !== discoverySeq.current) return;
+      setOrgSso(provider);
+      // A newly discovered tenant re-collapses the password controls: the
+      // previous "show me the password form anyway" was about the previous
+      // address, not this one.
+      setOrgSsoDismissed(false);
+    });
+  }, []);
+
+  const handleOrgSso = async () => {
+    if (!orgSso || ssoBootstrapping) return;
+    const url = `${orgSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`;
+    setSsoBootstrapping(true);
+    setError(undefined);
+    try {
+      await bootstrapThenNavigate(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Authentication bootstrap failed');
+      setSsoBootstrapping(false);
+    }
+  };
+
   const handlePartnerSso = async () => {
     if (!partnerSso || ssoBootstrapping) return;
     const url = `${partnerSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`;
@@ -471,6 +516,17 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           onSubmit={handleLogin}
           errorMessage={error}
           loading={loading}
+          onEmailSettled={handleEmailSettled}
+          ssoPrompt={
+            orgSso && !orgSsoDismissed
+              ? {
+                  providerName: orgSso.providerName,
+                  onSelect: () => { void handleOrgSso(); },
+                  onUsePassword: () => setOrgSsoDismissed(true),
+                  busy: ssoBootstrapping,
+                }
+              : null
+          }
         />
       )}
       <McpUrlCard variant="compact" requireOAuth className="mt-8" />

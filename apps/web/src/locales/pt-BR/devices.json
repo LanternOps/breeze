@@ -664,6 +664,7 @@
     "retry": "Tentar novamente",
     "activities": "Atividades",
     "total": "total)",
+    "totalAtLeast": "{{count}} ou mais",
     "searchActivities": "Pesquisar atividades...",
     "all": "Todos",
     "success": "Sucesso",
@@ -683,7 +684,8 @@
     "details": "Detalhes",
     "showing": "Exibindo",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "Não há mais atividade"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Falha ao buscar o status do sistema de arquivos",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Falha ao excluir o grupo",
     "billedByContracts": "Este grupo é faturado por {{count}} contrato(s): {{names}}. Remova primeiro essas linhas de contrato.",
     "billedByContractsCount": "Este grupo é faturado por {{count}} contrato(s). Remova primeiro essas linhas de contrato.",
+    "quotedByQuotes": "Este grupo é precificado por {{count}} orçamento(s) aberto(s): {{names}}. Remova primeiro essas linhas de orçamento.",
+    "quotedByQuotesCount": "Este grupo é precificado por {{count}} orçamento(s) aberto(s). Remova primeiro essas linhas de orçamento.",
     "failedToRunScriptOnGroups": "Falha ao executar o script nos grupos",
     "failedToApplyPolicyToGroups": "Falha ao aplicar a política aos grupos",
     "failedToMoveDevice": "Falha ao mover o dispositivo",

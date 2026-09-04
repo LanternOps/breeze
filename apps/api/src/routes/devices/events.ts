@@ -70,13 +70,70 @@ export function buildActionConditions(
     // route-audit twin. Manual commands (actor_type 'user') are excluded —
     // they're already represented by their richer route audit (e.g.
     // script.execute, device.patch.*, device.software.*), so this avoids
-    // double-listing. The 'agent' arm is defensive; only 'system' is emitted
-    // today.
+    // double-listing. 'agent' is excluded too: the device agent's own
+    // `agent.command.result.submit` rows are telemetry (resource = the command,
+    // actor = the agent), and the deliberate feed adds `actor_type <> 'agent'`
+    // at the top level so its partial index applies — see the feed predicate
+    // comment in the route below.
     actionClauses.push(
-      sql`(${auditLogs.action} LIKE ${likePrefixPattern('agent.command.')} AND ${auditLogs.actorType} IN ('system','agent'))`
+      sql`(${auditLogs.action} LIKE ${likePrefixPattern('agent.command.')} AND ${auditLogs.actorType} = 'system')`
     );
   }
   return actionClauses;
+}
+
+// Excludes device-agent telemetry (agent.logs.submit, agent.sessions.submit,
+// ...), which is ~99% of audit_logs. Written as an inline literal on purpose: the
+// partial indexes in 2026-10-09-000100-audit-logs-device-feed-partial-indexes.sql
+// carry this exact predicate, and the planner can only prove them usable when
+// the clause is a constant in the query text (a bound parameter would only be
+// provable under a custom plan).
+export const NON_AGENT_ACTOR: SQL = sql`${auditLogs.actorType} <> 'agent'`;
+
+// The audit_logs_device_feed_details_idx predicate. Implied by the
+// `details->>'deviceId' = X` test the details arm also applies, but the planner
+// cannot derive one from the other, so it is stated explicitly.
+export const DETAILS_HAS_DEVICE_ID: SQL = sql`${auditLogs.details} ? 'deviceId'`;
+
+// Microsecond-precision sort key selected alongside each row. audit_logs.timestamp
+// has microsecond precision and each arm is ordered by it in SQL, but Drizzle
+// hands it back as a JS Date (milliseconds). Merging on the Date would order two
+// rows from different arms that fall in the same millisecond differently from
+// SQL, and a page boundary between them would then skip or repeat a row. The
+// fixed-width text key sorts exactly like the column.
+export const FEED_SORT_KEY: SQL<string> = sql<string>`to_char(${auditLogs.timestamp}, 'YYYYMMDDHH24MISSUS')`;
+
+// Stop-gap cap for the Activities-tab `withTotal` count (#4834, option 2 of
+// the three the issue lays out). Past this many matching rows in an arm, the
+// count query stops instead of walking the rest of the device's audit
+// history, and the UI renders "10,000+" instead of an exact total. The root
+// fix — de-telemetrying audit_logs so the count is cheap outright — is
+// #4340 / #4021.
+export const FEED_TOTAL_CAP = 10000;
+
+// Merge the two feed arms (each already ordered timestamp DESC, id DESC in SQL
+// and bounded to offset+limit rows) and cut the requested page. Exact for any
+// offset because the top-(offset+limit) of the union is contained in the union
+// of each arm's top-(offset+limit) — provided the merge order is IDENTICAL to
+// the SQL order, hence the microsecond `sortKey` (FEED_SORT_KEY) rather than the
+// millisecond Date, and the same id DESC tiebreak (uuid text order == uuid
+// byte order for canonical lowercase uuids).
+export function mergeFeedPage<T extends { sortKey: string; id: string }>(
+  resourceRows: T[],
+  detailsRows: T[],
+  offset: number,
+  limit: number
+): T[] {
+  const desc = (a: string, b: string) => (a === b ? 0 : a < b ? 1 : -1);
+  const merged =
+    detailsRows.length === 0
+      ? resourceRows
+      : resourceRows.length === 0
+        ? detailsRows
+        : [...resourceRows, ...detailsRows].sort(
+            (a, b) => desc(a.sortKey, b.sortKey) || desc(a.id, b.id)
+          );
+  return merged.slice(offset, offset + limit);
 }
 
 const eventsQuerySchema = z.object({
@@ -145,44 +202,62 @@ eventsRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // Scope to the device's org FIRST. This is a performance fix, not just
-    // defense-in-depth (BREEZE-B: 25s holds, 5 users).
+    // ---- Feed predicate ---------------------------------------------------
     //
-    // The `details->>'deviceId'` arm below cannot use its index when RLS is
-    // enforced: `jsonb_object_field_text` (`->>`) is NOT leakproof
-    // (pg_proc.proleakproof = false), so Postgres may not evaluate it before the
-    // RLS security qual, which means it can never become an index condition.
-    // audit_logs_details_device_id_idx therefore exists and is simply ignored on
-    // the app's connection. Measured on 800k rows as breeze_app: 11,938ms
-    // (Parallel Seq Scan, 266k rows filtered per worker). The SAME query as a
-    // superuser, where RLS does not apply, uses the index and runs in 0.044ms —
-    // so this is an RLS interaction, not a missing index. `uuid_eq` IS
-    // leakproof, which is why the resource_id arm alone indexes fine (3.9ms).
+    // The feed runs as breeze_app with RLS forced on audit_logs. Under a
+    // security qual Postgres only promotes a clause to an INDEX CONDITION when
+    // it is leakproof; everything else is evaluated after the policy, as a
+    // plain filter. That rules out most of this predicate: `details->>'deviceId'`
+    // (jsonb_object_field_text), `action LIKE ...` (textlike) and
+    // `actor_type IN (...)` (enum_eq) are all non-leakproof, and an OR that
+    // contains one of them is non-leakproof as a whole. Only `org_id = X` and
+    // `resource_id = X` (uuid_eq) can drive an index.
     //
-    // An org_id equality is leakproof and indexable, so it bounds the scan to
-    // one org via audit_logs_org_timestamp_idx: 11,938ms -> 178ms (~67x).
+    // The original single query, `(resource_id = X OR details->>'deviceId' = X)`,
+    // therefore had exactly one index path: audit_logs_org_timestamp_idx, i.e.
+    // the org's ENTIRE audit history filtered row by row. On the largest US org
+    // (2.4M rows, 99% agent telemetry) that was 90 s mean and 13+ minutes worst
+    // case per device page load, and it saturated the managed DB (2026-09-03).
     //
-    // Safe on visibility: breeze_has_org_access(NULL) returns FALSE, so audit
-    // rows written with a null org_id (e.g. writeAuditEvent with `orgId ?? null`
-    // on some agent paths) are ALREADY invisible to every org- and
-    // partner-scope caller — this predicate hides nothing they could see. It
-    // does narrow system-scope callers, which previously saw null-org rows; a
-    // device's activity feed showing only that device's org is the intended
-    // semantics.
-    const conditions: SQL[] = [
-      eq(auditLogs.orgId, device.orgId),
-      // Find audit logs where resourceId matches the device, OR the device is
-      // referenced inside the JSONB details (agent-submitted events use
-      // details.deviceId).
-      or(
-        eq(auditLogs.resourceId, deviceId),
-        sql`${auditLogs.details}->>'deviceId' = ${deviceId}`
-      )!,
-    ];
+    // So the feed is two arms, merged in mergeFeedPage():
+    //
+    //   1. resource arm — `resource_id = device` as a TOP-LEVEL clause, so it is
+    //      an index condition. When the caller asks for the deliberate-action
+    //      feed (`actions` / `includeAutomated`), `actor_type <> 'agent'` is
+    //      added too: those action families are written by route handlers and
+    //      commandQueue, never by the device agent, so the clause changes
+    //      nothing semantically — but it lets the planner prove the partial
+    //      index audit_logs_device_feed_resource_idx (predicate proof is
+    //      static, leakproofness is irrelevant there) and skip the ~99% of the
+    //      device's rows that are telemetry. The unfiltered Activities tab keeps
+    //      the agent rows and uses audit_logs_resource_id_timestamp_idx.
+    //   2. details arm — rows that reference the device only through
+    //      details.deviceId (device.command.queue, remote sessions). Their
+    //      resource is something else, so this arm is keyed on the org via
+    //      audit_logs_device_feed_details_idx, a partial index on
+    //      `details ? 'deviceId'`. That predicate is stated verbatim here so
+    //      the proof holds (the `->>` equality cannot be derived from it). Rows
+    //      carrying the key are rare for every actor type (51 in the largest
+    //      US org), so the JSONB equality runs as a filter over a few rows
+    //      instead of the org's whole history — and the arm keeps the old OR's
+    //      semantics exactly; no actor is excluded from it except, for the
+    //      deliberate feed, the same telemetry exclusion as arm 1.
+    //      `resource_id IS DISTINCT FROM device` keeps the arms disjoint so the
+    //      merged page and the summed count have no duplicates.
+    //
+    // Both arms keep `org_id = device.orgId` (BREEZE-B). It is a leakproof
+    // index-able clause and the visibility semantics are intended: the device's
+    // feed shows only its own org. breeze_has_org_access(NULL) is FALSE, so rows
+    // written with a null org_id were already invisible to org/partner callers.
+    //
+    // Migration: 2026-10-09-000100-audit-logs-device-feed-partial-indexes.sql.
+    // Contract test (real Postgres, as breeze_app):
+    // __tests__/integration/deviceEventsFeedIndexes.integration.test.ts.
+    const commonConditions: SQL[] = [eq(auditLogs.orgId, device.orgId)];
 
     if (search) {
       const term = `%${search}%`;
-      conditions.push(
+      commonConditions.push(
         or(
           ilike(auditLogs.action, term),
           ilike(auditLogs.resourceName, term),
@@ -193,50 +268,55 @@ eventsRoutes.get(
 
     if (category) {
       // Filter by action prefix category
-      conditions.push(ilike(auditLogs.action, `${category}.%`));
+      commonConditions.push(ilike(auditLogs.action, `${category}.%`));
     }
 
     // The overview "deliberate action" filter: any supplied action prefix, plus
     // (opt-in) automated agent-dispatched commands. Both go into one OR group.
     const actionClauses = buildActionConditions(actions, includeAutomated);
-    if (actionClauses.length > 0) {
-      conditions.push(or(...actionClauses)!);
+    const deliberateFeed = actionClauses.length > 0;
+    if (deliberateFeed) {
+      commonConditions.push(or(...actionClauses)!);
     }
 
     if (result) {
-      conditions.push(eq(auditLogs.result, result));
+      commonConditions.push(eq(auditLogs.result, result));
     }
 
     if (initiatedBy) {
-      conditions.push(eq(auditLogs.initiatedBy, initiatedBy));
+      commonConditions.push(eq(auditLogs.initiatedBy, initiatedBy));
     }
 
     if (from) {
-      conditions.push(gte(auditLogs.timestamp, from));
+      commonConditions.push(gte(auditLogs.timestamp, from));
     }
     if (to) {
-      conditions.push(lte(auditLogs.timestamp, to));
+      commonConditions.push(lte(auditLogs.timestamp, to));
     }
 
-    const whereClause = and(...conditions);
+    const resourceArm = and(
+      ...commonConditions,
+      eq(auditLogs.resourceId, deviceId),
+      ...(deliberateFeed ? [NON_AGENT_ACTOR] : [])
+    )!;
+    const detailsArm = and(
+      ...commonConditions,
+      ...(deliberateFeed ? [NON_AGENT_ACTOR] : []),
+      DETAILS_HAS_DEVICE_ID,
+      sql`${auditLogs.details}->>'deviceId' = ${deviceId}`,
+      sql`${auditLogs.resourceId} IS DISTINCT FROM ${deviceId}::uuid`
+    )!;
 
-    // The total count is an unbounded count(*) over the device's whole audit
-    // history; only run it when the caller actually renders a total. The feed
-    // read itself is a bounded ORDER BY timestamp DESC LIMIT N (issue #1726).
-    const countPromise = withTotal
-      ? db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(auditLogs)
-          .where(whereClause)
-          .then((r) => r[0]?.count ?? 0)
-      : Promise.resolve(null);
-
-    const [countResult, rows] = await Promise.all([
-      countPromise,
+    // Each arm is a bounded "top offset+limit" read in index order; the page is
+    // cut from the merged result (mergeFeedPage), which is exact because the
+    // union's top-N is contained in the union of each arm's top-N.
+    const fetchLimit = offset + limit;
+    const selectArm = (where: SQL) =>
       db
         .select({
           id: auditLogs.id,
           timestamp: auditLogs.timestamp,
+          sortKey: FEED_SORT_KEY,
           action: auditLogs.action,
           actorType: auditLogs.actorType,
           actorEmail: auditLogs.actorEmail,
@@ -253,13 +333,57 @@ eventsRoutes.get(
         })
         .from(auditLogs)
         .leftJoin(users, eq(auditLogs.actorId, users.id))
-        .where(whereClause)
+        .where(where)
         .orderBy(desc(auditLogs.timestamp), desc(auditLogs.id))
-        .limit(limit)
-        .offset(offset),
+        .limit(fetchLimit);
+
+    // Only run the count when the caller actually renders a total (issue
+    // #1726); when it does run, cap it (issue #4834 stop-gap — option 2 of
+    // the three in that issue; the root fix, de-telemetrying audit_logs, is
+    // #4340 / #4021). An uncapped count(*) over a device's whole audit
+    // history read 76k rows (99% agent telemetry) in 118s on US prod, because
+    // the RLS org_id filter forces a heap fetch per row and the table is
+    // never vacuumed (no visibility map for an index-only count). Capping
+    // each arm's count at FEED_TOTAL_CAP + 1 rows via a LIMIT inside a
+    // derived table makes the query stop after that many matches instead of
+    // scanning the rest of the device's history — cost is now bounded
+    // regardless of how large that history grows. The inner SELECT stays on
+    // auditLogs alone (no join to `users`) and reuses the arm's `where`
+    // unchanged, so it hits the same index the row read for that arm uses.
+    const countArm = (where: SQL) => {
+      const cappedRows = db
+        .select({ one: sql`1` })
+        .from(auditLogs)
+        .where(where)
+        .limit(FEED_TOTAL_CAP + 1)
+        .as('capped_rows');
+      return db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(cappedRows)
+        .then((r) => Number(r[0]?.count ?? 0));
+    };
+
+    const [resourceRows, detailsRows, resourceCount, detailsCount] = await Promise.all([
+      selectArm(resourceArm),
+      selectArm(detailsArm),
+      withTotal ? countArm(resourceArm) : Promise.resolve(null),
+      withTotal ? countArm(detailsArm) : Promise.resolve(null),
     ]);
 
-    const total = countResult === null ? null : Number(countResult);
+    const rows = mergeFeedPage(resourceRows, detailsRows, offset, limit);
+
+    // Each arm's count is itself capped at FEED_TOTAL_CAP + 1, so the raw sum
+    // can read anywhere up to 2 * (FEED_TOTAL_CAP + 1) — that's fine, since
+    // all we need past the cap is the boolean "more than FEED_TOTAL_CAP rows
+    // matched", not a precise number. When the sum is at or under the cap,
+    // neither arm could have hit its own +1 ceiling, so the sum is exact.
+    let total: number | null = null;
+    let totalIsLowerBound = false;
+    if (resourceCount !== null && detailsCount !== null) {
+      const rawTotal = resourceCount + detailsCount;
+      totalIsLowerBound = rawTotal > FEED_TOTAL_CAP;
+      total = totalIsLowerBound ? FEED_TOTAL_CAP : rawTotal;
+    }
 
     const data = rows.map((row) => ({
       id: row.id,
@@ -286,7 +410,10 @@ eventsRoutes.get(
 
     return c.json({
       data,
-      pagination: { page, limit, total },
+      pagination:
+        total === null
+          ? { page, limit, total }
+          : { page, limit, total, totalIsLowerBound },
     });
   }
 );

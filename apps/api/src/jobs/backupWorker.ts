@@ -88,7 +88,15 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
       // pooled connection sits idle-in-transaction across that I/O.
       if (data.type === 'dispatch-backup') {
         assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
-        return await processDispatchBackup(data);
+        // #4137: BullMQ bumps `attemptsStarted` on EVERY move-to-active. With
+        // `attempts: 1` (backupEnqueue.DISPATCH_JOB_OPTIONS) an ordinary retry
+        // can no longer happen, but a STALLED job — worker process killed
+        // mid-dispatch — is pushed back to `wait` and re-delivered regardless
+        // of `attempts`, up to `maxStalledCount` below. `> 1` is therefore
+        // exactly "some earlier execution already started this dispatch", and
+        // Phase 3 must not run again. (`reprocessJob` clears the counter, so a
+        // deliberate operator retry is NOT suppressed by this.)
+        return await processDispatchBackup(data, { redelivered: job.attemptsStarted > 1 });
       }
       return runWithSystemDbAccess(async () => {
         switch (data.type) {
@@ -656,9 +664,22 @@ async function prepareBackupDispatchTargets(
 
   const prepared: PreparedBackupTarget[] = [];
   const preFailedTargets: string[] = [];
+  // #4137: every child row this loop has already committed. A cancellation
+  // detected at ANY later point must settle all of them — before this, a
+  // cancel landing at the top of iteration `i` cancelled nothing and left
+  // every child from iterations 1..i-1 stranded at status='running' (the
+  // cancel route only ever touches the parent id, and nothing else sweeps
+  // children — there is no parent linkage column to sweep by).
+  const createdChildJobIds: string[] = [];
+  const cancelCreatedChildren = async (): Promise<void> => {
+    for (const childJobId of createdChildJobIds) {
+      await markBackupJobCancelled(childJobId, 'Cancelled before dispatch');
+    }
+  };
 
   for (let i = 0; i < targets.length; i++) {
     if (await isBackupJobCancelled(data.jobId)) {
+      await cancelCreatedChildren();
       return { status: 'done', result: { dispatched: false } };
     }
 
@@ -687,9 +708,10 @@ async function prepareBackupDispatchTargets(
         continue;
       }
       commandJobId = newJob.id;
+      createdChildJobIds.push(commandJobId);
 
       if (await isBackupJobCancelled(data.jobId)) {
-        await markBackupJobCancelled(commandJobId, 'Cancelled before dispatch');
+        await cancelCreatedChildren();
         return { status: 'done', result: { dispatched: false } };
       }
     }
@@ -732,9 +754,102 @@ async function prepareBackupDispatchTargets(
   return { status: 'ok', prepared, preFailedTargets, backupMode, targetCount: targets.length };
 }
 
+/**
+ * Per-target delivery state across Phase 4 (#4137).
+ *
+ * The distinction that matters is `attempting` vs `not-attempted`: a target
+ * whose `dispatchCommandToAgent` call THREW may or may not have reached the
+ * agent, so its row must be left in-flight for a genuine result to land on
+ * (`applyBackupCommandResultToJob` only accepts a pending/running row). Only
+ * rows we know were never delivered may be settled to a terminal status.
+ */
+type TargetSendState = 'not-attempted' | 'attempting' | 'sent' | 'failed';
+
+/**
+ * Settle the rows for targets that provably never reached the agent, after an
+ * exception aborted Phase 4/5 (#4137).
+ *
+ * With `attempts: 1` there is no retry to clean these up on a second pass, so
+ * without this they would sit at status='running' (children) or 'pending'
+ * (parent) until the stale reaper's timeout. Deliberately does NOT touch:
+ *  - `sent` targets — a real agent result is still coming;
+ *  - `attempting` targets — delivery is ambiguous, same reason;
+ *  - rows already cancelled/terminal — the status guard excludes them.
+ *
+ * Best-effort: a failure here must not mask the original error, which the
+ * caller rethrows so the worker's `failed` listener reports it to Sentry.
+ */
+async function settleUndeliveredDispatchTargets(
+  data: DispatchBackupJobData,
+  prepared: PreparedBackupTarget[],
+  sendState: Map<string, TargetSendState>,
+  cause: unknown,
+): Promise<void> {
+  const undelivered = prepared.filter((target) => {
+    const state = sendState.get(target.commandJobId);
+    return state === 'not-attempted' || state === 'failed';
+  });
+  if (undelivered.length === 0) return;
+
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  try {
+    await runWithSystemDbAccess(async () => {
+      for (const target of undelivered) {
+        await db
+          .update(backupJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            updatedAt: new Date(),
+            errorLog: `Backup dispatch aborted; the ${target.commandType} target never reached the agent: ${reason}`,
+          })
+          .where(and(
+            eq(backupJobs.id, target.commandJobId),
+            inArray(backupJobs.status, ['pending', 'running'])
+          ));
+      }
+    });
+  } catch (settleError) {
+    console.error(
+      `[BackupWorker] Failed to settle ${undelivered.length} undelivered dispatch row(s) for job ${data.jobId}:`,
+      settleError,
+    );
+    // With `attempts: 1` this IS the only proactive cleanup for provably-unsent
+    // rows; if it fails they silently wait on the stale reaper instead, so the
+    // failure needs to be visible rather than log-only.
+    captureException(settleError, undefined, {
+      backup_dispatch_issue: 'undelivered-settle-failed',
+    });
+  }
+}
+
 async function processDispatchBackup(
-  data: DispatchBackupJobData
+  data: DispatchBackupJobData,
+  opts: { redelivered?: boolean } = {},
 ): Promise<{ dispatched: boolean }> {
+  // #4137 — refuse a re-delivery outright. Phase 3 below INSERTs a fresh
+  // `backup_jobs` child row per extra target and commits it before the Phase-4
+  // sends, so re-running it duplicates the child set (stranding the previous
+  // one at 'running' forever) and re-sends commands the agent may already be
+  // executing. At-most-once is the right trade for a backup: the scheduler
+  // creates a fresh job next tick and the stale reaper settles this one, which
+  // is strictly better than a corrupted job ledger.
+  if (opts.redelivered) {
+    const message =
+      `[BackupWorker] Refusing to re-dispatch backup job ${data.jobId} (device ${data.deviceId}): ` +
+      'this execution is a BullMQ re-delivery and the dispatch is not idempotent (#4137). ' +
+      'Leaving the existing job row(s) for the stale-job reaper.';
+    console.warn(message);
+    // `backup_dispatch_issue` is the only field that survives the Sentry
+    // scrubber — it deletes message/logentry/extra, rewrites the exception
+    // value to '[redacted]' and drops every tag outside ALLOWED_TAG_NAMES
+    // (services/sentry.ts). The ids stay in the console line above.
+    captureException(new Error(message), undefined, {
+      backup_dispatch_issue: 'redelivery-refused',
+    });
+    return { dispatched: false };
+  }
+
   // Phase 1 — cancellation guard, config load, agent lookup: ONE short system
   // DB context, then it CLOSES.
   const precheck = await runWithSystemDbAccess(() => loadBackupDispatchPrecheck(data));
@@ -762,81 +877,121 @@ async function processDispatchBackup(
   const failedTargets: string[] = [...preFailedTargets];
   let lastNonOfflineOutcomeStatus: string | null = null;
   const failedChildJobs: Array<{ commandJobId: string; detail: string }> = [];
+  // #4137: per-target delivery state, so an exception mid-Phase-4 can settle
+  // exactly the rows that provably never went out (see
+  // settleUndeliveredDispatchTargets) and Phase 5 can settle the PARENT row on
+  // its own target's outcome rather than the aggregate send count.
+  const sendState = new Map<string, TargetSendState>(
+    prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
+  );
+  let parentFailureDetail: string | null = null;
 
-  for (const target of prepared) {
-    const outcome = await dispatchCommandToAgent(agentId, target.command);
-    if (outcome.status === 'sent') {
-      sentCount++;
-      continue;
+  try {
+    for (const target of prepared) {
+      // Set BEFORE the await: if the send throws, delivery is ambiguous and
+      // this row must be left in-flight rather than settled as never-sent.
+      sendState.set(target.commandJobId, 'attempting');
+      const outcome = await dispatchCommandToAgent(agentId, target.command);
+      if (outcome.status === 'sent') {
+        sendState.set(target.commandJobId, 'sent');
+        sentCount++;
+        continue;
+      }
+
+      sendState.set(target.commandJobId, 'failed');
+      const detail = outcome.status === 'offline'
+        ? `Failed to send ${target.commandType} command to agent`
+        : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
+      console.warn(`[BackupWorker] ${detail} for job ${target.commandJobId}`);
+      failedTargets.push(target.commandType);
+      if (outcome.status !== 'offline') {
+        lastNonOfflineOutcomeStatus = outcome.status;
+      }
+      if (target.commandJobId !== data.jobId) {
+        failedChildJobs.push({ commandJobId: target.commandJobId, detail });
+      } else {
+        parentFailureDetail = detail;
+      }
     }
 
-    const detail = outcome.status === 'offline'
-      ? `Failed to send ${target.commandType} command to agent`
-      : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
-    console.warn(`[BackupWorker] ${detail} for job ${target.commandJobId}`);
-    failedTargets.push(target.commandType);
-    if (outcome.status !== 'offline') {
-      lastNonOfflineOutcomeStatus = outcome.status;
-    }
-    if (target.commandJobId !== data.jobId) {
-      failedChildJobs.push({ commandJobId: target.commandJobId, detail });
-    }
+    // Phase 5 — settle per-target failure rows and the final job status: one
+    // more short system DB context.
+    return await runWithSystemDbAccess(async () => {
+      // Failed-send child rows settle UNCONDITIONALLY, before the cancel check —
+      // a cancel racing the sends must not strand them at status 'running' (the
+      // cancel route only touches the parent id, nothing else sweeps children).
+      for (const failure of failedChildJobs) {
+        await db
+          .update(backupJobs)
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: failure.detail })
+          .where(eq(backupJobs.id, failure.commandJobId));
+      }
+
+      if (await isBackupJobCancelled(data.jobId)) {
+        return { dispatched: false };
+      }
+
+      if (sentCount === 0) {
+        await markJobFailed(
+          data.jobId,
+          lastNonOfflineOutcomeStatus
+            ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+            : 'Failed to send command to agent',
+        );
+        return { dispatched: false };
+      }
+
+      // #4137: the parent row carries the FIRST target's command, so its status
+      // must follow that target's own outcome — not the aggregate `sentCount`.
+      // A multi-target run whose first target failed while a child succeeded
+      // used to flip the parent to 'running' anyway, leaving it in-flight until
+      // the stale reaper's 24h running timeout for a command no agent ever got.
+      if (sendState.get(data.jobId) !== 'sent') {
+        console.warn(
+          `[BackupWorker] Parent target of job ${data.jobId} was not sent (${sentCount}/${targetCount} other target(s) dispatched) — failing the parent row`
+        );
+        await markJobFailed(
+          data.jobId,
+          parentFailureDetail ?? 'Failed to send command to agent',
+        );
+        return { dispatched: true };
+      }
+
+      if (failedTargets.length > 0) {
+        console.warn(
+          `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targetCount} sent, failed targets: ${failedTargets.join(', ')}`
+        );
+        await db
+          .update(backupJobs)
+          .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
+          .where(eq(backupJobs.id, data.jobId));
+      }
+
+      await db
+        .update(backupJobs)
+        .set({
+          status: 'running',
+          startedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(backupJobs.id, data.jobId),
+          inArray(backupJobs.status, ['pending', 'running'])
+        ));
+
+      console.log(
+        `[BackupWorker] Dispatched ${sentCount}/${targetCount} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
+      );
+      return { dispatched: true };
+    });
+  } catch (error) {
+    // #4137: with `attempts: 1` there is no second pass to tidy up, so settle
+    // the rows this run provably never delivered before the error propagates.
+    // Rethrown so the worker's `failed` listener still reports it to Sentry —
+    // swallowing it would record the job as a BullMQ success.
+    await settleUndeliveredDispatchTargets(data, prepared, sendState, error);
+    throw error;
   }
-
-  // Phase 5 — settle per-target failure rows and the final job status: one
-  // more short system DB context.
-  return runWithSystemDbAccess(async () => {
-    // Failed-send child rows settle UNCONDITIONALLY, before the cancel check —
-    // a cancel racing the sends must not strand them at status 'running' (the
-    // cancel route only touches the parent id, nothing else sweeps children).
-    for (const failure of failedChildJobs) {
-      await db
-        .update(backupJobs)
-        .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: failure.detail })
-        .where(eq(backupJobs.id, failure.commandJobId));
-    }
-
-    if (await isBackupJobCancelled(data.jobId)) {
-      return { dispatched: false };
-    }
-
-    if (sentCount === 0) {
-      await markJobFailed(
-        data.jobId,
-        lastNonOfflineOutcomeStatus
-          ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-          : 'Failed to send command to agent',
-      );
-      return { dispatched: false };
-    }
-
-    if (failedTargets.length > 0) {
-      console.warn(
-        `[BackupWorker] Partial dispatch for job ${data.jobId}: ${sentCount}/${targetCount} sent, failed targets: ${failedTargets.join(', ')}`
-      );
-      await db
-        .update(backupJobs)
-        .set({ errorLog: `Partial dispatch: ${failedTargets.length} target(s) failed to send (${failedTargets.join(', ')})`, updatedAt: new Date() })
-        .where(eq(backupJobs.id, data.jobId));
-    }
-
-    await db
-      .update(backupJobs)
-      .set({
-        status: 'running',
-        startedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(backupJobs.id, data.jobId),
-        inArray(backupJobs.status, ['pending', 'running'])
-      ));
-
-    console.log(
-      `[BackupWorker] Dispatched ${sentCount}/${targetCount} ${backupMode} command(s) to agent ${agentId} for job ${data.jobId}`
-    );
-    return { dispatched: true };
-  });
 }
 
 // ── process-results ───────────────────────────────────────────────────────────

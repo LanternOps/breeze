@@ -137,6 +137,19 @@ describe('contractLinesCoveringDevice (#3205 W06)', () => {
       .toEqual([['l-org', 'org', null], ['l-site', 'site', SITE_A]]);
   });
 
+  it('a site-deleted per_device line covers nothing instead of widening to org-wide', async () => {
+    queueResult(identity());
+    queueResult(billableRow);
+    queueResult([
+      contractLineRow({
+        id: 'l-site-deleted', lineType: 'per_device', deviceRoles: null,
+        siteId: null, siteName: 'Retired HQ', description: 'Retired site devices',
+      }),
+    ]);
+    const res = await contractLinesCoveringDevice(DEVICE_ID, actor);
+    expect(res).toMatchObject({ lines: [], uncovered: true });
+  });
+
   it('a static group line: batch read + 1 membership read + 0 deviceMatchesFilter', async () => {
     queueResult(identity());
     queueResult(billableRow);
