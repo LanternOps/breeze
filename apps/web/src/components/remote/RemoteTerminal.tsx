@@ -151,8 +151,20 @@ export default function RemoteTerminal({
       const { FitAddon } = await import('@xterm/addon-fit');
       const { WebLinksAddon } = await import('@xterm/addon-web-links');
 
-      // Import CSS
-      await import('@xterm/xterm/css/xterm.css');
+      // The stylesheet is cosmetic, so its load must never be able to fail
+      // the terminal (#4152). Vite compiles this dynamic import into a
+      // `<link rel=stylesheet>` injection that resolves on `load` and REJECTS
+      // on `error` — and it does reject in the field: after an upgrade a stale
+      // hashed asset URL comes back as the SPA's index.html, which `nosniff`
+      // refuses to treat as CSS. Awaited bare, that one rejection unwound the
+      // whole of init, leaving a permanently dead pane. Degrade to an
+      // unstyled terminal instead.
+      await import('@xterm/xterm/css/xterm.css').catch((cssError) => {
+        console.warn(
+          'Terminal stylesheet failed to load; continuing with an unstyled terminal:',
+          cssError
+        );
+      });
 
       const fitAddon = new FitAddon();
       const webLinksAddon = new WebLinksAddon();
@@ -220,6 +232,16 @@ export default function RemoteTerminal({
       setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
+      // Release the one-shot guard so the user can retry without remounting.
+      // It is only otherwise cleared by unmount cleanup, which is why a failed
+      // cold mount used to need a tab round-trip to recover (#4152).
+      initStartedRef.current = false;
+      // Surface the failure. Without this the pane keeps the initial
+      // 'disconnected' status while `autoConnectAttempted` stays false (the
+      // auto-connect effect is gated on `terminalReady`, which never flips),
+      // so the retry overlay's condition is never satisfied and the user is
+      // left with an empty pane and nothing to click.
+      setStatus('failed');
       onErrorRef.current?.(tRef.current('remoteTerminal.errors.initialize'));
     }
   }, []);
@@ -650,6 +672,22 @@ export default function RemoteTerminal({
     }
   }, [terminalReady, status, sessionId, autoConnectAttempted, connect]);
 
+  // The overlay's button has to serve two different broken states. When a
+  // session died, the terminal object still exists and reconnecting is the
+  // whole job. When init itself failed there is no terminal at all, and
+  // connect() early-returns on the null `terminalRef` — so the button silently
+  // did nothing (#4152). Re-run init in that case; the auto-connect effect
+  // takes it from there once `terminalReady` flips, which is also why the
+  // status has to go back to 'disconnected' (that effect is gated on it).
+  const handleOverlayRetry = useCallback(() => {
+    if (terminalRef.current) {
+      void connect();
+      return;
+    }
+    setStatus('disconnected');
+    void initTerminal();
+  }, [connect, initTerminal]);
+
   // Format connection duration
   const getConnectionDuration = () => {
     if (!connectionTime) return '';
@@ -791,7 +829,7 @@ export default function RemoteTerminal({
               <button
                 type="button"
                 data-testid="terminal-overlay-reconnect"
-                onClick={connect}
+                onClick={handleOverlayRetry}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
                 <RefreshCw className="h-4 w-4" />
