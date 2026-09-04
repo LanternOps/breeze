@@ -84,8 +84,7 @@ describe('buildScriptBuilderSystemPrompt — runtime parameter delivery', () => 
   });
 
   it('tells the assistant never to use a Mandatory param() block for a Breeze parameter', () => {
-    expect(prompt).toMatch(/Mandatory/);
-    expect(prompt).toContain('param()');
+    expect(prompt).toMatch(/Never write a param\(\) block with a Mandatory/);
   });
 
   it('tells the assistant never to read a bare $env:<Name>', () => {
@@ -103,7 +102,7 @@ describe('buildScriptBuilderSystemPrompt — runtime parameter delivery', () => 
   });
 
   it('forbids embedding a real customer value as a fallback in script code', () => {
-    expect(prompt).toMatch(/never embed/i);
+    expect(prompt).toMatch(/[Nn]ever embed a real customer value.*fallback/);
   });
 
   it('renders the derived BREEZE_PARAM_ env var name next to each declared editor parameter', () => {
@@ -118,5 +117,19 @@ describe('buildScriptBuilderSystemPrompt — runtime parameter delivery', () => 
     });
     expect(withParams).toContain('GoogleEmail → $env:BREEZE_PARAM_GOOGLEEMAIL');
     expect(withParams).toContain('log-level → $env:BREEZE_PARAM_LOG_LEVEL');
+  });
+
+  it('passes non-hyphen characters through unchanged (only "-" is folded to "_"), matching the agent executor exactly', () => {
+    // agent/internal/executor/executor.go buildEnvironment only folds "-" to
+    // "_" after upper-casing; a "." or space is NOT sanitized further. This
+    // pins that documented discrepancy from the issue's assumption of a
+    // general non-alphanumeric sanitizer.
+    const withParams = buildScriptBuilderSystemPrompt({
+      editorSnapshot: {
+        content: 'echo hi',
+        parameters: [{ name: 'api.key', type: 'string' }],
+      },
+    });
+    expect(withParams).toContain('api.key → $env:BREEZE_PARAM_API.KEY');
   });
 });
