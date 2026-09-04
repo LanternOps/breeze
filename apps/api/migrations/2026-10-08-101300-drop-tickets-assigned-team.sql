@@ -1,0 +1,12 @@
+-- #4463 — tickets.assigned_team was identified during AI-agents ticket-triage
+-- wave P2-4 as a dead column: no FK, no writer, and no reader anywhere in the
+-- codebase (confirmed by repo-wide grep across apps/, packages/, ee/, docs/
+-- before writing this migration). The P2-4 plan/spec amendment (2026-08-30
+-- quorum, decision D8) explicitly deferred wiring it into the triage proposal
+-- flow rather than resurrecting it, so per the issue's ruling this drops the
+-- column instead of leaving unused schema in place.
+--
+-- Idempotent: IF NOT EXISTS is implied by IF EXISTS below (re-running after
+-- the column is already gone is a no-op). No inner BEGIN/COMMIT — autoMigrate
+-- wraps each file in its own transaction.
+ALTER TABLE tickets DROP COLUMN IF EXISTS assigned_team;
