@@ -13,7 +13,6 @@ import { db } from '../db';
 import { scripts, scriptTags, scriptToTags } from '../db/schema';
 import {
   resolveScriptCloneScope,
-  insertScriptRow,
   isScriptScopeError,
   type ScriptScopeError,
 } from './scriptWrite';
@@ -99,30 +98,49 @@ export async function cloneScript(
 
   const name = input.name?.trim() || `${source.name} (copy)`;
 
-  const created = await insertScriptRow(auth, scope, {
-    name,
-    description: source.description,
-    category: source.category,
-    osTypes: source.osTypes,
-    language: source.language,
-    content: source.content,
-    parameters: source.parameters,
-    timeoutSeconds: source.timeoutSeconds,
-    runAs: source.runAs,
-    exitCodeSeverityMapping: source.exitCodeSeverityMapping,
-  });
-  if (!created) {
-    return { error: 'Clone failed', status: 400 };
-  }
-
+  // Insert + tag copy run in ONE transaction: insertScriptRow/ensureTagIds/
+  // linkTags (services/scriptWrite.ts, services/scriptBundle) all hard-code
+  // the module-level `db`, so a tag-copy failure after a successful bare
+  // insert would otherwise leave a real, untagged clone in place while the
+  // caller is told the duplicate failed — a retry then mints a second one.
+  // Rolling both back together makes "failed" mean "nothing was created".
   const tagRows = await db
     .select({ name: scriptTags.name })
     .from(scriptToTags)
     .innerJoin(scriptTags, eq(scriptToTags.tagId, scriptTags.id))
     .where(eq(scriptToTags.scriptId, scriptId));
-  if (tagRows.length > 0) {
-    const tagIds = await ensureTagIds(scope, tagRows.map((t) => t.name));
-    await linkTags(created.id, tagIds, false);
+
+  const created = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(scripts)
+      .values({
+        orgId: scope.orgId,
+        partnerId: scope.partnerId,
+        name,
+        description: source.description ?? undefined,
+        category: source.category ?? undefined,
+        osTypes: source.osTypes,
+        language: source.language,
+        content: source.content,
+        parameters: source.parameters,
+        timeoutSeconds: source.timeoutSeconds,
+        runAs: source.runAs,
+        isSystem: false,
+        version: 1,
+        exitCodeSeverityMapping: source.exitCodeSeverityMapping ?? null,
+        createdBy: auth.user.id,
+      })
+      .returning();
+    if (!row) return undefined;
+
+    if (tagRows.length > 0) {
+      const tagIds = await ensureTagIds(scope, tagRows.map((t) => t.name), tx);
+      await linkTags(row.id, tagIds, false, tx);
+    }
+    return row;
+  });
+  if (!created) {
+    return { error: 'Clone failed', status: 400 };
   }
 
   return { script: created };

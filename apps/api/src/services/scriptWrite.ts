@@ -109,18 +109,29 @@ export type ScriptCloneSource = { orgId: string | null; partnerId: string | null
  *   `resolveScriptCreateScope`'s system branch has no "which org" fallback of
  *   its own and would otherwise resolve to `org_id: null, partner_id: null`,
  *   an ownerless row invisible under RLS to everyone who isn't system scope.
- * - An explicit `requestedOrgId` on a non-system source is always an
- *   intentional target: a genuine cross-org copy, or a deliberate narrowing
- *   of a partner-wide script into one org. Checked with the same org-access
- *   rule as create; this is narrowing, not widening, so it never requires the
- *   partner-wide capability.
- * - No `requestedOrgId` on a non-system source: the clone preserves the
- *   SOURCE's scope rather than picking a new one. An org-owned source clones
- *   into that same org. A partner-wide source (`org_id` NULL, `partner_id`
- *   set) stays partner-wide by default — which still runs through
- *   `canManagePartnerWidePolicies` via `resolveScriptCreateScope('partner', …)`,
- *   so a caller who could not have CREATED a partner-wide script is refused
- *   (403) rather than silently getting an org-scoped downgrade of it (CLAUDE.md
+ * - Organization scope ALWAYS lands the clone in the caller's own org,
+ *   regardless of the source's scope (mirrors `resolveScriptCreateScope`'s
+ *   own org branch, which likewise ignores `availability`/`requestedOrgId`).
+ *   This is not a "downgrade" of a capability the caller ever held: org
+ *   scope can never create OR maintain a partner-wide script through any
+ *   path in this system (`canManagePartnerWidePolicies` is unconditionally
+ *   false for it), so there is no other org-scoped-writable destination to
+ *   land in even when the source (readable to them per `canReadScript`,
+ *   which also lets org-scope callers read their own partner's partner-wide
+ *   rows — see the scripts.ts list route) happens to be partner-wide.
+ * - An explicit `requestedOrgId` on a non-system source (partner/system
+ *   scope) is always an intentional target: a genuine cross-org copy, or a
+ *   deliberate narrowing of a partner-wide script into one org. Checked with
+ *   the same org-access rule as create; this is narrowing, not widening, so
+ *   it never requires the partner-wide capability.
+ * - No `requestedOrgId` on a non-system source (partner/system scope): the
+ *   clone preserves the SOURCE's scope rather than picking a new one. An
+ *   org-owned source clones into that same org. A partner-wide source
+ *   (`org_id` NULL, `partner_id` set) stays partner-wide by default — which
+ *   still runs through `canManagePartnerWidePolicies` via
+ *   `resolveScriptCreateScope('partner', …)`, so a partner-scope caller who
+ *   could not have CREATED a partner-wide script is refused (403) rather
+ *   than silently getting an org-scoped downgrade of it (CLAUDE.md
  *   Partner-Wide First: never silently narrow ownership either). System-scope
  *   tokens carry no `partnerId` to preserve partner-wide under, so they must
  *   name a target org explicitly in this case too.

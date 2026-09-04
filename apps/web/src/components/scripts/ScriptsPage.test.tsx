@@ -13,6 +13,9 @@ vi.mock('../../stores/auth', () => ({
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToastMock(a) }));
+
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
     getState: () => ({ currentOrgId: null, organizations: [] })
@@ -198,7 +201,7 @@ describe('ScriptsPage duplicate action (#4887)', () => {
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/scripts/script-2'));
   });
 
-  it('does not navigate when the clone request fails', async () => {
+  it('does not navigate, and shows an error toast, when the clone request fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.startsWith('/scripts?')) {
@@ -218,7 +221,7 @@ describe('ScriptsPage duplicate action (#4887)', () => {
     await screen.findByText('Run Cleanup Temp Files');
     fireEvent.click(screen.getByText('Duplicate Cleanup Temp Files'));
 
-    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/clone')).toBe(true));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(navigateTo).not.toHaveBeenCalled();
   });
 });

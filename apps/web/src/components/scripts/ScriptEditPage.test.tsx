@@ -26,6 +26,9 @@ vi.mock('./ScriptForm', () => ({
   default: () => <div>script form</div>
 }));
 
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToastMock(a) }));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const navigateToMock = vi.mocked(navigateTo);
 
@@ -93,7 +96,7 @@ describe('ScriptEditPage duplicate action (#4887)', () => {
     await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/scripts/script-2'));
   });
 
-  it('does not navigate when the clone request fails', async () => {
+  it('does not navigate, and shows an error toast, when the clone request fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === '/scripts/script-1' && !init?.method) return makeJsonResponse(baseScript);
@@ -107,7 +110,25 @@ describe('ScriptEditPage duplicate action (#4887)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /duplicate/i }));
 
-    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/clone')).toBe(true));
-    expect(navigateToMock).not.toHaveBeenCalledWith(expect.stringContaining('/scripts/script-2'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('shows an error toast (never a silent no-op) if a 2xx clone response is missing an id', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/scripts/script-1' && !init?.method) return makeJsonResponse(baseScript);
+      if (url === '/scripts/script-1/clone' && init?.method === 'POST') {
+        return makeJsonResponse({}, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptEditPage scriptId="script-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /duplicate/i }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 });

@@ -177,7 +177,13 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         errorFallback: t('scriptEditPage.errors.duplicate'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
+      // runAction only throws on a non-2xx/network failure — a 2xx response
+      // whose body is missing `id` (never happens today: the route always
+      // returns the inserted row) would otherwise silently do nothing but
+      // reset `duplicating`, with no toast and no navigation. Surface it
+      // rather than assume the contract always holds.
       if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+      else showToast({ message: t('scriptEditPage.errors.duplicate'), type: 'error' });
     } catch (err) {
       handleActionError(err, t('scriptEditPage.errors.duplicate'));
     } finally {
