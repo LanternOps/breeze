@@ -466,10 +466,27 @@ export default function ScriptTestRunner({
             {t('testRunner.exitCode', { code: execution.exitCode })}
           </span>
         )}
+        {/* #4886 — once this run has an execution id, link straight to it on
+            the device's own Scripts tab (same hash convention as the
+            post-run redirects elsewhere) rather than only the script-wide
+            history list. */}
+        {execution?.id && selectedDeviceId && (
+          <a
+            href={`/devices/${selectedDeviceId}#scripts/${execution.id}`}
+            data-testid="test-view-on-device"
+            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {t('testRunner.viewOnDevice')}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
         {scriptId && (
           <a
             href={`/scripts/${scriptId}/executions`}
-            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            className={cn(
+              'inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground',
+              !(execution?.id && selectedDeviceId) && 'ml-auto'
+            )}
           >
             {t('testRunner.viewHistory')}
             <ExternalLink className="h-3 w-3" />
@@ -512,9 +529,24 @@ export default function ScriptTestRunner({
 
       {execution && !running && TERMINAL_STATUSES.includes(execution.status) && (
         <div className="space-y-3 border-t p-3">
-          {execution.errorMessage && (
-            <p className="text-sm text-destructive">{execution.errorMessage}</p>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            {execution.errorMessage ? (
+              <p className="text-sm text-destructive">{execution.errorMessage}</p>
+            ) : <span />}
+            {/* #4885 — an explicit action beside the result, rather than
+                relying on the operator noticing the header's Run button is
+                enabled again. */}
+            <button
+              type="button"
+              onClick={handleRun}
+              disabled={busy || !selectedDeviceId || missingRequiredParams.length > 0}
+              data-testid="test-run-again"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t('testRunner.runAgain')}
+            </button>
+          </div>
           <OutputSection
             title={t('executionDetails.output.stdout')}
             content={execution.stdout ?? undefined}

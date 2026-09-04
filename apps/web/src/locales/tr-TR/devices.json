@@ -1519,6 +1519,7 @@
     "output": "Çıkış",
     "refreshing": "Yenileniyor...",
     "running": "Koşuyor...",
+    "runAgain": "Tekrar çalıştır",
     "scriptFallback": "Komut Dosyası",
     "status": {
       "cancelled": "İptal edildi",

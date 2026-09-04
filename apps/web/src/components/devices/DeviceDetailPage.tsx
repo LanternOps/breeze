@@ -489,6 +489,14 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           type: "success",
           message: `Script "${script.name}" queued for ${device.hostname}`,
         });
+        // #4886 — land on the Scripts tab with the new execution highlighted,
+        // so the operator watches the result instead of staying wherever they
+        // happened to trigger the run from (often Overview). Same page, so a
+        // direct hash write is enough — DeviceDetails' useHashState picks up
+        // the resulting hashchange (the CLAUDE.md tab-state convention).
+        window.location.hash = target.executionId
+          ? `scripts/${target.executionId}`
+          : "scripts";
       } else {
         showToast({
           type: "error",

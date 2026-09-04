@@ -1519,6 +1519,7 @@
     "output": "Salida",
     "refreshing": "Actualizando...",
     "running": "En ejecución...",
+    "runAgain": "Ejecutar de nuevo",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Cancelado",

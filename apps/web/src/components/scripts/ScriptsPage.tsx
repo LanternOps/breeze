@@ -155,8 +155,21 @@ export default function ScriptsPage() {
       throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
-    if (data.targets.some(target => target.admission === 'admitted')) {
+    const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
       await fetchScripts();
+      // #4886 — a library run left the operator stranded on this (now stale)
+      // list with no way to see the result land. A single-device run goes to
+      // that device's Scripts tab (same hash-highlight convention DeviceDetails
+      // already uses for anomalies), where the new execution is expanded live;
+      // a multi-device run has no single "the" device, so it goes to the
+      // script's execution-history list instead.
+      if (deviceIds.length === 1) {
+        const executionId = admittedTargets[0]?.executionId;
+        void navigateTo(`/devices/${deviceIds[0]}#scripts${executionId ? `/${executionId}` : ''}`);
+      } else {
+        void navigateTo(`/scripts/${scriptId}/executions`);
+      }
     }
     return data;
   };

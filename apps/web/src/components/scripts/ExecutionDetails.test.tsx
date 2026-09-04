@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 
@@ -19,12 +20,16 @@ function baseExecution(overrides: Partial<ScriptExecution> = {}): ScriptExecutio
   };
 }
 
-function renderExecution(overrides: Partial<ScriptExecution> = {}) {
+function renderExecution(
+  overrides: Partial<ScriptExecution> = {},
+  extraProps: Partial<ComponentProps<typeof ExecutionDetails>> = {}
+) {
   return render(
     <ExecutionDetails
       execution={baseExecution(overrides)}
       isOpen={true}
       onClose={() => {}}
+      {...extraProps}
     />
   );
 }
@@ -89,5 +94,29 @@ describe('ExecutionDetails custom-field write summary', () => {
 
     expect(screen.getByTestId('exec-custom-fields-applied')).toHaveTextContent('ram_slot_type');
     expect(screen.queryByTestId('exec-custom-fields-rejected')).not.toBeInTheDocument();
+  });
+});
+
+describe('ExecutionDetails "Run again" (#4885)', () => {
+  it('does not render a Run again button when no handler is supplied', () => {
+    renderExecution();
+
+    expect(screen.queryByTestId('execution-run-again')).not.toBeInTheDocument();
+  });
+
+  it('invokes onRunAgain with the full execution record when clicked', () => {
+    const onRunAgain = vi.fn();
+    const execution = baseExecution({ parameters: { target: 'C:\\Temp' } });
+    renderExecution({ parameters: { target: 'C:\\Temp' } }, { onRunAgain });
+
+    fireEvent.click(screen.getByTestId('execution-run-again'));
+
+    expect(onRunAgain).toHaveBeenCalledTimes(1);
+    expect(onRunAgain).toHaveBeenCalledWith(expect.objectContaining({
+      id: execution.id,
+      scriptId: execution.scriptId,
+      deviceId: execution.deviceId,
+      parameters: { target: 'C:\\Temp' },
+    }));
   });
 });

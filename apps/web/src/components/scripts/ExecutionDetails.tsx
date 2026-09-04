@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon, ListChecks } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon, ListChecks, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
@@ -11,6 +11,10 @@ type ExecutionDetailsProps = {
   isOpen: boolean;
   onClose: () => void;
   timezone?: string;
+  // #4885 — "Run again": re-open the execute flow pre-filled with this
+  // execution's device + parameters. Omitted entirely (no button rendered)
+  // where the host page has nowhere to send it.
+  onRunAgain?: (execution: ScriptExecution) => void;
 };
 
 function formatDuration(seconds?: number): string {
@@ -238,7 +242,8 @@ export default function ExecutionDetails({
   execution,
   isOpen,
   onClose,
-  timezone
+  timezone,
+  onRunAgain
 }: ExecutionDetailsProps) {
   const { t } = useTranslation('scripts');
   if (!isOpen) return null;
@@ -363,7 +368,18 @@ export default function ExecutionDetails({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end border-t px-6 py-4">
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+          {onRunAgain && (
+            <button
+              type="button"
+              data-testid="execution-run-again"
+              onClick={() => onRunAgain(execution)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t('executionDetails.actions.runAgain')}
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}

@@ -618,3 +618,73 @@ describe('ScriptTestRunner', () => {
     expect(onTestDeviceChange).not.toHaveBeenCalledWith(null);
   });
 });
+
+// #4885/#4886 — once a test run completes, offer an explicit "Run again" next
+// to the result and a link straight to where the full record lives.
+describe('ScriptTestRunner post-run actions (#4885 / #4886)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  async function runToCompletion(execute: () => void) {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        execute();
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({
+          id: EXECUTION_ID,
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'hello from test-box',
+          stderr: '',
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await waitFor(() => expect(screen.getByText('hello from test-box')).toBeInTheDocument(), { timeout: 5000 });
+  }
+
+  it('offers a "Run again" action next to a completed run\'s output, which starts a new execution', async () => {
+    let executeCalls = 0;
+    await runToCompletion(() => { executeCalls += 1; });
+    expect(executeCalls).toBe(1);
+
+    fireEvent.click(screen.getByTestId('test-run-again'));
+
+    await waitFor(() => expect(executeCalls).toBe(2));
+  }, 10000);
+
+  it('links straight to the device\'s Scripts tab for the execution once it has run', async () => {
+    await runToCompletion(() => {});
+
+    const link = screen.getByTestId('test-view-on-device') as HTMLAnchorElement;
+    expect(link).toHaveAttribute('href', `/devices/${DEVICE_ID}#scripts/${EXECUTION_ID}`);
+  }, 10000);
+
+  it('does not render the device link before any run has started', () => {
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    expect(screen.queryByTestId('test-view-on-device')).toBeNull();
+  });
+});
