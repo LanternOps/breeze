@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -69,15 +70,63 @@ func TestParametersFromPayloadMatchesJSONRoundTrip(t *testing.T) {
 }
 
 // captureExecutorLog swaps the package logger for the duration of a test and
-// returns the buffer it writes to. Safe because no test in this package calls
-// t.Parallel(), and the swap is restored on cleanup.
-func captureExecutorLog(t *testing.T) *bytes.Buffer {
+// returns a reader for the records it emitted. Safe because no test in this
+// package calls t.Parallel(), and the swap is restored on cleanup.
+//
+// JSON rather than text so a test can assert on the ATTRIBUTE SET, not just on
+// substrings. That distinction matters here: the guarantee under test is that
+// a parameter VALUE never reaches the log, and a substring check for a short
+// value like "3" would match the timestamp instead of proving anything.
+func captureExecutorLog(t *testing.T) func() []map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := log
-	log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	t.Cleanup(func() { log = prev })
-	return &buf
+
+	return func() []map[string]any {
+		t.Helper()
+		var records []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("log line is not JSON (%v): %s", err, line)
+			}
+			records = append(records, rec)
+		}
+		return records
+	}
+}
+
+// attrNames returns a record's attribute names, sorted, so a test can pin the
+// exact shape of a log line. Adding an attribute that carries a value would
+// change this set and redden the assertion.
+//
+// The expected sets below are slog's own three (time/level/msg) plus whatever
+// the call site adds. They deliberately omit the `component=executor`
+// attribute the real package logger carries: captureExecutorLog installs a
+// bare handler, and the guarantee under test is about what
+// ParametersFromPayload itself attaches, not about the logger's own framing.
+func attrNames(rec map[string]any) []string {
+	names := make([]string, 0, len(rec))
+	for k := range rec {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// onlyRecord asserts exactly one log record was emitted and returns it.
+func onlyRecord(t *testing.T, read func() []map[string]any) map[string]any {
+	t.Helper()
+	records := read()
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one log record, got %d: %#v", len(records), records)
+	}
+	return records[0]
 }
 
 // TestParametersFromPayloadWarnsOnBrokenWireContract proves the diagnostic
@@ -86,31 +135,37 @@ func captureExecutorLog(t *testing.T) *bytes.Buffer {
 // trip would reproduce that, so assert it rather than assume it.
 func TestParametersFromPayloadWarnsOnBrokenWireContract(t *testing.T) {
 	t.Run("non-object parameters field", func(t *testing.T) {
-		buf := captureExecutorLog(t)
-		if got := ParametersFromPayload("GoogleEmail=x"); got != nil {
+		read := captureExecutorLog(t)
+		if got := ParametersFromPayload("GoogleEmail=user@example.com"); got != nil {
 			t.Fatalf("got %#v, want nil", got)
 		}
-		out := buf.String()
-		if !strings.Contains(out, "non-object") {
-			t.Fatalf("expected a warning about the non-object payload, got %q", out)
+		rec := onlyRecord(t, read)
+		if !strings.Contains(rec["msg"].(string), "non-object") {
+			t.Fatalf("expected a warning about the non-object payload, got %#v", rec)
 		}
-		if !strings.Contains(out, "payloadType=string") {
-			t.Errorf("warning should name the offending type, got %q", out)
+		if rec["payloadType"] != "string" {
+			t.Errorf("payloadType = %#v, want the offending Go type", rec["payloadType"])
+		}
+		// Pinning the attribute set is the actual content guarantee: the
+		// offending payload was itself operator data, and nothing here may
+		// carry it. A new attribute holding the value would change this set.
+		if got, want := attrNames(rec), []string{"level", "msg", "payloadType", "time"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("log attributes = %v, want exactly %v — an added attribute may be leaking payload content", got, want)
 		}
 	})
 
 	t.Run("absent parameters field stays silent", func(t *testing.T) {
-		buf := captureExecutorLog(t)
+		read := captureExecutorLog(t)
 		if got := ParametersFromPayload(nil); got != nil {
 			t.Fatalf("got %#v, want nil", got)
 		}
-		if out := buf.String(); out != "" {
-			t.Fatalf("an unparameterised script must log nothing, got %q", out)
+		if records := read(); len(records) != 0 {
+			t.Fatalf("an unparameterised script must log nothing, got %#v", records)
 		}
 	})
 
-	t.Run("dropped non-string values name their keys only", func(t *testing.T) {
-		buf := captureExecutorLog(t)
+	t.Run("dropped non-string values name their keys and never their values", func(t *testing.T) {
+		read := captureExecutorLog(t)
 		got := ParametersFromPayload(map[string]any{
 			"keep":    "yes",
 			"retries": float64(3),
@@ -119,20 +174,30 @@ func TestParametersFromPayloadWarnsOnBrokenWireContract(t *testing.T) {
 		if !reflect.DeepEqual(got, map[string]string{"keep": "yes"}) {
 			t.Fatalf("got %#v", got)
 		}
-		out := buf.String()
-		if !strings.Contains(out, "keys=flag,retries") {
-			t.Fatalf("expected the dropped keys, sorted, got %q", out)
+
+		rec := onlyRecord(t, read)
+		if rec["keys"] != "flag,retries" {
+			t.Fatalf("keys = %#v, want the dropped keys sorted", rec["keys"])
 		}
-		if strings.Contains(out, "keep") {
-			t.Errorf("a kept key must not be reported as dropped, got %q", out)
+		// The stated guarantee is keys-only. Assert it structurally rather
+		// than by substring: a dropped value like 3 or true is far too short
+		// to search for in a rendered line without matching the timestamp or
+		// the level, so pin the attribute set instead. A mutation that added
+		// `"values", "3,true"` would satisfy every other assertion here and
+		// only this one catches it.
+		if got, want := attrNames(rec), []string{"keys", "level", "msg", "time"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("log attributes = %v, want exactly %v — a value-bearing attribute must never be added", got, want)
+		}
+		if strings.Contains(rec["keys"].(string), "keep") {
+			t.Errorf("a kept key must not be reported as dropped, got %#v", rec["keys"])
 		}
 	})
 
 	t.Run("all-string map stays silent", func(t *testing.T) {
-		buf := captureExecutorLog(t)
+		read := captureExecutorLog(t)
 		ParametersFromPayload(map[string]any{"GoogleEmail": "user@example.com"})
-		if out := buf.String(); out != "" {
-			t.Fatalf("the ordinary case must log nothing, got %q", out)
+		if records := read(); len(records) != 0 {
+			t.Fatalf("the ordinary case must log nothing, got %#v", records)
 		}
 	})
 }
