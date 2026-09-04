@@ -3473,6 +3473,8 @@
     "archived": {
       "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",
       "bannerWithDate": "Esta organização está arquivada — a exclusão está agendada para {{date}}. Restaure-a para fazer alterações.",
+      "drainBanner": "Esta organização está sendo arquivada — seus agentes estão sendo removidos e ela permanece somente leitura até que o processo termine.",
+      "drainBannerWithDate": "Esta organização está sendo arquivada — seus agentes estão sendo removidos, e a exclusão está agendada para {{date}}.",
       "restoreLink": "Restaurar esta organização",
       "saveBlocked": "Esta organização está arquivada e não pode ser editada. Restaure-a primeiro."
     },
@@ -4012,12 +4014,14 @@
       "empty": "Nenhuma organização arquivada.",
       "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
       "badge": "Arquivada",
+      "archivingBadge": "Arquivando…",
       "keptIndefinitely": "Mantida indefinidamente",
       "purgeToday": "Excluída definitivamente hoje",
       "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
       "purgeCountdown_other": "Excluída definitivamente em {{count}} dias",
       "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
       "readOnlyNotice": "Esta organização está arquivada e é somente leitura. Restaure-a para retomar o acesso normal.",
+      "drainNotice": "Esta organização está sendo arquivada — seus agentes estão sendo removidos, e ela permanece somente leitura até que o processo termine. Restaure-a para cancelar e trazê-la de volta.",
       "errors": {
         "fetch": "Falha ao carregar as organizações arquivadas"
       }

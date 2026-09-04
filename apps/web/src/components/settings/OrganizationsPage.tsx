@@ -16,6 +16,7 @@ import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
@@ -237,6 +238,20 @@ export default function OrganizationsPage() {
     if (days <= 0) return t('organizationsPage.archived.purgeToday');
     return t('organizationsPage.archived.purgeCountdown', { count: days });
   };
+
+  /**
+   * Label + colour for an archive-lifecycle row's badge, shared by the list row
+   * and the read-only detail pane. An org still DRAINING toward `archived`
+   * reads "Archiving…" in the offboarding colour; a settled one reads
+   * "Archived". Both are read-only and both live in the Archived section — the
+   * distinction is only whether the agent uninstall is still running (#4166),
+   * which is what tells an operator "the Archive click DID take effect" instead
+   * of leaving them staring at a list the org vanished from.
+   */
+  const archiveBadge = (org: Pick<Organization, 'status'>) =>
+    org.status === 'offboarding'
+      ? { label: t('organizationsPage.archived.archivingBadge'), color: statusColors.offboarding }
+      : { label: t('organizationsPage.archived.badge'), color: statusColors.archived };
 
   /**
    * `silent` skips the page-level loading flag. `loading` is an EARLY RETURN
@@ -463,12 +478,13 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
-      // An archived org is outside the request's own accessible-org set by
-      // design (RLS excludes it from `accessibleOrgIds`), so its sites read
-      // would come back an empty array regardless of the real count — reading
-      // that as "confirmed zero sites" would be a lie. The read-only detail
-      // pane has no sites section anyway, so skip the request outright.
-      if (selectedOrg.status === 'archived') {
+      // An archive-lifecycle org (archived, or mid-archive-drain — #4166) is
+      // outside the request's own accessible-org set by design (RLS excludes it
+      // from `accessibleOrgIds`), so its sites read would come back an empty
+      // array regardless of the real count — reading that as "confirmed zero
+      // sites" would be a lie. The read-only detail pane has no sites section
+      // anyway, so skip the request outright.
+      if (isArchiveLifecycleOrg(selectedOrg)) {
         setSites([]);
         return;
       }
@@ -610,7 +626,16 @@ export default function OrganizationsPage() {
       });
 
       const restoredStatus = data.status as Organization['status'];
-      const restoredOrg: Organization = { ...org, status: restoredStatus, archived: undefined, purgeAt: undefined };
+      // Clear every archive-lifecycle marker, not just `archived`: a restored
+      // archive DRAIN keeps `offboardingTarget: 'archive'` in the stale local
+      // object otherwise, and the server has already reset it.
+      const restoredOrg: Organization = {
+        ...org,
+        status: restoredStatus,
+        archived: undefined,
+        purgeAt: undefined,
+        offboardingTarget: undefined,
+      };
 
       setArchivedOrgs(prev => prev.filter(o => o.id !== org.id));
       setOrganizations(prev => [...prev, restoredOrg]);
@@ -1215,9 +1240,9 @@ export default function OrganizationsPage() {
                           <div className="mt-1 flex items-center gap-2">
                             <span
                               data-testid="org-archived-badge"
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors.archived}`}
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
                             >
-                              {t('organizationsPage.archived.badge')}
+                              {archiveBadge(org).label}
                             </span>
                             <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
                               {renderPurgeCountdown(org.purgeAt)}
@@ -1236,13 +1261,16 @@ export default function OrganizationsPage() {
         {/* Right panel - Detail view */}
         <div className="rounded-lg border bg-card shadow-xs" data-testid="org-detail-panel">
           {selectedOrg ? (
-            selectedOrg.status === 'archived' ? (
-              /* Archived org detail — READ-ONLY. No edit/merge/archive buttons: an
-               * archived org is outside the request's own accessible-org set by
-               * design (RLS), so none of those mutations could succeed against it
-               * anyway, and offering them would just produce a confusing 404/409
-               * after the fact. Restore is the only action, and the only way back
-               * to the normal (mutable) detail pane. */
+            isArchiveLifecycleOrg(selectedOrg) ? (
+              /* Archive-lifecycle detail — READ-ONLY. No edit/merge/archive
+               * buttons: an archived org (and, since #4166, one mid-archive-drain)
+               * is outside the request's own accessible-org set by design (RLS),
+               * so none of those mutations could succeed against it anyway, and
+               * offering them would just produce a confusing 404/409 after the
+               * fact. Restore is the only action, and the only way back to the
+               * normal (mutable) detail pane — for a drain it is the abort edge
+               * `restoreOrgFromArchive` implements, which is the whole reason
+               * this row has to be reachable at all. */
               <>
                 <div className="border-b px-6 py-4">
                   <div className="flex items-center justify-between">
@@ -1251,9 +1279,9 @@ export default function OrganizationsPage() {
                       <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
                         <span
                           data-testid="org-archived-detail-badge"
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors.archived}`}
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${archiveBadge(selectedOrg).color}`}
                         >
-                          {t('organizationsPage.archived.badge')}
+                          {archiveBadge(selectedOrg).label}
                         </span>
                         <span data-testid="org-archived-detail-purge">
                           {renderPurgeCountdown(selectedOrg.purgeAt)}
@@ -1276,7 +1304,9 @@ export default function OrganizationsPage() {
                   </div>
                 </div>
                 <div className="p-6 text-sm text-muted-foreground" data-testid="org-archived-readonly-notice">
-                  {t('organizationsPage.archived.readOnlyNotice')}
+                  {selectedOrg.status === 'offboarding'
+                    ? t('organizationsPage.archived.drainNotice')
+                    : t('organizationsPage.archived.readOnlyNotice')}
                 </div>
               </>
             ) : (
