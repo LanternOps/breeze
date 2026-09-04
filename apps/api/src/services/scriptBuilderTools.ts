@@ -49,27 +49,66 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   execute_script_on_device: 3,
 };
 
+/** SDK MCP server name — the `<server>` in the `mcp__<server>__<tool>` names
+ *  the model sees and the session allowlist is built from. */
+export const SCRIPT_BUILDER_MCP_SERVER_NAME = 'script_builder';
+
+/** The name a script-builder tool is exposed to the model (and allowlisted) as. */
+export function scriptBuilderMcpToolName(toolName: string): string {
+  return `mcp__${SCRIPT_BUILDER_MCP_SERVER_NAME}__${toolName}`;
+}
+
 export const SCRIPT_BUILDER_MCP_TOOL_NAMES = Object.keys(SCRIPT_BUILDER_TOOL_TIERS).map(
-  name => `mcp__script_builder__${name}`
+  scriptBuilderMcpToolName
 );
+
+/**
+ * MCP tool name -> the `executeTool` handler that actually runs it, for the
+ * tools whose model-facing name differs from their handler.
+ *
+ * The two identities are NOT interchangeable and must not be conflated:
+ *   - the MCP name is what the model calls and what `scriptAi.ts` puts in the
+ *     session's `allowedTools` (`SCRIPT_BUILDER_MCP_TOOL_NAMES`);
+ *   - the handler name is what `TOOL_TIERS`, `TOOL_PERMISSIONS`,
+ *     `toolInputSchemas` and the per-tool rate limits are keyed on.
+ * `makeExistingHandler` below resolves through this map so a call site names
+ * only its MCP tool once — the earlier arrangement passed the handler name at
+ * the `tool()` registration, which is how the session guardrail ended up
+ * checking `run_script` against an allowlist that only holds
+ * `mcp__script_builder__execute_script_on_device` (#4883).
+ */
+export const SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL: Record<string, string> = {
+  execute_script_on_device: 'run_script',
+};
 
 // ============================================
 // Handler factory for existing tools
 // ============================================
 
+/**
+ * @param mcpToolName the tool's model-facing MCP name, i.e. the key the
+ *   session allowlist and `SCRIPT_BUILDER_TOOL_TIERS` use. The `executeTool`
+ *   handler it dispatches to is resolved from
+ *   `SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL`, and everything keyed on the handler
+ *   (tier, RBAC, rate limit, schema, result compaction, audit) stays on that
+ *   name — only the session-allowlist check gets the exposed name (#4883).
+ */
 function makeExistingHandler(
-  toolName: string,
+  mcpToolName: string,
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
+  const toolName = SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL[mcpToolName] ?? mcpToolName;
+  const exposedToolName = scriptBuilderMcpToolName(mcpToolName);
+
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
 
     if (onPreToolUse) {
       let check: { allowed: true } | { allowed: false; error: string };
       try {
-        check = await onPreToolUse(toolName, args);
+        check = await onPreToolUse(toolName, args, exposedToolName);
       } catch (err) {
         captureException(err);
         console.error(`[ScriptBuilder] PreToolUse threw for ${toolName}:`, err);
@@ -195,14 +234,21 @@ export const applyScriptMetadataInputShape = {
   timeoutSeconds: z.number().int().min(1).max(3600).optional(),
 };
 
-export function createScriptBuilderMcpServer(
+/**
+ * The tool definitions this MCP server exposes.
+ *
+ * Exported so scriptBuilderTools.guard.test.ts can drive each registered
+ * handler and pin what it hands the session guardrail — the wiring that
+ * silently denied every execute_script_on_device call (#4883).
+ */
+export function buildScriptBuilderTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
   const uuid = z.string().guid();
 
-  const tools = [
+  return [
     // --- Apply tools (script-builder-only) ---
     tool(
       'apply_script_code',
@@ -314,9 +360,18 @@ export function createScriptBuilderMcpServer(
         deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
         parameters: z.record(z.string(), z.unknown()).optional(),
       },
-      makeExistingHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
+      makeExistingHandler('execute_script_on_device', getAuth, onPreToolUse, onPostToolUse)
     ),
   ];
+}
 
-  return createSdkMcpServer({ name: 'script_builder', tools });
+export function createScriptBuilderMcpServer(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  return createSdkMcpServer({
+    name: SCRIPT_BUILDER_MCP_SERVER_NAME,
+    tools: buildScriptBuilderTools(getAuth, onPreToolUse, onPostToolUse),
+  });
 }

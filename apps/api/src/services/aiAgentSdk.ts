@@ -20,6 +20,7 @@ import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTr
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
+import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -277,12 +278,6 @@ const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 // than declared independently here, so the two paths cannot drift apart —
 // see the doc comments at their declaration site.
 
-function stripMcpPrefix(toolName: string): string {
-  if (!toolName.startsWith('mcp__')) return toolName;
-  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
-  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
-}
-
 /**
  * Human-readable verbs for the two M365 mutation tools that hit per-step
  * approval. The three read tools are tier 1 and never create an approval card,
@@ -309,11 +304,6 @@ export function buildM365RiskSummary(
   const user = String(input.userIdentifier ?? 'a user');
   const reason = input.reason ? ` Reason: ${String(input.reason)}.` : '';
   return `${verb} ${user} on ${conn.customerDisplayName}.${reason}`;
-}
-
-function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
-  const bareToolName = stripMcpPrefix(toolName);
-  return allowedTools.some((allowedTool) => stripMcpPrefix(allowedTool) === bareToolName);
 }
 
 // ============================================
@@ -496,7 +486,7 @@ export async function runPreFlightChecks(
  * server tools.
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
-  return async (toolName, input) => {
+  return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
@@ -516,8 +506,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
-    if (session.allowedTools && !isAllowedForSession(toolName, session.allowedTools)) {
-      return { allowed: false, error: `Tool '${toolName}' is not allowed for this session` };
+    // Allowlist check runs on the EXPOSED name, not the handler name. The two
+    // coincide for every tool except script builder's
+    // `execute_script_on_device`, which dispatches to the `run_script`
+    // handler; comparing that handler name against an allowlist of
+    // `mcp__script_builder__*` names denied every call before tier/approval
+    // logic ran (#4883). Nothing below this line uses `exposedToolName` — the
+    // capability being gated is the handler's, so tier, RBAC, rate limits,
+    // approval and audit all stay on `toolName`.
+    const exposedToolName = mcpToolName ?? toolName;
+    if (session.allowedTools && !isAllowedForSession(exposedToolName, session.allowedTools)) {
+      return {
+        allowed: false,
+        error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,
+      };
     }
 
     // Guardrails (tier check + action-based escalation)

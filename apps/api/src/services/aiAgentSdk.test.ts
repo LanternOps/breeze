@@ -93,6 +93,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     // tests below stub via checkGuardrails, not this map.
     file_operations: 1,
     get_device_details: 1,
+    // #4883: the handler behind script builder's `execute_script_on_device`.
+    run_script: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -1622,6 +1624,87 @@ describe('createSessionPreToolUse', () => {
       toolName: 'take_screenshot',
       status: 'executing',
     }));
+  });
+
+  // #4883: script builder exposes `execute_script_on_device` but dispatches to
+  // the `run_script` handler. The session allowlist only ever holds the exposed
+  // MCP name, so the gate must be told which name the session actually granted
+  // — checking the handler name denied every Script Builder test run before
+  // tier/approval logic ran at all.
+  describe('#4883: tools exposed under a different name than their handler', () => {
+    const SCRIPT_BUILDER_ALLOWLIST = ['mcp__script_builder__execute_script_on_device'];
+
+    it('allows the call when the EXPOSED MCP name is on the allowlist', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Run script on device',
+      } as any);
+      const values = mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({ allowed: true });
+      // Only the allowlist check moved to the exposed name. Tier, RBAC and the
+      // audit row still describe the capability that actually runs.
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' });
+      expect(checkToolPermission).toHaveBeenCalledWith(
+        'run_script',
+        { scriptId: 'script-1' },
+        session.auth,
+      );
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        toolName: 'run_script',
+        status: 'executing',
+      }));
+    });
+
+    it('does not widen the allowlist — the bare handler name alone is still denied', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)('run_script', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'run_script' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects an exposed name the session never granted', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'take_screenshot',
+        {},
+        'mcp__script_builder__take_screenshot',
+      );
+
+      // Named by the model-facing tool, not the internal handler, so the
+      // assistant can tell the user which capability it lacks.
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'take_screenshot' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('plan-step shortcut is gated on effective tier', () => {

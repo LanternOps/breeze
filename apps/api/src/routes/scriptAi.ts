@@ -26,7 +26,11 @@ import {
   approveToolSchema,
   scriptBuilderContextSchema,
 } from '@breeze/shared/validators/ai';
-import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../services/scriptBuilderTools';
+import {
+  createScriptBuilderMcpServer,
+  SCRIPT_BUILDER_MCP_SERVER_NAME,
+  SCRIPT_BUILDER_MCP_TOOL_NAMES,
+} from '../services/scriptBuilderTools';
 import { captureException } from '../services/sentry';
 import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
@@ -237,7 +241,7 @@ scriptAiRoutes.post(
         // Custom MCP server factory for script builder tools
         (getAuth, onPreToolUse, onPostToolUse) => ({
           server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
-          name: 'script_builder',
+          name: SCRIPT_BUILDER_MCP_SERVER_NAME,
         }),
       );
     } catch (err) {
