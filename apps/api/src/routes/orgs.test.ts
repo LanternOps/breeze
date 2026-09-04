@@ -36,7 +36,12 @@ vi.mock('../services/enrollmentDefaults', () => ({
 // pin the CALL (partner pinning, when it fires) rather than the DB machinery.
 // The archived-context guarantees themselves are proven against real Postgres
 // in __tests__/integration/orgArchiveReadContext.integration.test.ts.
-vi.mock('../services/archivedOrgReads', () => ({
+// `archiveLifecycleCondition` / `isArchiveLifecycleRow` are pure predicates
+// with no DB machinery behind them, and the list route's system-scope
+// exclusion is asserted on their COMPILED SQL below — so they pass through
+// from the real module rather than being stubbed.
+vi.mock('../services/archivedOrgReads', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/archivedOrgReads')>()),
   listArchivedOrgs: vi.fn(async () => ({ orgs: [], truncated: false })),
   loadArchivedOrg: vi.fn(async () => null)
 }));
@@ -204,6 +209,10 @@ vi.mock('../db/schema', () => ({
     // lower(...) comparison, so it needs a sentinel of its own.
     slug: { __column: 'organizations.slug' },
     status: { __column: 'organizations.status' },
+    // #4166 — the archive-lifecycle predicate pairs `status = 'offboarding'`
+    // with `offboarding_target = 'archive'`, and the system-scope list
+    // exclusion is asserted on that compiled pair.
+    offboardingTarget: { __column: 'organizations.offboardingTarget' },
     deletedAt: { __column: 'organizations.deletedAt' },
     createdAt: { __column: 'organizations.createdAt' }
   },
@@ -1992,6 +2001,168 @@ describe('org routes', () => {
         expect(body.archivedTruncated).toBe(false);
       });
 
+      // #4166 — clicking Archive parks the org in `offboarding` for the whole
+      // agent-drain window. It matched neither allowlist, so it disappeared
+      // from BOTH branches of the union and Restore became unreachable. The
+      // status predicate itself is pinned on compiled SQL in
+      // services/archivedOrgReads.scope.test.ts (the service is mocked here);
+      // this case pins the ROUTE wiring — an archive-drain row reaches the
+      // caller, flagged, through the same append.
+      it('serves an org mid-archive-drain (offboarding) through the archived block', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+        mockOnePartnerPage(['org-1']);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({
+          orgs: [{
+            id: 'org-draining',
+            status: 'offboarding',
+            offboardingTarget: 'archive',
+            archived: true,
+            purgeAt: '2026-10-01T00:00:00.000Z',
+            deviceCount: 2
+          } as any],
+          truncated: false
+        });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-1', 'org-draining']);
+        // `archived: true` means "read through the READ ONLY archived door",
+        // NOT `status === 'archived'` — the UI branches on the flag for
+        // read-onlyness and on `status` for what to render.
+        expect(body.data[1]).toMatchObject({
+          archived: true,
+          status: 'offboarding',
+          offboardingTarget: 'archive'
+        });
+      });
+
+      // #4166 — system scope short-circuits every RLS predicate and its live
+      // branch carries NO status filter, so archive-lifecycle orgs already come
+      // back from the paginated query. Appending the flagged copy on top would
+      // return each of them twice.
+      it('excludes archive-lifecycle orgs from the system-scope live query when appending', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10&includeArchived=true');
+
+        expect(res.status).toBe(200);
+        // The exclusion rides on the SHARED `conditions`, so it constrains the
+        // COUNT as well as the rows — and on every page, not only the last one
+        // where the append happens (the duplicate would otherwise sit on
+        // whichever page the live query put it).
+        //
+        // Scope of this assertion: it proves the route WIRES the exclusion in,
+        // not that the predicate's boolean structure is right. `../db/schema`
+        // is mocked with plain sentinels here, so drizzle cannot render them as
+        // identifiers and compiles them as bound params — the shape collapses
+        // to `not ($1 = $2 or ($3 = $4 and $5 = $6))` regardless of which
+        // columns those params stand for. The STRUCTURE is pinned against real
+        // drizzle columns in services/archivedOrgReads.scope.test.ts
+        // ('archive-lifecycle predicate (#4166)'), which is the suite to fix if
+        // this predicate's logic ever needs re-asserting.
+        const { sql: compiled, params } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not (');
+        expect(params).toEqual(
+          expect.arrayContaining([
+            { __column: 'organizations.status' },
+            { __column: 'organizations.offboardingTarget' },
+            'archived',
+            'offboarding',
+            'archive',
+          ]),
+        );
+      });
+
+      // `conditions` is built by a ternary on `queryPartnerId`, so the
+      // partner-filtered arm needs its own case — the exclusion is easy to add
+      // to one branch and miss in the other.
+      it('applies the exclusion on the partnerId-filtered system-scope arm too', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        vi.mocked(listArchivedOrgs).mockResolvedValueOnce({ orgs: [], truncated: false });
+
+        const res = await app.request(
+          '/orgs/organizations?page=1&limit=10&includeArchived=true'
+          + '&partnerId=11111111-1111-4111-8111-111111111111'
+        );
+
+        expect(res.status).toBe(200);
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).toContain('not (');
+      });
+
+      // Without the opt-in nothing changes: a platform admin still sees
+      // archive-lifecycle orgs (unflagged) in the live list, exactly as before.
+      it('leaves the system-scope live query untouched without includeArchived', async () => {
+        setAuthContext({ scope: 'system', partnerId: null });
+        let capturedWhere: unknown;
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((cond: unknown) => {
+                capturedWhere = cond;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+
+        const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+        expect(res.status).toBe(200);
+        const { sql: compiled } = new PgDialect().sqlToQuery(capturedWhere as SQL);
+        expect(compiled).not.toContain('not (');
+      });
+
       // The archived block is capped at `limit` instead of being paginated, so
       // the response has to SAY when that cap dropped tenants — an archived org
       // silently missing from the list is one whose purge timer nobody sees.
@@ -2711,6 +2882,54 @@ describe('org routes', () => {
       // Served ONLY through the archived door — never through the request's own
       // read-write context.
       expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // #4166 — system scope reaches the row through the NORMAL read (it
+    // short-circuits every RLS predicate), so the flag has to be applied there
+    // too or the same org would come back read-only-flagged for a partner and
+    // unflagged for a platform admin.
+    it('flags an archive-drain org for system scope the same way it flags an archived one', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '77777777-7777-7777-7777-777777777777',
+              name: 'Draining Co',
+              status: 'offboarding',
+              offboardingTarget: 'archive'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: 'offboarding', archived: true });
+    });
+
+    // A CHURN drain ends at `churned`, which is deliberately invisible — it is
+    // not part of the archive lifecycle and must not be flagged read-only.
+    it('does NOT flag a churn drain as archive-lifecycle', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '77777777-7777-7777-7777-777777777777',
+              name: 'Churning Co',
+              status: 'offboarding',
+              offboardingTarget: 'churn'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/77777777-7777-7777-7777-777777777777');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).archived).toBeUndefined();
     });
 
     // `:id` is a raw path segment and every lookup feeds it to a uuid column,
@@ -3468,6 +3687,25 @@ describe('org routes', () => {
 
         expect(res.status).toBe(404);
         expect(db.update).not.toHaveBeenCalled();
+      });
+
+      // #4166 — making an archive-draining org VISIBLE must not make it
+      // WRITABLE. The read fix widens only the READ ONLY archived door;
+      // `computeAccessibleOrgIds` is untouched, so an `offboarding` org still
+      // fails `canAccessOrg`, and the suspended override refuses it because its
+      // ownership probe requires `status === 'suspended'`.
+      it('keeps an archive-draining org unwritable even though it is now listable', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'offboarding' }]) as any
+        );
+
+        const res = await patchOrg('org-draining', { status: 'active' });
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(db.update).not.toHaveBeenCalled();
+        expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
       });
 
       it('does NOT let a non-status edit ride the override — suspended orgs stay unwritable', async () => {
@@ -4929,7 +5167,9 @@ describe('org routes', () => {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {}, invoiceDeviceAppendix: true,
+              }])
             })
           })
         };
@@ -4939,7 +5179,9 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+      expect(body).toMatchObject({
+        id: 'partner-123', name: 'Acme MSP', slug: 'acme', invoiceDeviceAppendix: true,
+      });
 
       expect(selectedColumns).toBeDefined();
       const keys = Object.keys(selectedColumns!);
@@ -4951,6 +5193,7 @@ describe('org routes', () => {
         'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
         'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
         'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'invoiceDeviceAppendix',
         'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
       ]) {
         expect(keys).toContain(expected);

@@ -44,6 +44,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import Pax8OrgTab from '../organizations/Pax8OrgTab';
 import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
@@ -113,8 +114,10 @@ type OrgDetails = {
   name: string;
   slug: string;
   status: string;
-  // Present on the archived-org shape the GET returns (see orgs.ts —
-  // `loadArchivedOrg`/the `status === 'archived'` branch); absent otherwise.
+  // Present on the archive-lifecycle shape the GET returns (see orgs.ts —
+  // `loadArchivedOrg` / the `isArchiveLifecycleRow` branch); absent otherwise.
+  // Since #4166 it also covers an org mid-archive-drain, so it is NOT the same
+  // test as `status === 'archived'` — see `isArchiveLifecycleOrg`.
   archived?: boolean;
   purgeAt?: string | null;
   type?: string;
@@ -279,12 +282,20 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   const [typeDraft, setTypeDraft] = useState<string>('customer');
   const [savingType, setSavingType] = useState(false);
 
-  // Archived orgs are read-only: the update route 404s any PATCH here (the
-  // LIFECYCLE_FROZEN_ORG_STATUSES guard in orgs.ts matches 0 rows), so writes
+  // Archive-lifecycle orgs are read-only: the update route 404s any PATCH here
+  // (an archived org is outside `accessibleOrgIds` and hits the
+  // LIFECYCLE_FROZEN_ORG_STATUSES guard; an archive-DRAINING org — #4166 — is
+  // outside `accessibleOrgIds` too and gets no lifecycle override), so writes
   // must be refused client-side rather than surfacing that 404 as a bespoke
-  // error. The GET does NOT 404 for an archived org — it returns the full row
-  // plus `archived: true` — so this signal is always available once loaded.
-  const isArchived = orgDetails?.status === 'archived';
+  // error. The GET does NOT 404 for either — it returns the full row plus
+  // `archived: true` — so this signal is always available once loaded, and it
+  // has to be the FLAG rather than the status string: since #4166 the same GET
+  // also answers for a draining org, which would otherwise render a fully
+  // editable settings form whose every save could only fail.
+  const isArchived = isArchiveLifecycleOrg(orgDetails);
+  // Within that read-only set, an org whose agent uninstall is still running
+  // has not actually been archived yet — say so rather than claiming it has.
+  const isArchiveDraining = isArchived && orgDetails?.status === 'offboarding';
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
@@ -829,9 +840,17 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
           <div>
             <p className="text-sm font-medium">
-              {orgDetails?.purgeAt
-                ? t('orgSettingsPage.archived.bannerWithDate', { date: formatDate(orgDetails.purgeAt) })
-                : t('orgSettingsPage.archived.banner')}
+              {/* Four LITERAL t() keys rather than one interpolated key name.
+                  keyUsage.test.ts can only verify keys it can read statically,
+                  and the i18n-dynamic escape hatch would opt these out of that
+                  check entirely. */}
+              {isArchiveDraining
+                ? orgDetails?.purgeAt
+                  ? t('orgSettingsPage.archived.drainBannerWithDate', { date: formatDate(orgDetails.purgeAt) })
+                  : t('orgSettingsPage.archived.drainBanner')
+                : orgDetails?.purgeAt
+                  ? t('orgSettingsPage.archived.bannerWithDate', { date: formatDate(orgDetails.purgeAt) })
+                  : t('orgSettingsPage.archived.banner')}
             </p>
             <a
               href={`/settings/organizations#${displayOrg.id}`}

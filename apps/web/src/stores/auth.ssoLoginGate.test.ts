@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   armSsoLoginGate,
   fetchWithAuth,
+  handleSessionExpired,
+  markSsoExchangeFailed,
+  restoreAccessTokenFromCookieDetailed,
   settleSsoLoginGate,
+  SSO_EXCHANGE_FAILED_LOGIN_PATH,
   useAuthStore,
 } from './auth';
 
@@ -66,5 +70,128 @@ describe('SSO login gate holds token refreshes (#3700)', () => {
 
   it('settleSsoLoginGate is a safe no-op when no gate is armed', () => {
     expect(() => settleSsoLoginGate()).not.toThrow();
+  });
+});
+
+// #3704 second line of defence. Ordering (AuthOverlay awaits its redirect
+// before settling the gate) is enough only while `navigateTo` completes a real
+// Astro soft transition. Its fallback fires `window.location.replace` and
+// returns immediately, having merely QUEUED a hard navigation — the address bar
+// has not moved, so handleSessionExpired's `/login` pathname guard misses and
+// the released refresh's eviction would overwrite the notice all over again.
+// markSsoExchangeFailed makes the eviction land on the SAME url instead.
+describe('a terminally failed SSO exchange outranks the generic expiry (#3704)', () => {
+  // jsdom refuses a real navigation, so swap the whole location object (the
+  // same trick stores/auth.test.ts uses) and spy on replace().
+  function mockLocation(pathname: string, search = '') {
+    const originalLocation = window.location;
+    const replace = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { pathname, search, hash: '', replace, reload: vi.fn() },
+    });
+    return {
+      replace,
+      restore: () => {
+        Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+      },
+    };
+  }
+
+  const baseUser = { id: 'u-1', email: 'a@b.c', name: 'A', mfaEnabled: false };
+
+  beforeEach(() => {
+    // login() clears both the sessionExpiryInFlight latch and the SSO verdict,
+    // which are module singletons that outlive an individual test.
+    useAuthStore.getState().login(baseUser, { accessToken: 'a', expiresInSeconds: 900 });
+  });
+
+  afterEach(() => {
+    useAuthStore.getState().login(baseUser, { accessToken: 'a', expiresInSeconds: 900 });
+    useAuthStore.setState({ isAuthenticated: false, tokens: null, user: null });
+  });
+
+  it('evicts to the sso_exchange_failed notice instead of reason=session-expired', () => {
+    const loc = mockLocation('/dashboard');
+    try {
+      markSsoExchangeFailed();
+      handleSessionExpired('session-expired');
+
+      expect(loc.replace).toHaveBeenCalledTimes(1);
+      const target = String(loc.replace.mock.calls[0][0]);
+      expect(target).toBe(SSO_EXCHANGE_FAILED_LOGIN_PATH);
+      // The whole point: the generic reason must not be what the user reads.
+      expect(target).not.toContain('reason=session-expired');
+    } finally {
+      loc.restore();
+    }
+  });
+
+  it('leaves the ordinary expiry eviction untouched when no SSO exchange failed', () => {
+    // The positive counterpart: without this, the branch above could swallow
+    // every eviction and the suite would stay green.
+    const loc = mockLocation('/dashboard');
+    try {
+      handleSessionExpired('session-expired');
+
+      const target = String(loc.replace.mock.calls[0][0]);
+      expect(target).toContain('reason=session-expired');
+      expect(target).not.toContain('sso_exchange_failed');
+    } finally {
+      loc.restore();
+    }
+  });
+
+  it('does not let the verdict outlive a session that a plain refresh restored', async () => {
+    // The leak that login()-only clearing misses: every cookie-based recovery
+    // path (restoreAccessTokenFromCookieDetailed, fetchWithAuth's bootstrap and
+    // its 401 replay) lands on setTokens() WITHOUT calling login(). A stray
+    // `#ssoCode=` on a page whose refresh cookie is actually fine sets the
+    // verdict, the refresh then succeeds, and the user is legitimately signed
+    // in — an unrelated idle timeout hours later must not be reported as an SSO
+    // failure, nor drop its `next` deep link.
+    markSsoExchangeFailed();
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        return new Response(
+          JSON.stringify({ tokens: { accessToken: 'restored', expiresInSeconds: 900 } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    useAuthStore.setState({ isAuthenticated: true, tokens: null });
+
+    await expect(restoreAccessTokenFromCookieDetailed()).resolves.toBe('restored');
+
+    const loc = mockLocation('/tickets/42');
+    try {
+      handleSessionExpired('idle');
+      const target = String(loc.replace.mock.calls[0][0]);
+      expect(target).not.toContain('sso_exchange_failed');
+      expect(target).toContain('reason=idle');
+      // The deep link the SSO branch deliberately drops must survive here.
+      expect(target).toContain('next=');
+    } finally {
+      loc.restore();
+    }
+  });
+
+  it('does not let a previous attempt\'s SSO verdict leak into the next session', () => {
+    markSsoExchangeFailed();
+    // A fresh login is a new session — it must not inherit the old verdict.
+    useAuthStore.getState().login(baseUser, { accessToken: 'fresh', expiresInSeconds: 900 });
+
+    const loc = mockLocation('/dashboard');
+    try {
+      handleSessionExpired('session-expired');
+      expect(String(loc.replace.mock.calls[0][0])).toContain('reason=session-expired');
+    } finally {
+      loc.restore();
+    }
   });
 });

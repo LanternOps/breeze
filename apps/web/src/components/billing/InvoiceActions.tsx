@@ -99,30 +99,46 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
   const [resendOpen, setResendOpen] = useState(false);
   const [resending, setResending] = useState(false);
   const [copyingLink, setCopyingLink] = useState(false);
+  const [partnerDeviceAppendix, setPartnerDeviceAppendix] = useState(false);
+  const partnerDeviceAppendixLoaded = useRef(false);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
 
   const isDraft = invoice.status === 'draft';
   // An invoice with no customer-visible line can't be issued.
   const hasVisibleLines = lines.some((l) => l.customerVisible);
 
-  const issue = useCallback(async (alsoSend: boolean) => {
+  // The appendix override is draft-only. Resolve the partner default before
+  // opening the composer so a late read can never reset fields the operator has
+  // already started editing. A failed support read degrades to the server's
+  // false default; the send itself remains fully usable.
+  const openIssueSendComposer = useCallback(async () => {
+    if (!partnerDeviceAppendixLoaded.current) {
+      try {
+        const response = await fetchWithAuth('/orgs/partners/me');
+        if (response.ok) {
+          const partner = (await response.json()) as { invoiceDeviceAppendix?: boolean };
+          setPartnerDeviceAppendix(partner.invoiceDeviceAppendix === true);
+        }
+      } catch { /* keep the safe false default */ }
+      partnerDeviceAppendixLoaded.current = true;
+    }
+    setIssueSendOpen(true);
+  }, []);
+
+  const issue = useCallback(async (alsoSend: boolean, opts?: ComposedInvoiceEmail) => {
     if (issuing) return;
     setIssuing(true);
     try {
-      // Issue first; on success optionally send.
-      await runAction({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
-        errorFallback: t('invoiceActions.issueError'),
-        successMessage: alsoSend ? undefined : t('invoiceActions.issueSuccess'),
-        onUnauthorized: UNAUTHORIZED,
-      });
       if (alsoSend) {
-        // /send is honest about whether an email actually went out. The invoice
-        // is issued either way; only claim "sent" when an email was dispatched,
-        // otherwise warn so the operator knows nothing was emailed. We suppress
-        // runAction's own success toast and post-process the result ourselves.
+        // /send owns draft issue + email as one lifecycle action. In particular,
+        // it persists includeDeviceAppendix while the invoice is still a draft,
+        // before issue freezes the PDF evidence choice.
         const result = await runAction<{ data: { emailed: boolean } }>({
-          request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
+          request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(opts ?? {}),
+          }),
           errorFallback: t('invoiceActions.issueSendError'),
           onUnauthorized: UNAUTHORIZED,
         });
@@ -131,6 +147,13 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
         } else {
           showToast({ type: 'warning', message: t('invoiceActions.issueNoEmailWarning') });
         }
+      } else {
+        await runAction({
+          request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
+          errorFallback: t('invoiceActions.issueError'),
+          successMessage: t('invoiceActions.issueSuccess'),
+          onUnauthorized: UNAUTHORIZED,
+        });
       }
     } catch (err) {
       handleActionError(err, t('invoiceActions.issueError'));
@@ -192,8 +215,8 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     // Plain Issue runs directly (it's reversible via Void); Issue & Send opens
     // its confirm dialog — the user still confirms the email before it sends.
     if (queued.kind === 'issue') void issue(false);
-    else setIssueSendOpen(true);
-  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, t]);
+    else void openIssueSendComposer();
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, openIssueSendComposer, t]);
 
   // Slow-save backstop: with failures handled above, the only way a queue waits
   // this long is a save that is genuinely still in flight (or a pending-state
@@ -429,7 +452,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
               onClick={() => {
                 if (savePending) { onIssueWhilePending?.(); setQueued({ kind: 'issueSend', atFailureNonce: saveFailureNonce }); return; }
                 if (unsavedFieldLabel) { refuseForUnsaved(); return; }
-                setIssueSendOpen(true);
+                void openIssueSendComposer();
               }}
               disabled={issueDisabled}
               aria-describedby={
@@ -540,32 +563,25 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
       </div>
 
       <InvoiceSendComposer
-        open={resendOpen}
-        onClose={() => setResendOpen(false)}
-        sending={resending}
-        onSend={(opts) => void resend(opts)}
+        open={isDraft ? issueSendOpen : resendOpen}
+        onClose={() => isDraft ? setIssueSendOpen(false) : setResendOpen(false)}
+        sending={isDraft ? issuing : resending}
+        onSend={(opts) => isDraft ? void issue(true, opts) : void resend(opts)}
         orgId={invoice.orgId}
         invoiceNumber={invoice.invoiceNumber}
-        title={neverEmailed ? t('invoiceActions.sendConfirm.title') : t('invoiceActions.resendConfirm.title')}
-        intro={neverEmailed
+        isDraft={isDraft}
+        title={isDraft
+          ? t('invoiceActions.issueSendConfirm.title')
+          : neverEmailed ? t('invoiceActions.sendConfirm.title') : t('invoiceActions.resendConfirm.title')}
+        intro={isDraft
+          ? t('invoiceActions.issueSendConfirm.message', composerIntroValues)
+          : neverEmailed
           ? t('invoiceActions.sendConfirm.message', composerIntroValues)
           : t('invoiceActions.resendConfirm.message', composerIntroValues)}
-        confirmLabel={resendLabel}
-        sendingLabel={t('invoiceActions.resending')}
-      />
-      <ConfirmDialog
-        open={issueSendOpen}
-        onClose={() => setIssueSendOpen(false)}
-        onConfirm={() => void issue(true)}
-        isLoading={issuing}
-        variant="warning"
-        title={t('invoiceActions.issueSendConfirm.title')}
-        message={t('invoiceActions.issueSendConfirm.message', {
-          customer: invoice.billToName ?? t('invoiceActions.issueSendConfirm.customerFallback'),
-          amount: formatMoney(invoice.total, currency),
-        })}
-        confirmLabel={t('invoiceActions.issueAndSend')}
-        confirmTestId="invoice-issue-send-confirm"
+        confirmLabel={isDraft ? t('invoiceActions.issueAndSend') : resendLabel}
+        sendingLabel={isDraft ? t('invoiceActions.issuing') : t('invoiceActions.resending')}
+        partnerDeviceAppendix={partnerDeviceAppendix}
+        confirmTestId={isDraft ? 'invoice-issue-send-confirm' : 'invoice-send-confirm'}
       />
       <ConfirmDialog
         open={delOpen}

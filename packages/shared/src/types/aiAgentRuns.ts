@@ -433,6 +433,24 @@ export interface AiAgentRunAlertVerdictDto {
 }
 
 /**
+ * Why a sweep-finding proposal did not become a pending intent — either a
+ * refusal from one of gates 1-3 or `max_actions_per_run` from gate 4, or
+ * `no_eligible_approvers`/`intent_error` from gate 5's `createActionIntent`
+ * attempt (see `services/aiAgents/sweepFindings.ts`'s gate-order docstring).
+ * Display strings only — never a raw `Error.message` (same posture as
+ * `AlertVerdictSuggestionReason`/`TicketTriageSkipReason`). Shared between
+ * the API's internal `SweepProposalRecord.reason` (sweepFindings.ts) and this
+ * DTO so the two can never drift apart.
+ */
+export type SweepProposalReason =
+  | 'device_not_in_evidence'
+  | 'device_not_in_org'
+  | 'not_allowlisted'
+  | 'no_eligible_approvers'
+  | 'intent_error'
+  | 'max_actions_per_run';
+
+/**
  * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
  * `SweepFinding` for `GET /ai/agents/runs/:runId`'s detail DTO. Same
  * leak-impossible convention as the rest of this file: `evidence` is the
@@ -453,7 +471,7 @@ export interface AiAgentRunSweepFindingDto {
     tool: string;
     action: string | null;
     disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
-    reason: string | null;
+    reason: SweepProposalReason | null;
     intentId: string | null;
   } | null;
 }

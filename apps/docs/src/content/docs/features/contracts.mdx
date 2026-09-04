@@ -85,7 +85,15 @@ When a customer accepts a quote or proposal that includes recurring (monthly or 
 - The draft inherits the quote's terms, currency, and the prices the customer agreed to.
 - It lands as a **draft** for you to review, adjust lines, and **activate** when you're ready to start billing.
 
+A recurring quote line that bills a device set becomes a contract line of the matching type (per device, per device role, per device group or per seat) instead of a fixed-quantity line, with the accepted unit price frozen, so the contract bills the actual count every period.
+
 Any one-time charges on the same quote become an invoice instead, not a contract.
+
+### If a site is deleted
+
+A contract line scoped to a site records the site's name as well as its id. If that site is deleted, the line **stops billing and says so**. The contract detail shows "site deleted," and generating an invoice refuses with a named error, instead of quietly falling back to billing every device in the organization. Re-scope the line to another site, or remove it, and generation resumes.
+
+A line whose site was deleted *before* this behavior shipped cannot be recovered because its site name was never recorded. It stays organization-wide until a technician re-scopes it.
 
 ## Managing the Lifecycle
 
@@ -101,6 +109,16 @@ You can also **generate now** to create the current period's invoice immediately
 <Aside>
   When auto-issue is enabled, generated invoices can be emailed to the customer automatically if a billing email is configured. Otherwise they land as drafts for you to review and send.
 </Aside>
+
+## What each billing period recorded
+
+Breeze records the exact devices behind every auto-counted line **at generation** and never re-derives them. Reclassifying, deleting or moving a device afterwards cannot change what a past invoice says it billed. If that invoice is voided and reissued, its recorded device evidence is copied to the replacement rather than recalculated.
+
+Each billed period also records how many devices no line on that contract billed, **by role**, together with the flagged and billed overage totals. The contract's billing history shows this outcome for each period.
+
+**Uncovered device identity is not stored.** A period says *how many* devices were uncovered and *by which role*, never *which ones*. To answer "Which devices are uncovered right now?", use the device **Billing** panel or the contract's coverage notice. Both check today's fleet live.
+
+Periods billed before this feature was available have no recorded outcome and show **Not recorded**. A period on a contract with no device-counted line shows **No device lines**. That means no measurement was taken, not that zero devices were measured.
 
 ## Auto-Renewal
 

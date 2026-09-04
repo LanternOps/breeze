@@ -209,8 +209,8 @@ Breeze automatically maps common SAML attribute URIs to user fields:
 The OIDC login flow follows the Authorization Code + PKCE pattern:
 
 <Steps>
-1. **User visits login page.** The frontend calls `GET /api/v1/sso/check/:orgId` to determine if SSO is enabled for the organization.
-2. **User clicks "Sign in with SSO".** The browser navigates to `GET /api/v1/sso/login/:orgId`.
+1. **User types their email and tabs away.** The login page has no `orgId` to check yet, so it calls `POST /api/v1/auth/sso-discovery` with the address instead (see [Login Page Discovery](#login-page-discovery)). A positive answer replaces the password field with a **"Sign in with \{provider\}"** button.
+2. **User clicks "Sign in with \{provider\}".** The browser navigates to `GET /api/v1/sso/login/:orgId`.
 3. **Breeze generates PKCE challenge and state.** A cryptographic `state`, `nonce`, and PKCE `codeVerifier`/`codeChallenge` pair are generated. The PKCE verifier, nonce, and redirect path are stored server-side in the `sso_sessions` table (10-minute TTL); the `state` is additionally bound to the initiating browser via a signed, HttpOnly cookie (`breeze_sso_state`, `SameSite=Lax`, `Secure` in production, scoped to the callback path, 10-minute Max-Age). The cookie carries an HMAC-SHA256 signature of the state (keyed on `APP_ENCRYPTION_KEY`/`SECRET_ENCRYPTION_KEY`, distinct from the JWT secret).
 4. **Redirect to IdP.** Breeze redirects the user to the IdP's authorization endpoint with the PKCE challenge, state, nonce, and redirect URI.
 5. **User authenticates at IdP.** The user signs in at the identity provider.
@@ -373,25 +373,36 @@ This link is updated on every SSO login, keeping the profile and tokens current.
 
 ## SSO Enforcement
 
-When `enforceSSO` is set to `true` on a provider, the organization's login page should disable password-based authentication. The `GET /api/v1/sso/check/:orgId` endpoint returns `enforceSSO: true` so the frontend can hide the password form and redirect users directly to the IdP.
-
-```json
-// GET /api/v1/sso/check/ORG_UUID
-{
-  "ssoEnabled": true,
-  "provider": {
-    "id": "uuid",
-    "name": "Azure AD",
-    "type": "oidc"
-  },
-  "enforceSSO": true,
-  "loginUrl": "/api/v1/sso/login/ORG_UUID"
-}
-```
+When `enforceSSO` is set to `true` on an **active** provider, password-based login is refused for the organization. This is enforced **server-side**, on every password attempt, regardless of what the login page shows — it is not something the frontend can opt out of by not checking first.
 
 <Aside type="caution">
   Before enabling SSO enforcement, ensure that at least one administrator account can still access the system. Consider keeping a break-glass account with password login or testing the SSO flow thoroughly in `testing` status first.
 </Aside>
+
+### Login Page Discovery
+
+The dashboard login page does not know an organization's `orgId` (and so cannot call `GET /sso/check/:orgId`) until a user has already picked that organization — which, for a first-time visitor typing an email address, hasn't happened yet. When a user tabs out of the email field, the page instead calls the public, unauthenticated `POST /api/v1/auth/sso-discovery` with the address. If it names a provider, the password field and submit button are replaced with a **"Sign in with \{provider\}"** button and a **"Sign in with password instead"** link — the password path stays reachable, since discovery is a convenience, not the enforcement point.
+
+```json
+// POST /api/v1/auth/sso-discovery
+// { "email": "user@example.com" }
+{
+  "sso": {
+    "providerName": "Azure AD",
+    "loginUrl": "/api/v1/sso/login/ORG_UUID",
+    "enforceSSO": true
+  }
+}
+```
+
+Discovery answers `{ "sso": null }` whenever it can't give a safe, unambiguous answer:
+
+- **It is keyed on the email's domain, never on the address itself**, and never reads the `users` table — a real address and a made-up one at the same domain get the identical answer. This is deliberate: a distinguishable answer per address would be an account-existence oracle.
+- **The domain must be verified.** Only a domain the organization has proven ownership of via DNS (the same domain-verification mechanism behind [Verified Email Required](#verified-email-required), `sso_verified_domains`) is eligible. An org with `allowedDomains` configured but no *verified* domain gets `{ "sso": null }` — `allowedDomains` is unverified free text and is deliberately not used here, since a hostile tenant on a shared instance could otherwise claim someone else's domain and have discovery point their users at an attacker-controlled IdP.
+- **If two organizations have verified the same domain, discovery refuses to guess** and returns `{ "sso": null }`.
+- **The named provider is the org's oldest active provider** — the same one `GET /api/v1/sso/login/:orgId` launches — not necessarily the one with `enforceSSO` set. If that provider is SAML rather than OIDC, discovery also returns `{ "sso": null }`, since the login entry route only supports OIDC today.
+
+An organization that hasn't verified a domain sees the password form exactly as before — this is pre-existing behavior, not a regression introduced by discovery.
 
 ---
 
@@ -563,6 +574,7 @@ All routes are prefixed with `/api/v1/sso`, except where a full path starting wi
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/sso/check/:orgId` | None | Check if SSO is enabled for an organization. Returns provider name, type, enforcement status, and login URL. |
+| `POST` | `/api/v1/auth/sso-discovery` | None | Home-realm discovery by email domain (see [Login Page Discovery](#login-page-discovery)). Body: `{ "email": "..." }`. Always returns `{ "sso": null }` or `{ "sso": { "providerName", "loginUrl", "enforceSSO": true } }` — never an account-existence signal. Rate-limited per client. |
 | `GET` | `/sso/login/:orgId` | None | Initiate SSO login for an organization. Generates PKCE + state and redirects to the IdP. |
 | `GET` | `/sso/login/partner/:partnerId` | None | Initiate partner-wide SSO login (technician sign-in). Uses the oldest active partner provider. |
 | `GET` | `/api/v1/auth/login-context` | None | Login-page context: partner login branding and the partner SSO button target. Returns empty values on hosted or multi-partner deployments. |

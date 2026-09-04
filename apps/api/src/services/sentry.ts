@@ -201,6 +201,18 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
+  // processDispatchBackup commits per-target child `backup_jobs` rows, so a
+  // retry duplicates them. Two consequences of that trade are things an
+  // operator must be able to see, and scrubEvent deletes message/logentry/extra
+  // and rewrites the exception value to '[redacted]' — so this tag is the ONLY
+  // part of either capture that reaches Sentry. Closed set of two string
+  // literals written at their call sites in jobs/backupWorker.ts:
+  // 'redelivery-refused' (a whole backup run was deliberately dropped rather
+  // than duplicated) | 'undelivered-settle-failed' (the fast cleanup of
+  // provably-unsent rows failed, so they wait on the stale reaper instead).
+  // Carries no tenant, device or job identifier.
+  'backup_dispatch_issue',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.
@@ -281,6 +293,46 @@ const ALLOWED_TAG_NAMES = new Set([
   // in BREEZE_ROLE is folded to `all` by that function, so this tag is a
   // 3-value set by construction and carries no tenant, device or host.
   'breeze_role',
+  // #4828: every `captureException` in the accounting sync path
+  // (accountingInvoicePush.ts, accountingMappingService.ts) tagged `service`,
+  // `invoiceId`/`mappingId`/`partnerId`/`remoteEntityId` — none of which were
+  // allowlisted (the camelCase keys had no allowlisted equivalent at all, not
+  // even a snake_case one, and `service` itself was never added). `scrubEvent`
+  // deletes `message`/`extra`/`logentry`, so every one of these best-effort
+  // failure reports has been arriving as a near-contentless event since the
+  // pattern was introduced — on-call could see a sync failed but not which
+  // invoice, mapping, or partner.
+  //
+  // `service` is the hardcoded module-name literal at each call site
+  // (`'accountingInvoicePush' | 'accountingMappingService'` today) — a closed
+  // set by construction, never interpolated, carrying no identifier.
+  //
+  // `invoice_id` and `accounting_mapping_id` follow the same precedent already
+  // set by `org_id`/`partner_id`/`user_id` above: unbounded UUID primary keys,
+  // allowed specifically for tenant/record-scoped triage, never raw message
+  // text. `remote_entity_id` is the analogous id on the QuickBooks side (the
+  // provider's own record id for the pushed invoice/customer/item) — also an
+  // opaque identifier, not free text, and length-capped like every tag by
+  // `isBoundedTagValue`.
+  //
+  // `breeze_entity_type` is the closed 2-value union `'org' | 'catalog_item'`
+  // from `SyncMappedEntityInput` (accountingMappingService.ts) — which kind of
+  // entity a sync failure was for; bounded by construction, carries no
+  // identifier.
+  //
+  // `remote_sync_token` is QuickBooks' optimistic-concurrency version counter
+  // for the pushed entity — a short numeric string (`'0'`, `'1'`, `'3'`, …),
+  // not free text. It is specifically the value the "QuickBooks accepted the
+  // sync but Breeze failed to record it — do not retry; contact support to
+  // reconcile" failure path in accountingMappingService.ts hands off: manual
+  // reconciliation needs to know which version Breeze last observed, not just
+  // which record. No tenant, device, or host identifier.
+  'service',
+  'invoice_id',
+  'accounting_mapping_id',
+  'remote_entity_id',
+  'breeze_entity_type',
+  'remote_sync_token',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

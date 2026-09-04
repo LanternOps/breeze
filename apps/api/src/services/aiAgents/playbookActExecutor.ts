@@ -107,8 +107,9 @@ async function getCommandQueue() {
 export interface PlaybookExecutorDeps {
   revalidate: typeof revalidateActExecution;
   executeToolFn: typeof executeTool;
-  /** Direct `commandQueue.executeCommand` access for the `service_status`
-   *  verify metric read — review fix (#3826 Task 5 follow-up): the
+  /** Direct `commandQueue.executeCommandWithSystemPrecheck` access for the
+   *  `service_status` verify metric read — review fix (#3826 Task 5
+   *  follow-up): the
    *  `manage_services` TOOL only forwards `{ name: serviceName }` to the
    *  agent (aiToolsScripts.ts), but the agent's `ListServices` command reads
    *  `search`/`status`/`page`/`limit`, not `name` (agent/internal/remote/
@@ -116,17 +117,22 @@ export interface PlaybookExecutorDeps {
    *  50-row-paginated list on every real device, and the target service is
    *  usually not on page one. actVerify.ts's `verifyServiceRunning` already
    *  does this read correctly (`{ search: target.serviceName }` straight
-   *  through `commandQueue.executeCommand`); this dep lets the playbook
+   *  through the same commandQueue entry point); this dep lets the playbook
    *  executor's read-back use the exact same call shape so the two act
-   *  paths cannot drift on the same postcondition again. */
-  executeCommandFn: typeof import('../commandQueue').executeCommand;
+   *  paths cannot drift on the same postcondition again.
+   *
+   *  The `WithSystemPrecheck` variant is load-bearing, not incidental: this
+   *  read is awaited for up to SERVICE_STATUS_READ_TIMEOUT_MS, so the DB
+   *  context its RLS-gated precheck needs has to close before the wait
+   *  (#4150/#1105). */
+  executeCommandFn: typeof import('../commandQueue').executeCommandWithSystemPrecheck;
   sleepFn: (ms: number) => Promise<void>;
 }
 
 const REAL_DEPS: PlaybookExecutorDeps = {
   revalidate: revalidateActExecution,
   executeToolFn: executeTool,
-  executeCommandFn: async (...args) => (await getCommandQueue()).executeCommand(...args),
+  executeCommandFn: async (...args) => (await getCommandQueue()).executeCommandWithSystemPrecheck(...args),
   sleepFn: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -439,10 +445,16 @@ async function readServiceStatus(
   // Bypasses the `manage_services` TOOL deliberately — see the
   // `executeCommandFn` doc comment on `PlaybookExecutorDeps` for why going
   // through the tool cannot find the service on a real device.
-  const result = await inSystemDbContext(() =>
-    deps.executeCommandFn(run.deviceId, 'list_services', { search: serviceName }, {
+  // NO DB context held across this call (#4150): it is a device round-trip
+  // bounded at SERVICE_STATUS_READ_TIMEOUT_MS (30s), and
+  // `executeCommandWithSystemPrecheck` opens the system context its own
+  // RLS-gated precheck needs and closes it before the wait. Wrapping this in
+  // `inSystemDbContext` — as it used to be — pinned a pooled connection
+  // idle-in-transaction for the whole read (#1105).
+  const result = await deps.executeCommandFn(
+    run.deviceId, 'list_services', { search: serviceName }, {
       userId: agentAuth.user.id, timeoutMs: SERVICE_STATUS_READ_TIMEOUT_MS,
-    }));
+    });
   if (result.status !== 'completed') {
     return { ok: false, detail: `service status read did not complete (${result.status})` };
   }

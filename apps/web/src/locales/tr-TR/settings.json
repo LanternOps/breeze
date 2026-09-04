@@ -100,6 +100,7 @@
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
     "sourceCidrs": "Kaynak IP'leri veya CIDR'ler (satır başına bir tane)",
+    "writeScopeRestrictionsRequired": "enrollment-keys:write kapsamı bir son kullanma tarihi ve en az bir kaynak IP veya CIDR gerektirir.",
     "expiresAt": "Süresi doluyor",
     "save": "Kaydet",
     "cancel": "İptal",
@@ -3472,6 +3473,8 @@
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur durumda. Değişiklik yapmak için geri yükleyin.",
       "bannerWithDate": "Bu kuruluş arşivlendi — silme işlemi {{date}} tarihinde planlandı. Değişiklik yapmak için geri yükleyin.",
+      "drainBanner": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor.",
+      "drainBannerWithDate": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve silme işlemi {{date}} tarihinde planlandı.",
       "restoreLink": "Bu kuruluşu geri yükle",
       "saveBlocked": "Bu kuruluş arşivlendi ve düzenlenemez. Önce geri yükleyin."
     },
@@ -4011,12 +4014,14 @@
       "empty": "Arşivlenmiş kuruluş yok.",
       "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
       "badge": "Arşivlendi",
+      "archivingBadge": "Arşivleniyor…",
       "keptIndefinitely": "Süresiz olarak saklanıyor",
       "purgeToday": "Bugün kalıcı olarak silinecek",
       "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
       "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
       "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
       "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
+      "drainNotice": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor. İptal edip geri getirmek için geri yükleyin.",
       "errors": {
         "fetch": "Arşivlenen kuruluşlar yüklenemedi"
       }

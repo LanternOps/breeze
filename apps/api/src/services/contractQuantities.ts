@@ -42,6 +42,10 @@ export async function countContractDevices(
 
 export interface DeviceSnapshotRow {
   id: string;
+  /** Stamped onto billing evidence at generation (#3205 W07) so a past invoice
+   *  stays legible after the device is deleted or moved to another org.
+   *  devices.hostname is varchar(255) NOT NULL, so this never needs a null branch. */
+  hostname: string;
   role: string;
   siteId: string | null;
 }
@@ -54,7 +58,7 @@ export interface DeviceSnapshotRow {
  *  per device in contractCoverage. */
 export async function snapshotContractDevices(orgId: string): Promise<DeviceSnapshotRow[]> {
   return db
-    .select({ id: devices.id, role: devices.deviceRole, siteId: devices.siteId })
+    .select({ id: devices.id, hostname: devices.hostname, role: devices.deviceRole, siteId: devices.siteId })
     .from(devices)
     .where(and(...billableDeviceConds(orgId)));
 }
@@ -65,7 +69,7 @@ export async function snapshotContractDevices(orgId: string): Promise<DeviceSnap
  *  null = decommissioned, ephemeral, in another org, or gone. */
 export async function billableDeviceById(deviceId: string, orgId: string): Promise<DeviceSnapshotRow | null> {
   const [row] = await db
-    .select({ id: devices.id, role: devices.deviceRole, siteId: devices.siteId })
+    .select({ id: devices.id, hostname: devices.hostname, role: devices.deviceRole, siteId: devices.siteId })
     .from(devices)
     .where(and(...billableDeviceConds(orgId), eq(devices.id, deviceId)))
     .limit(1);

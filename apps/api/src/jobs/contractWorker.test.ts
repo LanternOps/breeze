@@ -37,6 +37,8 @@ import type { Mock } from 'vitest';
 import { db } from '../db';
 import { runContractBillingSweep } from './contractWorker';
 
+const ACTOR = { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] } as const;
+
 describe('runContractBillingSweep price-book gap logging (#3775)', () => {
   beforeEach(() => { vi.clearAllMocks(); dueRows.length = 0; });
 
@@ -142,6 +144,24 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     }
   });
 
+  it('a SITE_DELETED contract is rolled back, reported, and the next contract still generates', async () => {
+    dueRows.push({ id: 'c1' }, { id: 'c2' });
+    const siteDeleted = Object.assign(new Error('site deleted'), { code: 'SITE_DELETED' });
+    generateDueInvoiceMock
+      .mockRejectedValueOnce(siteDeleted)
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const summary = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(generateDueInvoiceMock).toHaveBeenCalledTimes(2);
+      expect(err).toHaveBeenCalledWith('[ContractWorker] generation failed', 'contractId=c1', 'site deleted');
+      expect(captureExceptionMock).toHaveBeenCalledWith(siteDeleted);
+      expect(summary).toEqual({ billed: 1, failed: 1 });
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it('warns once per FLAGGED overage and never for a billed one (#3205 W04)', async () => {
     dueRows.push({ id: 'c1', orgId: 'org1' });
     generateDueInvoiceMock.mockResolvedValue({
@@ -179,6 +199,21 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('uncovered devices'), 'c1', 2, '{"unknown":2}');
     } finally { warn.mockRestore(); }
+  });
+
+  it('#3205 W07: a contract whose evidence insert throws rolls that contract back and the sweep continues', async () => {
+    dueRows.push({ id: 'c1' }, { id: 'c2' });
+    generateDueInvoiceMock
+      .mockRejectedValueOnce(new Error('evidence insert failed'))
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv-2', autoIssue: false, actor: ACTOR, priceBookGaps: [], uncoveredDevices: null, overages: [] });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-07-01T00:00:00Z'));
+      expect(res).toMatchObject({ billed: 1, failed: 1 });
+      expect(generateDueInvoiceMock).toHaveBeenCalledTimes(2);
+    } finally {
+      err.mockRestore();
+    }
   });
 });
 

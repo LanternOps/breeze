@@ -1033,27 +1033,25 @@ export interface PagedResult<T> {
  * Fetch ONE page of a mobile list endpoint and report how much of the set it
  * represents.
  *
- * Deliberately one request, not a walk. Neither pagination mode on
- * `/mobile/devices` or `/mobile/alerts/inbox` can produce a trustworthy
- * full-set walk today:
+ * Deliberately one request, not a walk — even though the server-side bug that
+ * originally justified this (#3770) is now fixed: `/mobile/devices` and
+ * `/mobile/alerts/inbox` both compute `nextCursor` on every response,
+ * including a cold-start caller's first one, and — for `/devices` — the
+ * default (no `?page=`) request now runs on the immutable, NOT NULL
+ * `hostname` keyset instead of the mutable, nullable `last_seen_at` one, so a
+ * caller that walks `nextCursor` no longer risks the skip/dup hazards
+ * described below for that path. `/alerts/inbox` additionally used to
+ * truncate its cursor to millisecond precision, which could skip rows sitting
+ * between the truncated boundary and the real one; the cursor now carries the
+ * full microsecond value.
  *
- *  - CURSOR mode is unreachable. The routes compute `nextCursor` only inside
- *    `if (cursor)`, so a cold-start caller — which has no cursor to send — gets
- *    `nextCursor: null` on its first response and can never obtain the token
- *    for page two. The previous walk here treated that null as clean
- *    exhaustion, so it stopped after one page AND suppressed its own truncation
- *    warning.
- *  - OFFSET mode is reachable but skews. Both routes order by a MUTABLE key
- *    (`last_seen_at`, rewritten by every heartbeat), so rows reorder between
- *    page requests: page two can repeat rows page one already returned and
- *    never return the ones that moved ahead of the offset. A row-count check
- *    cannot detect that, because the duplicates make the count come out right.
- *
- * So the walk is not the fix — the honest claim is. One page, plus the server's
- * exact `total`, lets the caller say "showing N of M" instead of presenting a
- * sample as the whole set. Fixing the underlying keyset (the way
- * `routes/devices/core.ts` did, by keying cursor mode on the NOT NULL,
- * immutable `hostname`) is filed separately.
+ * None of that makes a client-side walk trustworthy on its own — it only
+ * removes the server-side reasons one couldn't be. Implementing the walk
+ * (retry/backoff, mid-walk auth/network failure, cancellation, resuming a
+ * mid-flight session) is real client work nobody has done, so this still
+ * fetches one page and reports honestly whether it's the whole set: the
+ * server's exact `total`, plus this page, lets the caller say "showing N of
+ * M" instead of presenting a sample as the whole thing.
  */
 async function fetchPage<TRow>(
   buildPath: (params: URLSearchParams) => string,

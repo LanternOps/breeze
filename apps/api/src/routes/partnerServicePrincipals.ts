@@ -125,6 +125,22 @@ function validatePrincipalFields(
   return { scopes, expiresAt };
 }
 
+function validateEnrollmentWriteRestrictions(
+  c: any,
+  input: { scopes: readonly string[]; sourceCidrs: readonly string[]; expiresAt: Date | null },
+): { response: Response } | null {
+  if (!input.scopes.includes('enrollment-keys:write')) return null;
+  if (input.sourceCidrs.length === 0 || input.expiresAt === null) {
+    return {
+      response: c.json({
+        error: 'enrollment-keys:write requires a principal expiry and at least one source CIDR',
+        code: 'ENROLLMENT_KEY_SCOPE_RESTRICTIONS_REQUIRED',
+      }, 400),
+    };
+  }
+  return null;
+}
+
 function keyError(c: any, error: unknown): Response {
   if (error instanceof PartnerServicePrincipalKeyError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
@@ -225,6 +241,13 @@ partnerServicePrincipalRoutes.post(
     if (createDenial) return createDenial.response;
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const restrictionError = validateEnrollmentWriteRestrictions(c, {
+      scopes: validated.scopes!,
+      sourceCidrs: input.sourceCidrs,
+      expiresAt: validated.expiresAt ?? null,
+    });
+    if (restrictionError) return restrictionError.response;
+
 
     const [duplicate] = await db
       .select({ id: partnerServicePrincipals.id })
@@ -285,6 +308,25 @@ partnerServicePrincipalRoutes.patch(
     if (changed.length === 0) return c.json({ error: 'No updates provided' }, 400);
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const [existing] = await db.select({
+      scopes: partnerServicePrincipals.scopes,
+      sourceCidrs: partnerServicePrincipals.sourceCidrs,
+      expiresAt: partnerServicePrincipals.expiresAt,
+    }).from(partnerServicePrincipals).where(and(
+      eq(partnerServicePrincipals.id, id),
+      eq(partnerServicePrincipals.partnerId, resolved.partnerId),
+    )).limit(1);
+    if (!existing) return c.json({ error: 'Service principal not found' }, 404);
+
+    const restrictionError = validateEnrollmentWriteRestrictions(c, {
+      scopes: validated.scopes ?? existing.scopes,
+      sourceCidrs: input.sourceCidrs ?? existing.sourceCidrs,
+      expiresAt: validated.expiresAt === undefined
+        ? existing.expiresAt
+        : validated.expiresAt,
+    });
+    if (restrictionError) return restrictionError.response;
+
 
     if (input.name) {
       const [duplicate] = await db.select({ id: partnerServicePrincipals.id }).from(partnerServicePrincipals)

@@ -29,21 +29,16 @@
  *     src/__tests__/integration/ticketCommentsAgentRunBackfill.integration.test.ts
  */
 import './setup';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, ticketComments, tickets } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
-import { sql } from 'drizzle-orm';
+import { replayMigration } from './replayMigration';
 
-const MIGRATION_FILE = join(
-  __dirname,
-  '../../../migrations/2026-10-08-100500-detach-ticket-comment-runs-on-device-org-move.sql',
-);
+const MIGRATION_FILE = '2026-10-08-100500-detach-ticket-comment-runs-on-device-org-move.sql';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -52,11 +47,6 @@ const SYSTEM_CTX: DbAccessContext = {
   accessiblePartnerIds: null,
   userId: null,
 };
-
-/** Replays the migration file as the privileged test role (idempotent: CREATE OR REPLACE + a re-runnable backfill). */
-async function replayMigration() {
-  await getTestDb().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
-}
 
 async function readComment(id: string) {
   const adminDb = getTestDb() as any;
@@ -169,7 +159,8 @@ describe('ticket_comments.agent_run_id backfill (#4644 migration replay)', () =>
     expect((await readComment(staleComment.id)).agentRunId).toBe(staleRun!.id);
     expect((await readComment(liveComment.id)).agentRunId).toBe(liveRun!.id);
 
-    await replayMigration();
+    const definitionBefore = await getTestDb().execute(sql`SELECT pg_get_functiondef('public.breeze_cascade_device_org_id()'::regprocedure) AS definition`);
+    await replayMigration(MIGRATION_FILE);
 
     expect((await readComment(staleComment.id)).agentRunId, 'stale cross-org pointer must be severed').toBeNull();
     expect(
@@ -179,7 +170,8 @@ describe('ticket_comments.agent_run_id backfill (#4644 migration replay)', () =>
 
     // Idempotent replay: re-running must not error and must not touch the
     // already-corrected rows (there is nothing left to backfill).
-    await replayMigration();
+    await replayMigration(MIGRATION_FILE);
+    expect(await getTestDb().execute(sql`SELECT pg_get_functiondef('public.breeze_cascade_device_org_id()'::regprocedure) AS definition`)).toEqual(definitionBefore);
     expect((await readComment(staleComment.id)).agentRunId).toBeNull();
     expect((await readComment(liveComment.id)).agentRunId).toBe(liveRun!.id);
   });

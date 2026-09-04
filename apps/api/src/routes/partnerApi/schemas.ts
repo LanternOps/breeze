@@ -530,6 +530,50 @@ export const enrollmentKeyCreateResponseSchema = z.object({
   data: partnerEnrollmentKeyCreateRecordSchema,
   /** Returned exactly once, at creation. 64-char hex, as on the human route. */
   key: z.string().regex(/^[0-9a-f]{64}$/u),
+  /**
+   * Per-key enrollment secret, returned exactly once alongside `key` — and
+   * ONLY when the request set `issueEnrollmentSecret: true`.
+   *
+   * Optional rather than nullable on purpose. Its presence is the signal that
+   * `enrollment_keys.key_secret_hash` was written, which is what makes the
+   * agent enrollment path require this secret instead of the global
+   * `AGENT_ENROLLMENT_SECRET`. A key minted without it is absent here, so a
+   * client cannot read `null` as "issued but empty".
+   *
+   * Agents present it as the enrollment secret; it is stored as an unpeppered
+   * SHA-256 because that is what the agent enrollment path compares against.
+   */
+  enrollmentSecret: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+  /**
+   * Which secret the agent must present when it redeems `key`.
+   *
+   * Always present, in both directions, because the failure it prevents is
+   * silent and remote: a caller that assumes the wrong model gets a clean 201
+   * here and a `403 Enrollment secret required` from
+   * `routes/agents/enrollment.ts` at install time, with nothing tying the two
+   * together. Deriving it from "is `enrollmentSecret` present?" would work for
+   * a create and not at all for a replay, which never carries the secret.
+   */
+  enrollmentSecretSource: z.enum(['global', 'per_key']),
+}).strict();
+
+/**
+ * Replay of a completed idempotent create. Deliberately a separate schema with
+ * no `key` or `enrollmentSecret`: one-time credentials are returned by the
+ * single committing request and can never be re-read, so a retry gets metadata
+ * only. Keeping this strict and separate means a future edit cannot widen the
+ * replay path into a credential-disclosure path.
+ */
+export const enrollmentKeyReplayResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: partnerEnrollmentKeyCreateRecordSchema,
+  /**
+   * Same contract as on the create response. Derived from whether the stored
+   * row has a `key_secret_hash`, never from the secret itself — a replay is
+   * metadata-only and the one-time credentials stay unrecoverable.
+   */
+  enrollmentSecretSource: z.enum(['global', 'per_key']),
+  idempotencyReplay: z.literal(true),
 }).strict();
 
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {

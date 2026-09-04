@@ -47,7 +47,10 @@ export type ContractServiceErrorCode =
   // #3205 W02: a per_device_group line whose group was deleted (device_group_id
   // NULL). Reads show it unresolved; generation refuses.
   | 'GROUP_DELETED'
+  // #4693: a formerly site-scoped device line whose site was deleted.
+  | 'SITE_DELETED'
   | 'CONTRACT_NOT_FOUND'
+  | 'PERIOD_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'
   | 'NOT_A_DRAFT'

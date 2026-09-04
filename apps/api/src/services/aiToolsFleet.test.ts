@@ -379,6 +379,36 @@ describe('manage_groups peripheral reconciliation', () => {
       code: 'BILLED_BY_CONTRACTS',
     });
   });
+
+  it('returns the service error when an open quote prices the deleted group', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' },
+          ]),
+        }),
+      }),
+    } as any);
+    mockDeleteDeviceGroup.mockRejectedValueOnce(
+      new DeviceGroupDeleteError(
+        'QUOTED_BY_QUOTES',
+        'Group is priced by 1 open quote(s); remove those quote lines first',
+        undefined,
+        [{ id: 'quote-1', quoteNumber: 'Q-42', status: 'sent' }],
+      )
+    );
+
+    const result = JSON.parse(await tool.handler({
+      action: 'delete',
+      groupId: 'group-1',
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'Group is priced by 1 open quote(s); remove those quote lines first',
+      code: 'QUOTED_BY_QUOTES',
+    });
+  });
 });
 
 // ============================================

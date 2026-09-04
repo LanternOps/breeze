@@ -17,10 +17,11 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   deviceWarranty: { deviceId: 'deviceWarranty.deviceId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil' },
   configPolicyFeatureLinks: { featureType: 'configPolicyFeatureLinks.featureType', inlineSettings: 'configPolicyFeatureLinks.inlineSettings', configPolicyId: 'configPolicyFeatureLinks.configPolicyId' },
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
-  configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status' },
+  configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status', orgId: 'configurationPolicies.orgId', partnerId: 'configurationPolicies.partnerId' },
   deviceGroupMemberships: { deviceId: 'deviceGroupMemberships.deviceId', groupId: 'deviceGroupMemberships.groupId' },
 }));
 
@@ -117,17 +118,45 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
     // 3: device row (resolveWarrantySettings)
     selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
-    // 4: device group memberships → none
+    // 4: device org row (resolveWarrantySettings, for the partner axis) → no partner
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    // 5: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 5: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
+    // 6: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 6: disabled path now auto-resolves; open-alert select → none
+    // 7: disabled path now auto-resolves; open-alert select → none
     selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
 
     expect(result).toBeNull();
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('reports loudly when the device org row does not resolve, instead of silently degrading (#3963)', async () => {
+    stubAutoResolve();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1: warranty row  2: device row (evaluate)  3: device row (resolveWarrantySettings)
+    selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    // 4: device org row → EMPTY. Unreachable via the schema (devices.org_id is
+    // NOT NULL with an FK to organizations.id), so it means an invariant broke.
+    // Without the guard this degrades to exactly the org-only resolution #3963
+    // fixes — silently, and indistinguishably from "no policy configured".
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 5: device group memberships  6: warranty feature links  7: auto-resolve open alerts
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(ORG_ID));
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('partner-wide'));
+    // Resolution still completes rather than throwing — warranty alerting degrades.
+    expect(result).toBeNull();
+    consoleError.mockRestore();
   });
 
   it('does NOT fire for an active AppleCare subscription even within threshold (#1320 Bug 2)', async () => {
@@ -155,15 +184,17 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
     // 3: device row (resolveWarrantySettings)
     selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
-    // 4: device group memberships → none
+    // 4: device org row (resolveWarrantySettings, for the partner axis) → no partner
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    // 5: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 5: warranty feature link, enabled at org level
+    // 6: warranty feature link, enabled at org level
     selectMock.mockReturnValueOnce(
       queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
     );
-    // 6: existing open warranty alert check → none
+    // 7: existing open warranty alert check → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 7: dismissed warranty alert check → none
+    // 8: dismissed warranty alert check → none
     selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -188,13 +219,15 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
     // 3: device row (resolveWarrantySettings)
     selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
-    // 4: device group memberships → none
+    // 4: device org row (resolveWarrantySettings, for the partner axis) → no partner
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    // 5: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 5: warranty feature link present but enabled=false ⇒ gate trips
+    // 6: warranty feature link present but enabled=false ⇒ gate trips
     selectMock.mockReturnValueOnce(
       queueSelect([{ inlineSettings: { enabled: false, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
     );
-    // 6: disabled path now auto-resolves; open-alert select → none
+    // 7: disabled path now auto-resolves; open-alert select → none
     selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -217,11 +250,13 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
     // 3: device row (resolveWarrantySettings)
     selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
-    // 4: device group memberships → none
+    // 4: device org row (resolveWarrantySettings, for the partner axis) → no partner
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    // 5: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 5: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
+    // 6: warranty feature links → NONE assigned ⇒ DISABLED_SETTINGS ⇒ gate trips
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 6: autoResolveWarrantyAlerts open-alert select → an existing open (active) alert
+    // 7: autoResolveWarrantyAlerts open-alert select → an existing open (active) alert
     selectMock.mockReturnValueOnce(
       queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', triggeredAt: new Date('2026-01-01T00:00:00.000Z') }])
     );
@@ -257,15 +292,17 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
     // 3: device row (resolveWarrantySettings)
     selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
-    // 4: device group memberships → none
+    // 4: device org row (resolveWarrantySettings, for the partner axis) → no partner
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    // 5: device group memberships → none
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 5: warranty feature link, enabled at org level
+    // 6: warranty feature link, enabled at org level
     selectMock.mockReturnValueOnce(
       queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
     );
-    // 6: existing open warranty alert check → none (it was dismissed, not open)
+    // 7: existing open warranty alert check → none (it was dismissed, not open)
     selectMock.mockReturnValueOnce(queueSelect([]));
-    // 7: dismissed warranty alert check (scoped to this warranty end date) → HIT
+    // 8: dismissed warranty alert check (scoped to this warranty end date) → HIT
     selectMock.mockReturnValueOnce(queueSelect([{ id: 'alert-dismissed-1' }]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
