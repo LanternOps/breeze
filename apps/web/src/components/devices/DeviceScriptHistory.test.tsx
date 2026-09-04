@@ -1,11 +1,13 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceScriptHistory from './DeviceScriptHistory';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 type MockExecuteModalProps = {
   script: { id: string; name: string };
@@ -131,6 +133,48 @@ describe('DeviceScriptHistory "Run again" (#4885)', () => {
       expect(historyCalls.length).toBeGreaterThanOrEqual(2);
     });
   });
+
+  it('toasts an error and does not open the execute modal when the script definition fails to load', async () => {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [executionRow] });
+      }
+      if (url === '/scripts/script-1') {
+        return jsonResponse({ error: 'not found' }, 404);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await openDetails();
+    fireEvent.click(screen.getByTestId('device-script-run-again'));
+
+    await waitFor(() => expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error' })
+    ));
+    expect(screen.queryByTestId('mock-execution-modal')).not.toBeInTheDocument();
+  });
+
+  it('toasts an error when the script-detail request itself rejects (network failure)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [executionRow] });
+      }
+      if (url === '/scripts/script-1') {
+        throw new Error('network unreachable');
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await openDetails();
+    fireEvent.click(screen.getByTestId('device-script-run-again'));
+
+    await waitFor(() => expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: 'network unreachable' })
+    ));
+    expect(screen.queryByTestId('mock-execution-modal')).not.toBeInTheDocument();
+  });
 });
 
 describe('DeviceScriptHistory highlighted execution (#4886)', () => {
@@ -156,5 +200,28 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
 
     await screen.findByText('Collect Inventory');
     expect(screen.queryByText('Execution Details')).toBeNull();
+  });
+
+  // Guards `autoOpenedHighlightRef` (DeviceScriptHistory.tsx): the 10s poll
+  // refresh must not keep resurrecting a modal the operator already dismissed.
+  it('does not reopen the highlighted execution after it is closed once a 10s poll refresh runs', async () => {
+    vi.useFakeTimers();
+    const flush = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    try {
+      render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-1" />);
+      await flush();
+      expect(screen.getByText('Execution Details')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Close'));
+      expect(screen.queryByText('Execution Details')).toBeNull();
+
+      // One full poll interval — fetchHistory(true) runs again with the same
+      // (still-matching) execution row.
+      await flush(10000);
+
+      expect(screen.queryByText('Execution Details')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
