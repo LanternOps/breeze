@@ -664,6 +664,7 @@
     "retry": "Tekrar dene",
     "activities": "Faaliyetler",
     "total": "toplam)",
+    "totalAtLeast": "{{count}} ve üzeri",
     "searchActivities": "Arama etkinlikleri...",
     "all": "Hepsi",
     "success": "Başarılı",
@@ -683,7 +684,8 @@
     "details": "Ayrıntılar",
     "showing": "Gösteriliyor",
     "text": "–",
-    "of": "arasında"
+    "of": "arasında",
+    "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dosya sistemi durumu getirilemedi",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Grup silinemedi",
     "billedByContracts": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor: {{names}}. Önce bu sözleşme satırlarını kaldırın.",
     "billedByContractsCount": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor. Önce bu sözleşme satırlarını kaldırın.",
+    "quotedByQuotes": "Bu grup {{count}} açık teklifte fiyatlandırılıyor: {{names}}. Önce bu teklif satırlarını kaldırın.",
+    "quotedByQuotesCount": "Bu grup {{count}} açık teklifte fiyatlandırılıyor. Önce bu teklif satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",

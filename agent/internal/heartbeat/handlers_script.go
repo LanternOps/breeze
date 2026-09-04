@@ -125,14 +125,11 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
 	}
 	script.RunAs = strings.TrimSpace(script.RunAs)
-	if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
-		script.Parameters = make(map[string]string, len(params))
-		for k, v := range params {
-			if s, ok := v.(string); ok {
-				script.Parameters[k] = s
-			}
-		}
-	}
+	// Shared with userhelper.Client.executeScript, which rebuilds this same
+	// struct on the far side of the runAs=user IPC hop — see #4882, where only
+	// this site decoded parameters and every user-context script ran without
+	// them.
+	script.Parameters = executor.ParametersFromPayload(cmd.Payload["parameters"])
 	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
 	// parameters block: secrets ride the process environment (buildEnvironment)
 	// and must never reach SubstituteParameters or validateScript, which would

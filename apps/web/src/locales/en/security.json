@@ -1070,6 +1070,11 @@
       "title": "Delete PAM rule",
       "message": "Delete rule \"{{name}}\"? Elevation requests will no longer match it.",
       "confirm": "Delete rule"
+    },
+    "staleTierBadge": {
+      "label": "Stale",
+      "tooltip": "Risk tier {{tier}} no longer matches anything this rule can select, so it can never match.",
+      "tooltipWithTiers": "Risk tier {{tier}} no longer matches anything this rule can select, so it can never match. Tiers currently in use: {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

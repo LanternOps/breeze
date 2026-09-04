@@ -51,13 +51,13 @@ describe('ContractDetail — line site sub-label (#3205 W03)', () => {
     renderDetail([{
       id: 'l1', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Managed device',
       catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
-      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: 'site-1',
+      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: 'site-1', siteName: 'HQ',
       site: { id: 'site-1', name: 'HQ' }, deviceRoles: null, deviceGroupId: null, deviceGroupName: null,
       deviceGroup: null, taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     }, {
       id: 'l2', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Org-wide device',
       catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
-      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, site: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, siteName: null, site: null,
       deviceRoles: null, deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
       taxable: false, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
     }]);
@@ -65,5 +65,19 @@ describe('ContractDetail — line site sub-label (#3205 W03)', () => {
     expect(screen.getByTestId('contract-detail-line-l2')).toBeInTheDocument();
     expect(screen.queryByTestId('contract-detail-line-site-l2')).toBeNull();
     expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/orgs/sites'))).toBe(false);
+  });
+
+  // #4693 (W05): the stamp outlives the site row — render it, marked deleted.
+  it('renders the stamped site name with the deleted marker when the site row is gone', async () => {
+    renderDetail([{
+      id: 'l3', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device', description: 'Dallas devices',
+      catalogItemId: null, unitPrice: '10.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null, siteId: null, siteName: 'Dallas',
+      site: null, deviceRoles: null, deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
+      taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    }]);
+    const label = (await screen.findByTestId('contract-detail-line-site-l3')).textContent ?? '';
+    expect(label).toContain('Site: Dallas');
+    expect(label).not.toBe('Site: Dallas');   // the deleted marker is appended
   });
 });

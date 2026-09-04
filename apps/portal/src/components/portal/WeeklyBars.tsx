@@ -1,5 +1,12 @@
 import type { ThreatWeekDto } from '@breeze/shared';
 
+/**
+ * Eight quiet weeks of "what did we find, and did we clear it". When every
+ * week is zero there is nothing to draw — a 160px-tall empty chart reads as a
+ * loading failure to the customer, so the register says so in one ruled line
+ * instead (the EmptyState band, kept local because this sits inside a section
+ * that already has its own heading).
+ */
 export function WeeklyBars({
   weeks,
   label,
@@ -7,6 +14,23 @@ export function WeeklyBars({
   weeks: ThreatWeekDto[];
   label: string;
 }) {
+  const total = weeks.reduce((sum, week) => sum + week.detected + week.resolved, 0);
+
+  if (total === 0) {
+    return (
+      <p
+        className="border-y border-border/70 py-6 text-center text-sm text-muted-foreground"
+        data-testid="portal-weekly-bars-empty"
+      >
+        {weeks.length === 0
+          ? 'No history yet.'
+          : `Nothing harmful found in the last ${weeks.length} ${
+              weeks.length === 1 ? 'week' : 'weeks'
+            }.`}
+      </p>
+    );
+  }
+
   const max = Math.max(1, ...weeks.flatMap((week) => [week.detected, week.resolved]));
   return (
     <svg
@@ -16,6 +40,8 @@ export function WeeklyBars({
       data-testid="portal-weekly-bars"
       className="h-40 w-full"
     >
+      {/* The register's rule the bars stand on. */}
+      <line x1="0" y1="85.5" x2={Math.max(1, weeks.length) * 28} y2="85.5" className="stroke-border" strokeWidth="1" />
       {weeks.map((week, index) => {
         const detectedHeight = week.detected / max * 80;
         const resolvedHeight = week.resolved / max * 80;

@@ -91,6 +91,7 @@ import {
   type AiSweepKind,
   type SweepFinding,
   type SweepFindingsOutcome,
+  type SweepProposalReason,
   type SweepProposedAction,
 } from '@breeze/shared';
 import {
@@ -127,20 +128,14 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  */
 export type SweepProposalDisposition = 'intent_created' | 'refused' | 'cap_reached' | 'error';
 
-/**
- * Why a proposal did not become a pending intent. Display strings only —
- * NEVER a raw `Error.message` from `createActionIntent` (which could carry
- * tool-input detail); `intent_error` is the whole story a persisted record
- * gets, with the real error logged instead. Same posture as
- * `AlertVerdictSuggestionReason` (P2-1).
- */
-export type SweepProposalReason =
-  | 'device_not_in_evidence'
-  | 'device_not_in_org'
-  | 'not_allowlisted'
-  | 'no_eligible_approvers'
-  | 'intent_error'
-  | 'max_actions_per_run';
+// `SweepProposalReason` — why a proposal did not become a pending intent
+// (display strings only, NEVER a raw `Error.message` from
+// `createActionIntent`; `intent_error` is the whole story a persisted record
+// gets, with the real error logged instead; same posture as
+// `AlertVerdictSuggestionReason`, P2-1) — is declared in `@breeze/shared`
+// (`types/aiAgentRuns.ts`, imported above) rather than here so the web
+// sweep-findings UI can reuse the same union instead of re-deriving it
+// (#4458).
 
 /**
  * One row of `AgentRunOutcome.sweepProposals` — the bookkeeping for ONE

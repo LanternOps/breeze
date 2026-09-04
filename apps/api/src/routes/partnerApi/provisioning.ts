@@ -24,8 +24,21 @@ import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { enrollmentKeys, organizations, partners, sites } from '../../db/schema';
+import { createHash } from 'node:crypto';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
+import {
+  enrollmentKeys,
+  organizations,
+  partnerEnrollmentKeyIdempotency,
+  partners,
+  sites,
+} from '../../db/schema';
 // Concrete module, not the barrel — see the note in routes/orgs.ts.
 import { ORG_SLUG_UNIQUE_INDEX } from '../../db/schema/orgs';
 // The canonical SQLSTATE helpers — see their JSDoc for why a hand-rolled
@@ -43,11 +56,16 @@ import {
   generateEnrollmentKey,
   getDefaultEnrollmentKeyTtlMinutes,
   hashEnrollmentKey,
+  hashEnrollmentSecret,
 } from '../../services/enrollmentKeySecurity';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
+import { envInt } from '../../utils/envInt';
 import { computePartnerExportRevision, safelyExportDefinition } from './exportSafety';
 import { jsonField } from './organizations';
 import {
   enrollmentKeyCreateResponseSchema,
+  enrollmentKeyReplayResponseSchema,
   organizationCreateResponseSchema,
   siteCreateResponseSchema,
   type PartnerExportResource,
@@ -56,6 +74,58 @@ import {
 // Same 365-day ceiling as the human enrollment-key routes (enrollmentKeys.ts
 // MAX_TTL_MINUTES / devices/core.ts ENROLL_TOKEN_MAX_TTL_MINUTES).
 const ENROLLMENT_KEY_MAX_TTL_MINUTES = 525_600;
+
+// Credential minting gets its own fail-closed bucket. The generic per-principal
+// Partner API budget is shared with read/export traffic and is far too generous
+// for an endpoint that mints device-join credentials.
+const ENROLLMENT_KEY_MINT_WINDOW_SECONDS = 60 * 60;
+const DEFAULT_MINT_RATE_LIMIT_PER_PRINCIPAL = 10;
+// A partner admin can create service principals, so a per-principal bucket
+// alone is bypassable by minting N principals and getting N x the budget. The
+// partner-wide bucket is the ceiling that number cannot be multiplied past.
+const DEFAULT_MINT_RATE_LIMIT_PER_PARTNER = 100;
+
+/**
+ * Read a positive-integer operator knob, falling back to `fallback` when the
+ * value is absent, empty, or unusable.
+ *
+ * Deliberately NON-throwing. An earlier revision threw here, which meant a
+ * typo'd env value turned every mint into a 500 at request time instead of
+ * being caught at deploy time. `utils/envInt` already handles the `VAR: ""`
+ * case compose produces for an unset variable; the extra guard below is for
+ * `0` and negatives, which envInt parses fine but which would silently
+ * disable a security bound.
+ */
+function positiveEnvInt(name: string, fallback: number): number {
+  const parsed = envInt(name, fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `[partnerApi] ${name}=${JSON.stringify(process.env[name])} is not a positive integer; using ${fallback}`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
+ * The effective Partner API TTL ceiling for a minted enrollment key.
+ *
+ * `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` may only NARROW the hard
+ * 365-day bound above, never widen it, so an operator cannot use it to escape
+ * the ceiling the human routes enforce. Read per request rather than frozen at
+ * import so the value can be changed without a code deploy and so tests can
+ * exercise it; it is a plain env read, not I/O.
+ *
+ * Unset means "no operator ceiling" — the hard bound. Defaulting to anything
+ * narrower would retroactively cap partners already minting through this
+ * endpoint, which has shipped since v0.105.1.
+ */
+function partnerEnrollmentKeyMaxTtlMinutes(): number {
+  return Math.min(
+    ENROLLMENT_KEY_MAX_TTL_MINUTES,
+    positiveEnvInt('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', ENROLLMENT_KEY_MAX_TTL_MINUTES),
+  );
+}
 
 // `partnerId` is intentionally absent from every body schema: the principal's
 // partner always wins, and zod strips unrecognized keys on non-strict objects,
@@ -105,6 +175,23 @@ const createEnrollmentKeyBodySchema = z.object({
   maxUsage: z.number().int().min(1).max(100000).optional(),
   expiresAt: z.string().datetime().optional(),
   ttlMinutes: z.number().int().min(1).max(ENROLLMENT_KEY_MAX_TTL_MINUTES).optional(),
+  /**
+   * Opt in to a PER-KEY enrollment secret. Default `false`, and the default is
+   * the contract, not a convenience.
+   *
+   * `enrollment_keys.key_secret_hash` is a switch on the agent enrollment path
+   * (`routes/agents/enrollment.ts:217`): when it is set, that key REQUIRES the
+   * matching per-key secret and the globally configured
+   * `AGENT_ENROLLMENT_SECRET` no longer satisfies it. This endpoint shipped in
+   * v0.105.1 without ever writing that column, so every key minted through it
+   * so far enrolls with the global secret. Setting the hash unconditionally
+   * would break in-flight integrations that never asked for a per-key secret
+   * and have nowhere to put one.
+   *
+   * Callers that want the stronger per-key credential pass `true` and must
+   * capture `enrollmentSecret` from the 201 — it is unrecoverable afterwards.
+   */
+  issueEnrollmentSecret: z.boolean().optional(),
 }).strict().refine(
   (data) => !(data.expiresAt !== undefined && data.ttlMinutes !== undefined),
   { message: 'Pass either ttlMinutes or expiresAt, not both', path: ['ttlMinutes'] },
@@ -454,6 +541,31 @@ partnerProvisioningRoutes.post(
     const principal = c.get('partnerApiPrincipal');
     const data = c.req.valid('json');
 
+    const idempotencyHeader = c.req.header('X-Idempotency-Key');
+    // Validate before any Redis or database I/O. The value is persisted in a
+    // bounded varchar and participates in a unique index.
+    if (idempotencyHeader !== undefined && (
+      idempotencyHeader.length === 0
+      || idempotencyHeader.length > 128
+      || !/^[\x20-\x7E]+$/.test(idempotencyHeader)
+    )) {
+      return c.json({
+        error: 'X-Idempotency-Key must be 1-128 printable ASCII characters.',
+        code: 'partner_provisioning_invalid_idempotency_key',
+      }, 400);
+    }
+
+    // SECURITY: the human MFA boundary for this capability is the scope grant
+    // itself. Because the mint is machine-to-machine, every minting principal
+    // must additionally be time-bounded and network-bounded. A SQL cross-column
+    // CHECK enforces the same invariant below the API layer.
+    if (!principal.principalExpiresAt || (principal.sourceCidrs?.length ?? 0) === 0) {
+      return c.json({
+        error: 'enrollment-keys:write requires a principal expiry and a source CIDR allowlist.',
+        code: 'partner_provisioning_principal_restrictions_required',
+      }, 403);
+    }
+
     if (!principal.accessibleOrgIds.includes(data.orgId)) {
       return c.json({
         error: 'Access to this organization denied.',
@@ -470,18 +582,173 @@ partnerProvisioningRoutes.post(
       : data.expiresAt !== undefined
         ? Math.ceil((new Date(data.expiresAt).getTime() - Date.now()) / 60_000)
         : undefined;
+
+    // The operator ceiling, applied to whichever expiry path the caller used.
+    // Checking only `ttlMinutes` would leave `expiresAt` as an open bypass, the
+    // same way the per-org cap below has to check both.
+    const operatorTtlCap = partnerEnrollmentKeyMaxTtlMinutes();
+    if (impliedTtlMinutes !== undefined && impliedTtlMinutes > operatorTtlCap) {
+      return c.json({
+        error: `Requested TTL exceeds the Partner API ceiling of ${operatorTtlCap} minutes `
+          + '(PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES).',
+        code: 'partner_provisioning_ttl_exceeds_cap',
+      }, 400);
+    }
+
     const capError = await assertTtlWithinCap(data.orgId, impliedTtlMinutes);
     if (capError) {
       return c.json({ error: capError, code: 'partner_provisioning_ttl_exceeds_cap' }, 400);
     }
 
+    // Fingerprint follows the key insertion order Zod produces, which is the
+    // declaration order of createEnrollmentKeyBodySchema. Stable today, but
+    // reordering that schema's fields would change every fingerprint and make
+    // in-flight retries look like body mismatches for one retention window.
+    const requestFingerprint = createHash('sha256')
+      .update(JSON.stringify(data))
+      .digest('hex');
+
+    // Durable replay lookup runs BEFORE the mint limiter: a retry that will be
+    // answered from the idempotency claim mints nothing, so charging it against
+    // the mint budget would let a client's own retries 429 the replay they are
+    // entitled to. It also precedes mutable site validation, so a completed
+    // retry stays stable even if the site is deleted after the first call.
+    if (idempotencyHeader) {
+      const replayOutcome = await withDbAccessContext(
+        partnerScopedDbContext(principal),
+        async () => {
+          const [claim] = await db
+            .select()
+            .from(partnerEnrollmentKeyIdempotency)
+            .where(and(
+              eq(
+                partnerEnrollmentKeyIdempotency.partnerServicePrincipalId,
+                principal.partnerServicePrincipalId,
+              ),
+              eq(partnerEnrollmentKeyIdempotency.idempotencyKey, idempotencyHeader),
+            ))
+            .limit(1);
+          if (!claim) return { kind: 'no_claim' as const };
+          if (claim.requestFingerprint !== requestFingerprint) {
+            return { kind: 'idempotency_mismatch' as const };
+          }
+          if (!claim.enrollmentKeyId) return { kind: 'idempotency_unavailable' as const };
+          const [existing] = await db
+            .select()
+            .from(enrollmentKeys)
+            .where(eq(enrollmentKeys.id, claim.enrollmentKeyId))
+            .limit(1);
+          if (!existing) return { kind: 'idempotency_unavailable' as const };
+          return { kind: 'replay' as const, enrollmentKey: existing };
+        },
+      );
+      if (replayOutcome.kind === 'idempotency_mismatch') {
+        return c.json({
+          error: 'X-Idempotency-Key was already used with a different request body.',
+          code: 'partner_provisioning_idempotency_key_reused',
+        }, 409);
+      }
+      if (replayOutcome.kind === 'idempotency_unavailable') {
+        return c.json({
+          error: 'Idempotency result unavailable.',
+          code: 'partner_provisioning_idempotency_state_invalid',
+        }, 503);
+      }
+      if (replayOutcome.kind === 'replay') {
+        // Metadata only: the raw key and any enrollment secret were returned
+        // once, to the request that committed them, and are unrecoverable by
+        // design.
+        const replayed = replayOutcome.enrollmentKey;
+        return c.json(enrollmentKeyReplayResponseSchema.parse({
+          schemaVersion: '1' as const,
+          data: {
+            id: replayed.id,
+            orgId: replayed.orgId,
+            siteId: replayed.siteId,
+            name: replayed.name,
+            usageCount: replayed.usageCount,
+            maxUsage: replayed.maxUsage,
+            expiresAt: replayed.expiresAt ? iso(replayed.expiresAt) : null,
+            createdAt: iso(replayed.createdAt),
+          },
+          enrollmentSecretSource: replayed.keySecretHash ? 'per_key' as const : 'global' as const,
+          idempotencyReplay: true as const,
+        }), 200);
+      }
+    }
+
+    // Fail closed: the shared limiter rejects when Redis is unavailable rather
+    // than allowing an unmetered mint. Runs outside any bounded DB context so
+    // the Redis round-trip never happens on a pinned RLS connection.
+    //
+    // Two buckets, both charged, narrowest first. The per-principal bucket is
+    // the per-integration budget; the partner bucket exists because a partner
+    // admin can create service principals and would otherwise get N x the
+    // per-principal budget simply by minting N principals.
+    const perPrincipalLimit = positiveEnvInt(
+      'PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT',
+      DEFAULT_MINT_RATE_LIMIT_PER_PRINCIPAL,
+    );
+    const perPartnerLimit = Math.max(
+      perPrincipalLimit,
+      positiveEnvInt(
+        'PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT',
+        DEFAULT_MINT_RATE_LIMIT_PER_PARTNER,
+      ),
+    );
+    const mintRate = await runOutsideDbContext(async () => {
+      const redis = getRedis();
+      const principalBucket = await rateLimiter(
+        redis,
+        `rl:partner-enrollment-key-mint:${principal.partnerServicePrincipalId}`,
+        perPrincipalLimit,
+        ENROLLMENT_KEY_MINT_WINDOW_SECONDS,
+      );
+      if (!principalBucket.allowed) return principalBucket;
+      return rateLimiter(
+        redis,
+        `rl:partner-enrollment-key-mint:partner:${principal.partnerId}`,
+        perPartnerLimit,
+        ENROLLMENT_KEY_MINT_WINDOW_SECONDS,
+      );
+    });
+    if (!mintRate.allowed) {
+      c.header('Retry-After', String(Math.max(
+        1,
+        Math.ceil((mintRate.resetAt.getTime() - Date.now()) / 1000),
+      )));
+      return c.json({
+        error: 'Enrollment key mint rate limit exceeded.',
+        code: 'partner_provisioning_rate_limited',
+      }, 429);
+    }
+
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
+    // Opt-in only — see `issueEnrollmentSecret` on the body schema. When it is
+    // absent, `key_secret_hash` stays NULL and the key enrolls with the global
+    // AGENT_ENROLLMENT_SECRET, which is what this endpoint has always done.
+    const rawEnrollmentSecret = data.issueEnrollmentSecret === true
+      ? generateEnrollmentKey()
+      : null;
+    // Two different hashers on purpose, and they are not interchangeable.
+    // `key` is peppered; `key_secret_hash` is plain SHA-256 because the agent
+    // enrollment path (routes/agents/enrollment.ts) compares it against
+    // hashEnrollmentSecret(), which must also match the on-the-fly hash of a
+    // globally configured AGENT_ENROLLMENT_SECRET. Peppering this column makes
+    // every minted secret fail enrollment with 403.
+    const keySecretHash = rawEnrollmentSecret === null
+      ? null
+      : hashEnrollmentSecret(rawEnrollmentSecret);
+    // An unrequested default is clamped rather than rejected: the caller asked
+    // for nothing, so there is no request to refuse. A caller-supplied TTL over
+    // the ceiling is rejected above instead of being silently shortened.
+    const defaultTtlMinutes = Math.min(getDefaultEnrollmentKeyTtlMinutes(), operatorTtlCap);
     const expiresAt = data.ttlMinutes !== undefined
       ? new Date(Date.now() + data.ttlMinutes * 60 * 1000)
       : data.expiresAt
         ? new Date(data.expiresAt)
-        : new Date(Date.now() + getDefaultEnrollmentKeyTtlMinutes() * 60 * 1000);
+        : new Date(Date.now() + defaultTtlMinutes * 60 * 1000);
 
     const outcome = await withDbAccessContext(partnerScopedDbContext(principal), async () => {
       if (data.siteId) {
@@ -492,22 +759,56 @@ partnerProvisioningRoutes.post(
           .limit(1);
         if (!site) return { kind: 'bad_site' as const };
       }
-      const [enrollmentKey] = await db
-        .insert(enrollmentKeys)
-        .values({
-          orgId: data.orgId,
-          siteId: data.siteId ?? null,
-          name: data.name,
-          key: keyHash,
-          maxUsage: data.maxUsage ?? 1,
-          expiresAt,
-          // No human in this auth path; attribution lives in the audit event.
-          createdBy: null,
-        })
-        .returning();
-      return enrollmentKey
-        ? { kind: 'created' as const, enrollmentKey }
-        : { kind: 'failed' as const };
+      const insertValues = {
+        orgId: data.orgId,
+        siteId: data.siteId ?? null,
+        name: data.name,
+        key: keyHash,
+        keySecretHash,
+        maxUsage: data.maxUsage ?? 1,
+        expiresAt,
+        // No human in this auth path; attribution lives in the audit event.
+        createdBy: null,
+      };
+
+      if (!idempotencyHeader) {
+        const [enrollmentKey] = await db.insert(enrollmentKeys).values(insertValues).returning();
+        return enrollmentKey
+          ? { kind: 'created' as const, enrollmentKey }
+          : { kind: 'failed' as const };
+      }
+
+      // The claim, the key insert, and the claim-to-key link commit together.
+      // Without that, PostgreSQL could commit a live credential whose one-time
+      // plaintext is then lost because the claim never recorded it.
+      return db.transaction(async (tx) => {
+        const [claim] = await tx
+          .insert(partnerEnrollmentKeyIdempotency)
+          .values({
+            partnerId: principal.partnerId,
+            partnerServicePrincipalId: principal.partnerServicePrincipalId,
+            orgId: data.orgId,
+            idempotencyKey: idempotencyHeader,
+            requestFingerprint,
+          })
+          .onConflictDoNothing()
+          .returning();
+        // Lost the race on the unique index: the winner is committing, so this
+        // request must not mint a second key.
+        if (!claim) return { kind: 'idempotency_raced' as const };
+
+        const [enrollmentKey] = await tx.insert(enrollmentKeys).values(insertValues).returning();
+        if (!enrollmentKey) return { kind: 'failed' as const };
+
+        const [linked] = await tx
+          .update(partnerEnrollmentKeyIdempotency)
+          .set({ enrollmentKeyId: enrollmentKey.id })
+          .where(eq(partnerEnrollmentKeyIdempotency.id, claim.id))
+          .returning();
+        if (!linked) throw new Error('idempotency claim link failed');
+
+        return { kind: 'created' as const, enrollmentKey };
+      });
     });
 
     if (outcome.kind === 'bad_site') {
@@ -518,6 +819,12 @@ partnerProvisioningRoutes.post(
     }
     if (outcome.kind === 'failed') {
       return c.json({ error: 'Enrollment key create failed.', code: 'partner_provisioning_failed' }, 500);
+    }
+    if (outcome.kind === 'idempotency_raced') {
+      return c.json({
+        error: 'A concurrent request with this X-Idempotency-Key is in flight. Retry.',
+        code: 'partner_provisioning_idempotency_in_flight',
+      }, 409);
     }
 
     const { enrollmentKey } = outcome;
@@ -531,12 +838,17 @@ partnerProvisioningRoutes.post(
         siteId: enrollmentKey.siteId,
         maxUsage: enrollmentKey.maxUsage,
         expiresAt: enrollmentKey.expiresAt,
+        // Which enrollment credential model this key was minted under. Auditable
+        // because it decides whether the key accepts the global secret.
+        issuedEnrollmentSecret: rawEnrollmentSecret !== null,
       },
     });
 
     // The raw key is returned exactly once, deliberately OUTSIDE `data`: the
     // DTO record is a strict no-secret allowlist and the response schema pins
-    // the one-time credential to a single explicit top-level field.
+    // the one-time credentials to explicit top-level fields. `enrollmentSecret`
+    // is present only when the caller asked for one — the field is absent, not
+    // null, so a client cannot mistake "not issued" for "issued and empty".
     return c.json(enrollmentKeyCreateResponseSchema.parse({
       schemaVersion: '1' as const,
       data: {
@@ -550,6 +862,11 @@ partnerProvisioningRoutes.post(
         createdAt: iso(enrollmentKey.createdAt),
       },
       key: rawKey,
+      ...(rawEnrollmentSecret === null ? {} : { enrollmentSecret: rawEnrollmentSecret }),
+      // Tells the integrator which secret the agent will need, so a key minted
+      // under the default model cannot surprise them with a 403 at install
+      // time (#2826 round-four finding 5).
+      enrollmentSecretSource: rawEnrollmentSecret === null ? 'global' as const : 'per_key' as const,
     }), 201);
   },
 );

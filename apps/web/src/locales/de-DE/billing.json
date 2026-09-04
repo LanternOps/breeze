@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "Gruppe gelöscht"
+        "groupDeleted": "Gruppe gelöscht",
+        "siteDeleted": "Standort gelöscht",
+        "siteDeletedNamed": "Standort gelöscht: {{name}}"
       },
       "lineScope": {
         "site": "Standort: {{name}}"
@@ -91,6 +93,15 @@
         "period": "Zeitraum",
         "generated": "Generiert",
         "invoice": "Rechnung",
+        "outcome": "Ergebnis",
+        "outcomeAllBilled": "Alles abgerechnet",
+        "outcomeUncovered": "{{count}} nicht abgedeckt",
+        "outcomeFlagged": "{{count}} markiert",
+        "outcomeNoDeviceLines": "Keine Gerätepositionen",
+        "outcomeNotRecorded": "Nicht erfasst",
+        "outcomeToggle": "Periodenergebnis anzeigen",
+        "outcomeDevicesEvaluated": "Ausgewertete Geräte: {{count}}",
+        "outcomeBilledOverage": "Abgerechneter Mehrverbrauch: {{count}}",
         "empty": "Es wurden noch keine Rechnungen erstellt.",
         "viewInvoice": "Rechnung ansehen"
       },
@@ -573,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "Arbeitsstationen", "server": "Server", "printer": "Drucker", "router": "Router", "switch": "Netzwerk-Switches", "firewall": "Firewalls",
+        "access_point": "Zugangspunkte", "phone": "Telefone", "iot": "IoT-Geräte", "camera": "Kameras", "nas": "NAS-Geräte"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Nach Gerätesatz abrechnen", "typeLabel": "Gerätesatz",
+        "types": { "per_device": "Pro Gerät", "per_device_role": "Pro Geräterolle", "per_device_group": "Pro Gerätegruppe", "per_seat": "Pro Benutzerplatz" },
+        "rolesLabel": "Geräterollen", "groupLabel": "Gerätegruppe", "siteLabel": "Standort (optional)", "allSites": "Alle Standorte",
+        "quantityAuto": "Menge wird automatisch gezählt", "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
+        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.", "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+        "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
+        "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
+        "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",
+        "driftToast": "{{count}} Position(en) entsprechen nicht mehr der aktuellen Geräteanzahl: {{lines}}",
+        "retargetToast": "{{count}} Position(en) benötigen eine neu gewählte Gerätegruppe oder einen Standort für diese Organisation"
+      },
       "actions": {
         "addImage": "Bild hinzufügen",
         "addLine": "Position hinzufügen",
@@ -1253,6 +1282,12 @@
       "warehouses": "Lager: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Gesch.", "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
+        "setDevices": "Geräte", "setSeats": "Benutzerplätze", "setGroup": "Geräte in „{{name}}“", "atSite": "{{set}} am Standort {{site}}",
+        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
+        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+      },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
         "download": "Vertrag herunterladen",
@@ -1587,6 +1622,7 @@
       "messageLabel": "Nachricht (optional)",
       "messagePlaceholder": "Kurze Notiz für den Kunden hinzufügen…",
       "includePdfLabel": "Rechnungs-PDF anhängen",
+      "includeDeviceAppendixLabel": "Anhang mit abgerechneten Geräten einschließen",
       "signaturePreviewLabel": "Ihre Signatur wird angehängt:",
       "invalidEmail": "Keine gültige E-Mail-Adresse: {{addresses}}",
       "tooManyRecipients": "Maximal {{max}} Adressen.",
@@ -1687,6 +1723,21 @@
       "tax": "Steuer",
       "total": "Insgesamt",
       "allHidden": "Alle Positionen sind nur intern. Verwenden Sie „Kosten und Marge anzeigen“, um sie einzublenden."
+    },
+    "devices": {
+      "title": "Abgerechnete Geräte",
+      "toggle": "Geräte ({{count}})",
+      "notRecorded": "Für diese Rechnung wurden keine Gerätedetails erfasst.",
+      "hostname": "Hostname",
+      "role": "Rolle",
+      "countedAs": "Gezählt als",
+      "included": "Enthalten",
+      "overage": "Mehrverbrauch",
+      "removed": "Gerät entfernt",
+      "showing": "{{shown}} von {{total}} werden angezeigt",
+      "flaggedHeading": "Markiert, nicht abgerechnet",
+      "empty": "Für diese Position wurden keine Geräte gezählt.",
+      "loadError": "Die Geräteliste konnte nicht geladen werden."
     },
     "paymentMethods": {
       "cash": "Bargeld",
@@ -2033,6 +2084,8 @@
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",
       "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
+      "deviceAppendix": "Anhang mit abgerechneten Geräten in Rechnungs-PDFs aufnehmen",
+      "deviceAppendixHelp": "Fügt eine Seite mit allen Geräten hinzu, die auf jeder Rechnungsposition gezählt wurden. Standardmäßig deaktiviert; die Auswahl wird bei Rechnungsstellung eingefroren.",
       "documentPageSize": "Seitengröße",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "US-Letter",

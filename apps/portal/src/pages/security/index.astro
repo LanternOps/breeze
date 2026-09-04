@@ -2,6 +2,7 @@
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { SecurityOverview } from '../../components/portal/SecurityOverview';
 import { SecurityDeviceTable } from '../../components/portal/SecurityDeviceTable';
+import { ErrorNotice, PageHeader } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
@@ -20,21 +21,31 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
   {
     overview.data
       ? <SecurityOverview overview={overview.data} timezone={devices.data?.timezone} />
-      : <p data-testid="portal-security-error">{overview.error}</p>
+      : (
+          <div data-testid="portal-security-error">
+            {/* The page keeps its title even when the summary does not load, and
+                the notice names the recovery instead of leaking the transport
+                error the customer cannot act on. The concierge block in the
+                layout carries the support address on every page. */}
+            <PageHeader
+              title="Security"
+              lede="How well your machines are looked after, and what we're watching."
+            />
+            <ErrorNotice>We couldn't load your security summary just now. Your IT team can help.</ErrorNotice>
+          </div>
+        )
   }
   {
     devices.data
-      ? <>
-          <SecurityDeviceTable
-            devices={devices.data.data}
-            timezone={devices.data.timezone}
-          />
-          {devices.data.pagination.total > devices.data.data.length && (
-            <p data-testid="portal-security-devices-cap">
-              Showing the first {devices.data.data.length} of {devices.data.pagination.total} devices. Additional devices are not shown.
-            </p>
-          )}
-        </>
-      : <p data-testid="portal-security-devices-error">{devices.error}</p>
+      ? <SecurityDeviceTable
+          devices={devices.data.data}
+          timezone={devices.data.timezone}
+          total={devices.data.pagination.total}
+        />
+      : (
+          <div class="mt-10" data-testid="portal-security-devices-error">
+            <ErrorNotice>We couldn't load your device list just now. Your IT team can help.</ErrorNotice>
+          </div>
+        )
   }
 </PortalLayout>

@@ -664,6 +664,7 @@
     "retry": "Réessayer",
     "activities": "Activités",
     "total": "total)",
+    "totalAtLeast": "{{count}} ou plus",
     "searchActivities": "Rechercher des activités...",
     "all": "Tous",
     "success": "Succès",
@@ -683,7 +684,8 @@
     "details": "Détails",
     "showing": "Affichage",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossible de récupérer l’état du système de fichiers",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Impossible de supprimer le groupe",
     "billedByContracts": "Ce groupe est facturé par {{count}} contrat(s) : {{names}}. Supprimez d’abord ces lignes de contrat.",
     "billedByContractsCount": "Ce groupe est facturé par {{count}} contrat(s). Supprimez d’abord ces lignes de contrat.",
+    "quotedByQuotes": "Ce groupe est tarifé par {{count}} devis ouvert(s) : {{names}}. Supprimez d'abord ces lignes de devis.",
+    "quotedByQuotesCount": "Ce groupe est tarifé par {{count}} devis ouvert(s). Supprimez d'abord ces lignes de devis.",
     "failedToRunScriptOnGroups": "Impossible d’exécuter un script sur les groupes",
     "failedToApplyPolicyToGroups": "Impossible d’appliquer la politique aux groupes",
     "failedToMoveDevice": "Impossible de déplacer l’appareil",

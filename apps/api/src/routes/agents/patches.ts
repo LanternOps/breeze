@@ -12,11 +12,12 @@ import { submitInstalledPatchesSchema, submitPatchesSchema, submitPendingPatches
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
 import { admitPatchBatch, mergeRejectionReasons, type AdmittedPatch, type PatchAdmission } from './patchIngestIdentity';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
+import { compareBuilds } from '../../services/versionCompare';
 
 type PendingPatchData = z.infer<typeof submitPendingPatchesSchema>['patches'][number];
 type InstalledPatchData = z.infer<typeof submitInstalledPatchesSchema>['installed'][number];
 type PatchIngestDevice = { id: string; orgId: string; osType: string | null };
-type PatchIngestExecutor = Pick<Database, 'insert' | 'update'>;
+type PatchIngestExecutor = Pick<Database, 'insert' | 'update' | 'select'>;
 /**
  * A refused row means the sweep can no longer be trusted for this submission:
  * the sweep tombstones every pending row for the covered sources on the
@@ -381,15 +382,48 @@ async function upsertInstalledPatches(
     // mapper and postgres.js cannot serialize it (TypeError at query time) —
     // bind the ISO string with an explicit cast instead.
     const installedAtParam = installedAt ? sql`${installedAt.toISOString()}::timestamp` : sql`NULL::timestamp`;
-    // Installed inventory must not downgrade an actionable 'pending' row.
-    // Package managers report a pending upgrade and the installed package under
-    // the SAME (source, externalId) — `winget list` covers every package the
-    // paired `winget upgrade` scan reports — so an unconditional flip would
-    // clobber every pending third-party row in the same scan cycle.
-    // installedVersion still updates: it's the currently-installed version
-    // either way. A row whose upgrade completed self-heals within one scan
-    // cycle: the pending sweep flips it to 'missing', then the paired
-    // installed submit lands in this upsert's ELSE branch as 'installed'.
+    // Installed inventory must not downgrade an actionable 'pending' row on the
+    // normal paired-submit flow. Package managers report a pending upgrade and
+    // the installed package under the SAME (source, externalId) — `winget list`
+    // covers every package the paired `winget upgrade` scan reports — so an
+    // unconditional flip would clobber every pending third-party row in the
+    // same scan cycle. installedVersion still updates: it's the
+    // currently-installed version either way. A row whose upgrade completed
+    // self-heals within one scan cycle: the pending sweep flips it to
+    // 'missing', then the paired installed submit lands in the ELSE branch
+    // below as 'installed'.
+    //
+    // That sweep, though, only runs for sources whose pending Scan() actually
+    // ran this cycle (#2217) — a source whose pending scan chronically errors
+    // (e.g. winget upgrade flaking) never gets swept, so a row can stay
+    // 'pending' forever even after the upgrade genuinely lands, with the
+    // installed inventory (winget list) succeeding the whole time (#2736).
+    // Bound that: if the reported installed version already meets or exceeds
+    // the patch's known target version, flip out of 'pending' regardless of
+    // sweep coverage — the installed inventory itself proves the upgrade
+    // completed, so there is nothing left to preserve.
+    //
+    // The target must be THIS device's own observed available version
+    // (`device_patches.available_version`), not the global `patches.version` —
+    // `patches` is deduped on (source, externalId) with no tenant column, so
+    // an unrelated device (any org) that reported this same package first
+    // freezes `patches.version` via fillIfNull, and it can be arbitrarily
+    // stale relative to what THIS device is actually waiting on. Comparing
+    // against it directly would let a stale low `patches.version` prematurely
+    // flip a genuinely-still-pending row (reintroducing the #2725 downgrade
+    // bug), or a stale high one strand the row forever (failing to fix
+    // #2736). `patches.version` is only the fallback for a device_patches row
+    // that doesn't exist yet — same COALESCE precedence patchApprovalEvaluator
+    // already uses for pin targets.
+    const [existingDevicePatch] = await executor
+      .select({ availableVersion: devicePatches.availableVersion })
+      .from(devicePatches)
+      .where(and(eq(devicePatches.deviceId, device.id), eq(devicePatches.patchId, patch.id)))
+      .limit(1);
+    const targetVersion = existingDevicePatch?.availableVersion ?? patch.version;
+    const installedMeetsTarget =
+      version !== null && targetVersion !== null && compareBuilds(version, targetVersion) >= 0;
+
     await executor
       .insert(devicePatches)
       .values({
@@ -404,8 +438,12 @@ async function upsertInstalledPatches(
       .onConflictDoUpdate({
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
-          status: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
-          installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
+          status: installedMeetsTarget
+            ? 'installed'
+            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
+          installedAt: installedMeetsTarget
+            ? installedAtParam
+            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
           installedVersion: version,
           lastCheckedAt: new Date(),
           updatedAt: new Date()

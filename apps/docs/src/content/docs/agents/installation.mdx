@@ -182,12 +182,13 @@ Pre-provisioned devices land in `status: 'pending'` and stay there until the age
 
 ## What Gets Installed
 
-All platform installers (MSI, PKG, and manual service install) include two components:
+All platform installers (MSI, PKG, and manual service install) include these components:
 
 | Component | Description |
 |-----------|-------------|
 | **Breeze Agent** | The main service that communicates with the Breeze server, runs commands, and reports device status. |
 | **Watchdog** | A companion service that monitors the agent and automatically restarts it after crashes or hangs. |
+| **Desktop helper** (macOS) | A per-user helper that runs in the logged-in user's session so features like screen sharing work. Installed at `/usr/local/bin/breeze-desktop-helper`. |
 
 The watchdog runs alongside the agent as a separate process. You do not need to configure it -- it starts automatically with the agent service. See the [Watchdog documentation](/features/watchdog) for details.
 
@@ -205,6 +206,8 @@ When running `breeze-agent service install` manually, the agent fetches the matc
     ```
   </TabItem>
 </Tabs>
+
+On macOS the desktop helper is resolved the same way: `breeze-agent service install` uses a `breeze-desktop-helper` binary staged next to the agent if there is one, and otherwise downloads the matching-version signed binary from GitHub releases. If neither is available (for example on an air-gapped host), the install prints a warning and continues -- the agent service is still installed and running, and only the helper's features are unavailable until you place the binary next to `breeze-agent` and re-run `service install`. The agent binary is never installed under the helper's name: doing so would give the helper the agent's code-signing identity, and macOS would drop the Screen Recording and Accessibility grants once a real helper replaced it. The macOS `.pkg` always ships the signed helper, so this only affects raw-binary installs.
 
 If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. This reinstalls the agent binary and restarts the agent service (safe for upgrades) and registers the missing watchdog. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
 

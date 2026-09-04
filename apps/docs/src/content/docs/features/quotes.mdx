@@ -61,6 +61,27 @@ A quote separates **one-time** charges (hardware, project work) from **recurring
 
 Each pricing table also has a **Show subtotal** option you can turn on or off per table. When enabled, the table's subtotal -- split by recurrence -- appears on both the in-app **Preview** and the **PDF** the customer sees, so you can choose which sections show a running figure.
 
+## Quoting by device set
+
+A **recurring** quote line can price a live device count instead of a fixed number. Turn on **Bill by device set** on a monthly or annual line and pick one of four:
+
+| Device set | Bills |
+|---|---|
+| Per device | Every device on the organization, optionally narrowed to one site |
+| Per device role | Only devices with the roles you choose (servers, workstations, firewalls...), optionally narrowed to one site |
+| Per device group | The members of one device group. Dynamic groups are evaluated live |
+| Per seat | The organization's active users |
+
+The quantity is counted by Breeze, not typed in. The quantity box disappears while a device set is on. Any of the four can also carry an **included quantity**: the line then bills that quantity every period even when the live count is lower, and you choose whether the units above it are billed at a separate rate or just reported for review.
+
+**The number on the quote is an estimate**, and the customer's document labels every such line as an estimated quantity that will be billed at the actual count each billing period. A brand-new customer with nothing enrolled yet quotes at zero, and the document still shows the line and the explanation. That is the point.
+
+Counts refresh when you add the line or edit its device-set or allowance settings, and when you press **Refresh counts** on a draft quote. The read-only estimate can show the current count without changing the quote. Counts deliberately do **not** refresh when the quote is sent or accepted: sending reports which lines have drifted and leaves the numbers alone, so a scheduled send can never reprice a document you already approved.
+
+A device set cannot be added to a one-time line or to a component of a bundle, and it cannot be changed after the line is created. Remove the line and add it again. A device group that a draft, sent, or viewed quote prices cannot be deleted until that line is removed.
+
+Accepting the quote creates a contract line of the matching type, with the price frozen at what the customer signed. From then on the contract counts for itself every billing period.
+
 ### Customer Bill-To ("Prepared for")
 
 Every quote -- including a **draft** -- renders a **Prepared for** block with the customer's name, billing address, and tax id, drawn from the organization's **Billing** settings. This shows on both the in-app **Preview** and the **PDF**, so a draft you're reviewing looks the way the customer will see it. (Previously the block was blank until the quote was sent.)

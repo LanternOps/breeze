@@ -89,3 +89,35 @@ export function getModifiers(e: KeyboardEvent): string[] {
 export function isModifierOnly(e: KeyboardEvent): boolean {
   return ['Control', 'Alt', 'Shift', 'Meta'].includes(e.key);
 }
+
+/**
+ * Check if a key event is the Caps Lock key itself.
+ *
+ * Deliberately NOT folded into isModifierOnly: that predicate drives the
+ * "hold this modifier down on the remote machine" branch, and Caps Lock is a
+ * toggle rather than a key that is held. Treating it as held would latch it in
+ * the pressed-key set and emit a release for a key that was never held.
+ */
+export function isCapsLock(e: KeyboardEvent): boolean {
+  return e.code === 'CapsLock' || e.key === 'CapsLock';
+}
+
+/**
+ * Read the Caps Lock state that is in effect for this key event.
+ *
+ * Every keyboard event we forward carries this, so the remote machine's Caps
+ * Lock state is asserted rather than inferred from a synthetic key press
+ * (issue #3595). Two reasons it is per-event rather than sent once on change:
+ *
+ *  - The input DataChannel is ordered but UNRELIABLE (maxRetransmits: 0), so a
+ *    single dropped "caps changed" message would leave the agent applying the
+ *    wrong state to every keystroke for the rest of the session.
+ *  - macOS reports Caps Lock as keydown-on-engage / keyup-on-disengage rather
+ *    than a matched down/up pair, so there is no reliable edge to count.
+ *
+ * getModifierState is guarded because the Viewer also runs against synthetic
+ * events in tests and older webviews.
+ */
+export function getCapsLockState(e: KeyboardEvent): boolean {
+  return typeof e.getModifierState === 'function' && e.getModifierState('CapsLock');
+}

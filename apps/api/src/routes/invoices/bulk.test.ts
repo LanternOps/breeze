@@ -3,6 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../services/invoiceService', () => ({
   deleteDraftInvoice: vi.fn(), issueInvoice: vi.fn(), voidInvoice: vi.fn(),
 }));
+vi.mock('../../services/billingEvidence', () => ({
+  listInvoiceLineDevices: vi.fn(),
+  INVOICE_LINE_DEVICES_DEFAULT_LIMIT: 100,
+  INVOICE_LINE_DEVICES_MAX_LIMIT: 500,
+}));
 const gate = vi.hoisted(() => ({ permGate: async (_c: any, next: any) => next() }));
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {

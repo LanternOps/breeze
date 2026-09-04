@@ -842,6 +842,50 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       });
     });
 
+    it('returns quoteCount but omits quotes when the caller lacks quotes:read', async () => {
+      mockSelect.mockReturnValueOnce(chainSelect([groupInOrgA]));
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'viewed' }];
+      mockDeleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('QUOTED_BY_QUOTES', 'quoted', undefined, quotes)
+      );
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'quoted',
+        code: 'GROUP_IN_USE_BY_QUOTES',
+        quoteCount: 1,
+      });
+    });
+
+    it('includes quotes for a quotes reader and both counts for both refusals', async () => {
+      app = buildApp(makeAuth(), {
+        permissions: [
+          { resource: 'contracts', action: 'read' },
+          { resource: 'quotes', action: 'read' },
+        ],
+      });
+      mockSelect.mockReturnValueOnce(chainSelect([groupInOrgA]));
+      const contracts = [{ id: 'c1', name: 'Acme', status: 'active' }];
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }];
+      mockDeleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('BILLED_BY_CONTRACTS', 'billed and quoted', contracts, quotes)
+      );
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'billed and quoted',
+        code: 'GROUP_IN_USE_BY_CONTRACTS',
+        contractCount: 1,
+        quoteCount: 1,
+        contracts,
+        quotes,
+      });
+    });
+
     it('maps HAS_CHILDREN to 400 and calls deleteDeviceGroup with the group org', async () => {
       mockSelect.mockReturnValueOnce(chainSelect([groupInOrgA]));
       mockDeleteDeviceGroup.mockRejectedValueOnce(

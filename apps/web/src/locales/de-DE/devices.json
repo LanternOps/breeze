@@ -664,6 +664,7 @@
     "retry": "Versuchen Sie es noch einmal",
     "activities": "Aktivitäten",
     "total": "insgesamt)",
+    "totalAtLeast": "{{count}} oder mehr",
     "searchActivities": "Aktivitäten suchen...",
     "all": "Alle",
     "success": "Erfolg",
@@ -683,7 +684,8 @@
     "details": "Details",
     "showing": "Zeigt",
     "text": "–",
-    "of": "von"
+    "of": "von",
+    "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dateisystemstatus konnte nicht abgerufen werden",
@@ -768,6 +770,8 @@
     "failedToDeleteGroup": "Die Gruppe konnte nicht gelöscht werden",
     "billedByContracts": "Diese Gruppe wird über {{count}} Vertrag/Verträge abgerechnet: {{names}}. Entfernen Sie zuerst die entsprechenden Vertragspositionen.",
     "billedByContractsCount": "Diese Gruppe wird über {{count}} Vertrag/Verträge abgerechnet. Entfernen Sie zuerst die entsprechenden Vertragspositionen.",
+    "quotedByQuotes": "Diese Gruppe wird von {{count}} offenen Angebot(en) bepreist: {{names}}. Entfernen Sie zuerst diese Angebotspositionen.",
+    "quotedByQuotesCount": "Diese Gruppe wird von {{count}} offenen Angebot(en) bepreist. Entfernen Sie zuerst diese Angebotspositionen.",
     "failedToRunScriptOnGroups": "Das Skript konnte nicht für Gruppen ausgeführt werden",
     "failedToApplyPolicyToGroups": "Die Richtlinie konnte nicht auf Gruppen angewendet werden",
     "failedToMoveDevice": "Gerät konnte nicht verschoben werden",

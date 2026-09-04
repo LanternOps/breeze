@@ -87,8 +87,10 @@ compose=(
 
 export M365_GRAPH_ACTIONS_RUNTIME_PROBE_FILE="$PROBE_BUNDLE"
 
-# The checked production declaration defaults to /dev/null while onboarding is
-# dark. The API's real boot validator must leave the signing file untouched.
+# The checked production declaration defaults to the tracked empty
+# docker/secrets/.empty-jwk placeholder while onboarding is dark (#2991 — a
+# /dev/null default failed docker compose up on some hosts). The API's real
+# boot validator must leave the signing file untouched.
 unset M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE
 "${compose[@]}" run --no-deps --rm api
 
