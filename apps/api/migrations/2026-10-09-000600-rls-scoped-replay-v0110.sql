@@ -111,11 +111,19 @@
 -- 100700 committed but the constraint is missing anyway (e.g. dropped by hand
 -- during such a repair).
 --
+-- DECLINED (review, #4926): a scoped dedup PREFLIGHT sorting between 100600
+-- and 100700, so that abort could never happen. Rule 3 of
+-- scripts/check-migration-naming.sh forbids a new file that does not sort
+-- last, and per apps/api/scripts/check-migrations-nonsuperuser.ts a NOBYPASSRLS
+-- migrator aborts the whole set at 2026-05-22-snmp-multi-vendor-templates.sql —
+-- long before 100700 — so no database can reach 100700 with a migrator blind to
+-- the dedup. The operator recipe above stays the fallback.
+--
 -- IDEMPOTENCY ----------------------------------------------------------------
--- Every statement re-selects the same row set it originally targeted and is a
--- true no-op once applied: the two UPDATEs filter on
--- `platform_bound_basis = 'unattested'` (already rewritten rows drop out) and
--- on the ORIGINAL migration's own ledger timestamp (see section 3), the grants
+-- Every statement re-selects the rows its original targeted (narrowed, never
+-- widened — see section 3) and is a true no-op once applied: the two UPDATEs
+-- filter on `platform_bound_basis = 'unattested'` (already rewritten rows drop
+-- out) and on the ORIGINAL migration's own ledger timestamp, the grants
 -- are `NOT EXISTS`-guarded, the dedup keeps one row per org so a second pass
 -- finds none, and both DDL bits check the catalog first. No inner
 -- BEGIN/COMMIT: autoMigrate wraps the whole file in one transaction.
@@ -235,13 +243,25 @@ END $$;
 -- ---------------------------------------------------------------------------
 -- 3. Replay 2026-10-06-100101-authenticator-attestation-state.sql
 -- ---------------------------------------------------------------------------
--- The cutoff is the ORIGINAL migration's ledger timestamp, exactly as the
--- original computed it — NOT this file's. `platform_bound_basis = 'unattested'`
--- is not a pre-existing-row marker on its own: since #1374 shipped, every NEW
--- mobile_hw_key registration writes that value on purpose
--- (routes/authenticator.ts), so a bare basis predicate would relabel legitimate
--- new keys as `legacy_unattested`. Reading the original's `applied_at` selects
--- the identical row set the original aimed at, whether or not it landed.
+-- The cutoff is the ORIGINAL migration's own ledger timestamp
+-- (`breeze_migrations.applied_at`), not this file's.
+--
+-- This is deliberately NOT the identical row set. On its first run the original
+-- had no ledger row yet, so ITS cutoff was NULL and it updated every qualifying
+-- row visible to it, unbounded in time. The replay always has that timestamp,
+-- so it additionally excludes rows with `created_at >= applied_at` — a strictly
+-- narrower set.
+--
+-- Narrower is the safe direction and the only correct one here.
+-- `platform_bound_basis = 'unattested'` is not a pre-existing-row marker: since
+-- #1374 shipped, every NEW mobile_hw_key registration writes exactly that value
+-- on purpose (routes/authenticator.ts). The rows the cutoff excludes are
+-- therefore post-#1374 registrations that are honestly unattested; relabelling
+-- them `legacy_unattested` would be false and would strip L4 eligibility from
+-- keys that never had a legacy basis — and it would corrupt the very forensic
+-- counts these WARNINGs exist to produce. Nothing the original meant to
+-- classify is lost by the exclusion: every row it could have been aiming at
+-- already existed when it ran, so it predates its own `applied_at`.
 --
 -- A NULL cutoff means the original's ledger row is absent, which cannot happen
 -- through autoMigrate (files apply in order and each records itself inside its
@@ -348,13 +368,74 @@ END $$;
 
 -- Residual guard only — see "IF YOUR UPGRADE ALREADY ABORTED" in the header.
 -- If 100700 committed, this constraint already exists and this is a no-op.
+--
+-- The existence check is keyed on (conrelid, conname), not conname alone:
+-- constraint names are unique per TABLE, not per schema, so a same-named
+-- constraint on some other relation would make a bare conname probe skip the
+-- work silently.
+--
+-- Constraints and indexes share one relation-name namespace, so a leftover
+-- INDEX called `audit_retention_policies_org_id_key` (a hand-repair that ran
+-- `CREATE UNIQUE INDEX` instead of `ADD CONSTRAINT`, which is the natural way
+-- to dedup-and-protect without an ACCESS EXCLUSIVE rewrite) makes a bare
+-- `ADD CONSTRAINT` fail with 42P07 and abort the upgrade. Promote that index
+-- in place instead. If the leftover is NOT the index a `UNIQUE (org_id)`
+-- constraint would have built — non-unique, invalid, partial, expression, or
+-- on other columns — `USING INDEX` would raise too, so warn and leave it for a
+-- human rather than erroring: this is a residual guard, not a load-bearing
+-- step, and it must never be the thing that stops an upgrade.
 DO $$
+DECLARE
+  v_table   oid := to_regclass('public.audit_retention_policies');
+  v_index   oid;
+  v_promote boolean := false;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'audit_retention_policies_org_id_key'
+  IF v_table IS NULL THEN
+    RETURN;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = v_table
+      AND conname  = 'audit_retention_policies_org_id_key'
   ) THEN
+    RETURN;
+  END IF;
+
+  SELECT c.oid INTO v_index
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relname = 'audit_retention_policies_org_id_key'
+    AND c.relkind = 'i';
+
+  IF v_index IS NULL THEN
     ALTER TABLE audit_retention_policies
       ADD CONSTRAINT audit_retention_policies_org_id_key UNIQUE (org_id);
     RAISE WARNING 'rls-scoped replay: added the missing audit_retention_policies_org_id_key UNIQUE constraint';
+    RETURN;
+  END IF;
+
+  SELECT i.indisunique
+     AND i.indisvalid
+     AND i.indpred IS NULL
+     AND i.indexprs IS NULL
+     AND i.indrelid = v_table
+     AND i.indnatts = 1
+     AND i.indkey[0] = (
+           SELECT a.attnum FROM pg_attribute a
+           WHERE a.attrelid = v_table AND a.attname = 'org_id' AND NOT a.attisdropped
+         )
+    INTO v_promote
+  FROM pg_index i
+  WHERE i.indexrelid = v_index;
+
+  IF COALESCE(v_promote, false) THEN
+    ALTER TABLE audit_retention_policies
+      ADD CONSTRAINT audit_retention_policies_org_id_key
+      UNIQUE USING INDEX audit_retention_policies_org_id_key;
+    RAISE WARNING 'rls-scoped replay: promoted the existing unique index audit_retention_policies_org_id_key into the matching UNIQUE constraint';
+  ELSE
+    RAISE WARNING 'rls-scoped replay: a relation named audit_retention_policies_org_id_key exists but is not a plain valid unique index on (org_id) — leaving it alone; the UNIQUE(org_id) constraint is still MISSING and needs a human';
   END IF;
 END $$;
