@@ -379,7 +379,7 @@ describe('createWorkerReadinessRegistry', () => {
     expect(registry.requiredConsumersRunnable()).toBe(true);
     fake.setRunning(false);
     expect(registry.requiredConsumersRunnable()).toBe(false);
-    expect(registry.snapshot().worker.state).toBe('stopped');
+    expect(registry.snapshot().worker?.state).toBe('stopped');
   });
 
   it('follows a webhook adapter that replaces its ended blocking client', async () => {
@@ -418,10 +418,10 @@ describe('createWorkerReadinessRegistry', () => {
     expect(registry.requiredConsumersRunnable()).toBe(true);
     fake.emitter.emit('closing');
     fake.emitter.emit('ready');
-    expect(registry.snapshot().worker.state).toBe('stopping');
+    expect(registry.snapshot().worker?.state).toBe('stopping');
     fake.emitter.emit('closed');
     fake.emitter.emit('ready');
-    expect(registry.snapshot().worker.state).toBe('stopped');
+    expect(registry.snapshot().worker?.state).toBe('stopped');
   });
 
   it('keeps dependency probes cached during job traffic but invalidates on disconnect', async () => {
@@ -449,7 +449,7 @@ describe('createWorkerReadinessRegistry', () => {
     }
     expect(checkDb).toHaveBeenCalledTimes(1);
     expect(checkRedis).toHaveBeenCalledTimes(1);
-    expect(registry.snapshot().worker.lastSuccessfulJobAt).toBe(new Date(now).toISOString());
+    expect(registry.snapshot().worker?.lastSuccessfulJobAt).toBe(new Date(now).toISOString());
     fake.blockingClient.status = 'reconnecting';
     fake.blockingClient.emit('close');
     expect((await evaluator.get()).ready).toBe(false);
