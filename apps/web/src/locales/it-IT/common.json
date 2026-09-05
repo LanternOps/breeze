@@ -371,6 +371,9 @@
       "criticalPending": "{{count}} patch critiche in sospeso",
       "criticalPending_one": "{{count}} patch critica in sospeso",
       "criticalPending_other": "{{count}} patch critiche in sospeso",
+      "unratedPending": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
+      "unratedPending_one": "{{count}} patch non valutata in sospeso (non verrà approvata automaticamente)",
+      "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "empty": "Nessun dato sulle patch ancora"
     },
     "vuln": {
