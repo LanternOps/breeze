@@ -75,6 +75,7 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
 
@@ -1527,6 +1528,26 @@ coreRoutes.patch(
       }
     }
 
+    // Validate any custom-field values against their definition BEFORE
+    // building the update set — see customFieldValues.ts (PATCH
+    // /devices/:id/custom-fields) for why this must hold on both write paths.
+    // All-or-nothing per request; nothing else in this PATCH is written when
+    // a custom field fails (#3257 W04).
+    if (data.customFields !== undefined) {
+      const validation = await validateCustomFieldMap(device.orgId, data.customFields);
+      if (!validation.ok) {
+        return c.json(
+          {
+            error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
+            code: 'invalid-custom-field-value',
+            fields: validation.rejected,
+          },
+          400,
+        );
+      }
+      data.customFields = validation.values;
+    }
+
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.displayName !== undefined) updates.displayName = data.displayName;
     if (data.siteId !== undefined) updates.siteId = data.siteId;
@@ -1536,7 +1557,7 @@ coreRoutes.patch(
       updates.deviceRoleSource = 'manual';
     }
     if (data.customFields !== undefined) {
-      // Merge with existing custom fields rather than replacing
+      // Merge with existing (coerced) custom fields rather than replacing
       const raw = device.customFields;
       const existing: Record<string, unknown> =
         raw !== null && typeof raw === 'object' && !Array.isArray(raw)
