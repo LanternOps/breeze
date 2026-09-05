@@ -217,6 +217,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_connections',
   'device_disks',
   'device_event_logs',
+  'device_external_links',
   'device_filesystem_cleanup_runs',
   'device_filesystem_scan_state',
   'device_filesystem_snapshots',
