@@ -17,17 +17,5 @@ func setProcessGroup(cmd *exec.Cmd) {
 	}
 }
 
-// killProcessGroup kills the entire process group of the command.
-func killProcessGroup(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err != nil {
-		return cmd.Process.Kill()
-	}
-	return syscall.Kill(-pgid, syscall.SIGKILL)
-}
-
 // hideWindow is a no-op on Linux.
 func hideWindow(cmd *exec.Cmd) {}

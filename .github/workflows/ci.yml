@@ -1357,11 +1357,21 @@ jobs:
       # remote/desktop and no cgo. Its two behavioural tests assert against the
       # real netapi32 and skip loudly, rather than pass, on a host where
       # ~breeze_elev exists or local-account queries are not permitted.
+      # ./internal/executor is the fifth instance of the same gap (#3525):
+      # limits_windows.go's setProcessGroup/hideWindow and the new Job Object
+      # containment are Windows-only, and limits_windows_test.go had never
+      # executed anywhere. Verified like logging/ipc/elevaccount: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 it vets and its test binary
+      # compiles. It differs from those three in one way that matters — its
+      # Windows dependency graph DOES contain remote/desktop, via
+      # privilege -> remote/tools — which is harmless here (CGO_ENABLED=0 is
+      # exactly the configuration remote/desktop's !cgo files are written for)
+      # but is why it must stay out of the race step below.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1460,11 +1470,22 @@ jobs:
           if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
-      # this covers only packages that do not import it (heartbeat and agentapp
-      # do, transitively). Same package set as the step above: sessionbroker is
-      # the concurrency-critical one — session-keyed helper admission, the
-      # lifecycle registry, and Job Object ownership all live there — so it is
-      # the one that most needs the detector on the OS it actually ships to.
+      # this covers only packages that do not import it (heartbeat, agentapp and
+      # executor do, transitively). Same package set as the step above MINUS
+      # those: sessionbroker is the concurrency-critical one — session-keyed
+      # helper admission, the lifecycle registry, and Job Object ownership all
+      # live there — so it is the one that most needs the detector on the OS it
+      # actually ships to.
+      #
+      # ./internal/executor belongs to the CGO_ENABLED=0 step above and NOT
+      # here: it reaches remote/desktop via privilege -> remote/tools (#3525
+      # added the package to the list above and briefly to this one, which went
+      # red). The concrete failure is that dxgi_windows.go and
+      # dxgi_capture_windows.go are `//go:build windows && !cgo`, so with cgo ON
+      # their comVtblFn/dxgiCapturer/procDeleteObject definitions vanish while
+      # the plain-`windows` files that reference them stay. Check the import
+      # graph before adding anything else here:
+      #   GOOS=windows go list -deps ./internal/<pkg> | grep remote/desktop
       - name: Run Windows race tests
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
