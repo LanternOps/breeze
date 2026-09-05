@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
@@ -20,14 +20,12 @@ import { applyBackupProgress, applyBackupStartedAck } from './backupProgress';
 const runDb = describe.runIf(!!process.env.DATABASE_URL);
 
 runDb('backup queue lifecycle (real PostgreSQL)', () => {
-  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const agentId = `queue-agent-${unique}`;
-  let orgId = '';
-  let configId = '';
-  let deviceId = '';
-
-  beforeAll(async () => {
-    await withSystemDbAccessContext(async () => {
+  // The shared integration setup truncates between tests, so every test
+  // seeds its own partner → org → site → device → config chain.
+  async function seedFixture() {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const agentId = `queue-agent-${unique}`;
+    return withSystemDbAccessContext(async () => {
       const [partner] = await db
         .insert(partners)
         .values({ name: `Queue Partner ${unique}`, slug: `queue-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' })
@@ -56,18 +54,17 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
         .insert(backupConfigs)
         .values({ orgId: org!.id, name: `Queue Config ${unique}`, type: 'file', provider: 'local', providerConfig: {} })
         .returning({ id: backupConfigs.id });
-      orgId = org!.id;
-      configId = config!.id;
-      deviceId = device!.id;
+      return { unique, agentId, orgId: org!.id, configId: config!.id, deviceId: device!.id };
     });
-  });
+  }
+  type Fixture = Awaited<ReturnType<typeof seedFixture>>;
 
-  /** Fresh job row per test in the given status; dispatch-time running marker optional. */
-  async function seedJob(status: 'pending' | 'running', startedAt: Date | null): Promise<string> {
+  /** Fresh job row in the given status; dispatch-time running marker optional. */
+  async function seedJob(f: Fixture, status: 'pending' | 'running', startedAt: Date | null): Promise<string> {
     return withSystemDbAccessContext(async () => {
       const [job] = await db
         .insert(backupJobs)
-        .values({ orgId, configId, deviceId, status, type: 'manual', startedAt, lastProgressAt: null })
+        .values({ orgId: f.orgId, configId: f.configId, deviceId: f.deviceId, status, type: 'manual', startedAt, lastProgressAt: null })
         .returning({ id: backupJobs.id });
       return job!.id;
     });
@@ -76,28 +73,29 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
     const [r] = await db.select().from(backupJobs).where(eq(backupJobs.id, jobId));
     return r!;
   });
-  const progress = (jobId: string, phase: string, who = agentId) =>
+  const progress = (f: Fixture, jobId: string, phase: string, who = f.agentId) =>
     withSystemDbAccessContext(() => applyBackupProgress({ agentId: who, commandId: jobId, progress: { phase } }));
-  const admission = (jobId: string) =>
-    withSystemDbAccessContext(() => applyBackupStartedAck({ jobId, deviceId, queued: true }));
+  const admission = (f: Fixture, jobId: string) =>
+    withSystemDbAccessContext(() => applyBackupStartedAck({ jobId, deviceId: f.deviceId, queued: true }));
 
   it('queued admission demotes the dispatch-time running marker; starting promotes once; late queued pings never reset it', async () => {
     // backupWorker's post-send write marks the row running/startedAt before
     // the helper has admitted it.
-    const jobId = await seedJob('running', new Date('2026-01-01T00:00:00Z'));
+    const f = await seedFixture();
+    const jobId = await seedJob(f, 'running', new Date('2026-01-01T00:00:00Z'));
 
-    expect(await admission(jobId)).toBe(true);
+    expect(await admission(f, jobId)).toBe(true);
     let r = await row(jobId);
     expect(r.status).toBe('pending');
     expect(r.startedAt).toBeNull();
     expect(r.lastProgressAt).not.toBeNull();
 
-    expect(await progress(jobId, 'queued')).toMatchObject({ applied: true });
+    expect(await progress(f, jobId, 'queued')).toMatchObject({ applied: true });
     r = await row(jobId);
     expect(r.status).toBe('pending');
     expect(r.startedAt).toBeNull();
 
-    expect(await progress(jobId, 'starting')).toMatchObject({ applied: true });
+    expect(await progress(f, jobId, 'starting')).toMatchObject({ applied: true });
     r = await row(jobId);
     expect(r.status).toBe('running');
     const started = r.startedAt;
@@ -105,20 +103,21 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
 
     // A delayed duplicate admission / queued ping racing the start must not
     // demote or restamp the execution start.
-    await Promise.all([admission(jobId), progress(jobId, 'queued'), progress(jobId, 'starting')]);
+    await Promise.all([admission(f, jobId), progress(f, jobId, 'queued'), progress(f, jobId, 'starting')]);
     r = await row(jobId);
     expect(r.status).toBe('running');
     expect(r.startedAt?.getTime()).toBe(started!.getTime());
   });
 
   it('starting before the admission ack wins, and a terminal row rejects every lifecycle signal', async () => {
-    const jobId = await seedJob('pending', null);
+    const f = await seedFixture();
+    const jobId = await seedJob(f, 'pending', null);
 
-    await progress(jobId, 'starting');
+    await progress(f, jobId, 'starting');
     const started = (await row(jobId)).startedAt;
     expect(started).toBeInstanceOf(Date);
 
-    expect(await admission(jobId)).toBe(true);
+    expect(await admission(f, jobId)).toBe(true);
     let r = await row(jobId);
     expect(r.status).toBe('running');
     expect(r.startedAt?.getTime()).toBe(started!.getTime());
@@ -126,24 +125,26 @@ runDb('backup queue lifecycle (real PostgreSQL)', () => {
     await withSystemDbAccessContext(() =>
       db.update(backupJobs).set({ status: 'completed', completedAt: new Date() }).where(eq(backupJobs.id, jobId)),
     );
-    expect(await admission(jobId)).toBe(false);
-    expect(await progress(jobId, 'queued')).toMatchObject({ applied: false, reason: 'terminal-status' });
+    expect(await admission(f, jobId)).toBe(false);
+    expect(await progress(f, jobId, 'queued')).toMatchObject({ applied: false, reason: 'terminal-status' });
     r = await row(jobId);
     expect(r.status).toBe('completed');
     expect(r.startedAt?.getTime()).toBe(started!.getTime());
   });
 
   it('legacy helper progress (no starting phase) promotes a pending row and stamps startedAt', async () => {
-    const jobId = await seedJob('pending', null);
-    expect(await progress(jobId, 'uploading')).toMatchObject({ applied: true });
+    const f = await seedFixture();
+    const jobId = await seedJob(f, 'pending', null);
+    expect(await progress(f, jobId, 'uploading')).toMatchObject({ applied: true });
     const r = await row(jobId);
     expect(r.status).toBe('running');
     expect(r.startedAt).toBeInstanceOf(Date);
   });
 
   it('rejects lifecycle messages from an agent that does not own the device', async () => {
-    const jobId = await seedJob('pending', null);
-    expect(await progress(jobId, 'starting', `other-agent-${unique}`)).toMatchObject({ applied: false, reason: 'agent-mismatch' });
+    const f = await seedFixture();
+    const jobId = await seedJob(f, 'pending', null);
+    expect(await progress(f, jobId, 'starting', `other-agent-${f.unique}`)).toMatchObject({ applied: false, reason: 'agent-mismatch' });
     const r = await row(jobId);
     expect(r.status).toBe('pending');
     expect(r.lastProgressAt).toBeNull();
