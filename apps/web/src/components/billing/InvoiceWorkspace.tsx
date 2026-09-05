@@ -26,10 +26,18 @@ interface Props {
   id?: string;
 }
 
+// The hash can be a bare tab value (`#detail`) or a composed one where other
+// components append their own `&`-separated segments (InvoiceLineDevices'
+// `devices=<ids>` toggle state — see InvoiceLineDevices.tsx). The tab always
+// occupies the FIRST segment, so parse that rather than exact-matching the
+// whole hash: an exact match falls through to the draft default on any
+// composed hash, which snapped a draft invoice back to Editor the moment a
+// device appendix was opened on the Detail tab.
 function readTab(isDraft: boolean): Tab {
   if (typeof window === 'undefined') return isDraft ? 'editor' : 'detail';
   const raw = window.location.hash.replace(/^#/, '');
-  if (TAB_LABELS.some((t) => t.value === raw)) return raw as Tab;
+  const first = raw.split('&')[0];
+  if (TAB_LABELS.some((t) => t.value === first)) return first as Tab;
   return isDraft ? 'editor' : 'detail';
 }
 
@@ -115,7 +123,14 @@ export default function InvoiceWorkspace({ id }: Props) {
 
   const selectTab = useCallback((next: string) => {
     setTab(next as Tab);
-    if (typeof window !== 'undefined') window.location.hash = `#${next}`;
+    if (typeof window === 'undefined') return;
+    // Mirror InvoiceLineDevices' own writer (writeOpenIds): the tab occupies
+    // the first `&`-segment, everything after it belongs to other components
+    // (e.g. `devices=<ids>`) and must be preserved, not clobbered — only
+    // replacing the whole hash is what produced the composed-hash bug this
+    // guards against.
+    const otherSegments = window.location.hash.replace(/^#/, '').split('&').slice(1).filter(Boolean);
+    window.location.hash = [next, ...otherSegments].join('&');
   }, []);
 
   if (loading) {

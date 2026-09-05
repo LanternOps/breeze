@@ -83,6 +83,10 @@ describe('InvoiceWorkspace', () => {
     // neighbours' toggles.
     localStorage.clear();
     _resetShowMarginMemoryForTests();
+    // jsdom's `window` persists across tests in this file — reset the hash so
+    // one test's tab/devices state can't leak into the next's default-tab
+    // assertions.
+    window.location.hash = '';
   });
 
   it('renders a draft as the editor with a "Draft invoice" header', async () => {
@@ -252,5 +256,30 @@ describe('InvoiceWorkspace', () => {
 
     await waitFor(() => expect(screen.getByTestId('invoice-issue-unsaved-hint')).toBeInTheDocument());
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/issue') && (c[1] as RequestInit)?.method === 'POST')).toBe(false);
+  });
+
+  // Regression: InvoiceLineDevices composes its open-state into the hash as an
+  // `&`-joined `devices=` segment alongside whatever tab segment is already
+  // there (`#detail&devices=line-1`) — it never replaces the whole hash. The
+  // old `readTab` exact-matched the ENTIRE hash against a tab value, so a
+  // composed hash matched nothing and fell through to the draft default
+  // (`editor`), snapping a draft invoice back to the Editor tab and hiding the
+  // device appendix the click was meant to open. `readTab` must parse only the
+  // first `&`-segment as the tab.
+  it('honors a composed #detail&devices=… hash on a draft invoice instead of snapping back to Editor', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/payments') return json({ data: [] });
+      if (input.startsWith('/invoices/inv-1/lines/line-1/devices')) {
+        return json({ data: { recorded: true, total: 0, devices: [], nextCursor: null } });
+      }
+      if (input === '/invoices/inv-1') return json({ data: invoice({}) });
+      return json({ data: {} });
+    });
+    window.location.hash = '#detail&devices=line-1';
+    render(<InvoiceWorkspace id="inv-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('invoice-tab-detail')).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByTestId('invoice-tab-editor')).toHaveAttribute('aria-selected', 'false');
   });
 });
