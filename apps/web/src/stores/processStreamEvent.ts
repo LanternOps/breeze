@@ -123,7 +123,24 @@ export function processStreamEvent(
         isError: event.isError,
         createdAt: new Date()
       };
-      set((s) => ({ messages: [...s.messages, resultMsg] }));
+      set((s) => {
+        // The approval this card is waiting on can be decided somewhere else
+        // (mobile push, the Approvals queue). The server then runs the tool and
+        // this result arrives on the still-open stream — so a result for the
+        // awaited tool IS the decision landing, and the card must go with it.
+        // Matched by tool name via the tool_use row: the event carries no
+        // executionId, and the awaited tool is by construction the one whose
+        // result has not yet arrived.
+        const awaited = s.pendingApproval;
+        const toolUse = awaited
+          ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
+          : undefined;
+        const resolvesPending = !!awaited && !!toolUse && toolUse.toolName === awaited.toolName;
+        return {
+          messages: [...s.messages, resultMsg],
+          ...(resolvesPending ? { pendingApproval: null } : {}),
+        };
+      });
       return currentAssistantId;
     }
 

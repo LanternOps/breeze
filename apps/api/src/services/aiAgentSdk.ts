@@ -966,6 +966,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+          // The guardrail description names the device by an id stub
+          // ("on device 6eae0f70..."); the approver reads the hostname.
+          const approvalReason = deviceContext?.hostname
+            ? riskSummary.replace(/\bon device [0-9a-f]{8}\.\.\./i, `on ${deviceContext.hostname}`)
+            : riskSummary;
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -979,7 +984,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               toolName,
               input: input as Record<string, unknown>,
               source: 'chat',
-              reason: riskSummary,
+              reason: approvalReason,
               orgId: session.orgId,
             });
           } catch (err) {

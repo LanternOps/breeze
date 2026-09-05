@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AppState,
+  type AppStateStatus,
   KeyboardAvoidingView,
   Platform,
   Text,
@@ -19,6 +21,7 @@ import {
   failAssistantMessage,
   finishAssistantMessage,
   loadHistory,
+  reconcileHistory,
   resetChat,
   sessionCreated,
   setError,
@@ -45,6 +48,18 @@ import { ConversationList } from './components/ConversationList';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
+import { isStreamLostError, isTurnComplete, isTurnSettlingError } from './turnState';
+
+/** Catch-up poll cadence while the server is still writing the turn. */
+const RECONCILE_POLL_MS = 3_000;
+/**
+ * Upper bound on catch-up polls. The server's own approval wait budget is 5
+ * minutes (APPROVAL_WAIT_BUDGET_MS, aiAgentSdk.ts); beyond that the turn has
+ * concluded one way or another and further polling is just battery.
+ */
+const RECONCILE_MAX_POLLS = 100;
+/** How long to wait before retrying a 409 "wrapping up the previous turn". */
+const SETTLE_RETRY_MS = 2_500;
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -60,6 +75,12 @@ export function HomeScreen() {
 
   const streamHandleRef = useRef<SseStreamHandle | null>(null);
   const lastUserContentRef = useRef<string | null>(null);
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read by the mount/foreground effects without re-subscribing on every change.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,8 +91,74 @@ export function HomeScreen() {
     return () => {
       streamHandleRef.current?.abort();
       streamHandleRef.current = null;
+      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+      reconcileTimerRef.current = null;
     };
   }, []);
+
+  /**
+   * Catch up from the server's persisted transcript when the live stream is
+   * gone. The turn keeps running server-side whatever happens to this socket
+   * (the HTTP handler is only a subscriber to the session's event bus), so
+   * everything it produced is in `GET /ai/sessions/:id`. Polls while the
+   * transcript is still partial, e.g. a tool blocked on an approval.
+   */
+  const reconcileFromServer = useCallback(
+    async (sid: string, attempt = 0) => {
+      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+      reconcileTimerRef.current = null;
+      try {
+        const { messages: rows } = await getAiSessionMessages(sid);
+        // A new chat or a different session was opened while we were fetching.
+        if (sessionIdRef.current !== sid) return;
+        const msgs = historyToMessages(rows);
+        const complete = isTurnComplete(msgs);
+        dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete }));
+        if (complete) return;
+        if (attempt >= RECONCILE_MAX_POLLS) {
+          dispatch(setError('Lost track of this reply. Tap to retry.'));
+          return;
+        }
+        reconcileTimerRef.current = setTimeout(() => {
+          void reconcileFromServer(sid, attempt + 1);
+        }, RECONCILE_POLL_MS);
+      } catch (err) {
+        reportInternalError(err, 'ai-chat-reconcile');
+        dispatch(setError('Could not reconnect to this conversation. Tap to retry.'));
+      }
+    },
+    [dispatch],
+  );
+
+  // A remount mid-turn (the approval takeover used to unmount this screen;
+  // a JS relaunch still can) leaves Redux saying "streaming" with no socket
+  // behind it. Catch up rather than sit on RUNNING forever.
+  useEffect(() => {
+    const sid = sessionIdRef.current;
+    if (statusRef.current === 'streaming' && sid && !streamHandleRef.current) {
+      void reconcileFromServer(sid);
+    }
+    // Mount only.
+  }, []);
+
+  // iOS suspends the XHR after ~30s in the background, and the resume does
+  // not always deliver an `onerror`. On a real background→active transition
+  // (not the 'inactive' blip of a Face ID sheet) drop the socket and catch up
+  // from the transcript — the server never stopped.
+  useEffect(() => {
+    let previous: AppStateStatus = AppState.currentState ?? 'active';
+    const sub = AppState.addEventListener('change', (next) => {
+      const wasBackground = previous === 'background';
+      previous = next;
+      if (!wasBackground || next !== 'active') return;
+      const sid = sessionIdRef.current;
+      if (statusRef.current !== 'streaming' || !sid) return;
+      streamHandleRef.current?.abort();
+      streamHandleRef.current = null;
+      void reconcileFromServer(sid);
+    });
+    return () => sub.remove();
+  }, [reconcileFromServer]);
 
   // Refresh alerts whenever the Home tab gains focus, not just on first
   // mount. Keeps the StatusPill from going stale after a tab switch.
@@ -83,9 +170,11 @@ export function HomeScreen() {
   );
 
   const beginStream = useCallback(
-    async (sid: string, content: string) => {
-      const assistantId = `m-${Date.now()}-a`;
-      dispatch(addPendingAssistantMessage({ id: assistantId, sentAt: new Date().toISOString() }));
+    (sid: string, content: string, retry?: { assistantId: string }) => {
+      const assistantId = retry?.assistantId ?? `m-${Date.now()}-a`;
+      if (!retry) {
+        dispatch(addPendingAssistantMessage({ id: assistantId, sentAt: new Date().toISOString() }));
+      }
 
       streamHandleRef.current = streamChat({
         sessionId: sid,
@@ -155,6 +244,21 @@ export function HomeScreen() {
           }
         },
         onError: (err) => {
+          streamHandleRef.current = null;
+          // 409 while the previous turn settles (≤3s server-side). One quiet
+          // retry instead of a red "Stopped. Tap to retry." for a race the
+          // server documents as expected.
+          if (!retry && isTurnSettlingError(err.message)) {
+            setTimeout(() => {
+              if (sessionIdRef.current === sid) beginStream(sid, content, { assistantId });
+            }, SETTLE_RETRY_MS);
+            return;
+          }
+          // The socket died but the turn did not: catch up from the transcript.
+          if (isStreamLostError(err)) {
+            void reconcileFromServer(sid);
+            return;
+          }
           dispatch(failAssistantMessage({ id: assistantId, error: err.message }));
         },
         onDone: () => {
@@ -167,14 +271,16 @@ export function HomeScreen() {
         },
       });
     },
-    [dispatch],
+    [dispatch, reconcileFromServer],
   );
 
   const handleSend = useCallback(
     async (text: string) => {
-      // Abort any prior stream before starting the next one.
+      // Abort any prior stream (or catch-up poll) before starting the next one.
       streamHandleRef.current?.abort();
       streamHandleRef.current = null;
+      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+      reconcileTimerRef.current = null;
 
       const userMessageId = `m-${Date.now()}-u`;
       lastUserContentRef.current = text;

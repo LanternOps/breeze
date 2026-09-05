@@ -1,3 +1,4 @@
+import { buildActionLabel } from './actionLabel';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
@@ -463,6 +464,8 @@ interface HumanFanoutArgs {
   argumentDigest: string;
   requestingClientLabel: string;
   targetSummary: string;
+  /** Human headline for the approval row, push, and bell — never the raw signature. */
+  actionLabel: string;
   riskTier: 'medium' | 'high' | 'critical';
   impactSummary: string;
   expiresAt: Date;
@@ -499,6 +502,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     argumentDigest,
     requestingClientLabel,
     targetSummary,
+    actionLabel,
     riskTier,
     impactSummary,
     expiresAt,
@@ -517,7 +521,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
   const approvalRowFor = (userId: string) => ({
     userId,
     requestingClientLabel,
-    actionLabel: targetSummary,
+    actionLabel,
     actionToolName: toolName,
     actionArguments,
     riskTier,
@@ -623,6 +627,7 @@ interface NotifyFannedOutApproversArgs {
   fanOutUserIds: string[];
   requestingClientLabel: string;
   targetSummary: string;
+  actionLabel: string;
   /** Passed to `withDbAccessContext` for the push-token read only — the
    *  in-app notification always runs system-scoped (see the call below).
    *  `userId` on it may be null (agent-originated fan-out has no requester);
@@ -640,7 +645,7 @@ interface NotifyFannedOutApproversArgs {
  * have, instead of a second, drifting copy of this loop.
  */
 async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Promise<void> {
-  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, targetSummary, dbContext } = args;
+  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, actionLabel, dbContext } = args;
   for (let i = 0; i < approvalRequestIds.length; i++) {
     const approvalId = approvalRequestIds[i];
     const userId = fanOutUserIds[i];
@@ -661,7 +666,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
           type: 'approval',
           priority: 'high',
           title: 'Approval requested',
-          message: `${requestingClientLabel}: ${targetSummary}`,
+          message: `${requestingClientLabel}: ${actionLabel}`,
           link: '/approvals',
           metadata: { approvalId, intentId },
           // Survives outbox/BullMQ redelivery: one approver, one intent, one
@@ -686,7 +691,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
       const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
       await dispatchApprovalPushToTokens(tokens, {
         approvalId,
-        actionLabel: targetSummary,
+        actionLabel,
         requestingClientLabel,
       });
     } catch (err) {
@@ -1056,6 +1061,12 @@ export async function createActionIntent(
     );
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
+  // What the approver READS. `targetSummary` stays the audit signature.
+  const actionLabel = buildActionLabel({
+    toolName: input.toolName,
+    input: input.input,
+    reason: input.reason ?? guardrail.description ?? null,
+  });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
@@ -1428,6 +1439,7 @@ export async function createActionIntent(
             argumentDigest,
             requestingClientLabel,
             targetSummary,
+            actionLabel,
             riskTier,
             impactSummary,
             expiresAt,
@@ -1543,6 +1555,7 @@ export async function createActionIntent(
       fanOutUserIds: creation.fanOutUserIds,
       requestingClientLabel,
       targetSummary,
+      actionLabel,
       dbContext,
     });
   }
