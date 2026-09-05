@@ -160,6 +160,7 @@ function isPrincipalNameUniqueViolation(error: unknown): boolean {
       cause?: unknown;
     };
     const constraint = pg.constraint_name ?? pg.constraint;
+    // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
     if (pg.code === '23505' && constraint === PRINCIPAL_NAME_UNIQUE_CONSTRAINT) return true;
     if (typeof pg.message === 'string' && pg.message.includes(PRINCIPAL_NAME_UNIQUE_CONSTRAINT)) return true;
     candidate = pg.cause;

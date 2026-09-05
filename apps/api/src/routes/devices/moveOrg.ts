@@ -622,6 +622,7 @@ moveOrgRoutes.post(
       if (
         err instanceof PamDeviceMoveBlockedError
         || (
+          // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
           pgNode?.code === '23514'
           && pgNode.constraint_name === 'devices_pam_history_move_guard'
         )
