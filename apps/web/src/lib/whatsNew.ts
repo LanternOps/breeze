@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.110.0',
+    date: '2026-09-05',
+    title: 'Restart prompts users can postpone, device-set billing, and QuickBooks payments',
+    highlights: [
+      'End users now get a native restart dialog on Windows, macOS and Linux when a patch needs a reboot, and can postpone it a set number of times within a deadline you choose in the patch policy (off by default). The device page shows the scheduled restart and how many postponements are left.',
+      'Contracts can bill by device role or device group, with included quantities and overage. Every generated invoice records exactly which devices it billed, and an optional "Billed devices" appendix can print on the PDF. Quotes price by device set too.',
+      'QuickBooks Online: push issued invoices, and payments recorded in QuickBooks flow back onto the Breeze invoice automatically.',
+      'The customer portal grew Security, Backups, Devices, Tickets with SLA badges, and Reports pages, each behind a per-organization visibility toggle you control.',
+      'Cancel a running script or automation from Executions, set AI budget alert thresholds, and see AI agent impact and graduation evidence before widening an agent\'s autonomy.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.109.0',
     date: '2026-09-01',
     title: 'MFA everywhere, AI ticket triage, and ticketing on mobile',
