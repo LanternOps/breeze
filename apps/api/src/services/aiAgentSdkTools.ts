@@ -30,6 +30,7 @@ import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
+import { aiRunContextInputShape } from './scriptRunRequest';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -1369,6 +1370,9 @@ export function createBreezeMcpServer(
         scriptId: uuid,
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.string(), z.unknown()).optional(),
+        // #4888 — mirrors toolInputSchemas.run_script; see scriptRunRequest.ts
+        // for why the shape is shared rather than repeated.
+        ...aiRunContextInputShape,
       },
       makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),

@@ -18,6 +18,7 @@ import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
+import { aiRunContextInputShape } from './scriptRunRequest';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -368,6 +369,14 @@ export function buildScriptBuilderTools(
         scriptId: uuid.describe('The saved script ID to execute'),
         deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
         parameters: z.record(z.string(), z.unknown()).optional(),
+        // #4888 — the same run-context pair the `run_script` handler this tool
+        // dispatches to accepts. Adding fields here does NOT disturb the #4883
+        // name split: the tool stays registered as `execute_script_on_device`
+        // (what the model calls and what the session allowlist holds) while
+        // `SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL` still routes it to the
+        // `run_script` handler, whose tier, RBAC and input schema own these
+        // fields.
+        ...aiRunContextInputShape,
       },
       makeExistingHandler('execute_script_on_device', getAuth, onPreToolUse, onPostToolUse)
     ),

@@ -179,6 +179,16 @@ export const scriptExecutions = pgTable('script_executions', {
   // cancel reverts to it, so the row never claims an outcome we cannot prove
   // and reapStaleScriptExecutions keeps ownership of the deadline.
   cancelPrevStatus: executionStatusEnum('cancel_prev_status'),
+  // #4888 — the run context this execution ACTUALLY used, resolved at dispatch
+  // as `override ?? script.runAs`. Before this column the answer lived only in
+  // the transient `device_commands.payload` (sanitised out of every history
+  // read), so execution history could not say whether a run went to SYSTEM or
+  // to the logged-in user. NULLABLE ON PURPOSE: rows written before #4888 do
+  // not know, and 'system' would be an assertion we cannot back.
+  runAs: scriptRunAsEnum('run_as'),
+  // The Windows session a `run_as = 'user'` run was pinned to (RDS session
+  // targeting). NULL = any interactive session.
+  targetSessionId: integer('target_session_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   automationRunIdIdx: index('script_executions_automation_run_id_idx')

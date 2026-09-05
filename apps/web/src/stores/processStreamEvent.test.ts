@@ -21,6 +21,56 @@ function makeActivePlan(): ActivePlan {
   };
 }
 
+/**
+ * #4888 — the run context the server resolved has to survive the store hop.
+ *
+ * `AiApprovalDialog` renders the row correctly when handed the prop, and the
+ * server emits it on the event; this seam is the untested gap between those
+ * two facts. Dropping the line would hide the "the assistant chose SYSTEM"
+ * warning from the approver with every other test still green — the same
+ * value-silently-discarded shape this whole change exists to remove.
+ */
+describe('approval_required — scriptRunContext passthrough (#4888)', () => {
+  const runContext = {
+    effectiveRunAs: 'system' as const,
+    scriptDefaultRunAs: 'user' as const,
+    chosenByAssistant: true,
+    targetSessionId: null,
+  };
+
+  it('carries the resolved scriptRunContext into pendingApproval', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'run_script',
+        input: { scriptId: 's-1', deviceIds: ['d-1'], runAs: 'system' },
+        description: 'Run script s-1 on 1 device(s)',
+        intentBacked: true, scriptRunContext: runContext,
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toMatchObject({ scriptRunContext: runContext });
+  });
+
+  it('normalises an absent scriptRunContext to null for a non-script tool', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'file_operations',
+        input: { action: 'read' }, description: 'Read a file',
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval?.scriptRunContext).toBeNull();
+  });
+});
+
 describe('approval_required — selfApprovalRequestId passthrough', () => {
   it('carries selfApprovalRequestId into pendingApproval', () => {
     const state = makeState();

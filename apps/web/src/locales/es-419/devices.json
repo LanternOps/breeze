@@ -1515,6 +1515,7 @@
       "completedAt": "Completado en",
       "duration": "Duración",
       "exitCode": "Código de salida",
+      "runAs": "Contexto de ejecución",
       "startedAt": "Comenzó en"
     },
     "noOutput": "Sin salida",

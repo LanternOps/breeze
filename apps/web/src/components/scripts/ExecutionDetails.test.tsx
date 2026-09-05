@@ -120,3 +120,28 @@ describe('ExecutionDetails "Run again" (#4885)', () => {
     }));
   });
 });
+
+describe('ExecutionDetails run context (#4888)', () => {
+  it('names the system context for a run recorded as system', () => {
+    renderExecution({ runAs: 'system' });
+
+    expect(screen.getByTestId('run-context-chip')).toHaveTextContent('System');
+  });
+
+  it('names the target session for a run recorded as user with a session', () => {
+    renderExecution({ runAs: 'user', targetSessionId: 3 });
+
+    expect(screen.getByTestId('run-context-chip')).toHaveTextContent('session 3');
+  });
+
+  it('renders "not recorded" -- never "System" -- for a null runAs', () => {
+    renderExecution({ runAs: null });
+
+    const chip = screen.getByTestId('run-context-chip');
+    expect(chip).toHaveTextContent('Not recorded');
+    // This is the assertion that matters: a null runAs must never be
+    // rendered as a plausible-but-invented "System", since the column is
+    // nullable specifically because pre-#4888 rows genuinely don't know.
+    expect(chip).not.toHaveTextContent('System');
+  });
+});

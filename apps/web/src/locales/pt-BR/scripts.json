@@ -149,6 +149,7 @@
       "webhookSecret": "Segredo do webhook (opcional)",
       "mode": "Modo",
       "script": "Script",
+      "runAs": "Executar como",
       "notificationChannel": "Canal de notificação",
       "severity": "Gravidade",
       "message": "Mensagem",
@@ -662,7 +663,8 @@
       "startedAt": "Iniciado em",
       "duration": "Duração",
       "exitCode": "Código de saída",
-      "completedAt": "Concluído em"
+      "completedAt": "Concluído em",
+      "runAs": "Contexto de execução"
     },
     "status": {
       "running": "Em execução...",

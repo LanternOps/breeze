@@ -34,7 +34,11 @@
     "registerDevice": "Dieses Gerät registrieren",
     "decideFailed": "Entscheidung konnte nicht übermittelt werden",
     "approvedToast": "Aktion genehmigt",
-    "deniedToast": "Aktion abgelehnt"
+    "deniedToast": "Aktion abgelehnt",
+    "runContextLabel": "Ausführungskontext:",
+    "runContextChosenByAssistant": "vom Assistenten ausgewählt",
+    "runContextScriptDefault": "der gespeicherte Standard des Skripts",
+    "runContextOverrides": "vom Assistenten ausgewählt und überschreibt den gespeicherten Standard des Skripts ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Antwort wird erwartet…",

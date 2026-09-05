@@ -43,6 +43,11 @@ scriptsRoutes.get(
         // GET /scripts/executions/:id, so this adds no new exposure — just
         // parity for the device-scoped history list.
         parameters: scriptExecutions.parameters,
+        // #4888 — the run context this execution actually used, so the device
+        // Scripts tab can show SYSTEM vs the logged-in user instead of leaving
+        // the operator to guess. NULL on rows written before the column.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         startedAt: scriptExecutions.startedAt,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt

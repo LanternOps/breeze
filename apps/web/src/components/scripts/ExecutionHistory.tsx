@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { executionRowStatusConfig as statusConfig } from './executionStatus';
 import type { ExecutionStatus } from '@breeze/shared';
+import type { RunContextValue } from '@/components/common/RunContext';
 export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
 
@@ -42,6 +43,13 @@ export type ScriptExecution = {
   // return `script_executions.parameters` on the wire; this was simply never
   // declared on the type any consumer read through. Powers "Run again".
   parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System". Surfaced
+  // in ExecutionDetails; the list row here is already at 7 columns and has
+  // no room for a compact indicator without crowding the table.
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
 };
 
 type ExecutionHistoryProps = {

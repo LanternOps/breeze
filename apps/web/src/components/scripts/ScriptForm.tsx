@@ -846,6 +846,7 @@ export default function ScriptForm({
           onSaveChanges={saveForTestRun}
           onTestDeviceChange={(deviceId) => { testDeviceIdRef.current = deviceId; }}
           onExecutionChange={(executionId) => { lastTestExecutionIdRef.current = executionId; }}
+          scriptRunAs={watch('runAs')}
         />
       </div>
 

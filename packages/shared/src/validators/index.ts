@@ -234,7 +234,13 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     type: z.literal('run_script'),
     scriptId: z.string().guid(),
     parameters: z.record(z.string(), z.unknown()).optional(),
-    runAs: z.string().optional(),
+    // #4888 — narrowed from a bare string now that the automation form
+    // actually exposes this control. Absent = use the script's saved default,
+    // which is what `automationRuntime.executeRunScriptAction` resolves it to.
+    // 'elevated' stays accepted here because a stored action may legitimately
+    // carry it (it is a real value of the `script_run_as` enum), even though
+    // the form only offers system/user.
+    runAs: z.enum(['system', 'user', 'elevated']).optional(),
   }),
   z.object({
     type: z.literal('send_notification'),

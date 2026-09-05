@@ -168,6 +168,19 @@
     "optional": "Opcional",
     "required": "Obrigatório"
   },
+  "runContext": {
+    "label": "Executar como",
+    "scriptDefault": "Padrão do script",
+    "scriptDefaultNamed": "Padrão do script ({{context}})",
+    "system": "Sistema",
+    "user": "Usuário conectado",
+    "elevated": "Elevado",
+    "unknown": "Não registrado",
+    "userInSession": "Usuário conectado (sessão {{session}})",
+    "sessionLabel": "Sessão de destino",
+    "sessionAny": "Qualquer sessão ativa",
+    "effectiveLabel": "Contexto de execução"
+  },
   "shared": {
     "accessDenied": {
       "title": "Acesso negado",

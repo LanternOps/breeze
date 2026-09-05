@@ -10,6 +10,7 @@ import ScriptExecutionModal from '../scripts/ScriptExecutionModal';
 import type { Script } from '../scripts/ScriptList';
 import type { ScriptParameter } from '../scripts/ScriptForm';
 import type { ScriptAdmissionResult } from '@breeze/shared';
+import { RunContextChip, type RunContextValue } from '../common/RunContext';
 
 type ScriptExecution = {
   id?: string;
@@ -30,6 +31,11 @@ type ScriptExecution = {
   // same field on ExecutionHistory's ScriptExecution; the API's SELECT was
   // extended for this device-scoped endpoint alongside this change.
   parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System".
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
 };
 
 type ScriptWithDetails = Script & {
@@ -539,6 +545,12 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                     ) : (
                       <span className="text-muted-foreground">-</span>
                     )}
+                  </p>
+                </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.runAs')}</p>
+                  <p className="text-sm font-medium mt-1">
+                    <RunContextChip runAs={selectedExecution.runAs} targetSessionId={selectedExecution.targetSessionId} />
                   </p>
                 </div>
               </div>
