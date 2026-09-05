@@ -12,12 +12,17 @@ export interface WriteBackDevice {
   customFields: unknown;
 }
 
-export interface ScriptWritableDefinition {
+export interface VisibleCustomFieldDefinition {
+  id: string;
   fieldKey: string;
+  name: string;
   type: 'text' | 'number' | 'boolean' | 'dropdown' | 'date';
   options: unknown;
   deviceTypes: string[] | null;
+  required: boolean;
   scriptWrite: boolean;
+  orgId: string | null;
+  partnerId: string | null;
 }
 
 /** Ambient ORG context — `devices` is shape 1 and RLS is a real backstop here. */
@@ -40,23 +45,28 @@ export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBac
 /**
  * SYSTEM context, deliberately.
  *
- * `custom_field_definitions` is dual-axis (org OR partner). The caller runs
- * under `runWithAgentOrgDbAccess`, which sets accessiblePartnerIds: [] and
- * currentPartnerId: null, so `breeze_has_partner_access(partner_id)` is false
- * and every partner-wide definition (org_id IS NULL) is INVISIBLE from there.
- * A partner that defines one field for all its orgs would silently have no
- * script-writable fields at all. See CLAUDE.md, Partner-Wide First §3.
+ * `custom_field_definitions` is dual-axis (org OR partner). Every caller of
+ * this function — the script write-back path's `runWithAgentOrgDbAccess`
+ * context, and the two device-PATCH write paths' ordinary org-scoped request
+ * context — sets accessiblePartnerIds: [] and currentPartnerId: null, so
+ * `breeze_has_partner_access(partner_id)` is false and every partner-wide
+ * definition (org_id IS NULL) is INVISIBLE from there. A partner that defines
+ * one field for all its orgs would silently have no fields visible from any
+ * of these paths. See CLAUDE.md, Partner-Wide First §3.
  *
  * `runOutsideDbContext(() => withSystemDbAccessContext(...))` is the only form
  * that genuinely opens a second context — a bare nested
  * `withSystemDbAccessContext` early-returns and runs under the ORG context
  * instead. The scope is app-layer: an explicit org/partner predicate, kept
  * narrow, and the context is released immediately (it holds a second pooled
- * connection for its duration — #1105).
+ * connection for its duration — #1105). This now runs on every custom-field
+ * PATCH, not just script write-back — if this becomes a per-request cost
+ * worth caring about, cache the definition set per org/request rather than
+ * re-querying it per PATCH.
  */
-export async function loadScriptWritableDefinitions(
+export async function loadVisibleCustomFieldDefinitions(
   orgId: string,
-): Promise<ScriptWritableDefinition[]> {
+): Promise<VisibleCustomFieldDefinition[]> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [org] = await db
@@ -77,17 +87,31 @@ export async function loadScriptWritableDefinitions(
 
       return db
         .select({
+          id: customFieldDefinitions.id,
           fieldKey: customFieldDefinitions.fieldKey,
+          name: customFieldDefinitions.name,
           type: customFieldDefinitions.type,
           options: customFieldDefinitions.options,
           deviceTypes: customFieldDefinitions.deviceTypes,
+          required: customFieldDefinitions.required,
           scriptWrite: customFieldDefinitions.scriptWrite,
+          orgId: customFieldDefinitions.orgId,
+          partnerId: customFieldDefinitions.partnerId,
         })
         .from(customFieldDefinitions)
         .where(ownerCondition);
-    }, 'customFields.scriptWriteBack.definitions'),
+    }, 'customFields.loadVisibleCustomFieldDefinitions'),
   );
 }
+
+/**
+ * The script write-back loader, kept as a named alias so callers that only
+ * care about script-writable fields keep reading as they did. The script_write
+ * gate itself stays where it is — applied per field by scriptWriteBack.ts, so
+ * a field that exists but is not writable is REJECTED with
+ * 'not_script_writable' rather than reported as 'unknown_field'.
+ */
+export const loadScriptWritableDefinitions = loadVisibleCustomFieldDefinitions;
 
 /**
  * Ambient ORG context. The org predicate is redundant under RLS but pins the

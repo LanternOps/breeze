@@ -65,6 +65,16 @@ export function validateCustomFieldValue(
 ): CustomFieldValueResult {
   if (raw === null || raw === undefined) return { ok: true, value: null };
 
+  // An empty string is the browser's native "cleared" value for a <select>
+  // (the blank option) or an <input type="date">, and is how the device-edit
+  // UI's dropdown/date editors report a clear (the number editor already
+  // normalises its own clear gesture to `null` before it reaches here — see
+  // DeviceInfoTab.tsx). Without this, clearing either field type would fail
+  // dropdown's `not_a_choice` or date's `invalid_date` instead of clearing.
+  if (raw === '' && (definition.type === 'dropdown' || definition.type === 'date')) {
+    return { ok: true, value: null };
+  }
+
   const isScalar = typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean';
   if (!isScalar) return { ok: false, reason: 'invalid_type' };
 
