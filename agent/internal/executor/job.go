@@ -56,6 +56,8 @@ type windowsJobPrimitives interface {
 	AssignProcess(job jobHandle, process suspendedProcess) error
 	Resume(process suspendedProcess) error
 	TerminateJob(job jobHandle) error
+	// SetJobLimits doubles as the clear: releaseContainment calls it with 0
+	// before CloseJob, and that ORDER is the whole point (see releaseContainment).
 	CloseJob(job jobHandle) error
 }
 
@@ -105,13 +107,59 @@ func launchContained(p windowsJobPrimitives, spec launchSpec, running *runningEx
 
 // releaseContainment drops the Job Object once the script has exited. It is a
 // no-op on Unix, where the process group needs no teardown.
+//
+// KILL_ON_JOB_CLOSE is cleared FIRST, and that order is the entire point:
+// closing the handle with the flag still set would kill exactly the descendants
+// a normally-completed script legitimately left running (an installer, an
+// updater). This fires on EVERY successful completion, not only on cancel, so
+// getting the order wrong would silently kill customer processes fleet-wide on
+// green runs. Same precedent and same reasoning as
+// remote/tools/software_install_process_tree_windows.go's release().
+//
+// If the flag cannot be cleared we LEAK the handle rather than close it — one
+// kernel handle on a path that should never occur, versus taking those
+// descendants down.
 func releaseContainment(running *runningExecution) {
 	primitives, job, _ := running.containment()
 	if primitives == nil || !job.valid() {
 		return
 	}
+	if err := primitives.SetJobLimits(job, 0); err != nil {
+		log.Warn("could not clear job kill-on-close; retaining the handle so any detached children survive",
+			"error", err.Error())
+		return
+	}
 	if err := primitives.CloseJob(job); err != nil {
 		log.Warn("could not release script job object", "error", err.Error())
+	}
+}
+
+// abortContainment is releaseContainment's counterpart for a start that FAILED
+// after the process already existed.
+//
+// The Windows case it exists for: CreateProcessSuspended, CreateJob,
+// SetJobLimits and AssignProcess all succeed and then ResumeThread fails. The
+// process is created, contained and suspended — it has not run an instruction
+// and never will. releaseContainment would clear KILL_ON_JOB_CLOSE and drop the
+// only handle that could ever kill it, stranding a suspended process that no
+// later Cancel can find (Execute's release() has already forgotten the id).
+// Terminate, then close with the flag intact.
+func abortContainment(running *runningExecution) {
+	primitives, job, cmd := running.containment()
+	if primitives != nil && job.valid() {
+		if err := primitives.TerminateJob(job); err != nil {
+			log.Error("could not terminate the job object of a process that never started",
+				"error", err.Error())
+		}
+		if err := primitives.CloseJob(job); err != nil {
+			log.Warn("could not close the job object of a process that never started",
+				"error", err.Error())
+		}
+		return
+	}
+	// Uncontained, or Unix (where a failed cmd.Start leaves no process at all).
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
 	}
 }
 

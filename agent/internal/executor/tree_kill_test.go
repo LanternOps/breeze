@@ -51,7 +51,7 @@ func TestCancelKillsTheWholeProcessTree(t *testing.T) {
 	go func() { _, _ = e.Execute(grandchildHeartbeatScript("id-t", beat)) }()
 	waitForNonEmptyFile(t, beat)
 
-	outcome, err := e.Cancel("id-t", 0)
+	outcome, err := e.Cancel("id-t", "cc-t", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +76,29 @@ func TestPgidIsCapturedAtStartNotAtKillTime(t *testing.T) {
 	if r.processGroup() == 0 {
 		t.Fatal("pgid was not captured at Start")
 	}
-	if _, err := e.Cancel("id-p", 0); err != nil {
+	if _, err := e.Cancel("id-p", "cc-p", 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAKillBeforeThePgidWasCapturedCannotClaimContainment(t *testing.T) {
+	// os/exec starts its context watchdog inside cmd.Start, so a cancel really
+	// can fire in the window between Start returning and attachProcessGroup.
+	// That kill reaches the leader only; if attachProcessGroup could then set
+	// contained=true, the very cancel that already ran would grade `terminated`
+	// while group members survived.
+	r := newRunningExecution(time.Now(), ScriptTypeBash)
+
+	if err := terminateProcessTree(r, 0); err != nil { // pgid still 0
+		t.Fatalf("terminate with no pgid and no process: %v", err)
+	}
+	r.attachProcessGroup(4242) // the racing capture lands a moment later
+
+	if r.isContained() {
+		t.Fatal("containment was re-established after a leader-only kill had already run")
+	}
+	if got := gradeCancelOutcome(true, nil, r.isContained()); got != CancelKillFailed {
+		t.Fatalf("outcome = %q, want kill_failed", got)
 	}
 }
 

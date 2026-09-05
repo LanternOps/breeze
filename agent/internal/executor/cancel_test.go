@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -68,7 +70,7 @@ func TestCancelBlocksUntilTheProcessIsGone(t *testing.T) {
 	go func() { r, _ := e.Execute(sleepScript("id-1", 60)); done <- r }()
 	waitForRunning(t, e, "id-1")
 
-	outcome, err := e.Cancel("id-1", 0)
+	outcome, err := e.Cancel("id-1", "cc-1", 0)
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
@@ -86,7 +88,7 @@ func TestCancelBlocksUntilTheProcessIsGone(t *testing.T) {
 
 func TestCancelReportsNotFoundForAnUnknownID(t *testing.T) {
 	e := newTestExecutor()
-	outcome, err := e.Cancel("nope", 5)
+	outcome, err := e.Cancel("nope", "cc-nope", 5)
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
@@ -101,8 +103,7 @@ func TestCancelledResultCarriesTheCancellationMarker(t *testing.T) {
 	done := make(chan *ScriptResult, 1)
 	go func() { r, _ := e.Execute(sleepScript("id-2", 60)); done <- r }()
 	waitForRunning(t, e, "id-2")
-	e.SetCancelCommandID("id-2", "cancel-cmd-7")
-	if _, err := e.Cancel("id-2", 0); err != nil {
+	if _, err := e.Cancel("id-2", "cancel-cmd-7", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +131,7 @@ func TestGracefulEscalationSendsSIGTERMBeforeSIGKILL(t *testing.T) {
 	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-3", marker, 60)) }()
 	waitForRunning(t, e, "id-3")
 
-	outcome, err := e.Cancel("id-3", 5)
+	outcome, err := e.Cancel("id-3", "cc-3", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestZeroGraceSkipsStraightToKill(t *testing.T) {
 	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-5", marker, 60)) }()
 	waitForRunning(t, e, "id-5")
 
-	if _, err := e.Cancel("id-5", 0); err != nil {
+	if _, err := e.Cancel("id-5", "cc-5", 0); err != nil {
 		t.Fatal(err)
 	}
 	<-done
@@ -161,23 +162,31 @@ func TestZeroGraceSkipsStraightToKill(t *testing.T) {
 }
 
 func TestCancelBeforeRegistrationPreventsTheScriptFromStarting(t *testing.T) {
-	skipWithoutBash(t)
-	// Execute validates, writes the script file and calls configureRunAs BEFORE
-	// inserting into e.running, and WebSocket commands are concurrent. A cancel
-	// in that window must not return not_found and let the script start anyway.
+	// Execute validates, writes the script file and calls configureRunAs before
+	// the process exists, and WebSocket commands are concurrent. This walks that
+	// exact window deterministically: reserve (Execute's first action), a cancel,
+	// then the beginStart gate Execute reaches once its setup is done.
 	e := newTestExecutor()
-	e.reserve("id-4", time.Now(), ScriptTypeBash) // pre-start placeholder, inserted first
+	running, preCancelled, duplicate := e.reserve("id-4", time.Now(), ScriptTypeBash)
+	if preCancelled || duplicate {
+		t.Fatalf("a fresh id reported preCancelled=%v duplicate=%v", preCancelled, duplicate)
+	}
 
-	outcome, err := e.Cancel("id-4", 0)
+	outcome, err := e.Cancel("id-4", "cc-4", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome == CancelNotFound {
 		t.Fatal("cancel raced Execute's setup and reported not_found")
 	}
+	// Nothing will ever run, so the only honest answer is a proven stop.
+	if outcome != CancelTerminated {
+		t.Fatalf("outcome = %q, want terminated for a process that can never start", outcome)
+	}
 
-	res, _ := e.Execute(sleepScript("id-4", 60))
-	if !res.Cancelled {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if running.beginStart(exec.CommandContext(ctx, "/bin/sh", "-c", "true"), cancel) {
 		t.Fatal("script started despite a cancel that arrived first")
 	}
 }
@@ -197,7 +206,7 @@ func TestCancelReportsKillFailedWhenContainmentWasNeverEstablished(t *testing.T)
 	r.contained = false
 	r.mu.Unlock()
 
-	outcome, err := e.Cancel("id-6", 0)
+	outcome, err := e.Cancel("id-6", "cc-6", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +214,120 @@ func TestCancelReportsKillFailedWhenContainmentWasNeverEstablished(t *testing.T)
 		t.Fatalf("outcome = %q, want kill_failed for an uncontained execution", outcome)
 	}
 	<-done
+}
+
+func TestDuplicateExecuteCannotUnblockACancelOnTheOriginal(t *testing.T) {
+	skipWithoutBash(t)
+	// The server can redeliver a command id (the dedup window is 2 minutes but a
+	// script may run for an hour). A second Execute must NOT adopt the first
+	// one's reservation: it would close the shared done channel when IT
+	// finished, unblocking a Cancel that is waiting on the ORIGINAL process and
+	// letting it report `terminated` while that process is still running.
+	e := newTestExecutor()
+	first := make(chan *ScriptResult, 1)
+	go func() { r, _ := e.Execute(sleepScript("dup-1", 60)); first <- r }()
+	waitForRunning(t, e, "dup-1")
+
+	dup, err := e.Execute(sleepScript("dup-1", 60))
+	if err == nil {
+		t.Fatal("a duplicate Execute for a running id was accepted")
+	}
+	if dup == nil || dup.ExitCode != -1 {
+		t.Fatalf("duplicate result = %+v, want a failure result", dup)
+	}
+
+	// The original must still be running and still cancellable.
+	select {
+	case r := <-first:
+		t.Fatalf("the duplicate terminated the original execution: %+v", r)
+	default:
+	}
+	if outcome, cancelErr := e.Cancel("dup-1", "cc-dup", 0); cancelErr != nil || outcome != CancelTerminated {
+		t.Fatalf("Cancel on the original = (%q, %v), want terminated", outcome, cancelErr)
+	}
+	<-first
+}
+
+func TestCancelStopsAScriptThatIsStillQueuedInTheWorkerPool(t *testing.T) {
+	skipWithoutBash(t)
+	// The bypass lane makes the CANCEL jump the pool, but the script it targets
+	// can still be sitting in that queue behind another script — the pool floors
+	// at 1 worker, so this is the ordinary case, not an edge. Execute has not run
+	// yet, so the executor has never heard of the id. Answering a bare not_found
+	// and forgetting would let that script start minutes later exactly as if no
+	// cancel had ever been issued.
+	e := newTestExecutor()
+
+	outcome, err := e.Cancel("queued-1", "cc-q1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Honest: we cannot tell a queued script from an id this device never had,
+	// so the ANSWER stays not_found. The refusal below carries the marker, which
+	// is what closes the execution on the server.
+	if outcome != CancelNotFound {
+		t.Fatalf("outcome = %q, want not_found for an execution we have not seen", outcome)
+	}
+
+	// The pool frees up and the script is finally dispatched.
+	res, err := e.Execute(sleepScript("queued-1", 60))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.Cancelled {
+		t.Fatal("a script cancelled while queued ran anyway")
+	}
+	if res.ExitCode != -1 {
+		t.Fatalf("ExitCode = %d, want -1 for a script that never ran", res.ExitCode)
+	}
+	if e.GetRunningCount() != 0 {
+		t.Fatalf("running count = %d after the refusal, want 0", e.GetRunningCount())
+	}
+}
+
+func TestARefusalRecordNamesTheCancelCommandAndIsNotReportedAsRunning(t *testing.T) {
+	e := newTestExecutor()
+	if _, err := e.Cancel("queued-2", "cc-queued", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// script_list_running must not invent a phantom execution.
+	if got := e.ListRunning(); len(got) != 0 {
+		t.Fatalf("ListRunning reported a phantom execution: %v", got)
+	}
+	if got := e.GetRunningCount(); got != 0 {
+		t.Fatalf("GetRunningCount = %d, want 0", got)
+	}
+
+	res, _ := e.Execute(sleepScript("queued-2", 60))
+	if res.CancelledByCommandID != "cc-queued" {
+		t.Fatalf("CancelledByCommandID = %q, want cc-queued", res.CancelledByCommandID)
+	}
+}
+
+func TestARefusalRecordIsReapedSoItCannotBlockALaterExecutionForever(t *testing.T) {
+	restore := cancelRefusalTTL
+	cancelRefusalTTL = 50 * time.Millisecond
+	t.Cleanup(func() { cancelRefusalTTL = restore })
+
+	e := newTestExecutor()
+	if _, err := e.Cancel("queued-3", "cc-q3", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.mu.Lock()
+		_, present := e.running["queued-3"]
+		e.mu.Unlock()
+		if !present {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the refusal record was never reaped; a command id could be blocked forever")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestClampGraceBoundsTheRequestedWindow(t *testing.T) {

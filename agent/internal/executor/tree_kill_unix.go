@@ -27,26 +27,41 @@ func startContained(running *runningExecution, cmd *exec.Cmd) error {
 
 // capturePgid reads the process group id immediately after Start.
 //
-// #3525: looking it up at kill time — the old behaviour — fails once the leader
+// #3525: looking it up at KILL time — the old behaviour — fails once the leader
 // has exited (Getpgid returns ESRCH), and the fallback then kills a corpse via
 // cmd.Process.Kill() while the surviving children keep running. After SIGTERM
 // that is exactly the state we are in.
+//
+// setProcessGroup asked for Setpgid with Pgid 0, so the child IS its own group
+// leader and pgid == pid by construction. Getpgid here is therefore a
+// confirmation, not the source of truth: it also returns ESRCH for a script
+// that fails instantly, and treating that as "no group" would mark a perfectly
+// contained execution uncontained and downgrade every later cancel to
+// kill_failed.
 func capturePgid(cmd *exec.Cmd) int {
 	if cmd == nil || cmd.Process == nil {
 		return 0
 	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err != nil {
-		log.Warn("could not capture process group at start; cancellation will not reach children",
-			"pid", cmd.Process.Pid, "error", err.Error())
-		return 0
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil && pgid > 0 {
+		return pgid
 	}
-	return pgid
+	return cmd.Process.Pid
 }
 
 // terminateProcessTree escalates against the whole process tree.
 func terminateProcessTree(running *runningExecution, graceSeconds int) error {
-	return terminateProcessTreeUnix(running.processGroup(), running.command(), graceSeconds)
+	pgid := running.processGroup()
+	if pgid <= 0 {
+		// Either no group was ever captured, or this kill is landing in the
+		// window between cmd.Start returning and attachProcessGroup — os/exec
+		// starts its context watchdog inside Start, so a cancel really can fire
+		// there. Both cases reach the leader only, so latch the execution as
+		// uncontained; otherwise attachProcessGroup would set contained=true a
+		// moment later and let this very cancel claim `terminated` while group
+		// members survived.
+		running.markContainmentLost()
+	}
+	return terminateProcessTreeUnix(pgid, running.command(), graceSeconds)
 }
 
 // terminateProcessTreeUnix escalates SIGTERM -> grace -> SIGKILL against the

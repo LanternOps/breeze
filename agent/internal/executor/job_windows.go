@@ -138,22 +138,13 @@ func (nativeWindowsJobPrimitives) TerminateJob(job jobHandle) error {
 	return nil
 }
 
-// CloseJob is called once the script has exited. Clearing KILL_ON_JOB_CLOSE
-// FIRST is what keeps a completed script's legitimately-detached children
-// alive: closing the handle with the flag still set would kill exactly the
-// descendants the script meant to leave running. If the flag cannot be cleared,
-// leak the handle — one kernel handle on a path that should never occur —
-// rather than close it and take those children down.
-//
-// On the cancel and timeout paths TerminateJobObject has already run, so this
-// is a no-op beyond releasing the handle.
+// CloseJob releases the job handle. releaseContainment (job.go) is responsible
+// for clearing KILL_ON_JOB_CLOSE first — that ordering is policy, so it lives
+// in the portable layer where the contract test can assert it.
 func (nativeWindowsJobPrimitives) CloseJob(job jobHandle) error {
 	handle, err := nativeJobHandle(job)
 	if err != nil {
 		return err
-	}
-	if err := setJobLimitFlags(handle, 0); err != nil {
-		return fmt.Errorf("clear job kill-on-close (handle retained): %w", err)
 	}
 	return windows.CloseHandle(handle)
 }

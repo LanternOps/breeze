@@ -57,15 +57,37 @@ func outcomeOf(t *testing.T, result tools.CommandResult) string {
 
 // saturatePool blocks every worker AND fills the queue, so any further Submit
 // is rejected outright ("command rejected, worker pool full").
-func saturatePool(t *testing.T, h *Heartbeat, slots int) {
+//
+// Each worker signals when it has actually picked its task up, rather than the
+// test sleeping and hoping: a fixed sleep under CI contention can leave the
+// pool un-saturated and turn these into false passes (or false failures).
+func saturatePool(t *testing.T, h *Heartbeat, workers, queue int) {
 	t.Helper()
 	blocker := make(chan struct{})
 	t.Cleanup(func() { close(blocker) })
-	for i := 0; i < slots; i++ {
-		if !h.pool.Submit(func() { <-blocker }) {
-			t.Fatalf("could not saturate the pool at slot %d", i)
+
+	picked := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		if !h.pool.Submit(func() { picked <- struct{}{}; <-blocker }) {
+			t.Fatalf("could not occupy worker %d", i)
 		}
-		time.Sleep(20 * time.Millisecond) // let a worker pick the blocker up
+	}
+	for i := 0; i < workers; i++ {
+		select {
+		case <-picked:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("worker %d never picked up its task", i)
+		}
+	}
+	// Every worker is now parked, so these can only sit in the queue.
+	for i := 0; i < queue; i++ {
+		if !h.pool.Submit(func() { <-blocker }) {
+			t.Fatalf("could not fill queue slot %d", i)
+		}
+	}
+	// Proof the pool really is saturated: the next submit must be rejected.
+	if h.pool.Submit(func() {}) {
+		t.Fatal("the pool accepted another task; it is not saturated and these tests would prove nothing")
 	}
 }
 
@@ -73,7 +95,7 @@ func TestScriptCancelBypassesTheWorkerPool(t *testing.T) {
 	// A cancel that goes through the pool queues behind the very script it must
 	// stop — or is rejected outright once the queue is full.
 	h := newTestHeartbeatWithPool(1, 1)
-	saturatePool(t, h, 2)
+	saturatePool(t, h, 1, 1)
 
 	done := make(chan tools.CommandResult, 1)
 	go func() { done <- h.executeCommandViaPool(cancelCommand("cmd-bypass", "no-such-exec", 0)) }()
@@ -90,7 +112,7 @@ func TestScriptCancelBypassesTheWorkerPool(t *testing.T) {
 
 func TestScriptListRunningBypassesTheWorkerPool(t *testing.T) {
 	h := newTestHeartbeatWithPool(1, 1)
-	saturatePool(t, h, 2)
+	saturatePool(t, h, 1, 1)
 
 	done := make(chan tools.CommandResult, 1)
 	go func() {
@@ -110,7 +132,7 @@ func TestOrdinaryCommandsStillGoThroughTheWorkerPool(t *testing.T) {
 	// The bypass must stay narrow: a saturated pool still rejects a script, or
 	// the pool stops bounding concurrency at all.
 	h := newTestHeartbeatWithPool(1, 1)
-	saturatePool(t, h, 2)
+	saturatePool(t, h, 1, 1)
 
 	result := h.executeCommandViaPool(Command{ID: "cmd-script", Type: tools.CmdScript, Payload: map[string]any{"content": "echo hi"}})
 	if result.Status != "failed" || result.Error != "command rejected, worker pool full" {
@@ -351,8 +373,10 @@ func TestHelperNotFoundOnlyWinsWhenEveryHelperAgrees(t *testing.T) {
 	_ = answering.Close()
 	_ = clientIPC.Close()
 
-	if got := outcomeOf(t, result); got == "not_found" {
-		t.Fatalf("outcome = not_found although one helper could not be reached: %+v", result)
+	// An unreachable helper grades kill_failed, which the server records as
+	// `failed` — not the `unconfirmed` revert that not_found would cause.
+	if got := outcomeOf(t, result); got != "kill_failed" {
+		t.Fatalf("outcome = %q, want kill_failed when one helper could not be reached: %+v", got, result)
 	}
 }
 

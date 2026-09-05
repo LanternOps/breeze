@@ -376,10 +376,10 @@ func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	grace := cancelGraceSeconds(cmd.Payload)
 
-	// Name the responsible command BEFORE asking, so the script's own result
-	// can carry cancelledByCommandId even if it wins the race with our ack.
-	h.executor.SetCancelCommandID(executionID, cmd.ID)
-	outcome, err := h.executor.Cancel(executionID, grace)
+	// cmd.ID is the script_cancel command's own id: it is stamped onto the
+	// script's result so the server can tell which cancel earned the kill even
+	// when that result wins the race with this ack.
+	outcome, err := h.executor.Cancel(executionID, cmd.ID, grace)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

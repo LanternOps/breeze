@@ -724,8 +724,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		// used to come back as a failed IPC result, indistinguishable from a
 		// failed kill — and the agent needs the difference to decide whether
 		// not_found is the whole fleet's answer.
-		c.executor.SetCancelCommandID(executionID, cmd.CommandID)
-		outcome, err := c.executor.Cancel(executionID, getIntOrDefault(payload, "graceSeconds", defaultCancelGraceSeconds))
+		outcome, err := c.executor.Cancel(executionID, cmd.CommandID,
+			getIntOrDefault(payload, "graceSeconds", defaultCancelGraceSeconds))
 		if err != nil {
 			return ipc.IPCCommandResult{
 				CommandID: cmd.CommandID,
