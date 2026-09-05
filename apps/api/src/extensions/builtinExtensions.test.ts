@@ -256,6 +256,7 @@ function createHarness(overrides: {
       calls.push('validate');
       validatedTenancy.push({ name, tenancy });
     },
+    validatePublicTables: async () => {},
     registerRateLimitSkip: (prefix) => { rateLimitPrefixes.push(prefix); },
     webDistExists: () => true,
     readWebDist: () => FIXTURE_WEB_ASSET,
@@ -1144,4 +1145,76 @@ describe('built-in tenancy participates in the tenant-export contract', () => {
     expect(sources?.columns['root_path']?.decision).toBe('include');
     expect(sources?.columns['display_name']?.decision).toBe('include');
   });
+});
+
+
+describe('final public-table tenancy gate (#4283)', () => {
+  it.each(['full', 'worker'] as const)('awaits the sweep and propagates failure in %s mode', async (mode) => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'true');
+    const error = new Error('unprefixed_documents belongs to no manifest');
+    const sweep = vi.fn(async () => { throw error; });
+    const h = createHarness({ ports: { validatePublicTables: sweep } });
+    await expect(h.load(mode)).rejects.toBe(error);
+    expect(sweep).toHaveBeenCalledExactlyOnceWith([fixtureManifest().tenancy]);
+  });
+
+  it('sweeps only after all enabled and persisted disabled declarations are available', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'true');
+    const disabledTenancy = {
+      ...fixtureManifest().tenancy,
+      orgCascadeDeleteTables: ['retired_present', 'retired_missing'],
+    };
+    const h = createHarness({
+      builtins: [fixtureBuiltin(), fixtureBuiltin({
+        name: 'retired', enableEnvVar: 'BREEZE_RETIRED_TEST_ENABLED',
+        manifest: fixtureManifest({ name: 'retired', tenancy: disabledTenancy }),
+      })],
+      ports: {
+        existingDeclaredTables: async () => ['retired_present'],
+        validatePublicTables: async (tenancies) => {
+          expect(h.publishedTenancy).toHaveLength(2);
+          expect(tenancies).toEqual(h.publishedTenancy.map((m) => m.tenancy));
+          expect(tenancies[0]!.orgCascadeDeleteTables).toEqual(['retired_present']);
+        },
+      },
+    });
+    await h.load();
+  });
+
+  it('sweeps a disabled-only partial schema without opening the migration pool', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'false');
+    const sweep = vi.fn(async () => {});
+    const h = createHarness({
+      builtins: [fixtureBuiltin({ manifest: fixtureManifest({ tenancy: {
+        ...fixtureManifest().tenancy, orgCascadeDeleteTables: ['demo-builtin_present', 'demo-builtin_missing'],
+      } }) })],
+      ports: { existingDeclaredTables: async () => ['demo-builtin_present'], validatePublicTables: sweep },
+    });
+    await h.load();
+    expect(sweep).toHaveBeenCalledExactlyOnceWith([h.publishedTenancy[0]!.tenancy]);
+    expect(h.migrationSqlOpens.count).toBe(0);
+  });
+
+  it('does not sweep a stock installation with no persisted extension tables', async () => {
+    vi.stubEnv(ENABLE_ENV_VAR, 'false');
+    const sweep = vi.fn(async () => {});
+    const h = createHarness({ ports: { validatePublicTables: sweep } });
+    await h.load();
+    expect(sweep).not.toHaveBeenCalled();
+  });
+});
+
+
+it('does not treat a disabled built-in shared core table as an installed extension', async () => {
+  vi.stubEnv(ENABLE_ENV_VAR, 'false');
+  const sweep = vi.fn(async () => {});
+  const h = createHarness({
+    builtins: [fixtureBuiltin({ manifest: fixtureManifest({ tenancy: {
+      ...fixtureManifest().tenancy, orgCascadeDeleteTables: ['memory_blocks'],
+    } }) })],
+    ports: { existingDeclaredTables: async () => ['memory_blocks'], validatePublicTables: sweep },
+  });
+  await h.load();
+  expect(h.publishedTenancy).toHaveLength(1);
+  expect(sweep).not.toHaveBeenCalled();
 });
