@@ -21,6 +21,13 @@ export type Script = {
   osTypes: OSType[];
   isSystem?: boolean;
   parameters?: ScriptParameter[];
+  /**
+   * The script's SAVED run context (#4888). `GET /scripts` selects whole rows,
+   * so this has always been on the wire — it is surfaced on the type now that
+   * callers need to name the default they are inheriting ("Script default
+   * (Elevated)") instead of silently replacing it.
+   */
+  runAs?: 'system' | 'user' | 'elevated';
 };
 
 type ScriptPickerModalProps = {
@@ -33,6 +40,19 @@ type ScriptPickerModalProps = {
   // runAs=user when the device reports on-demand helper lifecycle.
   deviceId?: string;
   helperLifecycleMode?: 'always-on' | 'on-demand' | null;
+  /**
+   * #4888 — lets a host that owns its OWN run-context control suppress this
+   * modal's. The fleet Fix flow does exactly that: this select has no "script
+   * default" option and resets to `'system'` on every open, so a host that
+   * forwarded its value straight into a request would silently downgrade an
+   * `elevated` script to `system` the moment the picker started being
+   * honoured. FixPickerModal hides it and renders a `RunContextSelect` that
+   * can express "leave the script's default alone".
+   *
+   * When hidden, `onSelect` still receives a `runAs` argument (`'system'`);
+   * a host that hides the control must ignore it.
+   */
+  showRunAsSelector?: boolean;
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -49,7 +69,8 @@ export default function ScriptPickerModal({
   deviceHostname,
   deviceOs,
   deviceId,
-  helperLifecycleMode
+  helperLifecycleMode,
+  showRunAsSelector = true
 }: ScriptPickerModalProps) {
   const { t } = useTranslation('devices');
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -64,7 +85,7 @@ export default function ScriptPickerModal({
   // selectable for scripts — a process keeps running in a disconnected session.
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [targetSessionId, setTargetSessionId] = useState<number | undefined>();
-  const showSessionTarget = runAs === 'user' && helperLifecycleMode === 'on-demand' && !!deviceId;
+  const showSessionTarget = showRunAsSelector && runAs === 'user' && helperLifecycleMode === 'on-demand' && !!deviceId;
 
   // Parameter step state
   const [view, setView] = useState<'list' | 'params'>('list');
@@ -266,15 +287,17 @@ export default function ScriptPickerModal({
                   ))}
                 </select>
               )}
-              <select
-                value={runAs}
-                onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
-                data-testid="script-run-as"
-                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              >
-                <option value="system">{t('scriptPickerModal.runAs.system')}</option>
-                <option value="user">{t('scriptPickerModal.runAs.user')}</option>
-              </select>
+              {showRunAsSelector && (
+                <select
+                  value={runAs}
+                  onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
+                  data-testid="script-run-as"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  <option value="system">{t('scriptPickerModal.runAs.system')}</option>
+                  <option value="user">{t('scriptPickerModal.runAs.user')}</option>
+                </select>
+              )}
               {showSessionTarget && (
                 <select
                   value={targetSessionId ?? ''}

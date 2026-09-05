@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, ActionPlanStep } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, ActionPlanStep, AiScriptRunContext } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -33,6 +33,15 @@ export interface PendingApproval {
   selfApprovalRequestId?: string;
   /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
   intentExpiresAt?: string;
+  /**
+   * #4888 — the run context a script launch will actually execute in, resolved
+   * server-side. Present only for `run_script` / `execute_script_on_device`.
+   * The card renders it as its own visible row: letting an assistant pick
+   * SYSTEM for a script whose saved default is the logged-in user is a
+   * privilege escalation, and the human approving it has to be told, not left
+   * to expand a JSON blob.
+   */
+  scriptRunContext?: AiScriptRunContext | null;
 }
 
 export interface PendingPlan {
@@ -138,6 +147,7 @@ export function processStreamEvent(
           intentBacked: event.intentBacked,
           selfApprovalRequestId: event.selfApprovalRequestId,
           intentExpiresAt: event.intentExpiresAt,
+          scriptRunContext: event.scriptRunContext ?? null,
         }
       }));
       return currentAssistantId;

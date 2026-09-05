@@ -21,6 +21,11 @@ import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import {
+  resolveScriptRunContextForApproval,
+  describeScriptRunContext,
+  type ScriptApprovalRunContext,
+} from './scriptRunContextApproval';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -933,7 +938,36 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
       }
 
-      const description = guardrailCheck.description ?? `Execute ${toolName}`;
+      // #4888 — a script launch is the one approval where the ARGUMENTS decide
+      // a privilege level, so the effective run context is resolved here and
+      // stated on the card rather than left inside the collapsed parameter
+      // JSON. Non-fatal: any failure degrades to no run-context line, never to
+      // a failed approval. Returns null for every non-script tool.
+      let scriptRunContext: ScriptApprovalRunContext | null = null;
+      try {
+        scriptRunContext = await resolveScriptRunContextForApproval(
+          toolName,
+          input as Record<string, unknown>,
+          session.orgId,
+        );
+      } catch (err) {
+        // Reported, not just logged: `resolveScriptRunContextForApproval`
+        // already captures its own (expected) DB failure internally and
+        // degrades, so anything reaching HERE is a bug in the resolver rather
+        // than an outage — and its only symptom is an approval card that
+        // quietly stops naming the run context. That must not be invisible in
+        // Sentry, whatever the surrounding file's console-only convention.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
+      }
+
+      const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
+      // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
+      // every surface that renders one: the chat card, the durable intent's
+      // stored reason, the /approvals queue, and the mobile push.
+      const description = scriptRunContext
+        ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
+        : baseDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -1033,6 +1067,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // (AiApprovalDialog) uses this to decide whether the self-approve
             // button is itself the whole decision or just this user's half of one.
             approvalScope: guardrailCheck.approvalScope,
+            // #4888 — structured twin of the sentence in `description`, so
+            // the card can render a localized, always-visible run-context row
+            // instead of relying on the English prose.
+            scriptRunContext,
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1485,6 +1523,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             input,
             description,
             deviceContext,
+            scriptRunContext,
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval

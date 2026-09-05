@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import { executionDetailStatusConfig as statusConfig } from './executionStatus';
+import { RunContextChip } from '@/components/common/RunContext';
 
 type ExecutionDetailsProps = {
   execution: ScriptExecution;
@@ -333,6 +334,12 @@ export default function ExecutionDetails({
                 ) : (
                   <span className="text-muted-foreground">-</span>
                 )}
+              </p>
+            </div>
+            <div className="rounded-md border bg-muted/20 p-4">
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.runAs')}</p>
+              <p className="text-sm font-medium mt-1">
+                <RunContextChip runAs={execution.runAs} targetSessionId={execution.targetSessionId} />
               </p>
             </div>
           </div>

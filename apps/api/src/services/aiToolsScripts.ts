@@ -33,6 +33,7 @@ import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
@@ -273,7 +274,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing script to run' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
-          parameters: { type: 'object', description: 'Script parameters' }
+          parameters: { type: 'object', description: 'Script parameters' },
+          // #4888 — see services/scriptRunRequest.ts. Shared with the three
+          // other declarations of this tool's input shape so the model can
+          // express a run context on every surface, not just some of them.
+          ...AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES
         },
         required: ['scriptId', 'deviceIds']
       }
@@ -282,6 +287,29 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
+
+      // #4888 — an assistant-chosen run context clears the SAME gate a human
+      // one does. Not a copy of the rules, the actual object the HTTP route
+      // validates with (`POST /scripts/:id/execute`), so the enum ('elevated'
+      // excluded — that stays a property of the saved script) and both
+      // cross-field rules ("targetSessionId requires runAs=user", "…and
+      // exactly one device") can never drift between the two callers.
+      //
+      // `parameters` is deliberately NOT re-parsed here: the AI path has never
+      // validated them against `scriptParametersSchema` and tightening that is
+      // a separate behaviour change with its own blast radius. The field being
+      // optional in the schema is what lets this validate the run context
+      // alone. Nothing about the privilege decision depends on it.
+      const runContext = executeScriptSchema.safeParse({
+        deviceIds,
+        runAs: input.runAs,
+        targetSessionId: input.targetSessionId,
+      });
+      if (!runContext.success) {
+        return JSON.stringify({
+          error: runContext.error.issues[0]?.message ?? 'Invalid run context',
+        });
+      }
 
       // #3409 PR4c-1 — a release path may have ALREADY read this script row and
       // resolved its tenant variables, in order to recompute the approval's
@@ -449,6 +477,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 triggerType: 'manual',
                 triggeredBy: auth.user.id,
                 createdBy: auth.user.id,
+                // #4888 — undefined when the assistant did not choose one, in
+                // which case dispatch falls back to `script.runAs` exactly as
+                // it always did.
+                runAs: runContext.data.runAs,
+                targetSessionId: runContext.data.targetSessionId,
                 requireOnline: true,
                 variableScope,
               });
@@ -472,6 +505,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
             commandId: cmd.id,
             executionId: dispatch.executionId,
+            // #4888 — the RESOLVED context, echoed from dispatch rather than
+            // recomputed here, so the assistant can tell "ran as SYSTEM
+            // because I asked" from "ran as SYSTEM because that is the
+            // script's default" and reason about a user-context failure
+            // instead of retrying blind (the #4882 debugging shape).
+            runAs: dispatch.runAs,
+            ...(dispatch.targetSessionId != null ? { targetSessionId: dispatch.targetSessionId } : {}),
           };
         } catch (err) {
           // A thrown error here is indistinguishable from "device unsupported"

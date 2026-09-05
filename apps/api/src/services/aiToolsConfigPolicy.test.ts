@@ -313,6 +313,100 @@ describe('configuration policy AI tools', () => {
     );
   });
 
+  /**
+   * #4888 — an assistant must not reach ELEVATED through a config policy.
+   *
+   * `manage_policy_feature_link` is TIER 2: it auto-executes with no human
+   * approval. `automation` inline settings are not schema-validated (they are
+   * not in VALIDATED_INLINE_SETTINGS), and `normalizeAutomationActions`
+   * deliberately tolerates a stored `runAs: 'elevated'` because it also runs
+   * on the execute path. Without this guard an assistant could author an
+   * automation that runs a script as administrator/root — the exact capability
+   * the same assistant is refused head-on, where `executeScriptSchema` excludes
+   * 'elevated' AND a Tier-3 human approval is required.
+   */
+  function automationSettings(runAs?: string) {
+    return {
+      items: [{
+        name: 'Nightly cleanup',
+        triggerType: 'schedule',
+        cronExpression: '0 2 * * *',
+        actions: [{ type: 'run_script', scriptId: 'script-1', ...(runAs ? { runAs } : {}) }],
+        onFailure: 'stop',
+      }],
+    };
+  }
+
+  async function addAutomationLink(runAs?: string) {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: 'org-1', partnerId: 'partner-1', name: 'Policy',
+    } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({
+      id: 'link-1', configPolicyId: POLICY_ID, featureType: 'automation',
+    } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'automation',
+      inlineSettings: automationSettings(runAs),
+    }, makeAuth());
+  }
+
+  it("refuses an automation run_script action asking for runAs: 'elevated' (#4888)", async () => {
+    const output = await addAutomationLink('elevated');
+
+    expect(JSON.parse(output).error).toMatch(/runAs/i);
+    // The write must not happen at all — a rejection that still stored the
+    // action would be worse than no check.
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unrecognised runAs on an automation run_script action', async () => {
+    const output = await addAutomationLink('root');
+
+    expect(JSON.parse(output).error).toMatch(/runAs/i);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it("still allows runAs: 'user' — the guard is about elevation, not about the field", async () => {
+    const output = await addAutomationLink('user');
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
+  });
+
+  it('still allows an automation action that names no run context at all', async () => {
+    const output = await addAutomationLink();
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
+  });
+
+  it('applies the same guard to an update, not just an add (#4888)', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: 'org-1', partnerId: 'partner-1', name: 'Policy',
+    } as any);
+    const chain: Record<string, unknown> = {};
+    chain.from = () => chain;
+    chain.where = () => chain;
+    chain.limit = async () => [{ featureType: 'automation' }];
+    vi.mocked(db.select).mockReturnValue(chain as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: automationSettings('elevated'),
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toMatch(/runAs/i);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
   // addFeatureLink's insert (configurationPolicy.ts) uses onConflictDoNothing
   // and returns null instead of throwing on a duplicate — see the comment
   // there. Before the fix, this scenario surfaced as a raw PostgresError

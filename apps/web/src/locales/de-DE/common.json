@@ -168,6 +168,19 @@
     "optional": "Optional",
     "required": "Erforderlich"
   },
+  "runContext": {
+    "label": "Ausführen als",
+    "scriptDefault": "Skript-Standard",
+    "scriptDefaultNamed": "Skript-Standard ({{context}})",
+    "system": "System",
+    "user": "Angemeldeter Benutzer",
+    "elevated": "Erhöht",
+    "unknown": "Nicht erfasst",
+    "userInSession": "Angemeldeter Benutzer (Sitzung {{session}})",
+    "sessionLabel": "Zielsitzung",
+    "sessionAny": "Beliebige aktive Sitzung",
+    "effectiveLabel": "Ausführungskontext"
+  },
   "shared": {
     "accessDenied": {
       "title": "Zugriff verweigert",

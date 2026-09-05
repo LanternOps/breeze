@@ -225,3 +225,51 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
     }
   });
 });
+
+describe('DeviceScriptHistory run context (#4888)', () => {
+  function mockHistory(execution: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [execution] });
+      }
+      return jsonResponse({}, 404);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('names the system context for a run recorded as system', async () => {
+    mockHistory({ ...executionRow, runAs: 'system' });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect(await screen.findByTestId('run-context-chip')).toHaveTextContent('System');
+  });
+
+  it('names the target session for a run recorded as user with a session', async () => {
+    mockHistory({ ...executionRow, runAs: 'user', targetSessionId: 3 });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect(await screen.findByTestId('run-context-chip')).toHaveTextContent('session 3');
+  });
+
+  it('renders "not recorded" -- never "System" -- for a null runAs', async () => {
+    mockHistory({ ...executionRow, runAs: null });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    const chip = await screen.findByTestId('run-context-chip');
+    expect(chip).toHaveTextContent('Not recorded');
+    // This is the assertion that matters: a null runAs must never be
+    // rendered as a plausible-but-invented "System", since the column is
+    // nullable specifically because pre-#4888 rows genuinely don't know.
+    expect(chip).not.toHaveTextContent('System');
+  });
+});

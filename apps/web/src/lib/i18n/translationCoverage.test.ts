@@ -431,7 +431,10 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
-    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
+    // +1: runContext.system (#4888) — "System" is the German word too, and it
+    // labels a privilege level, so the one place it must NOT be creatively
+    // rendered is a control that says which account a script runs under.
+    'common.json': 107, // +1 W06: lists.separator ", " is punctuation
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,

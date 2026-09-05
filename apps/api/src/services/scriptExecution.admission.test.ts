@@ -101,6 +101,8 @@ const dispatched = (id: string) => ({
   deliveryOutcome: 'no_agent' as const,
   executedAt: null,
   ignoredParameters: [],
+  runAs: 'system' as const,
+  targetSessionId: null,
 });
 
 describe('executeScriptOnDevices admission contract', () => {

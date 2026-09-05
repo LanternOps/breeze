@@ -168,6 +168,19 @@
     "optional": "İsteğe bağlı",
     "required": "Gerekli"
   },
+  "runContext": {
+    "label": "Farklı Çalıştır",
+    "scriptDefault": "Komut dosyası varsayılanı",
+    "scriptDefaultNamed": "Komut dosyası varsayılanı ({{context}})",
+    "system": "Sistem",
+    "user": "Oturum açmış kullanıcı",
+    "elevated": "Yükseltilmiş",
+    "unknown": "Kaydedilmedi",
+    "userInSession": "Oturum açmış kullanıcı (oturum {{session}})",
+    "sessionLabel": "Hedef oturum",
+    "sessionAny": "Herhangi bir etkin oturum",
+    "effectiveLabel": "Çalıştırma bağlamı"
+  },
   "shared": {
     "accessDenied": {
       "title": "Erişim engellendi",

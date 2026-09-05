@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, text, integer, bigint, jsonb, timestamp, index,
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
+import { scriptRunAsEnum } from './scripts';
 
 export type FleetFindingKind = 'metric_anomaly_pattern' | 'log_correlation' | 'reliability_offenders';
 export type FleetFindingStatus = 'open' | 'acknowledged' | 'dismissed' | 'resolved';
@@ -75,6 +76,11 @@ export const fleetRemediationRuns = pgTable('fleet_remediation_runs', {
   scriptId: uuid('script_id'),
   commandType: varchar('command_type', { length: 60 }),
   parameterSnapshot: jsonb('parameter_snapshot').notNull().default({}),
+  // #4888 — the operator-chosen run context for this run. NULL means "use the
+  // script's saved default", which is what every run did before this column
+  // existed. Only meaningful when `action_kind = 'script'`; a command run has
+  // no script row to override.
+  runAs: scriptRunAsEnum('run_as'),
   status: varchar('status', { length: 20 }).$type<FleetRunStatus>().notNull().default('queued'),
   targetCount: integer('target_count').notNull().default(0),
   succeededCount: integer('succeeded_count').notNull().default(0),

@@ -255,6 +255,94 @@ describe('#4883: script-builder tools reach the session guardrail under the name
   });
 });
 
+// ============================================
+// #4888: execute_script_on_device's registered input shape must carry the
+// same run-context fields run_script accepts, and adding them must not
+// disturb the #4883 identity split this file already guards.
+// ============================================
+describe('#4888: execute_script_on_device accepts a run context without disturbing the #4883 identity split', () => {
+  function executeScriptOnDeviceTool() {
+    const tools = buildScriptBuilderTools(
+      (() => {
+        throw new Error('getAuth must not be reached');
+      }) as unknown as () => AuthContext,
+    );
+    const t = tools.find((tool) => tool.name === 'execute_script_on_device');
+    if (!t) throw new Error('execute_script_on_device not registered');
+    return t;
+  }
+
+  it('the registered zod input shape accepts runAs and targetSessionId', () => {
+    const t = executeScriptOnDeviceTool();
+    const schema = z.object(t.inputSchema);
+
+    const result = schema.safeParse({
+      scriptId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      deviceIds: ['a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e'],
+      runAs: 'user',
+      targetSessionId: 3,
+    });
+
+    expect(result.success).toBe(true);
+    // Not merely "didn't reject" — a plain (non-strict) zod object silently
+    // STRIPS unrecognized keys and still reports success, so success:true
+    // alone would pass vacuously even if the shape never declared these
+    // fields at all. Assert they actually survived parsing.
+    if (result.success) {
+      expect(result.data.runAs).toBe('user');
+      expect(result.data.targetSessionId).toBe(3);
+    }
+  });
+
+  it('the registered zod input shape still rejects runAs: "elevated" (not a launch-time choice)', () => {
+    const t = executeScriptOnDeviceTool();
+    const schema = z.object(t.inputSchema);
+
+    const result = schema.safeParse({
+      scriptId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      deviceIds: ['a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e'],
+      runAs: 'elevated',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('is still registered under the name execute_script_on_device (the #4883 exposed identity)', () => {
+    const t = executeScriptOnDeviceTool();
+    expect(t.name).toBe('execute_script_on_device');
+  });
+
+  it('the session-allowlist check still receives the mcp__script_builder__ prefixed name (#4883)', async () => {
+    const calls: Array<{ toolName: string; mcpToolName: string | undefined }> = [];
+    const onPreToolUse = vi.fn(
+      async (toolName: string, _input: Record<string, unknown>, mcpToolName?: string) => {
+        calls.push({ toolName, mcpToolName });
+        return { allowed: false as const, error: 'blocked-by-guard-test' };
+      },
+    );
+    const tools = buildScriptBuilderTools(
+      (() => {
+        throw new Error('getAuth must not be reached');
+      }) as unknown as () => AuthContext,
+      onPreToolUse,
+    );
+    const t = tools.find((tool) => tool.name === 'execute_script_on_device')!;
+
+    await t.handler({ scriptId: 's', deviceIds: ['d'] } as never, undefined);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.mcpToolName).toBe('mcp__script_builder__execute_script_on_device');
+    // Handler identity: preToolUse must still see 'run_script', not the
+    // exposed name — that's what TOOL_TIERS/TOOL_PERMISSIONS/toolInputSchemas
+    // are keyed on.
+    expect(calls[0]!.toolName).toBe('run_script');
+  });
+
+  it('still dispatches execute_script_on_device calls to the run_script handler (#4883)', () => {
+    expect(SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL['execute_script_on_device']).toBe('run_script');
+  });
+});
+
 describe('apply_script_metadata timeoutSeconds cap', () => {
   // The agent executor hard-clamps script timeouts to 3600s
   // (agent/internal/executor/executor.go MaxTimeout). If this inline cap ever

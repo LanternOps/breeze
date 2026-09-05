@@ -187,6 +187,18 @@ vi.mock('../db/schema/actionIntents', () => ({
 // no DB/network surface, and asserting against the real value pins the
 // actual key resultSecrets.ts uses rather than a test-local guess.
 const mockCaptureException = vi.fn();
+// #4888 — PARTIAL mock: only the DB-reading resolver is stubbed, so the real
+// `describeScriptRunContext` still builds the sentence this file asserts on.
+// Mocking both would leave the approval prose untested from every angle.
+const mockResolveScriptRunContext = vi.fn();
+vi.mock('./scriptRunContextApproval', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./scriptRunContextApproval')>();
+  return {
+    ...actual,
+    resolveScriptRunContextForApproval: (...args: unknown[]) => mockResolveScriptRunContext(...args),
+  };
+});
+
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }));
@@ -948,6 +960,89 @@ describe('createSessionPreToolUse', () => {
       // The old direct approval_requests bridge + push are gone — createActionIntent owns both now.
       expect(mockGetUserPushTokens).not.toHaveBeenCalled();
       expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    });
+
+    /**
+     * #4888 — the approval an assistant-chosen run context has to clear.
+     *
+     * Allowing the model to pick `runAs` is a privilege decision, and the
+     * condition attached to allowing it is that the human deciding the
+     * approval is told which context the run will use. These pin BOTH carriers
+     * of that fact, because they reach different surfaces: the structured
+     * `scriptRunContext` drives the web card's visible row, and the sentence
+     * folded into `description` is what the durable intent stores as its
+     * `reason` — i.e. what the /approvals queue and the mobile push show.
+     */
+    it('names the SYSTEM run context on the approval card and in the intent reason', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Run script abcd1234... on 1 device(s)',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+      mockInsertReturning({ id: 'exec-rc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-rc', approvalRequestIds: ['appr-rc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('run_script', {
+        scriptId: 'abcd1234-0000-0000-0000-000000000000',
+        deviceIds: ['d-1'],
+        runAs: 'system',
+      });
+
+      // The prose an approver reads on the queue / push must say SYSTEM, and
+      // must say it is an override — "runs as SYSTEM" alone does not tell a
+      // reviewer that this script normally runs as the logged-in user.
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toMatch(/SYSTEM/);
+      expect(intentArgs.reason).toMatch(/overriding the script's saved default/i);
+
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.description).toMatch(/SYSTEM/);
+      expect(published.scriptRunContext).toEqual({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+    });
+
+    it('leaves a non-script tool\'s approval untouched — no run-context sentence, no structured field', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue(null);
+      mockInsertReturning({ id: 'exec-nc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-nc', approvalRequestIds: ['appr-nc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toBe('Execute command');
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.scriptRunContext ?? null).toBeNull();
     });
 
     it('four-eyes: publishes NO selfApprovalRequestId when the requester holds no approval row', async () => {

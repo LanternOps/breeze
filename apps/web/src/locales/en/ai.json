@@ -34,7 +34,11 @@
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",
     "approvedToast": "Action approved",
-    "deniedToast": "Action denied"
+    "deniedToast": "Action denied",
+    "runContextLabel": "Run context:",
+    "runContextChosenByAssistant": "chosen by the assistant",
+    "runContextScriptDefault": "the script's saved default",
+    "runContextOverrides": "chosen by the assistant, overriding the script's saved default ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Waiting for response...",

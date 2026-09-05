@@ -1515,6 +1515,7 @@
       "completedAt": "Tamamlanma Tarihi",
       "duration": "Süre",
       "exitCode": "Çıkış Kodu",
+      "runAs": "Çalıştırma Bağlamı",
       "startedAt": "Başlangıç Tarihi"
     },
     "noOutput": "Çıkış yok",

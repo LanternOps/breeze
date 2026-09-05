@@ -149,6 +149,7 @@
       "webhookSecret": "Webhook Sırrı (isteğe bağlı)",
       "mode": "Modu",
       "script": "Komut Dosyası",
+      "runAs": "Farklı Çalıştır",
       "notificationChannel": "Bildirim Kanalı",
       "severity": "Önem",
       "message": "Mesaj",
@@ -662,7 +663,8 @@
       "startedAt": "Başlangıç Tarihi",
       "duration": "Süre",
       "exitCode": "Çıkış Kodu",
-      "completedAt": "Tamamlanma Tarihi"
+      "completedAt": "Tamamlanma Tarihi",
+      "runAs": "Çalıştırma Bağlamı"
     },
     "status": {
       "running": "Koşuyor...",

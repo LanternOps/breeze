@@ -109,7 +109,19 @@ interface RemediateRequestBase {
  * half of the same contract.
  */
 export type RemediateRequest =
-  | (RemediateRequestBase & { actionKind: 'script'; scriptId: string })
+  | (RemediateRequestBase & {
+      actionKind: 'script';
+      scriptId: string;
+      /**
+       * Operator-chosen run context for this run (#4888). Absent = use the
+       * script's saved default, which is what every run did before the Fix
+       * flow's picker stopped throwing this value away. 'elevated' is
+       * deliberately absent from the union, mirroring `executeScriptSchema`:
+       * elevation stays a property of the saved script, never a launch-time
+       * choice.
+       */
+      runAs?: 'system' | 'user';
+    })
   | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
 export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned' | 'unreachable';
@@ -385,6 +397,11 @@ export async function createRemediationRun(
         actionKind: req.actionKind,
         scriptId: req.actionKind === 'script' ? req.scriptId : null,
         commandType: req.actionKind === 'command' ? req.commandType : null,
+        // #4888 — pinned at creation, exactly like scriptId/parameterSnapshot,
+        // so a later edit to the script row cannot retroactively change the
+        // context the operator authorised. NULL keeps the historical
+        // behaviour: fall back to the script's saved default at dispatch.
+        runAs: req.actionKind === 'script' ? req.runAs ?? null : null,
         parameterSnapshot: req.parameters ?? {},
         status,
         targetCount,
@@ -692,7 +709,14 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
           language: scriptPayload.language,
           content: scriptPayload.content,
           timeoutSeconds: scriptPayload.timeoutSeconds,
-          runAs: scriptPayload.runAs,
+          // #4888 — the operator's choice, pinned on the run at creation,
+          // wins over the script's saved default. Before this the picker
+          // rendered a System / logged-in-user select and the answer was
+          // dropped on the floor (`_runAs` in FixPickerModal.tsx), so a
+          // remediation always ran in whatever context the script row
+          // happened to carry. `?? scriptPayload.runAs` is what keeps every
+          // pre-#4888 run (run_as NULL) behaving identically.
+          runAs: run.runAs ?? scriptPayload.runAs,
           parameters: run.parameterSnapshot ?? {},
         };
       } else {

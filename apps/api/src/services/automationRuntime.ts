@@ -128,7 +128,17 @@ export type RunScriptAction = {
   // #3409 PR2 Task 7: matches scriptParametersSchema's inferred value type —
   // canonicalized to strings once, downstream, at scriptDispatch.ts.
   parameters?: Record<string, string | number | boolean>;
-  runAs?: 'system' | 'user' | 'elevated' | string;
+  /**
+   * Run-context override for this action. Absent = the script's saved default
+   * (`executeRunScriptAction` resolves `action.runAs ?? script.runAs`).
+   *
+   * #4888 narrowed this from `… | string`: the automation form now exposes the
+   * control, so an unrecognised value is a bug rather than a shape the type
+   * has to keep representing. `normalizeAutomationActions` drops anything
+   * outside the enum back to `undefined` — see the note there for why it
+   * drops rather than throws.
+   */
+  runAs?: 'system' | 'user' | 'elevated';
 };
 
 export type SendNotificationAction = {
@@ -225,6 +235,27 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Narrows a stored `run_script` action's run context to the `script_run_as`
+ * enum (#4888).
+ *
+ * DROPS rather than throws on an unrecognised value, deliberately.
+ * `normalizeAutomationActions` is not only the write validator — it also runs
+ * over ALREADY-STORED rows every time an automation EXECUTES:
+ * `createAutomationRunRecord` (via `normalizeAutomationInput`) and
+ * `executeConfigPolicyAutomationRun` both normalize the loaded row, and both
+ * are driven by `jobs/automationWorker.ts` on the scheduled/event path (plus
+ * the manual-trigger routes in `routes/automations.ts`). Throwing here would
+ * therefore not reject a bad edit — it would take a live automation offline
+ * mid-run over a value that has been forwarded harmlessly for as long as the
+ * field has existed. Falling back to `undefined` means "the script's saved
+ * default", which is the conservative outcome and exactly what an action with
+ * no run context has always done.
+ */
+function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
+  return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -387,7 +418,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         type: 'run_script',
         scriptId,
         parameters,
-        runAs: asString(action.runAs),
+        runAs: asRunAs(action.runAs),
       });
       continue;
     }
@@ -1215,11 +1246,11 @@ export async function executeRunScriptAction(
     triggerType: 'automation',
     triggeredBy: context.automation.createdBy ?? null,
     createdBy: context.automation.createdBy ?? null,
-    // action.runAs is unchecked user input (RunScriptAction widens the literal
-    // union to `string`, since normalizeAutomationActions has no enum
-    // validation) — preserve the pre-existing runtime behavior of forwarding
-    // whatever value was configured rather than adding new validation here.
-    runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
+    // #4888 — `action.runAs` is now narrowed to the `script_run_as` enum by
+    // normalizeAutomationActions (anything else becomes undefined), so this no
+    // longer forwards unchecked user input and needs no cast. The `??` is the
+    // whole contract the automation form's "Script default" option relies on.
+    runAs: action.runAs ?? script.runAs,
     requireOnline: true,
     variableScope,
   });
