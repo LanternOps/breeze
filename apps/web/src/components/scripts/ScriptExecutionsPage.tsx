@@ -11,6 +11,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -163,8 +164,20 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     }
 
     const admission = await response.json() as ScriptAdmissionResult;
-    if (admission.targets.some(target => target.admission === 'admitted')) {
+    const admittedTargets = admission.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
       await fetchExecutions();
+      // #4886 mirror — same post-run navigation as ScriptsPage's library run:
+      // a single-device run (which is what "Run again" always seeds) jumps to
+      // that device's Scripts tab with the new execution highlighted; a
+      // multi-device run has no single "the" device, so it stays on this
+      // execution-history page (already the right place) via a self-navigate
+      // that picks up the just-fetched row.
+      if (deviceIds.length === 1) {
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      } else {
+        void navigateTo(scriptExecutionsHref(scriptId));
+      }
     }
     return admission;
   };
