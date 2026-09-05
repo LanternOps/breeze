@@ -199,6 +199,41 @@ const UNSCOPED_DML_BASELINE: Readonly<Record<string, number>> = {
   '2026-10-08-100700-audit-retention-policies-org-unique.sql': 1,
 };
 
+/**
+ * Baseline offenders whose EFFECT has been re-applied by a later migration that
+ * DOES elect system scope, and the file that did it.
+ *
+ * The baseline above records what the shipped BYTES do and can never shrink —
+ * those files are content-hash immutable. This map records the separate fact
+ * that the rows they failed to write have since been written, so the repair
+ * cannot be quietly undone: a replay migration that is renamed, deleted, or
+ * itself written without the scope line fails here rather than in production
+ * six months later. Adding an entry is a claim about a specific file; it does
+ * not (and must not) remove anything from the baseline.
+ *
+ * Not every baseline entry needs an entry here. Most are self-detecting — a
+ * `CREATE UNIQUE INDEX` right after a dedup fails loudly on surviving
+ * duplicates — or seed data that a later migration rewrites anyway. Only a
+ * silent write (a pure backfill, a permission grant) needs a replay.
+ */
+const REPLAYED_BY: Readonly<Record<string, string>> = {
+  // #4483 / PR #4484 — v0.109.0 pre-tag audit.
+  '2026-09-11-b-incident-atomic-winners.sql': '2026-09-30-100000-rls-scoped-backfill-replay.sql',
+  '2026-09-25-c-recovery-authorization-subject.sql':
+    '2026-09-30-100000-rls-scoped-backfill-replay.sql',
+  // #4483 follow-up — v0.110.0 pre-tag audit. Two permission grants that
+  // v0.109.0's audit missed plus the three unscoped writes merged since.
+  '2026-09-25-b-cross-site-restore-permission.sql': '2026-10-09-000600-rls-scoped-replay-v0110.sql',
+  '2026-09-27-technician-ticket-write-permissions.sql':
+    '2026-10-09-000600-rls-scoped-replay-v0110.sql',
+  '2026-10-06-100101-authenticator-attestation-state.sql':
+    '2026-10-09-000600-rls-scoped-replay-v0110.sql',
+  '2026-10-08-100600-audit-retention-manage-permission.sql':
+    '2026-10-09-000600-rls-scoped-replay-v0110.sql',
+  '2026-10-08-100700-audit-retention-policies-org-unique.sql':
+    '2026-10-09-000600-rls-scoped-replay-v0110.sql',
+};
+
 describe('migration DML runs under system scope', () => {
   const files = listMigrationFilenames();
 
@@ -265,6 +300,47 @@ describe('migration DML runs under system scope', () => {
       `Baseline names migration(s) that are no longer on disk: ${missing.join(', ')}. ` +
         'A shipped migration was renamed or deleted, which re-applies it under the new ' +
         'name on every already-migrated database.',
+    ).toEqual([]);
+  });
+
+  it('keeps every declared replay migration on disk, ordered after its offender, and scoped', () => {
+    const onDisk = new Set(files);
+    const problems: string[] = [];
+
+    for (const [offender, replay] of Object.entries(REPLAYED_BY)) {
+      if (!(offender in UNSCOPED_DML_BASELINE)) {
+        problems.push(`${offender}: claimed as replayed but absent from UNSCOPED_DML_BASELINE`);
+        continue;
+      }
+      if (!onDisk.has(replay)) {
+        problems.push(`${offender}: replay ${replay} is not on disk (renamed or deleted?)`);
+        continue;
+      }
+      // autoMigrate applies files in localeCompare order, so a replay that
+      // sorts BEFORE its offender runs first and repairs nothing.
+      if (replay.localeCompare(offender) <= 0) {
+        problems.push(`${offender}: replay ${replay} sorts at or before it, so it runs first`);
+      }
+
+      const replaySql = readFileSync(path.join(MIGRATIONS_DIR, replay), 'utf8');
+      const unscoped = analyzeMigrationDml(replaySql).filter((statement) => !statement.scoped);
+      if (unscoped.length > 0) {
+        problems.push(
+          `${replay}: the replay itself writes ${unscoped.length} statement(s) without ` +
+            `electing system scope — it reproduces the bug it exists to repair`,
+        );
+      }
+      if (analyzeMigrationDml(replaySql).length === 0) {
+        problems.push(`${replay}: contains no DML at all, so it cannot be replaying anything`);
+      }
+    }
+
+    expect(
+      problems,
+      `Declared replay migrations that cannot do their job:\n  ${problems.join('\n  ')}\n\n` +
+        'REPLAYED_BY records that a shipped, checksum-immutable offender has had its rows ' +
+        'written by a later system-scoped migration. Keep that migration on disk and scoped, ' +
+        'or the repair silently stops existing.',
     ).toEqual([]);
   });
 });
