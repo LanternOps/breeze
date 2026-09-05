@@ -2190,6 +2190,14 @@ jobs:
           # hosted SaaS from self-hosted, gates the email-verification flow on
           # /auth/register-partner. CI runs in self-hosted mode.
           IS_HOSTED=false
+          # RMM-QA-164: fresh installs now seed the system Partner Admin role
+          # with force_mfa=true, so the bootstrap admin would be minted
+          # mfa=false and get 428 mfa_enrollment_required on every
+          # authMiddleware-gated GET below. This sweep is about endpoint
+          # reachability, not the MFA wall (proven by the real-Postgres
+          # suites), so use the documented relief valve. The stored flag is
+          # still asserted with the valve off — see the step after login.
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
           # Required in production by the Wave 3 live-authorization epoch
           # rollout — compat until the fleet drains version-one writers.
           EVENT_PERMISSION_EPOCH_MODE=compat
@@ -2253,7 +2261,30 @@ jobs:
           fi
           echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+          # RMM-QA-164: with MFA_FORCE_FOR_PARTNER_ADMIN=false in this stack's
+          # .env the role-force component must be suppressed end to end
+          # (proves the root compose actually threads the valve, D6).
+          ENROLL=$(echo "${RESPONSE}" | jq -r '.mfaEnrollmentRequired')
+          echo "mfaEnrollmentRequired=${ENROLL} (expected false: relief valve set in .env)"
+          if [ "${ENROLL}" != "false" ]; then
+            echo "ERROR: relief valve MFA_FORCE_FOR_PARTNER_ADMIN=false was not honoured by the api container"
+            exit 1
+          fi
           echo "Login successful."
+
+      - name: Assert seeded Partner Admin stores force_mfa=true (RMM-QA-164)
+        run: |
+          # The finding's headline symptom was "fresh stack stored false".
+          # This reads the seeded global template straight from Postgres,
+          # independent of the relief valve (which only affects enforcement).
+          STORED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml.ci \
+            exec -T postgres psql -U breeze -d breeze -tAc \
+            "SELECT force_mfa FROM roles WHERE name = 'Partner Admin' AND is_system AND partner_id IS NULL")
+          echo "roles.force_mfa for the seeded system Partner Admin template: '${STORED}'"
+          if [ "${STORED}" != "t" ]; then
+            echo "ERROR: fresh-stack seed stored force_mfa='${STORED}' (expected 't')"
+            exit 1
+          fi
 
       - name: Smoke test API endpoints
         env:
@@ -2468,6 +2499,10 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
+          jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN_BODY}" >/dev/null || {
+            echo "ERROR: installer smoke role-MFA relief valve did not survive reboot"
+            exit 1
+          }
           TOKEN=$(jq -er '.tokens.accessToken' <<<"${LOGIN_BODY}")
           RESPONSE=$(curl -sk -o /tmp/guided-trust-response -w '%{http_code}' \
             -X POST https://localhost/api/v1/remote/sessions \
@@ -2689,6 +2724,9 @@ jobs:
           # The built-in Workspace extension defaults ON in the dev override; its
           # migrations are pure cost for a portal hydration run, so keep it off.
           BREEZE_WORKSPACE_ENABLED=false
+          # This job tests portal hydration and billing UI, not MFA enrollment.
+          # Keep the stored forced-MFA flag; suppress only its role component.
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
           # Image refs — the base docker-compose.yml requires all of these via
           # `${VAR:?}` before profile filtering, even though the dev override
           # builds api/web/portal from this checkout and stubs binaries-init.
@@ -2729,6 +2767,24 @@ jobs:
 
       - name: Show the stack descriptor
         run: cat .breeze-stack.json
+
+      - name: Verify hydration fixture MFA posture
+        run: |
+          BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -c '.admin' .breeze-stack.json)")
+          jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {
+            echo "ERROR: hydration fixture did not receive the role-MFA relief valve"
+            exit 1
+          }
+          PG_CONTAINER=$(jq -er '.pgContainer' .breeze-stack.json)
+          STORED=$(docker exec "${PG_CONTAINER}" psql -U breeze -d breeze -tAc \
+            "SELECT force_mfa FROM roles WHERE name = 'Partner Admin' AND scope = 'partner' AND is_system AND partner_id IS NULL AND org_id IS NULL")
+          [ "${STORED}" = "t" ] || {
+            echo "ERROR: hydration fixture's system Partner Admin must still store force_mfa=true"
+            exit 1
+          }
 
       # multi-currency.spec.ts is the only `waitForHydration` caller whose flow
       # reaches the portal — its `public-quote-accept` step is the exact

@@ -280,6 +280,9 @@ x-api-env: &api-env
   # apps/api/src/config/envComposeParity.test.ts.
   # Auth / security / session
   ENABLE_2FA: ${ENABLE_2FA:-}
+  # RMM-QA-164 relief valve (see .env.example). Empty when unset → envFlag
+  # default true; mapped so a locked-out self-hoster can actually flip it.
+  MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
   # present only in .env is inert unless it is listed here.

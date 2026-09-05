@@ -584,6 +584,23 @@ describe('authMiddleware', () => {
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/link/start/abc')).toBe(false);
   });
 
+  it('exempts /auth/cf-access-logout/prepare (a logout action) from forced MFA enrollment (RMM-QA-164)', () => {
+    // The route durably revokes refresh authority and mints a one-time
+    // navigation ticket to the Cloudflare Access logout hops — pure
+    // teardown, the CF-fronted twin of /auth/logout. A policy-required,
+    // unenrolled Partner Admin (every fresh-install bootstrap admin since
+    // RMM-QA-164) must still be able to sign out; without this the gate
+    // 428s the prepare call and the CF session can never be terminated.
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/auth/cf-access-logout/prepare')).toBe(true);
+  });
+
+  it('does not widen the logout exemption beyond the prepare route', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/complete')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare/extra')).toBe(false);
+  });
+
   it('permits an enrolled user without consulting the resolver at all', async () => {
     const app = new Hono();
     app.use(authMiddleware);

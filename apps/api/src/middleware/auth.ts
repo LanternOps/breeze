@@ -217,6 +217,13 @@ export function isMfaEnrollmentExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
   if (rel === '/auth/logout') return true;
+  // The CF-Access-fronted twin of /auth/logout: it durably revokes refresh
+  // authority and mints a one-time ticket to the Cloudflare logout hops —
+  // pure teardown. A policy-required, unenrolled user (every fresh-install
+  // bootstrap Partner Admin since RMM-QA-164) must still be able to sign
+  // out, or the CF session can never be terminated. Exact match: the GET
+  // hops are ticket-authenticated and never reach this gate.
+  if (rel === '/auth/cf-access-logout/prepare') return true;
   // /users/me is exempted WHOLESALE so an unenrolled user can load their profile
   // (GET) and finish enrolling. This path-level exemption cannot see the body,
   // so the narrower rule — that it must NOT admit a RECOVERY-ADDRESS change

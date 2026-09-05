@@ -19,10 +19,17 @@
  *    the real signup transaction.
  *
  * Constructing the required-policy condition:
- *   `partnerCreate.ts` seeds new "Partner Admin" roles with force_mfa = false.
- *   So these tests install a BEFORE INSERT trigger for the duration of one test
- *   to produce, explicitly, the row state a corrected seed would produce — a
- *   force_mfa admin role, or a partner whose security settings require MFA.
+ *   Role axis — `createPartner()` now stores force_mfa = true on the tenant
+ *   Partner Admin row itself (RMM-QA-164). The role-axis test therefore
+ *   exercises the REAL row with no trigger; the kill-switch control below
+ *   proves those assertions depend on the stored flag being honoured
+ *   (MFA_FORCE_FOR_PARTNER_ADMIN is read at call time, config/env.ts).
+ *   Settings axis — a BEFORE INSERT trigger on partners still models a
+ *   tenant whose security settings require MFA.
+ *
+ * ENABLE_2FA is set to 'true' before the dynamic imports on purpose: with
+ * it off, login/verify short-circuit to mfa: true and every `mfa: false`
+ * assertion here would be vacuous (verifier concern 4).
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
@@ -76,7 +83,6 @@ async function attachTrigger(name: string, table: string): Promise<void> {
 
 async function dropTriggers(): Promise<void> {
   const db = getTestDb();
-  await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_role_force_mfa ON roles'));
   await db.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_partner_require_mfa ON partners'));
 }
 
@@ -196,23 +202,18 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     expect(rows[0]?.p_verified).not.toBeNull();
   });
 
-  it('does NOT mint mfa=true when the new admin role forces MFA (role axis)', async () => {
-    await installTrigger(
-      'breeze_test_role_force_mfa',
-      `IF NEW.scope::text = 'partner' AND NEW.name = 'Partner Admin' THEN NEW.force_mfa := true; END IF;`,
-    );
-    await attachTrigger('breeze_test_role_force_mfa', 'roles');
-
+  it('stores force_mfa=true on the real createPartner row and does NOT mint mfa=true (role axis, no trigger — RMM-QA-164)', async () => {
     const { status, body, accessClaims } = await parkAndVerify('ForceMfaCo');
     expect(status).toBe(200);
 
     const db = getTestDb();
-    const forced = await db.execute(sql`
-      SELECT r.force_mfa FROM roles r
-      JOIN partners p ON p.id = r.partner_id
-      WHERE p.id = ${body.partner.id} AND r.name = 'Partner Admin'
+    const stored = await db.execute(sql`
+      SELECT r.force_mfa, r.is_system FROM roles r
+      WHERE r.partner_id = ${body.partner.id} AND r.name = 'Partner Admin'
     `);
-    expect(forced[0]?.force_mfa).toBe(true);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.is_system).toBe(true);
+    expect(stored[0]?.force_mfa).toBe(true);
 
     // The user holds NO factor and policy REQUIRES one → no MFA claim, and the
     // response must push them into enrollment.
@@ -243,11 +244,21 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     expect(body.mfaEnrollmentRequired).toBe(true);
   });
 
-  it('still mints mfa=true when nothing requires MFA (control — proves the assertions above are not vacuous)', async () => {
-    const { status, accessClaims, body } = await parkAndVerify('NoPolicyCo');
-    expect(status).toBe(200);
-    expect(accessClaims.mfa).toBe(true);
-    expect(body.mfaEnrollmentRequired).toBe(false);
+  it('still mints mfa=true with the kill switch off (control — proves the role-axis assertions depend on the stored flag being honoured)', async () => {
+    // After RMM-QA-164 every fresh tenant admin is forced, so "nothing requires
+    // MFA" can no longer be produced by createPartner. The documented relief
+    // valve is the only legitimate way to get there; mfaForcePartnerAdmin()
+    // reads the env at call time, so the override needs no re-import.
+    const previous = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+    process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+    try {
+      const { status, accessClaims, body } = await parkAndVerify('KillSwitchCo');
+      expect(status).toBe(200);
+      expect(accessClaims.mfa).toBe(true);
+      expect(body.mfaEnrollmentRequired).toBe(false);
+    } finally {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = previous;
+    }
   });
 
   it('a second click on the same token is a no-op — one winner, generic 400 on the loser', async () => {
