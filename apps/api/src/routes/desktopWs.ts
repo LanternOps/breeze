@@ -210,6 +210,7 @@ async function validateViewerSessionAccess(
   authorizationHeader: string | undefined,
   sessionId: string,
   prevalidatedViewerToken?: ViewerTokenPayload,
+  accessMode: 'live' | 'failure-diagnostics' = 'live',
 ): Promise<ViewerAccessResult> {
   if (!authorizationHeader?.startsWith('Bearer ')) {
     return { valid: false, status: 401, error: 'Missing viewer token' };
@@ -225,7 +226,8 @@ async function validateViewerSessionAccess(
     return { valid: false, status: 401, error: 'Viewer token revoked' };
   }
 
-  if (await isViewerSessionRevoked(payload.sessionId)) {
+  const sessionRevoked = await isViewerSessionRevoked(payload.sessionId);
+  if (sessionRevoked && accessMode === 'live') {
     return { valid: false, status: 401, error: 'Session closed' };
   }
 
@@ -275,7 +277,14 @@ async function validateViewerSessionAccess(
     // session to reconnect; otherwise a lingering viewer token (valid for up to
     // the viewer-token TTL, see getViewerAccessTokenExpirySeconds()) resurrects
     // a session the operator believes is over. Finding #5.
-    if (session.status === 'disconnected' || session.status === 'failed') {
+    // The status poll may read a terminal failure after agentWs revokes the
+    // session so the viewer can explain why capture failed. This exception
+    // never grants live access, and individual token revocation still wins.
+    const readingFailure = accessMode === 'failure-diagnostics' && session.status === 'failed';
+    if (sessionRevoked && !readingFailure) {
+      return { valid: false as const, status: 401 as const, error: 'Session closed' };
+    }
+    if (session.status === 'disconnected' || (session.status === 'failed' && !readingFailure)) {
       return { valid: false as const, status: 401 as const, error: 'Session ended' };
     }
 
@@ -1574,7 +1583,9 @@ export function createDesktopWsRoutes(
     zValidator('param', desktopSessionIdParamSchema),
     async (c) => {
       const { id: sessionId } = c.req.valid('param');
-      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      const access = await validateViewerSessionAccess(
+        c.req.header('Authorization'), sessionId, undefined, 'failure-diagnostics',
+      );
       if (!access.valid) {
         return c.json({ error: access.error }, access.status);
       }
@@ -1582,7 +1593,7 @@ export function createDesktopWsRoutes(
       return c.json({
         id: access.session.id,
         status: access.session.status,
-        webrtcAnswer: access.session.webrtcAnswer,
+        webrtcAnswer: access.session.status === 'failed' ? null : access.session.webrtcAnswer,
         errorMessage: access.session.errorMessage,
         startedAt: access.session.startedAt,
         endedAt: access.session.endedAt,

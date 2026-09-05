@@ -383,3 +383,106 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
     });
   });
 });
+
+
+// A failed capture revokes the session before the viewer polls its result.
+// Only this read-only endpoint may retrieve that diagnostic (#4162).
+describe('GET /:id/viewer/session failure diagnostics', () => {
+  const errorMessage = 'no display attached — open the lid or attach an external display';
+  const failedSession = { ...ACTIVE_SESSION, status: 'failed', errorMessage, webrtcAnswer: 'v=0 stale-answer' };
+  const request = () => buildApp().request(`/${SESSION_ID}/viewer/session`, {
+    headers: { Authorization: 'Bearer valid.viewer.token' },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    mockViewerSelect({ session: failedSession, device: DEVICE, user: USER });
+  });
+
+  it.each([true, false])('returns the capture diagnosis with session revocation=%s', async (revoked) => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(revoked);
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: SESSION_ID, status: 'failed', errorMessage, webrtcAnswer: null });
+    expect(checkRemoteAccess).toHaveBeenCalledWith(DEVICE_ID, 'webrtcDesktop');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'connecting', 'active', 'disconnected', 'denied'])('still rejects a revoked %s session', async (status) => {
+    mockViewerSelect({ session: { ...failedSession, status }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Session closed' });
+  });
+
+  it.each([
+    ['offer', 'POST'], ['ws-ticket', 'POST'], ['ice-servers', 'GET'],
+  ])('does not grant live access to %s', async (route, method) => {
+    const res = route === 'offer' ? await offerRequest() : await buildApp().request(`/${SESSION_ID}/viewer/${route}`, {
+      method, headers: { Authorization: 'Bearer valid.viewer.token' },
+    });
+    expect(res.status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing authentication', async () => {
+    expect((await buildApp().request(`/${SESSION_ID}/viewer/session`)).status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects expired or invalid tokens', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue(null);
+    expect((await request()).status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('honors individual token revocation even for failure diagnostics', async () => {
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(true);
+    expect((await request()).status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects a token bound to another session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({ ...VALID_PAYLOAD, sessionId: '22222222-2222-4222-8222-222222222222' } as never);
+    expect((await request()).status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('does not expose another tenant owner’s failure', async () => {
+    mockViewerSelect({
+      session: { ...failedSession, userId: 'another-user' },
+      device: { ...DEVICE, orgId: '22222222-2222-4222-8222-222222222222' },
+      user: { ...USER, id: 'another-user' },
+    });
+    const res = await request();
+    expect(res.status).toBe(403);
+    expect(await res.json()).not.toHaveProperty('errorMessage');
+  });
+
+  it('rejects inactive owners', async () => {
+    mockViewerSelect({ session: failedSession, device: DEVICE, user: { ...USER, status: 'disabled' } });
+    expect((await request()).status).toBe(403);
+  });
+
+  it('rechecks device access policy', async () => {
+    vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: false, reason: 'Disabled by policy' });
+    const res = await request();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Disabled by policy' });
+  });
+
+  it('rejects a missing session', async () => {
+    mockViewerSelect(undefined);
+    expect((await request()).status).toBe(404);
+  });
+
+  it('rejects non-desktop sessions', async () => {
+    mockViewerSelect({ session: { ...failedSession, type: 'terminal' }, device: DEVICE, user: USER });
+    expect((await request()).status).toBe(400);
+  });
+});

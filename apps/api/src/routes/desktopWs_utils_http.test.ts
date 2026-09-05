@@ -914,6 +914,15 @@ describe('desktopWs', () => {
         jti: 'viewer-jti-revoked',
       });
       vi.mocked(isViewerSessionRevoked).mockResolvedValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: () => ({ innerJoin: () => ({ innerJoin: () => ({ where: () => ({
+          limit: async () => [{
+            session: { id: SESSION_ID, type: 'desktop', status: 'active', userId: 'user-revoked' },
+            device: { id: 'device-1' },
+            user: { id: 'user-revoked', email: 'revoked@example.com', status: 'active' },
+          }],
+        }) }) }) }),
+      } as never);
 
       const app = buildApp();
       const res = await app.request(`/${SESSION_ID}/viewer/session`, {
@@ -922,7 +931,7 @@ describe('desktopWs', () => {
 
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ error: 'Session closed' });
-      expect(db.select).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalledOnce();
     });
   });
 
