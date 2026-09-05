@@ -659,7 +659,20 @@ authenticatorRoutes.post(
         attestationVerifiedAt: attestationHolds ? attested.verifiedAt : null,
         attestationKeyId: attestationHolds ? attested.keyId : null,
         attestedPublicKeySha256: attestationHolds ? attestedKeyDigest : null,
-        attestationEvidence: attestationHolds ? attested.evidence : {},
+        // Evidence follows a THIRD rule, not `attestationHolds` (#1374 W04).
+        // There are three states, and only the middle one must be blanked:
+        //
+        //  - verified and usable      -> keep it: it describes what was proved.
+        //  - CLAIMED verified but the bound-key digest is unavailable -> blank
+        //    it. A row labelled `unattested` carrying attested-looking evidence
+        //    is forensically worse than either honest state (W02's rule, and
+        //    the reason this is not simply `attested.evidence`).
+        //  - not verified at all      -> keep it. W04 verifiers put
+        //    `evidence.rejected` here saying WHY the attestation failed, and it
+        //    is the only durable answer to "why is my phone not L4" — the
+        //    alternative is a console line with no user or attempt id on it.
+        attestationEvidence:
+          attestationHolds || attested.verifiedAt === null ? attested.evidence : {},
         appIntegrityVerifiedAt: attestationHolds ? attested.appIntegrityVerifiedAt : null,
         possessionVerifiedAt: new Date(),
         mobileDeviceId,
