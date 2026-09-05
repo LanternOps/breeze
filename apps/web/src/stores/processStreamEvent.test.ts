@@ -226,3 +226,43 @@ describe('plan-mode step sequencing under approval-gated ordering', () => {
     expect(get().activePlan?.status).toBe('executing');
   });
 });
+
+describe('tool_result clears a pendingApproval decided elsewhere', () => {
+  // The approval can be decided on the phone (mobile push) rather than via
+  // this card. The stream then continues with tool_result for the very tool
+  // the card was waiting on; nothing used to clear `pendingApproval`, so the
+  // card stayed pinned over a conversation that had already moved on.
+  function run(events: Parameters<typeof processStreamEvent>[0][]) {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    let current: string | null = null;
+    for (const ev of events) {
+      current = processStreamEvent(
+        ev,
+        (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+        () => ({ ...state, ...patch }),
+        current,
+      );
+    }
+    return patch;
+  }
+
+  it('clears pendingApproval when the awaited tool reports its result', () => {
+    const patch = run([
+      { type: 'tool_use_start', toolUseId: 'tu-1', toolName: 'manage_services', input: { action: 'restart' } },
+      { type: 'approval_required', executionId: 'e1', toolName: 'manage_services', input: { action: 'restart' }, description: 'Restart Spooler', intentBacked: true },
+      { type: 'tool_result', toolUseId: 'tu-1', output: 'ok', isError: false },
+    ]);
+    expect(patch.pendingApproval).toBeNull();
+    expect(patch.messages?.some((m) => m.role === 'tool_result')).toBe(true);
+  });
+
+  it('leaves pendingApproval alone for a different tool\'s result', () => {
+    const patch = run([
+      { type: 'tool_use_start', toolUseId: 'tu-0', toolName: 'get_device_context', input: {} },
+      { type: 'approval_required', executionId: 'e1', toolName: 'manage_services', input: {}, description: 'Restart Spooler', intentBacked: true },
+      { type: 'tool_result', toolUseId: 'tu-0', output: 'ctx', isError: false },
+    ]);
+    expect(patch.pendingApproval).toMatchObject({ executionId: 'e1' });
+  });
+});
