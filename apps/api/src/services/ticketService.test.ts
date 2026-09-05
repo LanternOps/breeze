@@ -3478,6 +3478,39 @@ describe('moveTicketOrg', () => {
     throw new Error('no child-table rewrite tx.execute() was issued');
   }
 
+  it.each([
+    { actor: { userId: 'human', name: 'Human' }, userId: 'human', authorType: 'internal', originPrincipalKind: 'user' },
+    { actor: { kind: 'ai_agent' as const, agentId: 'agent', name: 'Ticket Agent' }, userId: null, authorType: 'ai_agent', originPrincipalKind: 'ai_agent' },
+  ])('preserves comment and event attribution for $authorType moves', async ({ actor, userId, authorType, originPrincipalKind }) => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta', currencyCode: 'USD' },
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB' }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'comment' }]);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1', userId, authorName: actor.name, authorType, originPrincipalKind,
+      agentRunId: null, commentType: 'system', isPublic: false,
+    }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated', orgId: 'oB', actorUserId: userId,
+    }));
+    expect(auditMock).toHaveBeenCalledTimes(2);
+    for (const [audit] of auditMock.mock.calls) {
+      expect(audit).toMatchObject(userId === null
+        ? { actorType: 'ai_agent', actorId: 'agent', initiatedBy: 'ai' }
+        : { actorId: 'human' });
+    }
+  });
+
   it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
     // The tickets UPDATE below changes tickets.org_id while time_entries and
     // ticket_parts still point at the old org, so both composite FKs must be
