@@ -23,18 +23,6 @@ func grandchildHeartbeatScript(id, beat string) ScriptExecution {
 	return s
 }
 
-func waitForNonEmptyFile(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("heartbeat file %q never appeared", path)
-}
-
 func fileSize(t *testing.T, path string) int64 {
 	t.Helper()
 	info, err := os.Stat(path)

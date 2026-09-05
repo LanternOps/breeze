@@ -47,7 +47,7 @@ func (nativeWindowsJobPrimitives) CreateJob() (jobHandle, error) {
 	if err != nil {
 		return jobHandle{}, fmt.Errorf("CreateJobObject: %w", err)
 	}
-	return jobHandle{handle: uintptr(handle), native: handle}, nil
+	return jobHandle{handle: uintptr(handle)}, nil
 }
 
 func (nativeWindowsJobPrimitives) SetJobLimits(job jobHandle, flags uint32) error {
@@ -149,14 +149,13 @@ func (nativeWindowsJobPrimitives) CloseJob(job jobHandle) error {
 	return windows.CloseHandle(handle)
 }
 
+// nativeJobHandle converts the portable handle back. windows.Handle is defined
+// as a uintptr, so this is lossless.
 func nativeJobHandle(job jobHandle) (windows.Handle, error) {
-	if handle, ok := job.native.(windows.Handle); ok && handle != 0 {
-		return handle, nil
+	if !job.valid() {
+		return 0, errors.New("job object handle is not available")
 	}
-	if job.handle != 0 {
-		return windows.Handle(job.handle), nil
-	}
-	return 0, errors.New("job object handle is not available")
+	return windows.Handle(job.handle), nil
 }
 
 // startContained runs the OD4-B launch sequence for a script.

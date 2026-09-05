@@ -23,19 +23,20 @@ const jobObjectLimitKillOnJobClose uint32 = 0x00002000
 
 // jobHandle is an opaque Windows Job Object handle. The zero value means "no
 // job" — checked with valid().
+//
+// A bare uintptr rather than a windows.Handle so this file stays portable:
+// windows.Handle IS a uintptr, so job_windows.go converts back losslessly.
 type jobHandle struct {
 	handle uintptr
-	native any
 }
 
-func (j jobHandle) valid() bool { return j.handle != 0 || j.native != nil }
+func (j jobHandle) valid() bool { return j.handle != 0 }
 
 // suspendedProcess is a process created with CREATE_SUSPENDED that has not been
 // resumed yet. It exists only between CreateProcessSuspended and Resume.
 type suspendedProcess struct {
-	pid    int
-	cmd    *exec.Cmd
-	native any
+	pid int
+	cmd *exec.Cmd
 }
 
 // launchSpec describes the process launchContained should create. Cmd carries

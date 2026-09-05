@@ -29,10 +29,31 @@ func sleepScript(id string, seconds int) ScriptExecution {
 
 // sigtermTrapScript traps SIGTERM, writes marker, then exits cleanly. If the
 // marker exists after a cancel, SIGTERM was genuinely delivered before SIGKILL.
-func sigtermTrapScript(id, marker string, seconds int) ScriptExecution {
+//
+// It touches `ready` only AFTER the trap is installed, and the tests wait for
+// that file rather than for the process merely existing. waitForRunning returns
+// as soon as cmd.Start succeeded, which is well before bash has parsed and run
+// the trap builtin — a SIGTERM landing in that window takes the DEFAULT action
+// and no marker is ever written. That made the graceful test flaky, and worse,
+// made its zero-grace twin pass for the wrong reason (marker absent because the
+// trap was not installed yet, not because SIGKILL beat it).
+func sigtermTrapScript(id, marker, ready string, seconds int) ScriptExecution {
 	s := sleepScript(id, seconds)
-	s.Script = fmt.Sprintf("trap 'printf caught > %q; exit 0' TERM\n", marker) + s.Script
+	s.Script = fmt.Sprintf("trap 'printf caught > %q; exit 0' TERM\nprintf ready > %q\n", marker, ready) + s.Script
 	return s
+}
+
+// waitForNonEmptyFile blocks until path exists with content.
+func waitForNonEmptyFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("file %q never appeared", path)
 }
 
 // waitForRunning blocks until the executor has an entry for id whose process
@@ -125,11 +146,13 @@ func TestCancelledResultCarriesTheCancellationMarker(t *testing.T) {
 
 func TestGracefulEscalationSendsSIGTERMBeforeSIGKILL(t *testing.T) {
 	skipWithoutBash(t)
-	marker := filepath.Join(t.TempDir(), "term-marker")
+	dir := t.TempDir()
+	marker, ready := filepath.Join(dir, "term-marker"), filepath.Join(dir, "ready")
 	e := newTestExecutor()
 	done := make(chan struct{})
-	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-3", marker, 60)) }()
+	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-3", marker, ready, 60)) }()
 	waitForRunning(t, e, "id-3")
+	waitForNonEmptyFile(t, ready) // the trap is installed only now
 
 	outcome, err := e.Cancel("id-3", "cc-3", 5)
 	if err != nil {
@@ -146,11 +169,15 @@ func TestGracefulEscalationSendsSIGTERMBeforeSIGKILL(t *testing.T) {
 
 func TestZeroGraceSkipsStraightToKill(t *testing.T) {
 	skipWithoutBash(t)
-	marker := filepath.Join(t.TempDir(), "term-marker")
+	dir := t.TempDir()
+	marker, ready := filepath.Join(dir, "term-marker"), filepath.Join(dir, "ready")
 	e := newTestExecutor()
 	done := make(chan struct{})
-	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-5", marker, 60)) }()
+	go func() { defer close(done); _, _ = e.Execute(sigtermTrapScript("id-5", marker, ready, 60)) }()
 	waitForRunning(t, e, "id-5")
+	// Without this the marker could be absent merely because the trap was never
+	// installed, and this test would pass without proving anything.
+	waitForNonEmptyFile(t, ready)
 
 	if _, err := e.Cancel("id-5", "cc-5", 0); err != nil {
 		t.Fatal(err)
