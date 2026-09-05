@@ -367,4 +367,66 @@ describe('UpdateRingForm — unrated-patch opt-in (#3758)', () => {
     const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
     expect(values.categoryRules?.[0]).toMatchObject({ autoApproveUnrated: true });
   });
+
+  // A legacy category override row saved before this opt-in existed has no
+  // autoApproveUnrated key at all — must hydrate to an unchecked toggle, not a
+  // crash or an uncontrolled-input warning.
+  it('hydrates a legacy category override (no autoApproveUnrated key) to an unchecked toggle', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          name: 'Legacy',
+          autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+          categoryRules: [{ category: 'security', autoApprove: true, autoApproveSeverities: ['critical'] }],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('ring-category-0-auto-approve-unrated-toggle')).not.toBeChecked();
+  });
+
+  // addOverride pre-fills a new override from the default rule's CURRENT
+  // values (mirrors the existing autoApproveSeverities pre-fill) — cover the
+  // pre-fill-true branch, not just the click-to-true branch above.
+  it('pre-fills a new override from a default rule that already has the opt-in on', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-critical'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-unrated-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /add override/i }));
+
+    expect(screen.getByTestId('ring-category-0-auto-approve-unrated-toggle')).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.categoryRules?.[0]).toMatchObject({ autoApproveUnrated: true });
+  });
+
+  // The evaluator treats autoApproveUnrated as strictly additive: an empty
+  // severity set (and third-party off) approves nothing even with the opt-in
+  // on (apps/api/.../patchApprovalEvaluator.ts — "OS path" severities.length
+  // === 0 short-circuit runs before the unrated check). The form must keep
+  // blocking submit in that state so a save can't silently configure a
+  // no-op ring — this is not a bug, but it needs a regression test so nobody
+  // "fixes" the validation to exempt autoApproveUnrated later.
+  it('still blocks submit when autoApproveUnrated is on but no severities are selected', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-unrated-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await screen.findByText(
+      'Select at least one severity or enable third-party app auto-approval.'
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });

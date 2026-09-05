@@ -252,6 +252,7 @@ export default function UpdateRingForm({
       categoryRules: (merged.categoryRules ?? []).map((r) => ({
         ...r,
         autoApproveSeverities: r.autoApproveSeverities ?? [],
+        autoApproveUnrated: r.autoApproveUnrated ?? false,
         deferralDaysOverride: r.deferralDaysOverride ?? inheritedHold,
       })),
     };
