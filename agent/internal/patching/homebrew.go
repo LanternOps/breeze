@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,27 @@ const brewCaskPrefix = "cask:"
 var ErrBrewUnavailable = errors.New("homebrew not installed")
 
 // HomebrewProvider integrates with Homebrew on macOS.
-type HomebrewProvider struct{}
+//
+// A single HomebrewProvider is constructed once and lives for the process
+// lifetime (see NewDefaultManager), which is what makes the cleanup
+// debounce below safe to hold as instance state rather than needing to
+// thread it through the caller.
+type HomebrewProvider struct {
+	cleanupMu       sync.Mutex
+	cleanupTimer    *time.Timer
+	cleanupDebounce time.Duration // overridden in tests; <=0 means use defaultCleanupDebounce
+	cleanupFunc     func()        // overridden in tests; nil means use h.runBrewCleanup
+}
+
+// defaultCleanupDebounce is how long scheduleCleanup waits after the most
+// recent successful Install before actually running `brew cleanup`. Patch
+// jobs install packages one at a time in a tight loop (see
+// executePatchInstallCommand in agent/internal/heartbeat), so a batch of N
+// upgrades calls scheduleCleanup N times in quick succession; each call
+// resets the timer, so only the last one in the batch survives to fire —
+// giving "once per batch" behavior (issue #4912) without the provider
+// interface needing a separate batch-end hook.
+const defaultCleanupDebounce = 30 * time.Second
 
 // NewHomebrewProvider creates a new HomebrewProvider.
 func NewHomebrewProvider() *HomebrewProvider {
@@ -229,10 +250,67 @@ func (h *HomebrewProvider) Install(patchID string) (InstallResult, error) {
 		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, truncatePatchOutput(output))
 	}
 
+	// Cleanup after a successful upgrade only — never per package (see
+	// scheduleCleanup) and never able to fail this job, since it runs
+	// asynchronously after InstallResult has already been returned below.
+	h.scheduleCleanup()
+
 	return InstallResult{
 		PatchID: patchID,
 		Message: truncatePatchOutput(output),
 	}, nil
+}
+
+// brewCleanupArgs builds the `brew cleanup --prune=all` args. Pure and
+// table-testable independent of any process execution, matching the
+// ensureBrewArgs/ensureBrewListArgs convention in this file.
+func brewCleanupArgs() []string {
+	return []string{"cleanup", "--prune=all"}
+}
+
+// scheduleCleanup debounces `brew cleanup --prune=all` so a batch of
+// consecutive Install calls (one job upgrading N formulae/casks) triggers
+// exactly one cleanup run, fired shortly after the last package in the
+// batch finishes — not once per package. Safe to call concurrently.
+func (h *HomebrewProvider) scheduleCleanup() {
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+
+	fn := h.cleanupFunc
+	if fn == nil {
+		fn = h.runBrewCleanup
+	}
+
+	debounce := h.cleanupDebounce
+	if debounce <= 0 {
+		debounce = defaultCleanupDebounce
+	}
+
+	if h.cleanupTimer != nil {
+		h.cleanupTimer.Stop()
+	}
+	h.cleanupTimer = time.AfterFunc(debounce, fn)
+}
+
+// runBrewCleanup actually runs `brew cleanup --prune=all` through the same
+// brewCommand() path Scan/Install/Uninstall use, so it executes as the
+// console user via sudo -n -H -u when the agent is running as root.
+// Cleanup is best-effort maintenance: any failure is logged (warn) and
+// swallowed, never surfaced to the patch job that triggered it.
+func (h *HomebrewProvider) runBrewCleanup() {
+	cmd, err := h.brewCommand(brewCleanupArgs()...)
+	if err != nil {
+		log.Warn("brew cleanup: could not build command", "error", err)
+		return
+	}
+
+	output, err := runCmdCombinedOutputWithTimeout(cmd, patchMutateTimeout)
+	if err != nil {
+		log.Warn("brew cleanup failed", "error", err, "output", truncatePatchOutput(output))
+		return
+	}
+
+	log.Info("brew cleanup completed", "output", truncatePatchOutput(output))
 }
 
 // Uninstall removes a Homebrew formula or cask.
