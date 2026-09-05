@@ -26,7 +26,7 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
       'Contracts can bill by device role or device group, with included quantities and overage. Every generated invoice records exactly which devices it billed, and an optional "Billed devices" appendix can print on the PDF. Quotes price by device set too.',
       'QuickBooks Online: push issued invoices, and payments recorded in QuickBooks flow back onto the Breeze invoice automatically.',
       'The customer portal grew Security, Backups, Devices, Tickets with SLA badges, and Reports pages, each behind a per-organization visibility toggle you control.',
-      'Cancel a running script or automation from Executions, set AI budget alert thresholds, and see AI agent impact and graduation evidence before widening an agent\'s autonomy.',
+      'Run a script again from its history, run scripts as the logged-in user, write device custom fields from script output, set AI budget alert thresholds, and see AI agent impact and graduation evidence before widening an agent\'s autonomy.',
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
   },

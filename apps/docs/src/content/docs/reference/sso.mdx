@@ -375,6 +375,8 @@ This link is updated on every SSO login, keeping the profile and tokens current.
 
 When `enforceSSO` is set to `true` on an **active** provider, password-based login is refused for the organization. This is enforced **server-side**, on every password attempt, regardless of what the login page shows — it is not something the frontend can opt out of by not checking first.
 
+A user who submits a password anyway gets the same generic **"Invalid email or password"** as a genuinely wrong password — deliberately, so the response reveals nothing that discovery has not already told the caller. If a user reports being unable to sign in with a password they are sure is correct, check whether their organization enforces SSO before assuming a credential problem.
+
 <Aside type="caution">
   Before enabling SSO enforcement, ensure that at least one administrator account can still access the system. Consider keeping a break-glass account with password login or testing the SSO flow thoroughly in `testing` status first.
 </Aside>

@@ -78,7 +78,7 @@ The quantity is counted by Breeze, not typed in. The quantity box disappears whi
 
 Counts refresh when you add the line or edit its device-set or allowance settings, and when you press **Refresh counts** on a draft quote. The read-only estimate can show the current count without changing the quote. Counts deliberately do **not** refresh when the quote is sent or accepted: sending reports which lines have drifted and leaves the numbers alone, so a scheduled send can never reprice a document you already approved.
 
-A device set cannot be added to a one-time line or to a component of a bundle, and it cannot be changed after the line is created. Remove the line and add it again. A device group that a draft, sent, or viewed quote prices cannot be deleted until that line is removed.
+A device set cannot be added to a one-time line or to a component of a bundle, and the **kind** of device set cannot be changed after the line is created — to switch a line from device roles to a device group, remove it and add it again. What the set contains stays editable: you can change which roles are included, or point the line at a different device group, at any time. A device group that a draft, sent, or viewed quote prices cannot be deleted until that line is removed.
 
 Accepting the quote creates a contract line of the matching type, with the price frozen at what the customer signed. From then on the contract counts for itself every billing period.
 

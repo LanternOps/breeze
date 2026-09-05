@@ -32,6 +32,38 @@ Each organization can enable or disable portal features independently through th
 | `enableSelfService` | `true` | Allow portal users to view organization devices |
 | `enablePasswordReset` | `true` | Allow portal users to reset their password via email |
 
+### Visibility settings
+
+The service-insight sections — Dashboard, Security, Backups, Reports, and support usage — are controlled separately, per organization, and every one of them starts **off**. You decide which customers get to see what.
+
+| Toggle | Default | What the customer sees |
+|--------|---------|------------------------|
+| **Dashboard** | Off | A service-health summary when they sign in |
+| **Security** | Off | Security posture, protection, threats, and vulnerabilities |
+| **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
+| **Reports** | Off | The ability to generate and download approved reports |
+| **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
+
+To change them:
+
+<Steps>
+
+1. Go to **Settings → Organizations** and open the organization.
+
+2. Open the **Customer Portal** tab (under **Portal & Branding**).
+
+3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns on all five at once.
+
+4. Save. The customer's next page load reflects the change.
+
+</Steps>
+
+You need the **Organizations: write** permission and a multi-factor confirmation to change these.
+
+<Aside type="note" title="Turned off means genuinely off">
+  Visibility is enforced on the server, not just in the portal's navigation. A section that is off is hidden from the menu **and** refused by the API, so a customer who bookmarks the URL or edits it by hand gets an "unavailable" page rather than a partial one. An organization that has never had portal settings saved is treated exactly like one with every toggle off — it fails closed, never open.
+</Aside>
+
 ### Ticket Statuses
 
 | Status | Meaning |
@@ -120,6 +152,51 @@ Each organization can customize the portal appearance and contact information. B
 
 ---
 
+## Dashboard
+
+When **Dashboard** visibility is on, signing in lands the customer on a service-health summary instead of a device list: what is being looked after, what needs attention, and what has been done for them recently. It is the answer to "what am I paying you for", written for a business owner rather than a technician.
+
+Leave it off and portal users land on their devices as before.
+
+---
+
+## Devices
+
+The device list shows what the customer's own devices are doing, in plain language: operating system, whether the device is protected, when it was last patched, whether the disk is encrypted, when it last backed up, and when the manufacturer warranty ends. Values Breeze cannot establish read **Not known** rather than being guessed at.
+
+**Export CSV** downloads the same list for a customer who wants it in a spreadsheet — for an insurance questionnaire, an asset register, or their own auditor.
+
+The device list is governed by the existing **Self-service** feature toggle, not by the visibility settings.
+
+---
+
+## Security
+
+With **Security** visibility on, the customer gets a posture overview — endpoint protection coverage, outstanding threats, and vulnerability exposure — plus per-device protection detail so they can see which machines are the reason a number is not green.
+
+This is a summary for the customer, not a console. Nothing here lets a portal user change protection settings or dismiss a finding.
+
+---
+
+## Backups
+
+With **Backups** visibility on, the customer sees backup coverage across their devices, whether recent backups verified, when restores were last tested, and an overall readiness picture. It answers the question a customer only asks after something has gone wrong, before it goes wrong.
+
+---
+
+## Reports
+
+With **Reports** visibility on, the customer can generate and download reports themselves rather than emailing you for them:
+
+- **Generate security summary** — the security and compliance posture report
+- **Generate executive summary** — the executive summary report
+
+A finished run offers both **PDF** and **CSV** downloads. These are the same report types described in [Reports](/features/reports/); only the trigger is different.
+
+With Reports off, a customer who navigates to the reports URL is redirected back to their devices.
+
+---
+
 ## Tickets
 
 Portal users can submit support tickets, track their status, and add comments to ongoing conversations. Tickets submitted through the portal land directly in the technician [Tickets queue](/features/ticketing/) in the Breeze dashboard, where technicians triage, assign, and respond to them.
@@ -140,6 +217,10 @@ Tickets are automatically associated with the submitter's portal user account an
 Both portal users and technicians can add comments to tickets. When a technician sends a public reply from the [Tickets queue](/features/ticketing/), it appears in the portal user's ticket conversation. Portal users only see public comments (`isPublic: true`). Internal notes added by technicians with `isPublic: false` are never shown in the portal view.
 
 Files a technician attaches to a public reply appear beneath it in the portal conversation — images inline, other files as download links. Attachments on internal notes are never exposed. Portal users cannot upload attachments of their own.
+
+### SLA badges and support usage
+
+Turning on **Support usage** visibility adds two things to the customer's view: an SLA badge on tickets in the list (the ticket detail always shows one), and a month-to-date total of billable support time. Use it with customers on a block-hours or time-and-materials arrangement who would otherwise find the invoice a surprise; leave it off for customers on a flat-rate agreement, where a running time total invites the wrong conversation.
 
 ### External Ticket Integration
 
@@ -263,6 +344,40 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/devices` | Yes | List devices in the portal user's organization |
+| `GET` | `/devices/export.csv` | Yes | Download the same list as CSV |
+
+### Dashboard
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/dashboard` | Yes | Service-health summary. Requires **Dashboard** visibility |
+
+### Security
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/security/overview` | Yes | Security posture summary. Requires **Security** visibility |
+| `GET` | `/security/devices` | Yes | Per-device protection detail. Requires **Security** visibility |
+
+### Backups
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/backups/overview` | Yes | Backup coverage and readiness. Requires **Backups** visibility |
+| `GET` | `/backups/devices` | Yes | Per-device backup detail. Requires **Backups** visibility |
+
+### Reports
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/reports/runs` | Yes | List the customer's report runs. Requires **Reports** visibility |
+| `POST` | `/reports/generate` | Yes | Generate a report. Requires **Reports** visibility |
+| `GET` | `/reports/runs/:id/pdf` | Yes | Download a finished run as PDF |
+| `GET` | `/reports/runs/:id/csv` | Yes | Download a finished run as CSV |
+
+<Aside type="note">
+  Every endpoint marked "Requires … visibility" answers **403** when the organization has that section turned off — including when the organization has no portal settings saved at all. There is no partial response and no silent fallback.
+</Aside>
 
 ### Tickets
 
@@ -272,6 +387,7 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `POST` | `/tickets` | Yes | Create a new support ticket |
 | `GET` | `/tickets/:id` | Yes | Get ticket details with public comments |
 | `POST` | `/tickets/:id/comments` | Yes | Add a comment to a ticket |
+| `GET` | `/tickets/usage` | Yes | Month-to-date billable support time. Requires **Support usage** visibility |
 
 ### Invoices
 

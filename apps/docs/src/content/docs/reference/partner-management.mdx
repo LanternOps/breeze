@@ -217,6 +217,10 @@ Because the allowlist depends on knowing the true client IP, the API refuses to 
 
 ## Managing Partners
 
+<Aside type="tip" title="Provisioning tenancy unattended">
+  Organizations, sites, and enrollment keys can all be created by a partner service principal rather than a signed-in user, which is how a migration script or an onboarding integration stands a customer up end to end. `POST /partner-api/v1/enrollment-keys` completes that set — see [Partner API (Service Principals)](/reference/api/#partner-api-service-principals) for the routes, scopes, and the tighter mint limits that apply to enrollment keys specifically.
+</Aside>
+
 ### Creating Partners (System Scope)
 
 System-scoped users can create partners directly via the API. This bypasses self-registration and allows setting fields that self-registration does not expose (type, plan, device limits).
