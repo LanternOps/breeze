@@ -87,6 +87,9 @@ jobs:
       - name: Test community README automation
         run: pnpm test:community-readme
 
+      - name: Test mobile native CI contract
+        run: node --test .github/scripts/mobile-native-ci.test.mjs
+
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
@@ -544,6 +547,109 @@ jobs:
       - name: Run Mobile type check
         working-directory: apps/mobile
         run: pnpm exec tsc --noEmit
+
+  # Native compilation catches incompatible RN/Expo modules that JS tests miss.
+  # Resolve paths on Linux so unrelated PRs never allocate a macOS runner.
+  mobile-native-changes:
+    name: Detect Mobile Native Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect mobile build inputs
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # On main compare the whole push, including multi-commit pushes.
+          base: ${{ github.event_name == 'push' && github.event.before || github.event.repository.default_branch }}
+          filters: |
+            mobile:
+              - 'apps/mobile/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - '.node-version'
+              - '.nvmrc'
+              - 'patches/**'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/mobile-native-ci.test.mjs'
+
+  build-mobile-ios:
+    name: Build Mobile iOS (Simulator)
+    needs: [mobile-native-changes]
+    if: needs.mobile-native-changes.outputs.mobile == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CI: '1'
+      # Debug simulator compilation needs neither release config nor uploads.
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install mobile dependencies
+        run: pnpm install --filter breeze-mobile... --frozen-lockfile
+
+      - name: Show native toolchain
+        run: |
+          xcodebuild -version
+          pod --version
+
+      - name: Generate iOS project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install
+
+      - name: Compile unsigned iOS simulator app
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace BreezeRMM.xcworkspace \
+            -scheme BreezeRMM \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/breeze-ios-derived-data" \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/breeze-ios-build.log"
+
+      - name: Upload native build log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mobile-ios-build-log
+          path: ${{ runner.temp }}/breeze-ios-build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-portal:
     name: Test Portal
@@ -2781,7 +2887,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -2794,6 +2900,9 @@ jobs:
           TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_MOBILE_RESULT: ${{ needs.test-mobile.result }}
+          MOBILE_NATIVE_CHANGES_RESULT: ${{ needs.mobile-native-changes.result }}
+          MOBILE_NATIVE_REQUIRED: ${{ needs.mobile-native-changes.outputs.mobile }}
+          BUILD_MOBILE_IOS_RESULT: ${{ needs.build-mobile-ios.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -2820,6 +2929,14 @@ jobs:
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
+          # Fail closed: only a successful path check may skip native compilation.
+          if [[ "$MOBILE_NATIVE_CHANGES_RESULT" != "success" ]] ||
+             { [[ "$MOBILE_NATIVE_REQUIRED" == "true" ]] && [[ "$BUILD_MOBILE_IOS_RESULT" != "success" ]]; } ||
+             { [[ "$MOBILE_NATIVE_REQUIRED" != "true" ]] && [[ "$MOBILE_NATIVE_REQUIRED" != "false" ]]; } ||
+             { [[ "$MOBILE_NATIVE_REQUIRED" == "false" ]] && [[ "$BUILD_MOBILE_IOS_RESULT" != "skipped" ]]; }; then
+            echo "Mobile native build failed or did not run when required"
+            exit 1
+          fi
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
