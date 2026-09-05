@@ -344,9 +344,15 @@ export async function decideIntentApprovalBatch(
       successMessage: (result) => {
         const rows = result?.results ?? [];
         if (rows.length === 0 || rows.some((row) => row.httpStatus >= 300)) return '';
+        // Paper cut: this toast used to read the singular "Action
+        // approved"/"Action denied" no matter how many cards the batch
+        // decided. Passing `count` selects the `_one`/`_other` plural form
+        // (see ai.json) — the base key with no `count` is unaffected, so the
+        // single-card `decideIntentApproval` path above keeps its original
+        // copy.
         return decision === 'approve'
-          ? i18n.t('ai:aiApprovalDialog.approvedToast')
-          : i18n.t('ai:aiApprovalDialog.deniedToast');
+          ? i18n.t('ai:aiApprovalDialog.approvedToast', { count: rows.length })
+          : i18n.t('ai:aiApprovalDialog.deniedToast', { count: rows.length });
       },
     });
     return {

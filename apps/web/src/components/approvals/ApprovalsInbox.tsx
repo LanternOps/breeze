@@ -828,7 +828,18 @@ export default function ApprovalsInbox() {
       if (Object.keys(failures).length > 0) {
         setRowErrors((current) => ({ ...current, ...failures }));
       }
-      if (decided.size > 0) removeApprovals(decided);
+      if (decided.size > 0) {
+        removeApprovals(decided);
+        // Paper cut: `removeApprovals` above only shrinks the VISIBLE list.
+        // Unlike the single-card `decide()` path (which refreshes via
+        // `loadApprovals({ withCount: true })`), this batch path never
+        // touched `totalCount`, so the "Showing N of M" footer kept
+        // reporting the pre-decision total after a group was decided. Adjust
+        // it by the same authoritative per-row count `removeApprovals` used,
+        // rather than a refetch — same reasoning as `removeApprovals`'s own
+        // comment: the per-row results already ARE the ground truth.
+        setTotalCount((current) => (current !== null ? Math.max(0, current - decided.size) : current));
+      }
     } catch (err) {
       const kind = classifyDecideError(err);
       if (kind === null) UNAUTHORIZED();

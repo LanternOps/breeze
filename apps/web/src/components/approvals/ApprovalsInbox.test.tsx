@@ -542,6 +542,53 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     expect(authenticatorMock.getBatchApprovalAssertion).not.toHaveBeenCalled();
   });
 
+  // Paper cut from the pre-release sweep: a batch decline showed the
+  // singular "Action denied" toast no matter how many cards were in the
+  // batch, and `decideGroup`'s local `removeApprovals` shrinks the VISIBLE
+  // list but never touches `totalCount` (only the single-card `decide` path
+  // refreshes it, via `loadApprovals({ withCount: true })`) — so the footer
+  // kept reporting the pre-decision total.
+  it('pluralizes the batch-decline toast by count and refreshes the "of M" footer total', async () => {
+    const group = [agentCard('ap-a'), agentCard('ap-b'), agentCard('ap-c')];
+    const leftover = { ...pendingApproval, id: 'ap-d', origin: 'human' };
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/batch/decide')) {
+        return response({
+          results: group.map((card) => ({ id: card.id, httpStatus: 200, body: {} })),
+        });
+      }
+      if (raw.includes('/approvals/pending/count')) {
+        // The initial total: the 3-card batchable group plus the 1 leftover
+        // human card. The fix decrements this locally by the decided count
+        // rather than re-fetching, so this mock is only ever read once, at
+        // mount — see the comment on the assertion below.
+        return response({ count: 4 });
+      }
+      return response({ approvals: [...group, leftover], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`));
+    fireEvent.change(screen.getByTestId(`approval-group-deny-reason-${GROUP_KEY}`), {
+      target: { value: 'Wrong maintenance window' },
+    });
+    fireEvent.click(screen.getByTestId(`approval-group-deny-confirm-${GROUP_KEY}`));
+
+    await waitFor(() => expect(batchCalls()).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.queryByTestId('approval-row-ap-a')).not.toBeInTheDocument(),
+    );
+
+    const toasts = showToastMock.mock.calls.map(([toast]) => toast as { message: string });
+    const denyToast = toasts.find((toast) => toast.message.includes('3'));
+    expect(denyToast).toBeDefined();
+
+    const pagination = await screen.findByTestId('approvals-pagination');
+    await waitFor(() => expect(pagination).toHaveTextContent('Showing 1 of 1'));
+  });
+
   it('leaves every row in place and explains a 403 step_up_required', async () => {
     routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
       status: 403,
