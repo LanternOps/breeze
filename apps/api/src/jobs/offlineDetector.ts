@@ -218,7 +218,8 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
           return await processReapUninstallIntent();
 
         // mark-offline owns one short CAS context and publishes only after it
-        // closes. Re-evaluation has no queue fan-out and keeps its existing
+        // closes. Alert evaluation opens its own per-device RLS context.
+        // Re-evaluation has no queue fan-out and keeps its existing
         // whole-job context, mirroring alertWorker's per-device jobs.
         case 'mark-offline':
           return await processMarkOffline(job.data as MarkOfflineJobData);
@@ -343,7 +344,12 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
         opts: {
           jobId: transitionId,
           removeOnComplete: { count: 10_000 },
-          removeOnFail: { count: 10_000 },
+          // Failed deterministic IDs must not block the next sweep forever.
+          // Brief retries absorb transient DB errors; exhausted jobs release
+          // their ID so an unchanged stale observation can be admitted again.
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 1_000 },
+          removeOnFail: true,
         },
       };
     });
@@ -417,7 +423,12 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   // session ends (the end user closed the client), and the reaper watches for
   // exactly that transition to tear the session down. Alerting on it would
   // page the on-call technician after every single support session.
-  const alertCreated = device.isEphemeral ? false : await triggerOfflineAlerts(device);
+  // Alert services inherit their caller's RLS context. Open a separate,
+  // per-device context after the CAS commits and the offline event publishes;
+  // otherwise breeze_app silently reads no policy or legacy alert rules.
+  const alertCreated = device.isEphemeral
+    ? false
+    : await runWithSystemDbAccess(() => triggerOfflineAlerts(device));
 
   return { transitioned: true, alertCreated };
 }
@@ -437,11 +448,12 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
  * the failure. The `42P01` "tables not migrated yet" case is treated as a
  * benign warn-once-and-skip (matching alertWorker); any other error is a fatal
  * error the caller MUST re-throw so the BullMQ job is marked failed (logged +
- * sent to Sentry via attachWorkerObservability). These jobs aren't configured
- * with `attempts`, so the failed job is not retried in place — recovery comes
- * from the next periodic detection/re-eval sweep re-queuing the still-offline
- * device. Silently swallowing the error would instead re-open the exact
- * "offline alerts never fire" symptom of issue #1857 with no failed-job signal.
+ * sent to Sentry via attachWorkerObservability). Configuration-policy recovery
+ * comes from the periodic re-evaluation sweep: a mark-offline retry cannot win
+ * the already-committed CAS again. Legacy alert/event recovery after that CAS
+ * still needs durable transition effects. Silently swallowing the error would
+ * re-open the "offline alerts never fire" symptom of issue #1857 with no
+ * failed-job signal.
  *
  * @returns `created` (true if ≥1 config-policy alert was created) and, on an
  *   unexpected error, `fatalError` for the caller to re-throw.

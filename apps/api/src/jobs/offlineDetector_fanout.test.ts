@@ -195,6 +195,21 @@ describe('offlineDetector.processDetectOffline cursor fan-out', () => {
     expect(job!.opts.jobId).toBe(expected);
   });
 
+  it('configures bounded retries and releases exhausted observation IDs for later sweeps', async () => {
+    fleetState.fleet = buildFleet(1);
+    await processDetectOffline({ type: 'detect-offline' });
+    const [job] = addBulkMock.mock.calls[0]![0] as Array<{ opts: Record<string, unknown> }>;
+
+    // A retained failed record blocks every later addBulk using this observation's
+    // deterministic jobId. Retry briefly, then release that ID for the next sweep.
+    expect(job!.opts).toMatchObject({
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1_000 },
+      removeOnFail: true,
+      removeOnComplete: { count: 10_000 },
+    });
+  });
+
   it('drains a 10,000-device fleet through bounded serialized continuations', async () => {
     process.env.OFFLINE_DETECTOR_CHUNK_SIZE = '500';
     process.env.OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN = '5000';

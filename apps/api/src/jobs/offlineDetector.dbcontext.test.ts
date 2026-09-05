@@ -214,7 +214,11 @@ function updateChain(returningRows: unknown[]) {
 function selectRulesChain(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
+      where: vi.fn().mockImplementation(async () => {
+        ctxState.events.push(`alertRulesSelect@depth${ctxState.depth}`);
+        if (ctxState.depth === 0) throw new Error('alert rules read without RLS context');
+        return rows;
+      }),
     }),
   };
 }
@@ -281,7 +285,7 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     expect(ctxState.events).toEqual(['ctx:enter', 'detectSelect@depth1', 'ctx:exit']);
   });
 
-  it('mark-offline performs one CAS in-context and publishes/events/alerts after exit', async () => {
+  it('mark-offline commits CAS before publication and opens a separate context for alert DB access', async () => {
     const device = {
       id: '00000000-0000-4000-8000-000000000001',
       orgId: '10000000-0000-4000-8000-000000000001',
@@ -310,7 +314,10 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
       'markOfflineCas@depth1',
       'ctx:exit',
       'publishEvent@depth0',
-      'alertEvaluation@depth0',
+      'ctx:enter',
+      'alertEvaluation@depth1',
+      'alertRulesSelect@depth1',
+      'ctx:exit',
     ]);
   });
 
