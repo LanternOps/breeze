@@ -23,6 +23,19 @@ import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
  * `id` (falling back to another schema-unique field when `id` is omitted —
  * the manifest schema allows that), and serialize with a fixed, explicit key
  * order (never rely on `Object.keys` insertion order of a spread).
+ *
+ * `moduleUrl` now embeds a short-lived signed asset token (issue #4164 — a
+ * bare dynamic `import()` cannot send an Authorization header, so the
+ * capability has to travel in the URL). That does NOT break determinism:
+ * `mintExtensionAssetToken` snaps its `iat` to a coarse time bucket, so every
+ * replica minting for the same extension + digest + tenant in the same bucket
+ * emits the same bytes. The revision therefore stays stable within a bucket
+ * and changes at each rollover — which is exactly the signal the browser
+ * client needs to adopt freshly-credentialled URLs, and is why the token is
+ * hashed INTO the revision rather than excluded from it. (Excluding it would
+ * let the client's revision-keyed memo hand back a document whose token has
+ * since expired.) The revision does vary per tenant scope, but a given client
+ * is always one tenant, so no client sees it flap.
  */
 
 export interface RuntimeWebPage {
@@ -82,8 +95,32 @@ export interface RuntimeWebRegistrySource {
 
 const API_VERSION = 'breeze.extensions.web/v1' as const;
 
-function assetPath(name: string, digest: string, entry: string): string {
-  return `/api/v1/extensions/assets/${name}/${digest}/${entry}`;
+/**
+ * The literal segment that introduces the signed asset token in an asset URL:
+ * `/api/v1/extensions/assets/t/<token>/<name>/<digest>/<member...>`.
+ *
+ * The token sits ABOVE the member path on purpose. A relative specifier inside
+ * a bundle (`import './chunk.js'`) resolves against the importing module's URL,
+ * which drops a query string but keeps the parent path segments — so a
+ * path-carried token is inherited by every sibling chunk request, while a `?t=`
+ * one is not. Shared with routes/extensionsWeb.ts (which matches it) and
+ * apps/web/src/lib/extensions/registry.ts (which strips it to derive a stable
+ * module-cache key) so the three cannot drift.
+ */
+export const ASSET_TOKEN_SEGMENT = 't';
+
+/** Mints the capability for one extension bundle. Injected rather than imported
+ *  so this projection stays pure and hand-testable (the real implementation
+ *  reads process-wide key material). */
+export type ExtensionAssetTokenMinter = (binding: { name: string; digest: string }) => string;
+
+export function buildExtensionAssetPath(
+  token: string,
+  name: string,
+  digest: string,
+  member: string,
+): string {
+  return `/api/v1/extensions/assets/${ASSET_TOKEN_SEGMENT}/${token}/${name}/${digest}/${member}`;
 }
 
 /** Stable sort key for a page/navigation entry: its `id`, or its unique `path`. */
@@ -100,7 +137,10 @@ function byKey<T>(key: (value: T) => string): (a: T, b: T) => number {
   return (a, b) => key(a).localeCompare(key(b));
 }
 
-function projectExtension(source: RuntimeWebRegistrySource): RuntimeWebExtension | null {
+function projectExtension(
+  source: RuntimeWebRegistrySource,
+  mintAssetToken: ExtensionAssetTokenMinter,
+): RuntimeWebExtension | null {
   const web = source.manifest.web;
   if (!web) return null;
 
@@ -128,7 +168,12 @@ function projectExtension(source: RuntimeWebRegistrySource): RuntimeWebExtension
     name: source.name,
     version: source.version,
     digest: source.digest,
-    moduleUrl: assetPath(source.name, source.digest, web.entry),
+    moduleUrl: buildExtensionAssetPath(
+      mintAssetToken({ name: source.name, digest: source.digest }),
+      source.name,
+      source.digest,
+      web.entry,
+    ),
     pages,
     navigation,
     slots,
@@ -138,13 +183,15 @@ function projectExtension(source: RuntimeWebRegistrySource): RuntimeWebExtension
 /**
  * Build the browser-safe web registry document from a set of candidate
  * sources. Pure: no I/O, no DB, no enabled-recheck — the caller supplies
- * exactly the sources that are enabled RIGHT NOW.
+ * exactly the sources that are enabled RIGHT NOW, and the asset-token minter
+ * (which is the only thing here that touches process-wide state).
  */
 export function buildRuntimeWebRegistry(
   sources: readonly RuntimeWebRegistrySource[],
+  mintAssetToken: ExtensionAssetTokenMinter,
 ): RuntimeWebRegistry {
   const extensions = sources
-    .map(projectExtension)
+    .map((source) => projectExtension(source, mintAssetToken))
     .filter((ext): ext is RuntimeWebExtension => ext !== null)
     .sort(byKey((ext) => ext.name));
 
