@@ -3,11 +3,12 @@ import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import ChangeCurrencyDialog, { type CurrencyChangeMode } from './ChangeCurrencyDialog';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
@@ -29,6 +30,7 @@ import InvoiceActions from './InvoiceActions';
 import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
+import InvoiceLineDevices from './InvoiceLineDevices';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -85,11 +87,33 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [voidReason, setVoidReason] = useState('');
   const [voidReissue, setVoidReissue] = useState(false);
 
+  // Draft-only currency restamp (#4416, ports the ContractDetail #3778
+  // pattern). The server (changeInvoiceCurrency, invoiceService.ts) is the
+  // authority: it re-checks invoices:write, the draft status and the row
+  // lock, so this dialog is a convenience, never a gate.
+  const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [currencyBusy, setCurrencyBusy] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState(currency);
+  const [currencyMode, setCurrencyMode] = useState<CurrencyChangeMode | null>(null);
+  const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
+  const [currencyError, setCurrencyError] = useState<string | null>(null);
+
   // Inline due-date editor (issued invoices only). Opens with the current due date;
   // Save PATCHes /invoices/:id/due-date.
   const [dueDateEditing, setDueDateEditing] = useState(false);
   const [dueDateDraft, setDueDateDraft] = useState(invoice.dueDate ?? '');
-  useEffect(() => { setDueDateDraft(invoice.dueDate ?? ''); }, [invoice.dueDate]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect flushes AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale date the effect captured.
+  const dueDateSeed = invoice.dueDate ?? '';
+  const [dueDateSeededFrom, setDueDateSeededFrom] = useState(dueDateSeed);
+  if (dueDateSeededFrom !== dueDateSeed) {
+    setDueDateSeededFrom(dueDateSeed);
+    setDueDateDraft(dueDateSeed);
+  }
 
   const loadPayments = useCallback(async () => {
     const res = await fetchWithAuth(`/invoices/${invoice.id}/payments`);
@@ -276,6 +300,51 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     }
   }, [busy, voidReason, voidReissue, invoice.id, refresh, t]);
 
+  const openCurrencyDialog = useCallback(() => {
+    setTargetCurrency(currency);
+    setCurrencyMode(null);
+    setCurrencyConfirmed(false);
+    setCurrencyError(null);
+    setCurrencyOpen(true);
+  }, [currency]);
+
+  const submitCurrency = useCallback(async () => {
+    if (currencyBusy || !currencyMode || !currencyConfirmed || targetCurrency === currency) return;
+    setCurrencyBusy(true);
+    // A retry starts from a clean slate — a stale error would read as a fresh
+    // rejection of the SAME attempt.
+    setCurrencyError(null);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/currency`, {
+          method: 'POST',
+          body: JSON.stringify({
+            currencyCode: targetCurrency,
+            ...(currencyMode === 'clear' ? { clearLines: true } : { reprice: true }),
+          }),
+        }),
+        errorFallback: t('invoiceDetail.currency.errors.change'),
+        successMessage: t('invoiceDetail.currency.toast.changed', { currency: targetCurrency }),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setCurrencyOpen(false);
+      refresh();
+    } catch (err) {
+      // A 409 CURRENCY_LOCKED names why (line count) in its message — keep the
+      // dialog open and show it inline rather than losing it to a toast alone.
+      if (err instanceof ActionError && err.status === 409) {
+        setCurrencyError(err.message);
+      } else {
+        handleActionError(err, t('invoiceDetail.currency.errors.change'));
+      }
+    } finally {
+      setCurrencyBusy(false);
+    }
+  }, [currencyBusy, currencyMode, currencyConfirmed, targetCurrency, currency, invoice.id, refresh, t]);
+
+  const canChangeCurrency = can('invoices', 'write') && invoice.status === 'draft';
+  const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
+
   return (
     <div className="space-y-6" data-testid="invoice-detail">
       {/* xl (not lg): matches the editor tab and QuoteDetail — below xl the rail
@@ -306,6 +375,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           ) : (
           <div className="rounded-lg border bg-card shadow-xs">
+            {/* #3205 W07: invoice-level provenance, rendered once. */}
+            {invoice.evidenceVersion === null && (
+              <p className="mb-2 px-3 pt-2 text-xs text-muted-foreground" data-testid="invoice-devices-not-recorded">
+                {t('invoiceDetail.devices.notRecorded')}
+              </p>
+            )}
             {/* Labeled, keyboard-reachable scroll region: the internal view runs
                 to 7 columns, well past a phone viewport — scroll inside the card
                 instead of bleeding past its rounded edge (QuoteDetail pattern). */}
@@ -346,6 +421,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       </span>
                       {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                      <InvoiceLineDevices invoiceId={invoice.id} line={l} />
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
@@ -486,6 +562,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           <AccountingSyncCard
             invoiceId={invoice.id}
             sync={detail.accountingSync}
+            invoiceStatus={invoice.status}
             canPush={can('invoices', 'write')}
             onChanged={onChanged}
           />
@@ -523,6 +600,20 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 {t('invoiceDetail.void.button')}
               </button>
             )}
+            {/* Change stamped currency (DRAFT only, #4416). The server
+                re-checks permission, the draft status and eligibility under
+                the row lock. */}
+            {canChangeCurrency && (
+              <button
+                type="button"
+                onClick={openCurrencyDialog}
+                disabled={currencyBusy}
+                data-testid="invoice-currency-open"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {t('invoiceDetail.currency.actions.change')}
+              </button>
+            )}
           </div>
 
           {/* Payments */}
@@ -550,10 +641,23 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           {t('invoiceDetail.payments.online')}
                         </span>
                       )}
+                      {p.source === 'quickbooks' && (
+                        <span
+                          className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          data-testid={`invoice-payment-quickbooks-${p.id}`}
+                        >
+                          {t('invoiceDetail.payments.quickbooks')}
+                        </span>
+                      )}
                     </span>
-                    {/* Stripe payments are refunded through Stripe, never hand-voided. */}
+                    {/* Stripe payments are refunded through Stripe, never hand-voided.
+                        QuickBooks-pulled payments are the same story with a different
+                        system of record: reversing one here would not touch the books,
+                        and the next reconcile would pull it straight back in. */}
                     {p.source === 'stripe' ? (
                       <span className="whitespace-nowrap text-[11px] text-muted-foreground">{t('invoiceDetail.payments.viaStripe')}</span>
+                    ) : p.source === 'quickbooks' ? (
+                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">{t('invoiceDetail.payments.viaQuickbooks')}</span>
                     ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => setReversePayment(p)} disabled={busy || invoice.status === 'void'}
@@ -738,6 +842,36 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </div>
         </div>
       </Dialog>
+
+      <ChangeCurrencyDialog
+        open={currencyOpen}
+        onClose={() => setCurrencyOpen(false)}
+        busy={currencyBusy}
+        currentCurrency={currency}
+        targetCurrency={targetCurrency}
+        onTargetCurrencyChange={setTargetCurrency}
+        mode={currencyMode}
+        onModeChange={setCurrencyMode}
+        confirmed={currencyConfirmed}
+        onConfirmedChange={setCurrencyConfirmed}
+        error={currencyError}
+        onSubmit={() => void submitCurrency()}
+        submittable={currencySubmittable}
+        testIdPrefix="invoice-currency"
+        copy={{
+          title: t('invoiceDetail.currency.dialog.title'),
+          description: t('invoiceDetail.currency.dialog.description', { currency }),
+          currencyLabel: t('invoiceDetail.currency.dialog.currencyLabel'),
+          modeLegend: t('invoiceDetail.currency.dialog.modeLegend'),
+          modeClearLabel: t('invoiceDetail.currency.dialog.modeClear'),
+          modeClearHint: t('invoiceDetail.currency.dialog.modeClearHint'),
+          modeRepriceLabel: t('invoiceDetail.currency.dialog.modeReprice'),
+          modeRepriceHint: t('invoiceDetail.currency.dialog.modeRepriceHint'),
+          confirmLabel: t('invoiceDetail.currency.dialog.confirm'),
+          submitLabel: t('invoiceDetail.currency.dialog.submit'),
+          cancelLabel: t('common:actions.cancel'),
+        }}
+      />
     </div>
   );
 }

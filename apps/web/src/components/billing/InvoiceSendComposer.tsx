@@ -16,6 +16,7 @@ export interface ComposedInvoiceEmail {
   subject?: string;
   message?: string;
   includePdf?: boolean;
+  includeDeviceAppendix?: boolean;
 }
 
 interface Props {
@@ -29,12 +30,18 @@ interface Props {
   /** Drives the billing-contact prefill and the "fix it here" deep link. */
   orgId: string;
   invoiceNumber: string | null;
+  /** Lifecycle gate for the draft-only appendix override. */
+  isDraft?: boolean;
   title: string;
   /** One-line summary above the envelope fields (who / how much). */
   intro: string;
   confirmLabel: string;
   /** Label while `sending` — e.g. "Re-sending…". */
   sendingLabel: string;
+  /** Draft-time partner default. Issued composers never expose an override. */
+  partnerDeviceAppendix?: boolean;
+  /** Allows the draft Issue & Send flow to retain its established action id. */
+  confirmTestId?: string;
 }
 
 /**
@@ -55,6 +62,7 @@ interface Props {
  */
 export default function InvoiceSendComposer({
   open, onClose, sending, onSend, orgId, invoiceNumber, title, intro, confirmLabel, sendingLabel,
+  isDraft = invoiceNumber === null, partnerDeviceAppendix = false, confirmTestId = 'invoice-send-confirm',
 }: Props) {
   const { t } = useTranslation('billing');
   const [to, setTo] = useState('');
@@ -63,6 +71,7 @@ export default function InvoiceSendComposer({
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [includePdf, setIncludePdf] = useState(true);
+  const [includeDeviceAppendix, setIncludeDeviceAppendix] = useState(partnerDeviceAppendix);
   const [signature, setSignature] = useState<string | null>(null);
   // Set when a Send click finds no valid recipient — an inline reason under the
   // To field beats a silently dead button.
@@ -79,7 +88,8 @@ export default function InvoiceSendComposer({
   useEffect(() => {
     if (!open) return;
     setTo(''); setCc(''); setCcOpen(false); setSubject(''); setMessage('');
-    setIncludePdf(true); setSignature(null); setToMissing(false); setToPrefillMissing(false);
+    setIncludePdf(true); setIncludeDeviceAppendix(partnerDeviceAppendix);
+    setSignature(null); setToMissing(false); setToPrefillMissing(false);
     let canceled = false;
     void (async () => {
       try {
@@ -106,7 +116,7 @@ export default function InvoiceSendComposer({
       })();
     }
     return () => { canceled = true; };
-  }, [open, orgId]);
+  }, [open, orgId, partnerDeviceAppendix]);
 
   const toParsed = useMemo(() => parseAddressList(to), [to]);
   const ccParsed = useMemo(() => parseAddressList(cc), [cc]);
@@ -143,8 +153,9 @@ export default function InvoiceSendComposer({
     const note = message.trim();
     if (note) opts.message = note;
     if (!includePdf) opts.includePdf = false;
+    if (isDraft && includeDeviceAppendix !== partnerDeviceAppendix) opts.includeDeviceAppendix = includeDeviceAppendix;
     onSend(opts);
-  }, [sending, valid, toParsed, toError, ccParsed, subject, message, includePdf, onSend]);
+  }, [sending, valid, toParsed, toError, ccParsed, subject, message, includePdf, isDraft, includeDeviceAppendix, partnerDeviceAppendix, onSend]);
 
   return (
     <Dialog
@@ -286,6 +297,18 @@ export default function InvoiceSendComposer({
         />
         {t('invoiceActions.composer.includePdfLabel')}
       </label>
+      {isDraft && (
+        <label className="mt-3 flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={includeDeviceAppendix}
+            onChange={(e) => setIncludeDeviceAppendix(e.target.checked)}
+            disabled={sending}
+            data-testid="invoice-send-include-device-appendix"
+          />
+          {t('invoiceActions.composer.includeDeviceAppendixLabel')}
+        </label>
+      )}
 
       {/* The email's CTA is the durable no-login view-and-pay link — say so, so
           the sender knows the customer won't hit a portal login. */}
@@ -307,7 +330,7 @@ export default function InvoiceSendComposer({
           onClick={submit}
           disabled={sending}
           aria-describedby={toMissing ? 'invoice-send-to-missing' : toError ? 'invoice-send-to-error' : undefined}
-          data-testid="invoice-send-confirm"
+          data-testid={confirmTestId}
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
         >
           {sending ? sendingLabel : confirmLabel}

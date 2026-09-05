@@ -7,6 +7,7 @@ vi.mock('../../lib/navigation', () => ({
 
 import AuthOverlay from './AuthOverlay';
 import { useAuthStore } from '../../stores/auth';
+import * as authStoreModule from '../../stores/auth';
 
 const AUTHENTICATED = {
   isAuthenticated: true,
@@ -525,7 +526,17 @@ describe('AuthOverlay refresh-throttle mask (#3696)', () => {
     expect(screen.getByTestId('auth-throttled-signout')).toBeInTheDocument();
   });
 
-  it('retries automatically once the advertised window elapses', async () => {
+  // #3984: the mask's own countdown used to end in its OWN
+  // `window.location.reload()` — racing the auth store's own retry-in-progress
+  // at the exact same deadline (both derived from `authThrottledUntil`), and
+  // the mask's reload usually preempted the store's retry, wasting it. The
+  // mask is now pure display: its countdown reaching zero must NOT itself
+  // trigger a reload. The store is the single owner of automatic recovery
+  // (`scheduleThrottleReload`, covered in stores/auth.test.ts) — a state
+  // update made directly via `setState`, as this test does, never goes
+  // through the store's throttle-wait path, so no reload is ever scheduled
+  // here either.
+  it('does not reload on its own once the advertised window elapses — the store owns recovery', async () => {
     useAuthStore.setState({ authThrottledUntil: Date.now() + 2_000 });
     render(<AuthOverlay />);
     await screen.findByTestId('auth-throttled-overlay');
@@ -535,7 +546,38 @@ describe('AuthOverlay refresh-throttle mask (#3696)', () => {
       vi.advanceTimersByTime(3_000);
     });
 
-    expect(reload).toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    // The countdown itself still renders correctly at zero.
+    expect(screen.getByTestId('auth-throttled-overlay')).toHaveTextContent(/Retrying in 0s/i);
+  });
+
+  // #3984: the store's reload only fires while `throttleMaskMounted` is true
+  // (see stores/auth.test.ts for the gate's own behavior) — this proves the
+  // WIRING: the mask actually tells the store when it mounts and unmounts,
+  // exactly once each, not once per countdown tick. A regression that merges
+  // the mount effect into the ticking countdown effect (or adds `retryAt` to
+  // its deps) would call this on every tick instead of once per mount.
+  it('tells the store when the throttle mask mounts and unmounts', async () => {
+    const spy = vi.spyOn(authStoreModule, 'setThrottleMaskMounted');
+    try {
+      useAuthStore.setState({ authThrottledUntil: Date.now() + 30_000 });
+      const { unmount } = render(<AuthOverlay />);
+      await screen.findByTestId('auth-throttled-overlay');
+
+      expect(spy).toHaveBeenCalledWith(true);
+      expect(spy.mock.calls.filter(([mounted]) => mounted === true)).toHaveLength(1);
+
+      // Ticking the countdown must not re-toggle the flag.
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+      });
+      expect(spy.mock.calls.filter(([mounted]) => mounted === true)).toHaveLength(1);
+
+      unmount();
+      expect(spy).toHaveBeenLastCalledWith(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // THE branch-order regression. The throttle mask is checked BEFORE the

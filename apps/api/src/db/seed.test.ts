@@ -227,6 +227,37 @@ describe('approvals:decide permission (action intents approval layer, §4)', () 
   });
 });
 
+describe('audit:manage permission (audit retention policy settings, #4633)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines audit:manage in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some(
+        (p) => p.resource === 'audit' && p.action === 'manage',
+      ),
+    ).toBe(true);
+  });
+
+  it('registers audit:manage in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.AUDIT_MANAGE).toEqual({ resource: 'audit', action: 'manage' });
+  });
+
+  it('grants audit:manage to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('audit:manage');
+  });
+
+  it('does NOT grant audit:manage to Org Technician or Org Viewer', () => {
+    expect(byName('Org Technician')?.permissions).not.toContain('audit:manage');
+    expect(byName('Org Viewer')?.permissions).not.toContain('audit:manage');
+  });
+
+  it('Partner Admin covers audit:manage via the wildcard grant (does not need a redundant literal entry)', () => {
+    const role = byName('Partner Admin');
+    expect(role?.permissions).toContain('*:*');
+    expect(role?.permissions).not.toContain('audit:manage');
+  });
+});
+
 describe('backup:cross_site_restore permission', () => {
   const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
 

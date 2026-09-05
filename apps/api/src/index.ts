@@ -38,6 +38,7 @@ import { quotesPublicRoutes } from './routes/quotesPublic';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
+import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -117,6 +118,7 @@ import { metricsRoutes, metricsMiddleware } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { partnerTrustRoutes } from './routes/partnerTrust';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -170,6 +172,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
+import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
   captureException,
   captureMessage,
@@ -543,6 +546,10 @@ const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
+  // Transport-layer ticket mint for the event-stream WebSocket, polled routinely
+  // by the web app. Not a user action — nobody is accountable for it, and it
+  // does not belong in a compliance trail. See issue #3991.
+  /^\/api\/v1\/events\/ws-ticket$/,
   // Agent telemetry endpoints are high-volume and many already emit explicit audit events.
   /^\/api\/v1\/agents\/[^/]+\/heartbeat$/,
   /^\/api\/v1\/agents\/[^/]+\/security\/status$/,
@@ -929,6 +936,12 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // passes through (no Authorization header); the route reads the raw body itself
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
+// Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
+// verifier token. partnerGuard passes through (no Authorization header); the
+// route reads the raw body itself via c.req.text(), so no body-consuming
+// middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// there is no ambient auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', quickbooksWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1001,6 +1014,7 @@ api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
+api.route('/partner/trust', partnerTrustRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -1608,6 +1622,12 @@ async function bootstrap(): Promise<void> {
   }
 
   await runStartupChecks();
+
+  // #3128: advisory scan for PAM rules pinned to a risk tier no tool resolves
+  // to any more. Tool tiers are static code, so a deploy is the only moment a
+  // stored rule can go stale — boot is exactly when to look. Never throws;
+  // runs after loadBuiltinExtensions so extension tool tiers are resolvable.
+  await reportStalePamRuleTiers();
 
   // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
   // configure_defaults) so they are ready before the first request. The unauth

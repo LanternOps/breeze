@@ -133,6 +133,7 @@ interface AuthState {
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
+  commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -179,6 +180,12 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
+        // Same reasoning for the SSO failure reason (#3704): a session that
+        // just logged in must not inherit a previous attempt's verdict.
+        ssoExchangeFailed = false;
+        // A fresh login makes any pending throttle-recovery reload stale —
+        // the session is already restored, don't reload out from under it.
+        cancelThrottleReload();
         set((state) => ({
           user,
           tokens,
@@ -204,6 +211,9 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
+        // An evicted session must never come back via a stray throttle-recovery
+        // reload — the redirect to /login owns navigation from here.
+        cancelThrottleReload();
         set((state) => ({
           user: null,
           tokens: null,
@@ -220,6 +230,31 @@ export const useAuthStore = create<AuthState>()(
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
       })),
+
+      /**
+       * Adopt a replacement session an authenticated endpoint handed back after
+       * rotating the user's own authority (#4480: POST /auth/mfa/recovery-codes
+       * bumps mfa_epoch and revokes every refresh family, then re-issues for the
+       * caller). Unlike commitMfaEnrollmentIfCurrent this asserts nothing about
+       * the user record — only the tokens move.
+       *
+       * Fenced on `sessionGeneration`: a logout or re-login that raced the
+       * request has already bumped it, and pushing a token into THAT session
+       * would resurrect an evicted one.
+       */
+      commitReissuedSessionIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return { tokens };
+        });
+        return committed;
+      },
 
       commitMfaEnrollmentIfCurrent: (generation, tokens) => {
         let committed = false;
@@ -463,11 +498,35 @@ const DEFAULT_REFRESH_RETRY_AFTER_MS = 60_000;
 // misconfigured value must not wedge the tab indefinitely.
 const MAX_REFRESH_RETRY_AFTER_MS = 90_000;
 
+// Every client throttled in the same server window reads the same
+// Retry-After and, without this, would wake at the exact same instant — a
+// throttled fleet's own recovery becomes a second synchronized burst (#3984).
+// Jitter only ever ADDS time (never subtracts): retrying before the server's
+// granted window elapses just earns another 429, so the floor stays the raw
+// wait and only the ceiling spreads out.
+const RETRY_JITTER_FACTOR = 0.25;
+
+// The pre-jitter ceiling parseRetryAfterMs clamps to, chosen so base +
+// up-to-25% jitter never exceeds MAX_REFRESH_RETRY_AFTER_MS. Clamping to
+// MAX_REFRESH_RETRY_AFTER_MS itself and jittering AFTER would let the result
+// exceed the documented ceiling, AND would collapse every value at/above the
+// ceiling to the exact same ceiling deadline pre-jitter — recreating the
+// lockstep problem for precisely the hostile/misconfigured Retry-After values
+// this ceiling exists to bound.
+const MAX_REFRESH_RETRY_BASE_MS = Math.floor(MAX_REFRESH_RETRY_AFTER_MS / (1 + RETRY_JITTER_FACTOR));
+
+function withRetryJitter(waitMs: number): number {
+  return waitMs + Math.floor(Math.random() * waitMs * RETRY_JITTER_FACTOR);
+}
+
 /**
  * Seconds-to-wait from a 429, preferring the standard `Retry-After` header and
  * falling back to the JSON `retryAfter` field the API also sends. Clamped into
  * a sane range so neither a `0` (retry immediately — the very hammering being
- * rejected) nor an absurd value can be honoured literally.
+ * rejected) nor an absurd value can be honoured literally. Deliberately NOT
+ * jittered here — jitter is applied once, at the single call site below, so
+ * this stays a pure parse+clamp and the jitter itself can be tested/reasoned
+ * about independently (#3984).
  */
 function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | null): number {
   // Optional chaining: `headers` is absent on partially-stubbed Response
@@ -491,9 +550,9 @@ function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | 
       '[auth] /auth/refresh returned 429 with no usable Retry-After; ' +
         `falling back to ${DEFAULT_REFRESH_RETRY_AFTER_MS}ms`
     );
-    return DEFAULT_REFRESH_RETRY_AFTER_MS;
+    return Math.min(MAX_REFRESH_RETRY_BASE_MS, DEFAULT_REFRESH_RETRY_AFTER_MS);
   }
-  return Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)));
+  return Math.min(MAX_REFRESH_RETRY_BASE_MS, Math.max(1_000, Math.round(seconds * 1_000)));
 }
 
 async function refreshFetchOnce(): Promise<RefreshFetchResult> {
@@ -563,7 +622,9 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
       tokens: null,
       raced: false,
       transient: false,
-      throttledForMs: parseRetryAfterMs(refreshResponse, body),
+      // Jitter applied once, here, so it covers every consumer of
+      // `throttledForMs`/`retryAfterMs` uniformly (#3984).
+      throttledForMs: withRetryJitter(parseRetryAfterMs(refreshResponse, body)),
     };
   }
 
@@ -714,6 +775,46 @@ export function settleSsoLoginGate(): void {
   ssoLoginGate = null;
 }
 
+/**
+ * Where a terminally failed SSO exchange sends the user.
+ *
+ * Exported so AuthOverlay's redirect and handleSessionExpired's eviction land
+ * on the BYTE-IDENTICAL URL. That is what makes it harmless for either of them
+ * to win the race between the two (#3704) — see markSsoExchangeFailed below.
+ */
+export const SSO_EXCHANGE_FAILED_LOGIN_PATH = '/login?error=sso_exchange_failed';
+
+let ssoExchangeFailed = false;
+
+/**
+ * Record that the `#ssoCode` exchange has terminally failed (#3704).
+ *
+ * Settling the gate releases every refresh queued behind it, and those
+ * refreshes 401 against the very cookie whose deadness sent the user through
+ * SSO in the first place. Their eviction is CORRECT — the session really is
+ * gone — but its generic `reason=session-expired` is the wrong explanation:
+ * it points away from SSO and invites an infinite retry loop, since signing in
+ * again just re-runs the same broken SSO round trip.
+ *
+ * AuthOverlay orders the two so the specific redirect commits first, which on
+ * its own is enough whenever `navigateTo` completes a real soft transition.
+ * This flag is what makes the outcome correct even when that ordering
+ * guarantee does NOT hold — `navigateTo` falls back to a fire-and-forget
+ * `window.location.replace`, which merely QUEUES a hard navigation and then
+ * resolves, so the address bar has not moved yet when the gate opens. Rather
+ * than suppress the eviction (which would strand the user if the SSO redirect
+ * never lands), we make it carry the same destination: whichever navigation
+ * wins, the user gets the same specific explanation.
+ *
+ * Cleared by login(), and — more importantly — by ANY refresh that mints an
+ * access token (see requestTokenRefreshWaitingOutThrottle): a proven-live
+ * session must never carry a previous attempt's SSO verdict into an unrelated
+ * eviction later in the same document.
+ */
+export function markSsoExchangeFailed(): void {
+  ssoExchangeFailed = true;
+}
+
 // Optional chaining: tests (and some embedders) stub `window.location` with a
 // partial object, and this runs at module load where a throw breaks every
 // importer of the store.
@@ -726,6 +827,63 @@ if (typeof window !== 'undefined' && window.location?.hash?.startsWith('#ssoCode
 // is told the refresh is still throttled. One wait is enough to clear a full
 // server window; more would let a genuinely wedged client hang for minutes.
 const MAX_THROTTLE_WAITS = 1;
+
+// Single owner of the "throttle outlasted the bounded in-memory wait above"
+// recovery action (#3984). Before this, AuthThrottledMask (AuthOverlay.tsx)
+// independently counted down to its OWN `window.location.reload()` using the
+// same `authThrottledUntil` deadline this module publishes — so the mask's
+// reload and this module's own retry-in-progress fired at the same instant,
+// and the reload usually preempted the retry, wasting it. Only this module
+// schedules a reload now; the mask is pure display.
+//
+// A reload (not an in-place retry) is deliberate: the web app is an Astro MPA
+// whose access token lives in memory only, and AuthOverlay's own recovery
+// effect runs once per mount — a fresh document is what re-arms it.
+let throttleReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Gate: only reload on a page that actually renders AuthThrottledMask (i.e.
+// mounts AuthOverlay). Pages that handle `AuthThrottledError` with their own
+// non-destructive UI instead — `ForcedMfaSetupPage` on `AuthLayout`, which
+// mounts no AuthOverlay by design and shows a "still signed in, please wait"
+// message with no reload — must never have that work discarded by a reload
+// they never opted into. AuthThrottledMask toggles this on mount/unmount.
+let throttleMaskMounted = false;
+
+export function setThrottleMaskMounted(mounted: boolean): void {
+  throttleMaskMounted = mounted;
+}
+
+function scheduleThrottleReload(waitMs: number): void {
+  if (typeof window === 'undefined') return;
+  if (throttleReloadTimer) clearTimeout(throttleReloadTimer);
+  throttleReloadTimer = setTimeout(() => {
+    throttleReloadTimer = null;
+    // A newer refresh cycle (a concurrent fetchWithAuth call, or
+    // AdminSessionManager's keepalive) may have started — and be in its OWN
+    // bounded in-memory wait — since this timer was armed. That cycle owns
+    // the next decision (it will call scheduleThrottleReload/
+    // cancelThrottleReload itself once it settles); reloading here would
+    // discard ITS in-progress retry, recreating the exact race this module
+    // exists to remove.
+    if (tokenRefreshInFlight) return;
+    // Only reload if a mask is actually visible to explain it, and the
+    // throttle is still actually blocking the page. A background keepalive
+    // refresh (AdminSessionManager) can get throttled while the access token
+    // is still valid and every data call is still succeeding — reloading
+    // there would discard unsaved work to "recover" a session that was never
+    // impaired.
+    if (throttleMaskMounted && !useAuthStore.getState().tokens?.accessToken) {
+      window.location.reload();
+    }
+  }, waitMs);
+}
+
+function cancelThrottleReload(): void {
+  if (throttleReloadTimer) {
+    clearTimeout(throttleReloadTimer);
+    throttleReloadTimer = null;
+  }
+}
 
 /**
  * Wait out a `429` on /auth/refresh and try once more (#3696).
@@ -758,10 +916,26 @@ async function requestTokenRefreshWaitingOutThrottle(): Promise<RefreshOutcome> 
   // logout(), and by the next successful refresh.
   if (outcome.kind === 'throttled') {
     useAuthStore.getState().setAuthThrottledUntil(Date.now() + outcome.retryAfterMs);
+    // The in-memory bounded wait above is exhausted — schedule the ONE
+    // automatic recovery action left (see comment on scheduleThrottleReload).
+    scheduleThrottleReload(outcome.retryAfterMs);
   } else {
     // Any other verdict (restored, auth-failed, transient) ends the throttle —
     // drop the mask so a wait we entered above can never outlive its cause.
     useAuthStore.getState().setAuthThrottledUntil(null);
+    cancelThrottleReload();
+  }
+
+  // A minted access token proves the session is alive, so a previous SSO
+  // exchange failure is no longer the reason for anything (#3704). Clearing it
+  // in login() alone is NOT enough: every cookie-based recovery path lands on
+  // setTokens() without ever calling login(), so the verdict would outlive its
+  // cause and mislabel an unrelated eviction — an idle timeout hours later
+  // reported as "SSO sign-in failed", with its `next` deep link dropped too.
+  // Every refresh in the app funnels through here, so this is the one place
+  // that catches all of them.
+  if (outcome.kind === 'restored') {
+    ssoExchangeFailed = false;
   }
 
   return outcome;
@@ -1005,14 +1179,18 @@ export class AuthSessionExpiredError extends Error {
  *
  * SCOPE, precisely: on pages rendered by `DashboardLayout.astro` (and the
  * `/account/*` pages) `authThrottledUntil` also puts AuthOverlay's waiting mask
- * on top, so the throttle is impossible to miss. Pages built on the bare
- * `Layout.astro` / `AuthLayout.astro` shells mount no AuthOverlay — the
- * full-screen remote-access viewers (`pages/remote/**`) and the forced-MFA
- * enrollment page — so there the mask does NOT appear and the throttle is only
- * as visible as the caller's own error handling makes it. `ForcedMfaSetupPage`
- * handles this type explicitly; the remote viewers do not yet (tracked
- * separately — mounting a `fixed inset-0` mask over a live video/terminal
- * surface needs its own design pass).
+ * on top, so the throttle is impossible to miss. `pages/remote/**` (the
+ * full-screen remote-access viewers) now mount AuthOverlay too (#3984) — a
+ * throttle over a live video/terminal session forces a reload (see
+ * `scheduleThrottleReload`), which re-mints any single-use session ticket on
+ * reconnect, an accepted tradeoff for making the throttle visible/recoverable
+ * there at all. The forced-MFA enrollment page (`AuthLayout.astro`) is the
+ * one bare-shell exception: it mounts no AuthOverlay by design, so no mask
+ * and no automatic reload ever happen there (`throttleMaskMounted` gates the
+ * store's reload on a mask actually being on screen) — `ForcedMfaSetupPage`
+ * instead handles this type explicitly with its own non-destructive "still
+ * signed in, please wait" copy, so a throttle mid-enrollment can never
+ * silently discard a typed code.
  */
 export class AuthThrottledError extends Error {
   readonly retryAt: number;
@@ -1054,6 +1232,17 @@ export function handleSessionExpired(reason: SessionExpiredReason = 'session-exp
   useAuthStore.getState().logout();
 
   if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    // A terminally failed SSO exchange outranks the generic expiry these
+    // refreshes report (#3704): it is the actual reason the session is dead,
+    // and it is the only one of the two the user can act on. Landing on the
+    // exact URL AuthOverlay is already navigating to makes it irrelevant which
+    // of the two wins. Dropping `next` is safe precisely BECAUSE the verdict is
+    // cleared by any successful refresh: it can only still be set while the SSO
+    // bounce is the live cause, and that handoff has no deep link to preserve.
+    if (ssoExchangeFailed) {
+      window.location.replace(SSO_EXCHANGE_FAILED_LOGIN_PATH);
+      return;
+    }
     const url = loginPathWithNext();
     window.location.replace(`${url}${url.includes('?') ? '&' : '?'}reason=${reason}`);
   }
@@ -1947,11 +2136,13 @@ export async function apiEnableTotpMfa(code: string, currentPassword: string): P
   try {
     const response = await fetchWithAuth('/auth/mfa/enable', {
       method: 'POST',
-      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
-      // uses. Without this the generic 401 path replays the code, or evicts the
-      // session outright — on the forced-enrollment page that strands the user
-      // with no way back in. The caller already renders the raw error.
-      skipUnauthorizedRetry: true,
+      // #4470: no `skipUnauthorizedRetry` here any more. The API now answers a
+      // rejected TOTP (or a rejected step-up password) with 400 +
+      // `code: 'mfa_code_invalid'` / `'invalid_credentials'`, so a typo can no
+      // longer reach fetchWithAuth's 401 refresh-and-evict path at all. A 401
+      // from this endpoint now means only what it says — the bearer is dead —
+      // and refreshing it is the right response. The #4413 stopgap flag is
+      // gone with the status it was working around.
       body: JSON.stringify({ code, currentPassword }),
     });
     const data = await response.json().catch(() => null);

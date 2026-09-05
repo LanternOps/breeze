@@ -512,6 +512,53 @@
         "passed": "Passed",
         "failed": "Failed"
       }
+    },
+    "aiKillSwitch": {
+      "title": "AI Kill Switch",
+      "description": "Platform-wide emergency stop for unattended AI agent activity. Flipping it affects every partner at once — this is a platform operation, not a per-tenant setting.",
+      "refresh": "Refresh",
+      "loading": "Loading kill switch state…",
+      "impactNote": "Killing the switch stops unattended AI actions for every partner within about 5 seconds. Existing in-flight actions are not interrupted.",
+      "platformAdmin": {
+        "title": "Platform-admin access required",
+        "description": "The AI kill switch is a platform-wide control managed by Breeze platform admins. Your account cannot view or change it."
+      },
+      "status": {
+        "active": "AI actions active",
+        "killed": "AI actions killed"
+      },
+      "fields": {
+        "epoch": "Epoch",
+        "updatedBy": "Last changed by",
+        "updatedAt": "Last changed at",
+        "lastReason": "Last reason",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Kill AI actions platform-wide",
+        "restore": "Restore AI actions"
+      },
+      "confirm": {
+        "killTitle": "Kill AI actions platform-wide?",
+        "killDescription": "This immediately stops unattended AI agent activity for every partner on Breeze. Use this only for an active incident.",
+        "restoreTitle": "Restore AI actions?",
+        "restoreDescription": "This re-enables unattended AI agent activity for every partner on Breeze.",
+        "reasonLabel": "Reason (required, for the audit log)",
+        "reasonPlaceholder": "Describe the incident or reason for this change…",
+        "cancel": "Cancel",
+        "killSubmit": "Kill AI actions",
+        "restoreSubmit": "Restore AI actions"
+      },
+      "notice": {
+        "killed": "AI actions killed platform-wide.",
+        "restored": "AI actions restored platform-wide."
+      },
+      "errors": {
+        "load": "Failed to load kill switch state",
+        "generic": "An error occurred",
+        "flip": "Failed to update the kill switch",
+        "mfaRequired": "Flipping the AI kill switch requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      }
     }
   },
   "audit": {
@@ -687,80 +734,6 @@
         "previous": "Previous",
         "page": "Page {{page}}",
         "next": "Next"
-      }
-    },
-    "complianceReport": {
-      "title": "Compliance Report",
-      "description": "Generate audit-ready summaries aligned to compliance controls.",
-      "generateReport": "Generate Report",
-      "dataAccessAudit": "Data Access Audit",
-      "sensitiveOperations": "Sensitive Operations",
-      "reviewRequired": "Review required",
-      "categories": {
-        "gdpr": {
-          "label": "GDPR"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Data access events",
-          "dsarRequests": "DSAR requests",
-          "retentionAlerts": "Retention alerts"
-        },
-        "soc2": {
-          "controlExceptions": "Control exceptions",
-          "privilegedActions": "Privileged actions",
-          "policyAttestations": "Policy attestations"
-        },
-        "hipaa": {
-          "phiAccessEvents": "PHI access events",
-          "roleChanges": "Role changes",
-          "encryptionChecks": "Encryption checks"
-        },
-        "helpers": {
-          "past30Days": "past 30 days",
-          "pending2": "pending 2",
-          "overdue": "overdue",
-          "last7Days": "last 7 days",
-          "withinScope": "within scope",
-          "complete": "complete",
-          "past14Days": "past 14 days",
-          "requiresReview": "requires review",
-          "compliant": "compliant"
-        }
-      },
-      "table": {
-        "user": "User",
-        "data": "Data",
-        "purpose": "Purpose",
-        "time": "Time"
-      },
-      "data": {
-        "customerRecords": "Customer Records",
-        "adminPortal": "Admin Portal",
-        "payrollRecords": "Payroll Records",
-        "deviceGroupVip": "Device Group - VIP"
-      },
-      "purpose": {
-        "billingReview": "Billing review",
-        "securityAudit": "Security audit",
-        "complianceSampling": "Compliance sampling",
-        "accessProvisioning": "Access provisioning"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Exported customer dataset to CSV",
-        "mfaWindowReduced": "MFA window reduced to 15 minutes",
-        "roleChangedExternalContractor": "Role changed for external contractor"
-      },
-      "severity": {
-        "high": "High",
-        "medium": "Medium"
       }
     },
     "userActivityReport": {

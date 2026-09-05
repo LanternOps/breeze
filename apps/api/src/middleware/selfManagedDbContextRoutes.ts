@@ -205,6 +205,23 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // and writes the verification through the service's own short
   // `withSystemDbAccessContext` blocks, with the harness call between them.
   { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
+  // #3905 — quote send and re-send. `sendQuote`/`resendQuote` take a FOR UPDATE
+  // lock on the quote (and, when sending a revision, on its PARENT) and the
+  // handler then renders the proposal PDF and runs the outbound mail
+  // round-trip. Held inside the request transaction that was: a pooled
+  // connection pinned idle-in-transaction for the whole render + SMTP/Mailgun
+  // call (the #1105 pool-poison class), AND — worse — the parent quote's row
+  // locked while the customer still holds a live accept link for it, so their
+  // own POST /accept blocked behind our mail server. The handlers now open a
+  // short `withAuthDbAccessContext` block for the state transition and run the
+  // returned deferred (services/quoteLifecycle.ts, DeferredQuoteEmail) after it
+  // COMMITS, so no lock and no connection is held across delivery.
+  //
+  // `bulk-send` is deliberately ABSENT: `runBulkIsolated` already gives each
+  // item its own short transaction, and the per-item deferred runs after that
+  // item commits — the ambient request transaction it keeps holds no quote lock.
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/send\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/resend\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,

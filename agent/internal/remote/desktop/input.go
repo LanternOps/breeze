@@ -9,6 +9,14 @@ type InputEvent struct {
 	Key       string   `json:"key,omitempty"`       // Key code or character
 	Modifiers []string `json:"modifiers,omitempty"` // "ctrl", "alt", "shift", "meta"
 	Delta     int      `json:"delta,omitempty"`     // Scroll delta
+
+	// CapsLock is the viewer's Caps Lock state at the moment this event was
+	// produced. A pointer, because "the viewer did not say" (nil) has to be
+	// distinguishable from "the viewer says Caps Lock is off" (false): only the
+	// latter lets the agent take ownership of the AlphaShift bit. Viewers that
+	// predate issue #3595 never set it, and those sessions keep the platform
+	// handler's original behaviour.
+	CapsLock *bool `json:"capsLock,omitempty"`
 }
 
 // InputHandler processes input events

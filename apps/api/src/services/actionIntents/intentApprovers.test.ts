@@ -32,6 +32,10 @@ vi.mock('../aiTools', () => ({
     ['execute_command', { deviceArgs: ['deviceId'] }],
     ['run_script', { deviceArgs: ['deviceIds'] }],
     ['manage_services', { deviceArgs: ['deviceId'] }],
+    // `deviceId` is OPTIONAL on the real tool (aiToolSchemas.ts) — interactive
+    // chat may omit it and act across devices; only the sweep path always
+    // populates it. See the resolveIntentTargetScope tests below.
+    ['remediate_vulnerability', { deviceArgs: ['deviceId'] }],
     // Registered but NOT in DEVICE_COMPLETE_TARGET_TOOLS — the canonical
     // indirect-target tool (targetType: all/group/filter, no deviceArgs).
     ['manage_deployments', {}],
@@ -533,6 +537,41 @@ describe('resolveIntentTargetScope', () => {
     expect(scope).toEqual({ kind: 'indirect' });
     expect(db.select).not.toHaveBeenCalled();
   });
+
+  // #4452: remediate_vulnerability's `deviceId` arg is OPTIONAL (unlike the
+  // three other DEVICE_COMPLETE_TARGET_TOOLS entries, whose device args are
+  // required). These two cases are the ones that make it safe to add.
+  it('resolves remediate_vulnerability devices when deviceId is pinned (sweep path)', async () => {
+    queueDeviceSiteSelect([{ id: 'dev-1', siteId: 'site-1' }]);
+
+    const scope = await resolveIntentTargetScope(
+      'remediate_vulnerability',
+      { deviceVulnerabilityIds: ['finding-1'], deviceId: 'dev-1' },
+      { deviceId: 'dev-1' },
+      'org-1',
+    );
+    expect(scope).toEqual({ kind: 'devices', siteIds: ['site-1'] });
+  });
+
+  it('fails closed to indirect for remediate_vulnerability when deviceId is omitted, even with a bound run device', async () => {
+    // Interactive chat may call remediate_vulnerability WITHOUT deviceId
+    // (aiToolSchemas.ts: "interactive chat may still omit it and remediate
+    // across devices as before") — the handler then does not restrict which
+    // devices the cited findings live on. A device-bound chat run's OWN
+    // device (`target.deviceId`, the 3rd arg here) must NOT be treated as a
+    // complete stand-in target in that case: the findings can span other
+    // devices/sites the resolved run device tells us nothing about. Before
+    // the #4452 fix this returned {kind:'devices', siteIds:['site-1']} —
+    // silently narrowing approver fan-out to the wrong site.
+    const scope = await resolveIntentTargetScope(
+      'remediate_vulnerability',
+      { deviceVulnerabilityIds: ['finding-1'] },
+      { deviceId: 'dev-1' },
+      'org-1',
+    );
+    expect(scope).toEqual({ kind: 'indirect' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
 });
 
 describe('isAgentIntentDecideAuthorized', () => {
@@ -721,6 +760,7 @@ describe('DEVICE_COMPLETE_TARGET_TOOLS', () => {
     expect([...DEVICE_COMPLETE_TARGET_TOOLS].sort()).toEqual([
       'execute_command',
       'manage_services',
+      'remediate_vulnerability',
       'run_script',
     ]);
   });

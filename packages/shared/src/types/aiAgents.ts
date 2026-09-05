@@ -506,6 +506,37 @@ export interface AiAgentDto {
   disabledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The agent's most recent run, as the LIST route projects it (`loadLastRuns`
+   * in apps/api/src/routes/aiAgents.ts batches one query for the whole page).
+   *
+   * Optional because only the list route computes them; `null` — which that
+   * route always sends, computed or not — means "this agent has never run in
+   * an org this caller can see". The settings page used to declare its own
+   * `AgentListItem = AiAgentDto & {...}` for exactly these two fields, which
+   * made the DTO a description of the wire shape that the wire did not match.
+   */
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
+  /**
+   * How many things that most recent run left for a human to look at — the
+   * same number `AiAgentRunListItemDto.findingsToReview` carries, from the
+   * same helper (`countFindingsToReview` / `findingsToReviewSql`,
+   * apps/api/src/services/aiAgents/runFindings.ts), computed over the SAME
+   * `DISTINCT ON` row `lastRunStatus` above comes from.
+   *
+   * `lastRunStatus` alone understates the agent: a sweep that found six
+   * problems and was allowed to execute none of them reports `completed`, so
+   * the settings list showed a healthy-looking agent sitting on unread
+   * findings. `null` — never 0 — when there is no visible last run at all,
+   * matching its two siblings; 0 means "there IS a last run and it left
+   * nothing to review".
+   *
+   * Optional for the same reason as its siblings: only the list route
+   * computes it, and every other route that returns an `AiAgentDto` answers
+   * `null` rather than omitting the key.
+   */
+  lastRunFindingsToReview?: number | null;
 }
 
 /**

@@ -111,6 +111,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // orders the actual DELETE, not this list's alphabetization (same
   // reasoning as ai_unattended_exposure above).
   'ai_alert_verdicts',
+  // ai_budget_alert_events (#4388, W01): durable outbox row, FK org_id ON
+  // DELETE CASCADE. No cross-references to ai_budgets, so its position is
+  // pure alphabetization ('_' sorts before letters under localeCompare).
+  'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',
@@ -181,6 +185,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // prefix-extension trap noted below for custom_field_definitions).
   'contact_external_links',
   'contacts',
+  // localeCompare puts the '_' in 'contract_billing_period_outcomes' ahead of
+  // the 's' in 'contract_billing_periods' — the same prefix-extension trap
+  // documented above for contact_external_links/contacts. Verify with
+  // `node --eval "console.log('contract_billing_period_outcomes'.localeCompare('contract_billing_periods'))"`
+  // (-1) before moving either line.
+  'contract_billing_period_outcomes',
   'contract_billing_periods',
   'contract_documents',
   'contract_lines',
@@ -270,6 +280,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'incidents',
   'installer_bootstrap_tokens',
   'invoice_documents',
+  // Same '_' < 's' prefix-extension trap: invoice_line_devices sorts BEFORE
+  // invoice_lines. It is also the FK child, so children-before-parents and
+  // alphabetical order agree here — but the runtime topological sort
+  // (topologicalCascadeOrder) is what actually orders the DELETEs.
+  'invoice_line_devices',
   'invoice_lines',
   'invoice_payments',
   'invoice_stripe_payments',
@@ -313,6 +328,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
+  // partner_enrollment_key_idempotency (2026-08-09, partner-api-enrollment-keys):
+  // Idempotency claim store for Partner API enrollment-key minting. org_id is a
+  // direct FK to organizations (ON DELETE CASCADE already clears rows on org
+  // delete; listed here anyway per the cascade contract test's requirement that
+  // every org_id-columned public table be enumerated for auditability).
+  'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
   'patch_compliance_snapshots',
   'patch_jobs',
@@ -349,6 +370,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'recovery_tokens',
   'remediation_suggestions',
   'remote_sessions',
+  'report_schedule_recipients',
   'reports',
   'restore_jobs',
   'roles',
@@ -916,11 +938,18 @@ export async function cascadeDeleteOrg(
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
     } catch (err) {
-      // A single table failure aborts the cascade — partial deletion is
-      // worse than no deletion (the org sits in an inconsistent state).
-      // Best-effort forensic record of how far the erasure got (#2195 —
-      // mirrors the partner purge's purge_failed breadcrumb), then re-throw
-      // with context.
+      // A single table failure aborts the WALK. It does NOT roll the erasure
+      // back: each table above deletes inside its own
+      // `withSystemDbAccessContext` transaction, so every table already
+      // processed is committed by the time a later one raises. The contract is
+      // therefore fail-fast + partial + re-runnable, not atomic — which is why
+      // the forensic breadcrumb below matters (it is the only record of how far
+      // the erasure got) and why the walk is idempotent (a re-run after the
+      // fault is cleared finishes the job; already-erased tables match zero
+      // rows). Pinned end-to-end by the "failure semantics" describe in
+      // `__tests__/integration/tenantCascadeErasureBreadth.integration.test.ts`
+      // (#3880). Best-effort forensic record (#2195 — mirrors the partner
+      // purge's purge_failed breadcrumb), then re-throw with context.
       await writeErasureFailedAudit(orgId, performedBy, performedByEmail, table, stats, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for org=${orgId}: ${

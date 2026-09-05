@@ -72,10 +72,62 @@ const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unk
   monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
 };
 
+/**
+ * Refuses an assistant-authored automation action that asks to run a script
+ * ELEVATED (#4888).
+ *
+ * `automation` inline settings are not schema-validated at this layer (they
+ * are not in VALIDATED_INLINE_SETTINGS), so `actions` reaches
+ * `normalizeAutomationActions` as an opaque record — and that function
+ * tolerates `runAs: 'elevated'` on purpose, because it also runs over
+ * already-stored rows every time an automation executes and must not take a
+ * live automation offline.
+ *
+ * The result, without this guard, is a privilege hole with this PR's name on
+ * it: `manage_policy_feature_link` is TIER 2 (auto-executes, audit only, no
+ * human approval), so an assistant could author an automation action that runs
+ * a script with full administrator/root privileges — while the very same
+ * assistant calling `run_script` directly is held to `executeScriptSchema`,
+ * which excludes 'elevated', AND to a Tier-3 human approval. An assistant must
+ * not be able to reach through a config policy for a capability it is refused
+ * head-on.
+ *
+ * Scope, stated plainly: this closes the ASSISTANT path only. A raw
+ * `POST /automations` call still reaches the same tolerant
+ * `normalizeAutomationActions` (`routes/automations.ts` types `actions` as
+ * `z.unknown()`), because closing that safely needs to distinguish a NEWLY
+ * SUBMITTED 'elevated' from one already stored on the row being edited — a
+ * design decision, not a guard. Tracked as follow-up work on #4888; it is a
+ * pre-existing gap, not one this change opens.
+ */
+function rejectElevatedAutomationActions(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const items = (raw as { items?: unknown }).items;
+  if (!Array.isArray(items)) return null;
+
+  for (const item of items) {
+    const actions = (item as { actions?: unknown } | null)?.actions;
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      const candidate = action as { type?: unknown; runAs?: unknown } | null;
+      if (candidate?.type !== 'run_script' || candidate.runAs === undefined || candidate.runAs === null) continue;
+      if (candidate.runAs !== 'system' && candidate.runAs !== 'user') {
+        return `A run_script automation action may set runAs to "system" or "user" only (got "${String(candidate.runAs)}"). Elevation is a property of the saved script, not something an automation action may request.`;
+      }
+    }
+  }
+  return null;
+}
+
 function validateInlineSettingsForFeature(
   featureType: string | undefined,
   raw: unknown
 ): { value: unknown } | { error: string } {
+  if (featureType === 'automation') {
+    const elevated = rejectElevatedAutomationActions(raw);
+    if (elevated) return { error: elevated };
+  }
+
   const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
   if (!entry || raw === undefined || raw === null) return { value: raw };
 

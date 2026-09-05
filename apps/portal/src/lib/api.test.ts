@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { buildPortalApiUrl, portalApi } from './api';
+import { readFileSync } from 'node:fs';
+import { buildPortalApiUrl, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -59,6 +60,76 @@ describe('portalApi.getTicketForms request path', () => {
   });
 });
 
+describe('portalApi backup request paths', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the backup overview and device paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'not_configured',
+        asOf: '2026-09-02T12:00:00.000Z',
+        protected: 0, unprotected: 0, total: 0,
+        lastPassedVerification: null, lastTestRestoreAt: null,
+        openRpoBreaches: 0, openRtoBreaches: 0,
+        meanReadinessScore: null,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'no_data',
+        asOf: '2026-09-02T12:00:00.000Z',
+        data: [],
+        pagination: { page: 1, limit: 50, total: 0 },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBackupOverview();
+    await portalApi.getBackupDevices();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/portal/backups/overview');
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/portal/backups/devices?page=1&limit=50',
+    );
+  });
+});
+
+it('GETs support usage with an optional month', async () => {
+  const dto = {
+    asOf: '2026-09-02T12:00:00.000Z',
+    month: '2026-09',
+    timezone: 'America/Denver',
+    dataStatus: 'no_data',
+    totals: {
+      billed: { minutes: 0, hours: 0 },
+      toBeBilled: { minutes: 0, hours: 0 },
+      coveredByContract: { minutes: 0, hours: 0 },
+      pendingReview: { minutes: 0, hours: 0 },
+    },
+    tickets: [],
+  };
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(dto), { status: 200 }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(
+    portalApi.getSupportUsage('2026-09'),
+  ).resolves.toMatchObject({ data: dto });
+  expect(String(fetchMock.mock.calls[0][0])).toContain(
+    '/portal/tickets/usage?month=2026-09',
+  );
+});
+
+it('keeps the W08 support usage API in its trailing delimited block', () => {
+  const source = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
+  const marker = source.lastIndexOf('// W08 — support usage');
+  const supportUsage = source.lastIndexOf('getSupportUsage:');
+  const previousApiMember = source.lastIndexOf('settlePublicReturn:');
+
+  expect(marker).toBeGreaterThan(previousApiMember);
+  expect(supportUsage).toBeGreaterThan(marker);
+});
+
 
 describe('publicApiPath (rendered into HTML)', () => {
   it('is same-origin relative on the server even with INTERNAL_API_URL set', async () => {
@@ -78,6 +149,34 @@ describe('publicApiPath (rendered into HTML)', () => {
   });
 });
 
+it('preserves enriched device fields and exposes a same-origin CSV path', async () => {
+  const row = {
+    id: 'd-1',
+    hostname: 'Laptop',
+    displayName: null,
+    osType: 'windows',
+    osVersion: '11',
+    status: 'online',
+    lastSeenAt: null,
+    lastPatchAt: null,
+    protection: 'unknown',
+    encryption: null,
+    lastBackupAt: null,
+    warrantyEndsAt: null,
+  };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      data: [row],
+      pagination: { page: 1, limit: 50, total: 1 },
+    }), { status: 200 }),
+  ));
+
+  await expect(portalApi.getDevices()).resolves.toMatchObject({ data: [row] });
+  expect(publicApiPath('/portal/devices/export.csv')).toBe(
+    '/api/v1/portal/devices/export.csv',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // W08 #3902
 // ---------------------------------------------------------------------------
@@ -87,5 +186,211 @@ describe('portalAttachmentContentPath', () => {
     const path = portalAttachmentContentPath('t-1', 'a-1');
     expect(path).toBe('/api/v1/portal/tickets/t-1/attachments/a-1/content');
     expect(path.startsWith('http')).toBe(false);
+  });
+});
+
+describe('portalApi.getBrandingByDomain', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('loads public branding by encoded domain', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        branding: { name: 'Customer Portal' },
+      }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getBrandingByDomain(
+      'customer portal.example',
+    );
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/branding/customer%20portal.example',
+    );
+    expect(result.data).toEqual({ name: 'Customer Portal' });
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('ApiRequestConfig.timeoutMs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches an AbortSignal built from timeoutMs to the fetch call', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('omits signal when timeoutMs is not set, unchanged from prior behavior', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeUndefined();
+  });
+
+  it('falls through to the existing network-error path when the fetch aborts', async () => {
+    const abortError = new DOMException('The operation was aborted.', 'TimeoutError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+
+    const result = await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    expect(result.data).toBeUndefined();
+    expect(result.error).toBe('Network error');
+  });
+});
+
+describe('portalApi.getDashboard', () => {
+  it('GETs the dashboard endpoint and preserves tile statuses', async () => {
+    const dto = {
+      asOf: '2026-09-02T12:00:00.000Z',
+      timezone: 'America/Denver',
+      securityScore: { status: 'stale', score: 76 },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(dto), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(portalApi.getDashboard()).resolves.toMatchObject({ data: dto });
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/portal/dashboard');
+  });
+});
+
+describe('portal security client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the overview and paginated device paths', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        asOf: '2026-09-02T12:00:00.000Z',
+        dataStatus: 'no_data',
+        score: null,
+        band: null,
+        scoreHistory: [],
+        threatEvents: { label: 'endpoint threat events', weeks: [] },
+        vulnerabilities: {
+          openBySeverity: {
+            critical: 0, high: 0, medium: 0, low: 0, unknown: 0,
+          },
+          kevCount: 0,
+          lastDetectedAt: null,
+        },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        dataStatus: 'no_data',
+        asOf: '2026-09-02T12:00:00.000Z',
+        data: [],
+        pagination: { page: 2, limit: 25, total: 0 },
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getSecurityOverview(30);
+    await portalApi.getSecurityDevices({ page: 2, limit: 25 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/security/overview?days=30',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      '/portal/security/devices?page=2&limit=25',
+    );
+  });
+});
+
+describe('portalApi customer reports', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists report runs with pagination and maps the response data', async () => {
+    const run = {
+      id: 'run-1',
+      reportId: 'report-1',
+      type: 'executive_summary',
+      name: 'Customer portal — Executive summary',
+      status: 'completed',
+      startedAt: '2026-09-02T12:00:00.000Z',
+      completedAt: '2026-09-02T12:01:00.000Z',
+      rowCount: 4,
+      createdAt: '2026-09-02T12:00:00.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [run],
+      pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getReportRuns({ page: 2, limit: 5 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/reports/runs?page=2&limit=5',
+    );
+    expect(result).toMatchObject({
+      data: [run],
+      pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
+      statusCode: 200,
+    });
+  });
+
+  it('generates a report with the requested type and unwraps the run', async () => {
+    const run = {
+      id: 'run-2',
+      reportId: 'report-2',
+      type: 'security_compliance_posture',
+      name: 'Customer portal — Security compliance posture',
+      status: 'pending',
+      startedAt: null,
+      completedAt: null,
+      rowCount: null,
+      createdAt: '2026-09-02T12:00:00.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ data: run }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.generateReport(
+      'security_compliance_posture',
+    );
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/reports/generate',
+    );
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ type: 'security_compliance_posture' }),
+    });
+    expect(result).toMatchObject({ data: run, statusCode: 200 });
+  });
+
+  it('builds same-origin PDF and CSV artifact paths', () => {
+    expect(portalApi.reportArtifactUrl('run-1', 'pdf')).toBe(
+      '/api/v1/portal/reports/runs/run-1/pdf',
+    );
+    expect(portalApi.reportArtifactUrl('run-1', 'csv')).toBe(
+      '/api/v1/portal/reports/runs/run-1/csv',
+    );
   });
 });

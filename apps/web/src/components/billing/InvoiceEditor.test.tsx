@@ -41,7 +41,7 @@ function draft(lines: InvoiceDetail['lines'], extra: Partial<InvoiceDetail['invo
 const manualLine: InvoiceDetail['lines'][number] = {
   id: 'line-1', invoiceId: 'inv-1', sourceType: 'manual', parentLineId: null, catalogItemId: null,
   name: null, description: 'Consulting', quantity: '2.00', unitPrice: '50.00', costBasis: null, revenueAllocation: null,
-  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1,
+  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
 };
 
 describe('InvoiceEditor', () => {
@@ -70,6 +70,25 @@ describe('InvoiceEditor', () => {
     // Name/description are now editable inputs (full-width description row) rather
     // than static text; the legacy name-less line shows its description in the box.
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
+  });
+
+  it('characterizes a contract overage sibling as editable while a bundle child is read-only (#3205 W04)', async () => {
+    const overage = {
+      ...manualLine, id: 'over', sourceType: 'contract' as const, parentLineId: null,
+      description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00',
+    };
+    const child = {
+      ...manualLine, id: 'child', sourceType: 'bundle' as const, parentLineId: 'over',
+      description: 'Bundle component', customerVisible: false,
+    };
+    render(<InvoiceEditor detail={draft([overage, child])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-line-desc-over')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-line-remove-over')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-line-child-child')).toHaveTextContent('Bundle component');
+    expect(screen.queryByTestId('invoice-line-desc-child')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-line-remove-child')).not.toBeInTheDocument();
   });
 
   it('warns when a line is taxable but no tax rate is configured', async () => {

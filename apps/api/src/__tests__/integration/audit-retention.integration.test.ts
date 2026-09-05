@@ -35,6 +35,7 @@ describe('audit-log retention pruning', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 30)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
     await getTestDb().execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
@@ -60,6 +61,7 @@ describe('audit-log retention pruning', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 90)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
     await getTestDb().execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
@@ -78,6 +80,7 @@ describe('audit-log retention pruning', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days, last_cleanup_at)
       VALUES (${orgId}, 30, NULL)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
 
     await pruneExpiredAuditLogs();
@@ -94,6 +97,7 @@ describe('audit-log retention pruning', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 30)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
     await getTestDb().execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
@@ -123,6 +127,7 @@ describe('audit-log retention pruning', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 30)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
 
     // Three rows: two old (will be pruned), one recent (will survive and
@@ -198,6 +203,7 @@ describe('audit-log retention pruning', () => {
     beforeEach(async () => {
       await getTestDb().execute(sql`
         INSERT INTO audit_retention_policies (org_id, retention_days) VALUES (${orgId}, 30)
+        ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
       `);
     });
 

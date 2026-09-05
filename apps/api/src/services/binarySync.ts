@@ -1029,11 +1029,11 @@ export async function syncBinaries(): Promise<void> {
     }
   }
 
-  // Scan and register agent binaries in DB. The watchdog and backup binaries
-  // ship in the same directory as their per-arch siblings
-  // (breeze-watchdog-{os}-{arch}[.exe], breeze-backup-{os}-{arch}[.exe]) and are
-  // served by the matching /download/watchdog and /download/backup routes.
+  // Scan and register agent binaries in DB. The user-helper, watchdog, and
+  // backup binaries ship in the same directory as their per-arch siblings and
+  // are served by their matching component download routes.
   const binaries = await scanBinaryDir(agentBinaryDir);
+  const userHelperBinaries = await scanBinaryDir(agentBinaryDir, "user-helper");
   const watchdogBinaries = await scanBinaryDir(agentBinaryDir, "watchdog");
   const backupBinaries = await scanBinaryDir(agentBinaryDir, "backup");
 
@@ -1089,6 +1089,57 @@ export async function syncBinaries(): Promise<void> {
       console.log(
         `[binarySync] Registered ${remainingAgentBinaries.length} agent binaries via per-deployment re-signing (version: ${version})`,
       );
+    }
+
+    // #4682: register the Windows user-helper in local mode too. GitHub mode
+    // already registers this companion component, but local deployments only
+    // scanned agent/watchdog/backup binaries and therefore never created the
+    // agent_versions row that heartbeat's verified updater resolves.
+    if (userHelperBinaries.length > 0) {
+      try {
+        let coveredUserHelperFilenames = new Set<string>();
+        let excludedUserHelperFilenames = new Set<string>();
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: userHelperBinaries,
+            component: "user-helper",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/user-helper/${osParam}/${arch}`,
+          });
+          coveredUserHelperFilenames = result.registeredFilenames;
+          excludedUserHelperFilenames = result.excludedFilenames;
+          if (coveredUserHelperFilenames.size > 0) {
+            console.log(
+              `[binarySync] Registered ${coveredUserHelperFilenames.size} user-helper binaries from the official release manifest (version: ${version})`,
+            );
+          }
+        }
+        const remainingUserHelperBinaries = userHelperBinaries.filter(
+          (b) =>
+            !coveredUserHelperFilenames.has(b.filename) &&
+            !excludedUserHelperFilenames.has(b.filename),
+        );
+        if (remainingUserHelperBinaries.length > 0) {
+          await registerLocalBinaries({
+            binaries: remainingUserHelperBinaries,
+            component: "user-helper",
+            version,
+            keyId,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/user-helper/${osParam}/${arch}`,
+          });
+          console.log(
+            `[binarySync] Registered ${remainingUserHelperBinaries.length} user-helper binaries via per-deployment re-signing (version: ${version})`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[binarySync] Failed to register local user-helper binaries — interactive-session helper auto-update unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
 
     // #1802: register the watchdog component too, so self-hosters on

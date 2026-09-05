@@ -406,6 +406,117 @@ describe('createRemediationRun — script validation', () => {
 });
 
 /**
+ * #4888 — the Fix flow's run-context override.
+ *
+ * The picker has always RENDERED a System / logged-in-user select and then
+ * thrown the answer away (`_runAs` in FixPickerModal.tsx), because the
+ * dispatcher read `runAs` straight off the script row. These tests pin the two
+ * halves of honouring it: the choice is PERSISTED on the run at creation, and
+ * the dispatcher's COMMAND PAYLOAD carries it.
+ *
+ * The payload assertion is the load-bearing one. A test that only checked
+ * `queueCommandForExecution` had been called — or that matched the payload
+ * with a bare `expect.anything()` — passed against the old, broken code too.
+ */
+describe('createRemediationRun / dispatchRunChunk — run-context override (#4888)', () => {
+  it('persists the operator-chosen runAs on the run row', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1 }]); // script lookup
+    h.selectQueue.push([]); // membership: no members
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      parameters: {},
+      runAs: 'user',
+    };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect(h.capturedInserts[0]!.values).toMatchObject({ runAs: 'user' });
+  });
+
+  it('records runAs as null when the operator did not choose one (= the script default)', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1 }]);
+    h.selectQueue.push([]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: {} };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect((h.capturedInserts[0]!.values as Record<string, unknown>).runAs).toBeNull();
+  });
+
+  it('never records a runAs for a command run — a command has no script default to override', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([]); // membership: no members
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'command', commandType: 'reboot', parameters: {} };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect((h.capturedInserts[0]!.values as Record<string, unknown>).runAs).toBeNull();
+  });
+
+  it("dispatches with the run's chosen runAs, NOT the script row's saved default", async () => {
+    // The whole bug: script row says 'system', the operator picked 'user', and
+    // the agent used to receive 'system'.
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: 'user',
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-runas' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.runAs).toBe('user');
+  });
+
+  it("falls back to the script's saved default when the run recorded no choice (pre-#4888 rows)", async () => {
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: null,
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'elevated' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-default' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.runAs).toBe('elevated');
+  });
+});
+
+/**
  * #3409 PR4c-2. Fleet remediation is the FOURTH script-dispatch path and the
  * only one that does not go through `dispatchScriptToDevice`, so nothing here
  * resolves a bound parameter, opens the tenant-variable scope, or seals a

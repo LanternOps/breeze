@@ -149,6 +149,7 @@
       "webhookSecret": "Segredo do webhook (opcional)",
       "mode": "Modo",
       "script": "Script",
+      "runAs": "Executar como",
       "notificationChannel": "Canal de notificação",
       "severity": "Gravidade",
       "message": "Mensagem",
@@ -281,7 +282,8 @@
       "partial": "Parcial",
       "running": "Em execução",
       "pending": "Pendente",
-      "skipped": "Ignorado"
+      "skipped": "Ignorado",
+      "cancelled": "Cancelado"
     },
     "empty": "Nenhum histórico de execução disponível.",
     "triggeredBy": {
@@ -618,8 +620,33 @@
       "stdout": "Saída padrão (stdout)",
       "stderr": "Erro padrão (stderr)"
     },
+    "customFields": {
+      "title": "Gravações de campos personalizados",
+      "applied": "Aplicados",
+      "rejected": "Rejeitados",
+      "none": "Nenhum",
+      "reasons": {
+        "unknown_field": "Nenhuma definição de campo correspondente",
+        "not_script_writable": "O campo não é gravável por script",
+        "not_applicable_to_device": "O campo não se aplica a este tipo de dispositivo",
+        "device_not_found": "Dispositivo não encontrado",
+        "invalid_type": "O valor tem o tipo incorreto",
+        "out_of_range": "O valor está fora do intervalo permitido",
+        "not_a_choice": "O valor não é uma das opções permitidas do campo",
+        "too_long": "O valor é muito longo",
+        "invalid_date": "O valor não é uma data válida",
+        "marker_unparseable": "Não foi possível analisar o marcador como JSON",
+        "too_many_lines": "Muitas linhas de marcador nesta execução",
+        "too_many_keys": "Muitas chaves no marcador",
+        "marker_too_large": "O marcador excedeu o limite de tamanho",
+        "forbidden_key": "A chave não é permitida",
+        "envelope_unparseable": "Não foi possível analisar o resultado estruturado",
+        "envelope_unsupported_version": "O resultado estruturado usou uma versão não suportada"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Copiar para a área de transferência"
+      "copyToClipboard": "Copiar para a área de transferência",
+      "runAgain": "Executar novamente"
     },
     "title": "Detalhes da execução",
     "statusDescription": {
@@ -627,20 +654,31 @@
       "completed": "Script concluído com sucesso",
       "failed": "A execução do script falhou",
       "timeout": "A execução do script atingiu o tempo limite",
-      "pending": "O script está aguardando execução"
+      "pending": "O script está aguardando execução",
+      "queued": "O script está na fila para envio ao dispositivo",
+      "cancelling": "Interrupção solicitada — aguardando confirmação do dispositivo.",
+      "cancelled": "O script foi interrompido no dispositivo"
     },
     "fields": {
       "startedAt": "Iniciado em",
       "duration": "Duração",
       "exitCode": "Código de saída",
-      "completedAt": "Concluído em"
+      "completedAt": "Concluído em",
+      "runAs": "Contexto de execução"
     },
     "status": {
       "running": "Em execução...",
       "pending": "Pendente",
       "completed": "Concluído",
       "failed": "Falha",
-      "timeout": "Tempo limite"
+      "timeout": "Tempo limite",
+      "queued": "Na fila",
+      "cancelling": "Interrompendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
+      "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
+      "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
     }
   },
   "executionHistory": {
@@ -661,7 +699,14 @@
       "running": "Em execução...",
       "completed": "Concluído",
       "failed": "Falha",
-      "timeout": "Tempo limite"
+      "timeout": "Tempo limite",
+      "queued": "Na fila",
+      "cancelling": "Interrompendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
+      "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
+      "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -762,7 +807,8 @@
     "errors": {
       "fetch": "Falha ao buscar script",
       "generic": "Ocorreu um erro",
-      "save": "Falha ao salvar script"
+      "save": "Falha ao salvar script",
+      "duplicate": "Falha ao duplicar script"
     },
     "toast": {
       "created": "Script criado",
@@ -772,6 +818,7 @@
     "actions": {
       "backToScripts": "Voltar para scripts",
       "executionHistory": "Histórico de execuções",
+      "duplicate": "Duplicar",
       "create": "Criar script",
       "saveChanges": "Salvar alterações"
     },
@@ -1035,6 +1082,8 @@
       "variablePlaceholder": "ex.: vendor_token",
       "fieldLabel": "Chave do campo personalizado",
       "fieldPlaceholder": "ex.: asset_tag",
+      "fieldHelp": "Digite a Chave do Campo exibida em Configurações → Campos Personalizados (diferencia maiúsculas de minúsculas). Leitura: uma vez vinculado, o valor resolvido é entregue ao script como qualquer parâmetro normal — nenhum prompt é exibido. Gravação: para salvar um novo valor, faça o script chamar a API de campos personalizados do dispositivo com uma requisição PATCH e uma chave de API.",
+      "fieldHelpAriaLabel": "Sobre a vinculação de campo personalizado do dispositivo",
       "builtinLabel": "Propriedade",
       "chooseTitle": "Escolher uma variável",
       "secretRejected": "\"{{key}}\" é secreta — o salvamento será rejeitado. Escolha uma variável que não seja secreta.",
@@ -1080,6 +1129,7 @@
     "actions": {
       "runTitle": "Executar script",
       "editTitle": "Editar script",
+      "duplicateTitle": "Duplicar script",
       "deleteTitle": "Excluir script"
     },
     "pagination": {
@@ -1200,7 +1250,8 @@
       "delete": "Falha ao excluir script",
       "deleteTryAgain": "Falha ao excluir script. Tente novamente.",
       "alreadyInLibrary": "\"{{name}}\" já está na sua biblioteca",
-      "import": "Falha ao importar script"
+      "import": "Falha ao importar script",
+      "duplicate": "Falha ao duplicar script"
     },
     "toast": {
       "deleting": "Excluindo \"{{name}}\"...",
@@ -1287,6 +1338,8 @@
     "offlineWarning": "O dispositivo selecionado está offline — a execução aguardará até que ele reconecte.",
     "exitCode": "saída {{code}}",
     "viewHistory": "Ver histórico",
+    "runAgain": "Executar novamente",
+    "viewOnDevice": "Ver no dispositivo",
     "status": {
       "pending": "Na fila",
       "running": "Em execução",
@@ -1294,7 +1347,8 @@
       "failed": "Falhou",
       "timeout": "Tempo esgotado",
       "queued": "Na fila",
-      "cancelled": "Cancelada"
+      "cancelled": "Cancelada",
+      "cancelling": "Interrompendo…"
     },
     "errors": {
       "execute": "Falha ao iniciar a execução de teste",

@@ -527,7 +527,13 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
       .map(([pattern, sites]) => `${pattern} used by ${sites.join(', ')}`);
     expect(duplicated, 'one slot, one job').toEqual([]);
 
-    const unused = registryValues.filter((p) => !usage.has(p));
+    // Fine-grained patterns may also live in the registry when another
+    // subsystem needs one canonical cadence (partner trust does this for its
+    // 15-minute sweep/promote pair). They are intentionally outside this
+    // contract's coarse collision grid.
+    const unused = registryValues.filter(
+      (p) => minimumGapMs(p) >= COARSE_REPEAT_INTERVAL_MS && !usage.has(p),
+    );
     expect(unused, 'registry slots that no job registers (delete them)').toEqual([]);
   });
 

@@ -44,6 +44,10 @@ vi.mock('../db/schema', () => ({
     groupId: 'deviceGroupMemberships.groupId',
     orgId: 'deviceGroupMemberships.orgId',
   },
+  deviceGroups: {
+    id: 'deviceGroups.id',
+    orgId: 'deviceGroups.orgId',
+  },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId', settings: 'organizations.settings' },
   partners: { id: 'partners.id', timezone: 'partners.timezone', settings: 'partners.settings' },
   sites: { id: 'sites.id', timezone: 'sites.timezone' },
@@ -203,7 +207,7 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
 
   it('re-clamps a DEVICE_GROUP-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
     const { db } = await import('../db');
-    const { organizations, devices } = await import('../db/schema');
+    const { organizations, deviceGroups, devices } = await import('../db/schema');
     const chain: any = {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
@@ -214,15 +218,59 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', null, 'partner-123');
 
     expect(ids).toEqual(['dev-a']);
-    // Two joins: organizations for the partner re-clamp, devices for the
-    // Quick Support ephemeral exclusion (group membership rows carry no
-    // is_ephemeral of their own).
-    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
+    // Three joins: organizations for the partner re-clamp, deviceGroups and
+    // devices for the #3182 tightened membership -> group -> device chain
+    // (each carrying its own org-equality condition, not just an id match) —
+    // plus the pre-existing Quick Support ephemeral exclusion on devices.
+    expect(chain.innerJoin).toHaveBeenCalledTimes(3);
     expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
-    expect(chain.innerJoin.mock.calls[1][0]).toBe(devices);
+    expect(chain.innerJoin.mock.calls[1][0]).toBe(deviceGroups);
+    expect(chain.innerJoin.mock.calls[2][0]).toBe(devices);
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('group-x');
     expect(whereArgs).toContain('partner-123');
+  });
+
+  it('#3182 — device_group join conditions tie deviceGroups/devices org_id to the membership row, not just id (tightened join, org-owned branch)', async () => {
+    // Structurally parallel to the #2280 partner-clamp test above, but exercises
+    // the OTHER device_group branch (policyOrgId set, no partner re-clamp) so
+    // there are exactly two joins to inspect. A membership row could — pre-#3182
+    // composite FK — name a group in a different org than the membership itself,
+    // letting a cross-org device slip through a bare id join. Asserting on the
+    // actual join predicates (not just table identity) means this test fails if
+    // the `eq(deviceGroups.orgId, deviceGroupMemberships.orgId)` /
+    // `eq(devices.orgId, deviceGroupMemberships.orgId)` conditions are ever
+    // reverted back to a bare id-equality join.
+    const { db } = await import('../db');
+    const { deviceGroups, devices, deviceGroupMemberships } = await import('../db/schema');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      // Empty result simulates what a real DB would return once the tightened
+      // join filters out a membership row whose group/device sit in a
+      // different org than the membership itself.
+      where: vi.fn(() => Promise.resolve([])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', 'org-y', null);
+
+    expect(ids).toEqual([]);
+    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
+    expect(chain.innerJoin.mock.calls[0][0]).toBe(deviceGroups);
+    expect(chain.innerJoin.mock.calls[1][0]).toBe(devices);
+
+    const groupJoinArgs = collectSqlLeafStrings(chain.innerJoin.mock.calls[0][1]);
+    expect(groupJoinArgs).toContain(deviceGroupMemberships.groupId);
+    expect(groupJoinArgs).toContain(deviceGroups.id);
+    expect(groupJoinArgs).toContain(deviceGroups.orgId);
+    expect(groupJoinArgs).toContain(deviceGroupMemberships.orgId);
+
+    const deviceJoinArgs = collectSqlLeafStrings(chain.innerJoin.mock.calls[1][1]);
+    expect(deviceJoinArgs).toContain(deviceGroupMemberships.deviceId);
+    expect(deviceJoinArgs).toContain(devices.id);
+    expect(deviceJoinArgs).toContain(devices.orgId);
+    expect(deviceJoinArgs).toContain(deviceGroupMemberships.orgId);
   });
 
   it('re-clamps a DEVICE-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {

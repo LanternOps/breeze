@@ -3,6 +3,9 @@ import { formatDate } from './dateTimeFormat';
 
 export function formatTimeAgo(dateString: string): string {
   const date = new Date(dateString);
+  // Intl.RelativeTimeFormat.format(NaN) throws; an unparseable stamp must
+  // degrade to a placeholder, never take the row (or the page) down.
+  if (Number.isNaN(date.getTime())) return '—';
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);

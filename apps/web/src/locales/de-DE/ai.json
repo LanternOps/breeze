@@ -34,7 +34,15 @@
     "registerDevice": "Dieses Gerät registrieren",
     "decideFailed": "Entscheidung konnte nicht übermittelt werden",
     "approvedToast": "Aktion genehmigt",
-    "deniedToast": "Aktion abgelehnt"
+    "approvedToast_one": "{{count}} Aktion genehmigt",
+    "approvedToast_other": "{{count}} Aktionen genehmigt",
+    "deniedToast": "Aktion abgelehnt",
+    "deniedToast_one": "{{count}} Aktion abgelehnt",
+    "deniedToast_other": "{{count}} Aktionen abgelehnt",
+    "runContextLabel": "Ausführungskontext:",
+    "runContextChosenByAssistant": "vom Assistenten ausgewählt",
+    "runContextScriptDefault": "der gespeicherte Standard des Skripts",
+    "runContextOverrides": "vom Assistenten ausgewählt und überschreibt den gespeicherten Standard des Skripts ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Antwort wird erwartet…",
@@ -424,7 +432,9 @@
     "limit": "Bis zu 5 gleichzeitige Unterhaltungen"
   },
   "workspaceTab": {
-    "approvalPending": "Genehmigung ausstehend"
+    "approvalPending": "Genehmigung ausstehend",
+    "renameLabel": "Chat umbenennen",
+    "renameHint": "Doppelklicken zum Umbenennen"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Neuer Tab (Cmd+Shift+N)",

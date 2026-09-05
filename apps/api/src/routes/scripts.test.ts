@@ -36,8 +36,8 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const db: any = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -59,14 +59,26 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
-    }))
-  },
-  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
-}));
+    })),
+    // POST /scripts/:id/clone (#4887) runs its insert + tag copy inside
+    // db.transaction — the mock `tx` handed to the callback is just `db`
+    // itself, so every existing db.select/db.insert mockReturnValueOnce
+    // queue works unchanged whether a given call goes through `db` or `tx`.
+    transaction: vi.fn((fn: (tx: any) => unknown) => fn(db))
+  };
+  return {
+    db,
+    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  };
+});
 
 vi.mock('../db/schema', () => ({
   scripts: { id: 'scripts.id', updatedAt: 'scripts.updatedAt' },
+  // POST /scripts/:id/clone (#4887) reads/writes tags via scriptBundle's
+  // ensureTagIds/linkTags helpers, which key off these two column refs.
+  scriptTags: { id: 'stg.id', name: 'stg.name', orgId: 'stg.orgId', partnerId: 'stg.partnerId' },
+  scriptToTags: { scriptId: 'stt.scriptId', tagId: 'stt.tagId' },
   scriptExecutions: {},
   scriptExecutionBatches: {},
   devices: {},
@@ -975,6 +987,404 @@ describe('scripts routes', () => {
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------
+  // POST /scripts/:id/clone (#4887) — the general "Duplicate" action.
+  // Tenancy resolution lives in resolveScriptCloneScope (services/scriptWrite.ts);
+  // these tests exercise it end to end through the route, including the
+  // cross-org/cross-partner negative cases that must be rejected.
+  //
+  // Every helper below queues EXACTLY the db.select/db.insert calls a given
+  // test path will make and no more — vi.clearAllMocks() in beforeEach does
+  // NOT clear a queued mockReturnValueOnce/mockImplementationOnce that a prior
+  // test left unconsumed (only mockReset does), so an over-queued mock here
+  // would leak into and corrupt an unrelated LATER test in this file.
+  // -------------------------------------------------------------------
+  describe('POST /scripts/:id/clone', () => {
+    function orgSource(overrides: Record<string, unknown> = {}) {
+      return {
+        id: SCRIPT_ID_2,
+        name: 'Original Script',
+        description: 'desc',
+        category: 'Maintenance',
+        osTypes: ['windows'],
+        language: 'powershell',
+        content: 'Write-Host hi',
+        parameters: null,
+        timeoutSeconds: 300,
+        runAs: 'system',
+        isSystem: false,
+        orgId: ORG_ID,
+        partnerId: null,
+        exitCodeSeverityMapping: null,
+        ...overrides
+      };
+    }
+
+    // The ONE db.select the route always makes first: the source lookup.
+    function mockCloneSource(source: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([source]) })
+        })
+      } as any);
+    }
+
+    // The post-insert tag lookup on the SOURCE (scriptToTags join scriptTags)
+    // — only reached once the clone actually succeeds. Callers on an
+    // early-exit path (403/404/400) must NOT call this.
+    function mockTagLookup(tagRows: unknown[] = []) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(tagRows) })
+        })
+      } as any);
+    }
+
+    function mockInsertOnce(returned: Record<string, unknown>) {
+      let insertedValues: any;
+      vi.mocked(db.insert).mockImplementationOnce((() => ({
+        values: vi.fn().mockImplementation((vals: any) => {
+          insertedValues = vals;
+          return { returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, ...returned }]) };
+        })
+      })) as any);
+      return () => insertedValues;
+    }
+
+    function makePartnerAuth(partnerOrgAccess: 'all' | 'selected', accessibleOrgIds = [ORG_ID, ORG_ID_2]) {
+      return {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'partner' as const,
+        partnerId: PARTNER_ID,
+        partnerOrgAccess,
+        orgId: null,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: null, partnerId: PARTNER_ID, scope: 'partner', type: 'access', mfa: true,
+        },
+        accessibleOrgIds,
+        canAccessOrg: (id: string) => accessibleOrgIds.includes(id),
+      };
+    }
+
+    async function useAuth(auth: Record<string, unknown>) {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', auth);
+        return next();
+      });
+    }
+
+    const clone = (body?: Record<string, unknown>) =>
+      app.request(`/scripts/${SCRIPT_ID_2}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify(body ?? {})
+      });
+
+    it('org-scope caller clones its own script, defaulting the name to "<name> (copy)"', async () => {
+      mockCloneSource(orgSource());
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'Original Script (copy)', orgId: ORG_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe('Original Script (copy)');
+      expect(getInserted().orgId).toBe(ORG_ID);
+      expect(getInserted().partnerId).toBeNull();
+      expect(getInserted().isSystem).toBe(false);
+      expect(getInserted().createdBy).toBe('user-123');
+      // Every copied field lands byte-for-byte on the insert — a regression
+      // that dropped or truncated any of these would otherwise pass every
+      // other assertion in this suite (they only check name/orgId/isSystem).
+      expect(getInserted().description).toBe('desc');
+      expect(getInserted().category).toBe('Maintenance');
+      expect(getInserted().osTypes).toEqual(['windows']);
+      expect(getInserted().language).toBe('powershell');
+      expect(getInserted().content).toBe('Write-Host hi');
+      expect(getInserted().parameters).toBeNull();
+      expect(getInserted().timeoutSeconds).toBe(300);
+      expect(getInserted().runAs).toBe('system');
+      expect(getInserted().exitCodeSeverityMapping).toBeNull();
+      // Fresh row: version always starts at 1, never copied from a source
+      // that may have accumulated versions via prior edits.
+      expect(getInserted().version).toBe(1);
+    });
+
+    it.each([248, 249, 255])('bounds the default clone name for a %i-character source', async (length) => {
+      mockCloneSource(orgSource({ name: 'a'.repeat(length) }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe(`${'a'.repeat(248)} (copy)`);
+    });
+
+    it('does not split a Unicode character at the default clone name boundary', async () => {
+      mockCloneSource(orgSource({ name: `${'a'.repeat(247)}😀${'b'.repeat(6)}` }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe(`${'a'.repeat(247)} (copy)`);
+    });
+
+    it('honors an explicit name override in the body', async () => {
+      mockCloneSource(orgSource());
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'My Copy', orgId: ORG_ID });
+
+      const res = await clone({ name: 'My Copy' });
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe('My Copy');
+    });
+
+    it('a partner-scope caller may explicitly clone into another org within their partner (cross-org copy)', async () => {
+      await useAuth(makePartnerAuth('all'));
+      mockCloneSource(orgSource({ orgId: ORG_ID }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'Original Script (copy)', orgId: ORG_ID_2 });
+
+      const res = await clone({ orgId: ORG_ID_2 });
+
+      expect(res.status).toBe(201);
+      expect(getInserted().orgId).toBe(ORG_ID_2);
+    });
+
+    it('rejects an inaccessible sibling-org source even when its partnerId matches', async () => {
+      await useAuth(makePartnerAuth('selected', [ORG_ID]));
+      mockCloneSource(orgSource({ orgId: ORG_ID_2, partnerId: PARTNER_ID }));
+
+      const res = await clone({ orgId: ORG_ID });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicit orgId the caller cannot access (cross-org negative)', async () => {
+      // accessibleOrgIds excludes ORG_ID_2 — the requested target is outside
+      // this partner user's own org grant, even though they're partner scope.
+      await useAuth(makePartnerAuth('all', [ORG_ID]));
+      mockCloneSource(orgSource({ orgId: ORG_ID }));
+
+      const res = await clone({ orgId: ORG_ID_2 });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('rejects cloning a script owned by a DIFFERENT partner entirely (cross-partner negative)', async () => {
+      // Source is partner-wide under OTHER_PARTNER_ID — invisible to this
+      // caller under both RLS and the app-layer canReadScript check, since
+      // neither its org nor its partner match. Must 404, never leak via a
+      // successful clone or a 403 that confirms the id exists.
+      await useAuth(makePartnerAuth('all', [ORG_ID, ORG_ID_2]));
+      mockCloneSource(orgSource({ orgId: null, partnerId: OTHER_PARTNER_ID }));
+
+      const res = await clone({ orgId: ORG_ID_2 });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('preserves partner-wide scope by default when the source is partner-wide and the caller has the capability', async () => {
+      await useAuth(makePartnerAuth('all'));
+      mockCloneSource(orgSource({ orgId: null, partnerId: PARTNER_ID }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'Original Script (copy)', orgId: null, partnerId: PARTNER_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().orgId).toBeNull();
+      expect(getInserted().partnerId).toBe(PARTNER_ID);
+    });
+
+    // #3262-style guard: omitting orgId on a partner-wide source must NEVER
+    // silently downgrade to an org-owned clone for a caller who couldn't have
+    // created a partner-wide script in the first place.
+    it('refuses (never silently downgrades) a partner-wide clone for a selected-access caller with no orgId', async () => {
+      await useAuth(makePartnerAuth('selected'));
+      mockCloneSource(orgSource({ orgId: null, partnerId: PARTNER_ID }));
+
+      const res = await clone();
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('clones a system-library script into the org-scope caller\'s own org as an editable, non-system copy', async () => {
+      mockCloneSource(orgSource({ orgId: null, partnerId: null, isSystem: true, name: 'System Script' }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'System Script (copy)', orgId: ORG_ID, isSystem: false });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().orgId).toBe(ORG_ID);
+      expect(getInserted().isSystem).toBe(false);
+    });
+
+    it('an org-scope caller cannot clone a script owned by a DIFFERENT org (org-scope negative)', async () => {
+      // Default org-scope auth: canAccessOrg is true ONLY for ORG_ID. A
+      // source owned by ORG_ID_2 fails BOTH canReadScript branches (no org
+      // access, and no partnerId on the row to fall back to), so this never
+      // even reaches resolveScriptCloneScope.
+      mockCloneSource(orgSource({ orgId: ORG_ID_2 }));
+
+      const res = await clone();
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    // #4897 design note: an org-scope caller can already READ a partner-wide
+    // script belonging to their own partner (see "Task 7: list union" below,
+    // and canReadScript's `auth.partnerId === script.partnerId` branch).
+    // Cloning one is NOT a capability downgrade — org scope can never create
+    // OR hold a partner-wide script through ANY path in this system
+    // (canManagePartnerWidePolicies is unconditionally false for it), so
+    // landing in the caller's own org is the only sensible, non-surprising
+    // outcome. This locks that decision in with a test rather than leaving
+    // it as an untested side effect of resolveScriptCloneScope's org branch.
+    it('an org-scope caller clones a partner-wide script of their own partner into their own org', async () => {
+      await useAuth({
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization' as const,
+        partnerId: PARTNER_ID,
+        orgId: ORG_ID,
+        token: {
+          sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
+          orgId: ORG_ID, partnerId: PARTNER_ID, scope: 'organization', type: 'access', mfa: true,
+        },
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (id: string) => id === ORG_ID,
+      });
+      mockCloneSource(orgSource({ orgId: null, partnerId: PARTNER_ID, name: 'Partner Script' }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'Partner Script (copy)', orgId: ORG_ID, partnerId: null });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().orgId).toBe(ORG_ID);
+    });
+
+    it('a system-scope caller must name an explicit orgId to clone (never an orphan org_id=null/partner_id=null row)', async () => {
+      await useAuth({
+        user: { id: 'sys-1', email: 'sys@example.com', name: 'System' },
+        scope: 'system' as const,
+        partnerId: null,
+        orgId: null,
+        token: { sub: 'sys-1', email: 'sys@example.com', roleId: 'role-1', orgId: null, partnerId: null, scope: 'system', type: 'access', mfa: true },
+        accessibleOrgIds: null,
+        canAccessOrg: () => true,
+      });
+      mockCloneSource(orgSource({ orgId: null, partnerId: null, isSystem: true, name: 'System Script' }));
+
+      const res = await clone();
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('a system-scope caller clones into an explicitly named org', async () => {
+      await useAuth({
+        user: { id: 'sys-1', email: 'sys@example.com', name: 'System' },
+        scope: 'system' as const,
+        partnerId: null,
+        orgId: null,
+        token: { sub: 'sys-1', email: 'sys@example.com', roleId: 'role-1', orgId: null, partnerId: null, scope: 'system', type: 'access', mfa: true },
+        accessibleOrgIds: null,
+        canAccessOrg: () => true,
+      });
+      mockCloneSource(orgSource());
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ name: 'Original Script (copy)', orgId: ORG_ID_2 });
+
+      const res = await clone({ orgId: ORG_ID_2 });
+
+      expect(res.status).toBe(201);
+      expect(getInserted().orgId).toBe(ORG_ID_2);
+    });
+
+    it('404s cloning a script that does not exist', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+        })
+      } as any);
+
+      const res = await clone();
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('400s a clone whose copied parameters bind a partner-wide secret at a narrower (org) target scope', async () => {
+      // NOT mockCloneSource + mockTagLookup: a bound parameter makes
+      // findParameterSecretMismatches issue its own select BEFORE the
+      // (never-reached) post-insert tag lookup — queue exactly the two
+      // selects that actually run, in order.
+      mockCloneSource(orgSource({
+        parameters: [{ name: 'psa', type: 'string', source: 'tenantSecret', variableKey: 'psa_api_token' }]
+      }));
+      mockTenantVariableScopeRows([
+        { id: 'tv-3', key: 'psa_api_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: null, forOrgId: ORG_ID }
+      ]);
+
+      const res = await clone();
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('psa_api_token');
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('copies the source script\'s tags onto the clone', async () => {
+      mockCloneSource(orgSource());
+      mockTagLookup([{ name: 'prod' }, { name: 'critical' }]);
+      // ensureTagIds -> look up existing tags in the target scope by name.
+      // linkTags is called with isExistingScript=false for a brand-new clone,
+      // so it skips its own "existing links" select entirely — only one
+      // extra select (this one) happens beyond the source/tag-lookup pair.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'prod' }, { id: 'tag-2', name: 'critical' }])
+        })
+      } as any);
+      let linkedTagIds: string[] = [];
+      // Two chained mockImplementationOnce calls, in the exact order the two
+      // db.insert calls happen: the script row first, the scriptToTags link
+      // second — no need to branch on the `table` argument.
+      const insertScriptRowOnce = () => ({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Original Script (copy)', orgId: ORG_ID }])
+        })
+      });
+      const insertTagLinksOnce = () => ({
+        values: vi.fn().mockImplementation((rows: any) => {
+          linkedTagIds = rows.map((r: any) => r.tagId);
+          return Promise.resolve();
+        })
+      });
+      vi.mocked(db.insert)
+        .mockImplementationOnce(insertScriptRowOnce as any)
+        .mockImplementationOnce(insertTagLinksOnce as any);
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(linkedTagIds.sort()).toEqual(['tag-1', 'tag-2']);
+    });
+  });
+
 
   it('should prevent deleting scripts with active executions', async () => {
     vi.mocked(db.select)

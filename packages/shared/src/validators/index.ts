@@ -12,6 +12,7 @@ import {
   USER_STATUSES,
   NOTIFICATION_CHANNEL_TYPES
 } from '../constants';
+import { DEVICE_ROLES } from './deviceRoles';
 
 export * from './reliability';
 export * from './businessEmail';
@@ -33,16 +34,11 @@ export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
+export * from './deviceRoles';
 
 // ============================================
 // Device Roles
 // ============================================
-
-export const DEVICE_ROLES = [
-  'workstation', 'server', 'printer', 'router', 'switch',
-  'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-] as const;
-export type DeviceRole = typeof DEVICE_ROLES[number];
 
 // Orthogonal virtualization attribute (issue #1387). A virtual/VDI box is still
 // a workstation (or server) — virtualization is a SECOND targeting axis, not a
@@ -238,7 +234,13 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     type: z.literal('run_script'),
     scriptId: z.string().guid(),
     parameters: z.record(z.string(), z.unknown()).optional(),
-    runAs: z.string().optional(),
+    // #4888 — narrowed from a bare string now that the automation form
+    // actually exposes this control. Absent = use the script's saved default,
+    // which is what `automationRuntime.executeRunScriptAction` resolves it to.
+    // 'elevated' stays accepted here because a stored action may legitimately
+    // carry it (it is a real value of the `script_run_as` enum), even though
+    // the form only offers system/user.
+    runAs: z.enum(['system', 'user', 'elevated']).optional(),
   }),
   z.object({
     type: z.literal('send_notification'),
@@ -669,6 +671,13 @@ export const ringAutoApproveSchema = z.object({
   // first-seen otherwise (#2218). null = inherit deferralDays. Optional for
   // the same old-shape-preservation reason as thirdPartyApps.
   thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().optional(),
+  // Opt-in to auto-approving patches with no severity rating (severity IS NULL
+  // or the 'unknown' sentinel) — issue #3758. Fail-closed default: unrated
+  // patches never auto-approve unless this is explicitly true. OPTIONAL (no
+  // default) for the same old-shape-preservation reason as thirdPartyApps: an
+  // omitted value means "writer predates this field" and is preserved by
+  // mergeRingAutoApproveWrite, not reset to false.
+  autoApproveUnrated: z.boolean().optional(),
 }).superRefine((data, ctx) => {
   if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
     ctx.addIssue({
@@ -703,9 +712,11 @@ export function mergeRingAutoApproveWrite(
   deferralDays: number;
   thirdPartyApps: boolean;
   thirdPartyDeferralDays: number | null;
+  autoApproveUnrated: boolean;
 } {
   let storedThirdPartyApps = false;
   let storedThirdPartyDeferralDays: number | null = null;
+  let storedAutoApproveUnrated = false;
   if (storedRaw && typeof storedRaw === 'object') {
     const stored = storedRaw as Record<string, unknown>;
     const storedSeverities = Array.isArray(stored.severities)
@@ -720,6 +731,7 @@ export function mergeRingAutoApproveWrite(
       typeof rawTp === 'number' && Number.isInteger(rawTp) && rawTp >= 0 && rawTp <= 365
         ? rawTp
         : null;
+    storedAutoApproveUnrated = stored.autoApproveUnrated === true;
   }
   return {
     enabled: incoming.enabled,
@@ -730,6 +742,7 @@ export function mergeRingAutoApproveWrite(
       incoming.thirdPartyDeferralDays !== undefined
         ? incoming.thirdPartyDeferralDays
         : storedThirdPartyDeferralDays,
+    autoApproveUnrated: incoming.autoApproveUnrated ?? storedAutoApproveUnrated,
   };
 }
 
@@ -747,6 +760,12 @@ export const patchInlineSettingsSchema = z.object({
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
   rebootDelayMinutes: z.number().int().min(1).max(1440).default(15),
+  // #3207: end-user reboot deferral budget. `rebootAllowDeferral` is the opt-in;
+  // there is deliberately no "don't warn the user" switch — #3197 made at least
+  // one warning an invariant and a silence toggle would re-create that defect.
+  rebootAllowDeferral: z.boolean().default(false),
+  rebootMaxDeferrals: z.number().int().min(0).max(10).default(3),
+  rebootDeferralMinutes: z.number().int().min(5).max(1440).default(60),
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
@@ -765,6 +784,35 @@ export const patchInlineSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sources'],
       message: 'The selected patch sources (firmware/drivers) have no patch provider yet and would approve nothing. Include at least one of: os, third_party, custom.',
+    });
+  }
+
+  // #3207: deferral enabled with a zero budget would render a "Postpone"
+  // affordance that can never be used — a UI lie, not a policy.
+  if (data.rebootAllowDeferral && data.rebootMaxDeferrals === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootMaxDeferrals'],
+      message: 'rebootMaxDeferrals must be at least 1 when deferral is enabled.',
+    });
+  }
+
+  // 10080 minutes (7 days) is the agent's own ceiling on a scheduled reboot
+  // (handlers_patch.go rejects delayMinutes outside 1-10080). The API sets the
+  // hard deadline to delay + maxDeferrals x deferralMinutes, so the WHOLE sum
+  // has to stay inside that horizon: bounding only the deferral product would
+  // let a 1440-minute warning delay push the real deadline a day past it, and
+  // this comment would then be promising something the check did not deliver.
+  // With deferral off there is no deferral horizon at all and
+  // rebootDelayMinutes is bounded by its own 1-1440 range instead.
+  if (
+    data.rebootAllowDeferral
+    && data.rebootDelayMinutes + data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootDeferralMinutes'],
+      message: 'rebootDelayMinutes + rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
   }
 
@@ -1077,6 +1125,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';
 export * from './quickSupport';

@@ -11,6 +11,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -35,6 +36,14 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   const [error, setError] = useState<string>();
   const [selectedExecution, setSelectedExecution] = useState<ScriptExecution | null>(null);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
+  // #4885 "Run again" — carries the clicked execution's device + parameters
+  // into the next open of the execute modal. Cleared on close so a later
+  // "Run Script" from the toolbar (not tied to any past execution) opens
+  // blank again.
+  const [runAgainSeed, setRunAgainSeed] = useState<{
+    deviceIds: string[];
+    parameters: Record<string, string | number | boolean>;
+  } | null>(null);
 
   const fetchScript = useCallback(async () => {
     try {
@@ -117,6 +126,23 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     setSelectedExecution(null);
   };
 
+  // #4885 — re-open the execute flow pre-filled with this execution's device
+  // and the runtime parameters it was submitted with, instead of the operator
+  // re-picking both from scratch.
+  const handleRunAgain = (execution: ScriptExecution) => {
+    setSelectedExecution(null);
+    setRunAgainSeed({
+      deviceIds: [execution.deviceId],
+      parameters: execution.parameters ?? {}
+    });
+    setShowExecuteModal(true);
+  };
+
+  const handleCloseExecuteModal = () => {
+    setShowExecuteModal(false);
+    setRunAgainSeed(null);
+  };
+
   const handleExecute = async (
     _scriptId: string,
     deviceIds: string[],
@@ -138,8 +164,20 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     }
 
     const admission = await response.json() as ScriptAdmissionResult;
-    if (admission.targets.some(target => target.admission === 'admitted')) {
+    const admittedTargets = admission.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
       await fetchExecutions();
+      // #4886 mirror — same post-run navigation as ScriptsPage's library run:
+      // a single-device run (which is what "Run again" always seeds) jumps to
+      // that device's Scripts tab with the new execution highlighted; a
+      // multi-device run has no single "the" device, so it stays on this
+      // execution-history page (already the right place) via a self-navigate
+      // that picks up the just-fetched row.
+      if (deviceIds.length === 1) {
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      } else {
+        void navigateTo(scriptExecutionsHref(scriptId));
+      }
     }
     return admission;
   };
@@ -206,7 +244,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         {script && (
           <button
             type="button"
-            onClick={() => setShowExecuteModal(true)}
+            onClick={() => { setRunAgainSeed(null); setShowExecuteModal(true); }}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Play className="h-4 w-4" />
@@ -259,6 +297,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           execution={selectedExecution}
           isOpen={true}
           onClose={handleCloseDetails}
+          onRunAgain={handleRunAgain}
         />
       )}
 
@@ -268,8 +307,10 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           script={script}
           sites={sites}
           isOpen={true}
-          onClose={() => setShowExecuteModal(false)}
+          onClose={handleCloseExecuteModal}
           onExecute={handleExecute}
+          initialDeviceIds={runAgainSeed?.deviceIds}
+          initialParameters={runAgainSeed?.parameters}
         />
       )}
     </div>

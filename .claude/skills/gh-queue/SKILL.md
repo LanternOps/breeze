@@ -91,6 +91,16 @@ An unlabeled issue is invisible to all three, so **label on sight** — that's w
 - **Discussions:** the `comments(last:1)` author in the re-orient query. `isAnswered=false` on a Q&A I already answered = I still owe an "accept answer." Do NOT read `isAnswered=null` on non-Q&A categories as "open" — that field is null for Ideas/Show-and-tell by design; use last-comment author instead. (Misread this once and flagged a pile of already-closed discussions as open.)
 - **Issues:** last comment author + date. A reporter who replied after my last comment is waiting on me.
 
+**Issues: the staleness sweep is a FULL pass, never an activity window.** Iterate every open issue whose author is not me, regardless of `updatedAt`, and compare the last comment's author+date against my last comment. A round that only looks at items updated "since the last round" misses everything that landed during a gap between rounds — that is exactly how #2987 (08-18), #3876 (08-25), #4000 (08-25) and #3386 (08-27) went unanswered for 18 days after a two-week outage in rounds, while the log claimed "every community issue last-comment = Todd." Two corollaries: (1) **a community issue with ZERO comments is waiting on me** — a last-comment check returns nothing and silently drops it, which is what hid the p1 #4000; (2) **never age a prior round's "not waiting on me" verdict** — re-run the comparison on every item every round, because a reporter can nudge after a sign-off (#3386). The one-liner:
+
+```bash
+gh issue list --repo LanternOps/breeze --state open --limit 400 --json number,author --jq '.[] | select(.author.login != "ToddHebebrand") | .number' \
+  | while read n; do gh issue view $n --repo LanternOps/breeze --json number,author,comments \
+      --jq '"#\(.number) by \(.author.login) last=\(if (.comments|length)>0 then "\(.comments[-1].author.login)@\(.comments[-1].createdAt[:10])" else "NONE (waiting on me)" end)"'; done \
+  | grep -v 'last=ToddHebebrand'
+```
+Anything that prints is 🔴 until the thread is opened and read.
+
 **Drafts — `isDraft=true` ≠ "not on me."** A draft whose *body* asks for early design/approach feedback ("opening for early feedback," "thoughts before I build the rest") is genuinely waiting on me. Read the body of every incoming draft before bucketing it author-blocked (missed once on #976). Respond with a design-level COMMENT review, not an approve/merge gate. **The draft flag also never auto-flips on a comment-thread handoff** — #859 sat 18 days bucketed "author-blocked draft" after the author had addressed every blocker and a reviewer posted "leaving the merge decision to @ToddHebebrand," because the staleness check stopped at `isDraft=true`. The last-activity-author rule OUTRANKS the draft flag: apply it to drafts too, every round — if the last substantive comment hands me the ball (LGTM-pending-maintainer, "no rush" posted *after* fixes landed), the item is 🔴 waiting-on-me regardless of draft status.
 
 **Dependabot — "will auto-rebase" is a recurring queue.md lie.** Dependabot only auto-rebases trivial conflicts, NOT lockfile conflicts. For any "auto-rebase pending" PR, check `commits.last.committedDate` vs the note date; if stale, post `@dependabot rebase` explicitly, then merge **sequentially** (10-15s between admin-merges) so GH's mergeability recompute keeps up.

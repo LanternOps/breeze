@@ -46,6 +46,7 @@ import { aiAlertVerdicts } from '../../db/schema/aiAlertVerdicts';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
+import { countEligibleGraduations } from './graduationService';
 import { lastCompleteUtcDay, shiftUtcDay, type UtcDay } from './impactRollup';
 import { loadImpactWeights, resolveImpactPartnerId } from './impactWeights';
 
@@ -187,7 +188,7 @@ export async function loadImpactSummary(auth: AuthContext, input: ImpactQueryInp
     sql`${aiAlertVerdicts.feedbackAt} < (${through}::date + 1)::timestamp AT TIME ZONE 'UTC'`
   );
 
-  const [rawSeriesRows, rawByOrgRows, rawFeedbackRows, partnerId] = await Promise.all([
+  const [rawSeriesRows, rawByOrgRows, rawFeedbackRows, partnerId, promoteEligibleCount] = await Promise.all([
     db
       .select({
         day: aiAgentImpactDaily.day,
@@ -220,6 +221,10 @@ export async function loadImpactSummary(auth: AuthContext, input: ImpactQueryInp
       .from(aiAlertVerdicts)
       .where(feedbackWhere),
     resolveImpactPartnerId(auth, input.orgId),
+    // P2-6b (#4193 follow-up, P2-5 #4192 Task 22): the persisted `eligible`
+    // count over the SAME accessible-org set the aggregates above use. Never
+    // re-derives eligibility — `graduationService` owns that ladder.
+    countEligibleGraduations(auth.orgCondition, input.orgId),
   ]);
 
   const { effective, overrides } = await loadImpactWeights(partnerId);
@@ -282,9 +287,7 @@ export async function loadImpactSummary(auth: AuthContext, input: ImpactQueryInp
     byOrg,
     byOrgTruncated,
     positiveFeedback,
-    // P2-6b (#4193 follow-up): reads P2-5's ai_agent_graduation, which has
-    // not landed.
-    promoteEligibleCount: null,
+    promoteEligibleCount,
     weights: { effective, overrides },
     canEditWeights: canManagePartnerWidePolicies(auth),
   };

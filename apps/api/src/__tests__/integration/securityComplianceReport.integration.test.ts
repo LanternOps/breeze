@@ -111,6 +111,7 @@ describe('security compliance report vulnerability isolation', () => {
           orgId: envA.organization.id,
         };
         const authority: ReportExecutionAuthority = {
+          principalKind: 'user',
           scope,
           principalUserId: envA.user.id,
           capturedAt: new Date(),

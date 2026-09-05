@@ -512,6 +512,53 @@
         "passed": "Bestanden",
         "failed": "Fehlgeschlagen"
       }
+    },
+    "aiKillSwitch": {
+      "title": "KI-Notausschalter",
+      "description": "Plattformweiter Notausschalter für unbeaufsichtigte KI-Agentenaktivität. Das Umschalten wirkt sich auf alle Partner gleichzeitig aus — dies ist eine Plattformoperation, keine mandantenspezifische Einstellung.",
+      "refresh": "Aktualisieren",
+      "loading": "Status des Notausschalters wird geladen…",
+      "impactNote": "Das Aktivieren des Schalters stoppt unbeaufsichtigte KI-Aktionen für alle Partner innerhalb von etwa 5 Sekunden. Bereits laufende Aktionen werden nicht unterbrochen.",
+      "platformAdmin": {
+        "title": "Plattform-Administratorzugriff erforderlich",
+        "description": "Der KI-Notausschalter ist eine plattformweite Kontrolle, die von Breeze-Plattformadministratoren verwaltet wird. Ihr Konto kann ihn nicht einsehen oder ändern."
+      },
+      "status": {
+        "active": "KI-Aktionen aktiv",
+        "killed": "KI-Aktionen gestoppt"
+      },
+      "fields": {
+        "epoch": "Epoche",
+        "updatedBy": "Zuletzt geändert von",
+        "updatedAt": "Zuletzt geändert am",
+        "lastReason": "Letzter Grund",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "KI-Aktionen plattformweit stoppen",
+        "restore": "KI-Aktionen wiederherstellen"
+      },
+      "confirm": {
+        "killTitle": "KI-Aktionen plattformweit stoppen?",
+        "killDescription": "Dies stoppt sofort unbeaufsichtigte KI-Agentenaktivität für alle Partner auf Breeze. Verwenden Sie dies nur bei einem aktiven Vorfall.",
+        "restoreTitle": "KI-Aktionen wiederherstellen?",
+        "restoreDescription": "Dies aktiviert unbeaufsichtigte KI-Agentenaktivität für alle Partner auf Breeze erneut.",
+        "reasonLabel": "Grund (erforderlich, für das Audit-Protokoll)",
+        "reasonPlaceholder": "Beschreiben Sie den Vorfall oder den Grund für diese Änderung…",
+        "cancel": "Abbrechen",
+        "killSubmit": "KI-Aktionen stoppen",
+        "restoreSubmit": "KI-Aktionen wiederherstellen"
+      },
+      "notice": {
+        "killed": "KI-Aktionen plattformweit gestoppt.",
+        "restored": "KI-Aktionen plattformweit wiederhergestellt."
+      },
+      "errors": {
+        "load": "Laden des Notausschalterstatus fehlgeschlagen",
+        "generic": "Ein Fehler ist aufgetreten",
+        "flip": "Aktualisieren des Notausschalters fehlgeschlagen",
+        "mfaRequired": "Das Umschalten des KI-Notausschalters erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
     }
   },
   "audit": {
@@ -687,80 +734,6 @@
         "previous": "Zurück",
         "page": "Seite {{page}}",
         "next": "Weiter"
-      }
-    },
-    "complianceReport": {
-      "title": "Compliance-Bericht",
-      "description": "Auditfähige Zusammenfassungen gemäß den Compliance-Kontrollen erstellen.",
-      "generateReport": "Bericht erstellen",
-      "dataAccessAudit": "Audit des Datenzugriffs",
-      "sensitiveOperations": "Sensible Vorgänge",
-      "reviewRequired": "Prüfung erforderlich",
-      "categories": {
-        "gdpr": {
-          "label": "GDPR"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Datenzugriffsereignisse",
-          "dsarRequests": "DSAR-Anfragen",
-          "retentionAlerts": "Aufbewahrungswarnungen"
-        },
-        "soc2": {
-          "controlExceptions": "Kontrollausnahmen",
-          "privilegedActions": "Privilegierte Aktionen",
-          "policyAttestations": "Richtlinienbestätigungen"
-        },
-        "hipaa": {
-          "phiAccessEvents": "PHI-Zugriffsereignisse",
-          "roleChanges": "Rollenänderungen",
-          "encryptionChecks": "Verschlüsselungsprüfungen"
-        },
-        "helpers": {
-          "past30Days": "letzte 30 Tage",
-          "pending2": "2 ausstehend",
-          "overdue": "überfällig",
-          "last7Days": "letzte 7 Tage",
-          "withinScope": "im Geltungsbereich",
-          "complete": "vollständig",
-          "past14Days": "letzte 14 Tage",
-          "requiresReview": "Prüfung erforderlich",
-          "compliant": "konform"
-        }
-      },
-      "table": {
-        "user": "Benutzer",
-        "data": "Daten",
-        "purpose": "Zweck",
-        "time": "Zeit"
-      },
-      "data": {
-        "customerRecords": "Kundendatensätze",
-        "adminPortal": "Administratorportal",
-        "payrollRecords": "Gehaltsabrechnungsdaten",
-        "deviceGroupVip": "Gerätegruppe - VIP"
-      },
-      "purpose": {
-        "billingReview": "Abrechnungsprüfung",
-        "securityAudit": "Sicherheitsaudit",
-        "complianceSampling": "Compliance-Stichprobe",
-        "accessProvisioning": "Zugriffsbereitstellung"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Kundendatensatz als CSV exportiert",
-        "mfaWindowReduced": "MFA-Zeitfenster auf 15 Minuten reduziert",
-        "roleChangedExternalContractor": "Rolle für externen Auftragnehmer geändert"
-      },
-      "severity": {
-        "high": "Hoch",
-        "medium": "Mittel"
       }
     },
     "userActivityReport": {

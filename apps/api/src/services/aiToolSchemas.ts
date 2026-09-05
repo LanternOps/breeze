@@ -8,8 +8,9 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
 import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
+import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { m365ToolSchemas } from './aiToolSchemasM365';
@@ -20,6 +21,7 @@ import {
   peripheralEventTypeEnum
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { CONTACT_ROLES } from './contacts/types';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -341,6 +343,22 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  // AI agent governance (P2-5, #4192). `orgId` is an ADDRESS, never an
+  // authority — it exists so the effect-digest resolver (which receives
+  // `(args, database)` and nothing else, and recomputes under a system context
+  // with no ambient org) can name the org whose supervised keys are changing.
+  // Creation sets it from the authenticated org and rejects
+  // `args.orgId !== intent.orgId`; the executor re-asserts the same equality
+  // under the graduation lock before writing. See aiToolsAiAgentGovernance.ts.
+  // Keys mirror the tool's advertised input_schema exactly; a key Zod does not
+  // know is STRIPPED silently rather than rejected (#2814).
+  manage_ai_agents: z.object({
+    action: z.enum(['authorize_supervised_key']),
+    kind: z.enum(AI_AGENT_KINDS),
+    opKey: z.string().min(3).max(120),
+    orgId: uuid,
+  }),
+
   manage_organizations: z.object({
     action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
     orgId: uuid.optional(),
@@ -348,6 +366,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
     address: z.record(z.string(), z.unknown()).optional(),
     email: z.string().email().max(255).optional(),
+    siteId: uuid.optional(),
+    phone: z.string().max(64).optional(),
+    mobile: z.string().max(64).optional(),
+    title: z.string().max(255).optional(),
+    roles: z.array(z.enum(CONTACT_ROLES)).optional(),
+    isPrimary: z.boolean().optional(),
   }),
 
   manage_quotes: z.object({
@@ -432,6 +456,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'delete_draft',
       'add_line',
       'remove_line',
+      'update_line',
       'activate',
       'pause',
       'resume',
@@ -708,6 +733,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scriptId: uuid,
     deviceIds: z.array(uuid).min(1).max(10),
     parameters: z.record(z.string(), z.unknown()).optional(),
+    // #4888 — an assistant may choose the run context, under exactly the
+    // constraints a human caller has (services/scriptRunRequest.ts): the enum
+    // excludes 'elevated', and the handler re-parses the pair through the very
+    // same `executeScriptSchema` the HTTP route uses before it reaches
+    // dispatch. The cross-field rules ("targetSessionId needs runAs=user",
+    // "…and exactly one device") live there, not here, so the two callers
+    // cannot disagree about them.
+    ...aiRunContextInputShape,
   }),
 
   manage_services: z.object({

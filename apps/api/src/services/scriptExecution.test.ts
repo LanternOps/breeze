@@ -266,9 +266,9 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-c', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' })
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] });
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: [] });
 
     const result = await executeScriptOnDevices({
       scriptId: 'script-1',
@@ -293,7 +293,7 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-b', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
 
     await executeScriptOnDevices({
@@ -328,7 +328,7 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-b', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
 
     const result = await executeScriptOnDevices({
@@ -379,6 +379,8 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
     deliveryOutcome: 'no_agent' as const,
     executedAt: null,
     ignoredParameters: [],
+    runAs: 'system' as const,
+    targetSessionId: null,
   });
 
   it('reports agent_upgrade_required_recorded in failures without a second execution insert or batch increment', async () => {
@@ -536,8 +538,8 @@ describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)'
     // the same set — the caller must still see each key exactly once, and a
     // key only one device reported must not be dropped.
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key', 'site_code'] })
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key'] });
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: ['api_key', 'site_code'] })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: ['api_key'] });
 
     const result = await executeScriptOnDevices({
       scriptId: 'script-1',
@@ -556,7 +558,7 @@ describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)'
       .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
       .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-a', orgId: 'org-b' })]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] });
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: [] });
 
     const result = await executeScriptOnDevices({
       scriptId: 'script-1',
@@ -583,7 +585,7 @@ describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)'
       // failed device contributes nothing — the surviving device is what keeps
       // the warning alive for the run.
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_parameters', error: 'Unresolved script parameter(s): no value for required parameter(s) "region"' })
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key'] });
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, runAs: 'system' as const, targetSessionId: null, ignoredParameters: ['api_key'] });
 
     const result = await executeScriptOnDevices({
       scriptId: 'script-1',
@@ -727,6 +729,7 @@ const maintenanceStatus = (overrides: { active: boolean; suppressScripts: boolea
   suppressPatching: false,
   suppressAutomations: false,
   rebootIfPending: false,
+  windowEndsAt: null,
 });
 
 describe('executeScriptOnDevices — maintenance window suppression', () => {

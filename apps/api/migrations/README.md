@@ -6,6 +6,17 @@ Hand-written SQL, applied by `apps/api/src/db/autoMigrate.ts` on API boot.
 Enforced by `scripts/check-migration-naming.sh` — it runs as a pre-commit hook
 and again in CI, so you find out here rather than in a red `Test API`.
 
+The pre-commit guard only compares a new migration against history already
+reachable from the branch's own HEAD — it cannot see a migration that lands on
+`origin/main` *after* the branch was cut. A separate `pre-push` hook re-runs
+the same script as `check-migration-naming.sh --against-ref origin/main`
+(after fetching `origin/main` itself, and warning rather than blocking if that
+fetch fails, e.g. offline), so a branch whose migration sorted fine at commit
+time but has since been overtaken by `origin/main` fails locally, at push
+time, instead of surfacing later in CI's `Check Migrations` job on the merge
+commit — the round-trip that motivated adding this check. If it fails, rename
+the migration to sort after the newest one it names on `origin/main`.
+
 ## Naming
 
 - **`YYYY-MM-DD-<slug>.sql`.** The runner discovers files matching
@@ -61,6 +72,32 @@ with anything.
   logs. Silently fixing bad data destroys the forensic trail.
 - **RLS policies ship in the same migration that creates the table** — never
   deferred. See the tenancy shapes in the root `CLAUDE.md`.
+- **Writing rows requires system scope first.** Before the first
+  `UPDATE`/`DELETE`/`INSERT`/`MERGE` in the file:
+
+  ```sql
+  SELECT set_config('breeze.scope', 'system', true);
+  ```
+
+  (or `PERFORM set_config('breeze.scope', 'system', true);` as the first
+  statement inside a `DO` block). `breeze_current_scope()` defaults to `'none'`
+  (`0012-tenant-rls-deny-default.sql`) and 425 of the 442 public tables are
+  `FORCE ROW LEVEL SECURITY`, which binds the table **owner** too — and the
+  owner is the role migrations run as. On a connection that does not bypass
+  RLS, an unwrapped `UPDATE`/`DELETE` therefore matches **zero rows with no
+  error** — your `RAISE WARNING` prints a truthful-looking `0 cleaned` and the
+  migration moves on — and an unwrapped `INSERT` aborts with 42501. Reference
+  file: `2026-09-30-100000-rls-scoped-backfill-replay.sql`.
+
+  `is_local = true` scopes the setting to autoMigrate's per-file transaction,
+  so one line at the top covers the whole file — **except** in a
+  `-- @no-transaction` file, where each statement is sent separately and the
+  elevation must sit inside the same statement as the write.
+
+  Enforced by `apps/api/src/db/migrationRlsScope.test.ts` in the **Test API**
+  job. It carries a frozen baseline of the 122 shipped migrations that predate
+  the rule; that list is capped at a cutoff filename, so a new migration
+  **cannot** be silenced by adding it. See issue #4518.
 
 ## Never edit a shipped migration
 
@@ -84,6 +121,15 @@ references fails as an `ENOENT` several minutes into Integration Tests, not as
 a compile error. `autoMigrate.test.ts` asserts every such reference resolves,
 so the unit job catches it first — but only if you run it.
 
+**A replayed migration must go through `replayMigration`, not a bare
+`readFile` + `sql.raw`.** If the file redefines a SQL function
+(`CREATE OR REPLACE FUNCTION`) that a LATER migration also redefines, a bare
+replay reverts that function to the earlier body for the rest of the vitest
+process — silently breaking any later suite in the same shard/CI job that
+depends on the later body (#3205 W07 / PR #4838).
+`apps/api/src/__tests__/integration/replayMigration.ts` re-applies every
+later definer automatically; see its header comment.
+
 ## Checklist for a new migration
 
 1. Write `apps/api/migrations/YYYY-MM-DD-<slug>.sql` (add `-a-`/`-b-` only if
@@ -93,7 +139,8 @@ so the unit job catches it first — but only if you run it.
 4. New tenant-scoped table? Work the RLS + cascade + export-policy registration
    lists in the root `CLAUDE.md` — they are separate contracts and the missed
    one is always a cascade list.
-5. `pnpm --filter @breeze/api test src/db/autoMigrate.test.ts`.
+5. Does it write rows? Elect system scope first (see Content rules).
+6. `pnpm --filter @breeze/api test --run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts`.
 
 ## Rule 3 — a new migration must sort AFTER every committed one
 

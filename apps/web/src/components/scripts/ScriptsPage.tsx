@@ -15,6 +15,9 @@ import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { cloneScript } from '@/lib/api/scripts';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -57,6 +60,7 @@ export default function ScriptsPage() {
   const [systemScripts, setSystemScripts] = useState<SystemScript[]>([]);
   const [loadingLibrary, setLoadingLibrary] = useState(false);
   const [importingId, setImportingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
@@ -127,6 +131,27 @@ export default function ScriptsPage() {
     void navigateTo(`/scripts/${script.id}`);
   };
 
+  // #4887: one-click same-scope duplicate from the list row. Landing on the
+  // new draft (rather than refreshing the list in place) is the point of
+  // duplicating — the user is about to edit it.
+  const handleDuplicate = async (script: Script) => {
+    if (duplicatingId) return;
+    setDuplicatingId(script.id);
+    try {
+      const cloned = await runAction<{ id: string }>({
+        request: () => cloneScript(script.id),
+        errorFallback: t('scriptsPage.errors.duplicate'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+      else await fetchScripts();
+    } catch (err) {
+      handleActionError(err, t('scriptsPage.errors.duplicate'));
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
+
   const handleDelete = (script: Script) => {
     setSelectedScript(script);
     setModalMode('delete');
@@ -155,8 +180,23 @@ export default function ScriptsPage() {
       throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
-    if (data.targets.some(target => target.admission === 'admitted')) {
+    const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
       await fetchScripts();
+      // #4886 — a library run left the operator stranded on this (now stale)
+      // list with no way to see the result land. A single-device run goes to
+      // that device's Scripts tab (same hash-highlight convention DeviceDetails
+      // already uses for anomalies), where the new execution is expanded live;
+      // a multi-device run has no single "the" device, so it goes to the
+      // script's execution-history list instead.
+      // Keep partial admission results visible so the operator can inspect
+      // blocked or suppressed targets before leaving the execute flow.
+      if (admittedTargets.length !== data.targets.length) return data;
+      if (deviceIds.length === 1) {
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      } else {
+        void navigateTo(scriptExecutionsHref(scriptId));
+      }
     }
     return data;
   };
@@ -360,6 +400,7 @@ export default function ScriptsPage() {
           scripts={scripts}
           onRun={handleRun}
           onEdit={handleEdit}
+          onDuplicate={(script) => void handleDuplicate(script)}
           onDelete={handleDelete}
           organizations={organizations}
         />

@@ -776,7 +776,19 @@
     "failedToRefreshSettings": "QuickBooks-Einstellungen konnten nicht aktualisiert werden.",
     "homeCurrency": "Basiswährung",
     "multiCurrency": "Mehrwährungsfähig",
-    "multiCurrencyUnknown": "Unbekannt — zum Prüfen die Einstellungen aktualisieren"
+    "multiCurrencyUnknown": "Unbekannt — zum Prüfen die Einstellungen aktualisieren",
+    "pullPayments": "Zahlungsabgleich",
+    "pullPaymentsDescription": "In QuickBooks erfasste Zahlungen zurück auf die Breeze-Rechnungen übertragen.",
+    "pullPaymentsEnabled": "Zahlungen werden aus QuickBooks übernommen",
+    "pullPaymentsDisabled": "Zahlungen werden nicht mehr aus QuickBooks übernommen",
+    "failedToUpdatePullPayments": "Die Einstellung für den Zahlungsabgleich konnte nicht geändert werden.",
+    "lastPaymentSync": "Letzter Zahlungsabgleich",
+    "never": "Nie",
+    "syncNow": "Jetzt abgleichen",
+    "syncNowQueued": "Zahlungsabgleich eingereiht.",
+    "syncNowNotQueued": "Der Zahlungsabgleich konnte nicht eingereiht werden. Bitte in Kürze erneut versuchen.",
+    "syncNowPullDisabled": "Der Zahlungsabgleich ist für diese Verbindung deaktiviert. Aktivieren Sie den Zahlungsabgleich, um jetzt zu synchronisieren.",
+    "failedToSyncNow": "Der Zahlungsabgleich konnte nicht gestartet werden."
   },
   "securityIntegration": {
     "notConfigured": "Nicht konfiguriert",

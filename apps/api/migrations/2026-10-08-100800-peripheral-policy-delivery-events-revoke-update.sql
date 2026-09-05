@@ -1,0 +1,33 @@
+-- Issue #4806: peripheral_policy_delivery_events' append-only guarantee
+-- rested entirely on its BEFORE UPDATE trigger (peripheral_policy_delivery_
+-- events_append_only, migrations/2026-09-11-peripheral-effective-policy-v2.sql)
+-- because breeze_app kept a real UPDATE grant -- unlike its five append-only
+-- siblings from #4371/#4789 (pam_actuation_results, agent_rollback_events,
+-- ml_feedback_events have UPDATE fully revoked; automation_action_results
+-- and device_software_inventory_state were never append-only by design).
+--
+-- UPDATE was deliberately left granted in the original migration so
+-- routes/devices/moveOrg.ts's device org-move path could restamp org_id on
+-- this table via an ordinary breeze_app UPDATE. That restamp is redundant:
+-- this table has both a uuid device_id and a uuid org_id column, so it is
+-- auto-discovered by breeze_cascade_device_org_id() (migrations/2026-05-18-
+-- device-child-orgid-cascade.sql), the SECURITY DEFINER trigger on
+-- `devices` that already restamps every such child table -- verified via
+-- `SELECT * FROM breeze_device_child_orgid_tables()` -- the instant
+-- devices.org_id changes, ahead of moveOrg.ts's own app-level loop. The
+-- explicit breeze_app UPDATE was therefore never load-bearing for a
+-- legitimate writer path; it was purely a privilege-layer gap identical in
+-- shape to the one #4371 closed for agent_rollback_events.
+--
+-- Companion changes: apps/api/src/db/ensureAppRole.ts re-revokes UPDATE on
+-- every boot (matching agent_rollback_events's full UPDATE, DELETE,
+-- TRUNCATE re-revoke); apps/api/src/routes/devices/core.ts adds this table
+-- to DEVICE_ORG_FK_CASCADE_TABLES so moveOrg.ts's generic loop skips the
+-- now-unprivileged UPDATE; apps/api/src/services/orgMergeRegistry.ts
+-- reclassifies the table from 'repoint' to 'leave-for-erasure' (org merge
+-- has no role -- breeze_app or breeze_audit_admin -- that can issue this
+-- UPDATE, the same reasoning already applied to agent_rollback_events).
+--
+-- Idempotent: REVOKE on a privilege the role no longer holds is a no-op in
+-- PostgreSQL (a NOTICE, not an error), so re-applying this file is safe.
+REVOKE UPDATE ON TABLE peripheral_policy_delivery_events FROM breeze_app;

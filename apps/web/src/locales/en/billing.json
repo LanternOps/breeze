@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Flat fee",
         "perDevice": "Per device",
+        "perDeviceRole": "Per device role",
+        "perDeviceGroup": "Per device group",
         "perSeat": "Per seat",
         "manual": "Manual quantity"
+      },
+      "dynamicGroup": "dynamic",
+      "deletedGroup": "{{name}} (deleted group)",
+      "coverage": {
+        "uncovered": "{{count}} device(s) on this organization are not billed by any line on this contract: {{breakdown}}",
+        "allCovered": "Every device on this organization is billed by a line on this contract.",
+        "uncoveredLead": "{{count}} device(s) on this organization are not billed by any line on this contract:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{counted}} of {{included}} included",
+        "includedOnly": "{{included}} included",
+        "overBilled": "{{included}} included · {{overage}} over (billed)",
+        "overFlagged": "{{included}} included · {{overage}} over (flagged)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} over {{included}} included, not billed",
+        "billed": "{{description}} — {{overage}} over {{included}} included, billed at the overage rate"
       },
       "transition": {
         "activate": "Activate",
@@ -31,7 +51,13 @@
         "cancel": "Cancel"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "group deleted",
+        "siteDeleted": "site deleted",
+        "siteDeletedNamed": "site deleted: {{name}}"
+      },
+      "lineScope": {
+        "site": "Site: {{name}}"
       }
     },
     "contractDetail": {
@@ -67,6 +93,15 @@
         "period": "Period",
         "generated": "Generated",
         "invoice": "Invoice",
+        "outcome": "Outcome",
+        "outcomeAllBilled": "All billed",
+        "outcomeUncovered": "{{count}} uncovered",
+        "outcomeFlagged": "{{count}} flagged",
+        "outcomeNoDeviceLines": "No device lines",
+        "outcomeNotRecorded": "Not recorded",
+        "outcomeToggle": "Show period outcome",
+        "outcomeDevicesEvaluated": "Devices evaluated: {{count}}",
+        "outcomeBilledOverage": "Billed overage: {{count}}",
         "empty": "No invoices have been generated yet.",
         "viewInvoice": "View invoice"
       },
@@ -96,6 +131,8 @@
           "cancel": "Contract cancelled"
         },
         "invoiceGenerated": "Invoice generated",
+        "flaggedOverage": "{{count}} line(s) are over their included quantity and were not billed: {{names}}",
+        "uncoveredDevices": "Invoice generated, but {{count}} device(s) are not billed by any line on this contract: {{breakdown}}",
         "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
         "draftDeleted": "Draft deleted"
       },
@@ -143,13 +180,22 @@
         "addLine": "Could not add the line.",
         "removeLine": "Could not remove the line.",
         "activateContract": "Could not activate the contract.",
-        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link."
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or clear the catalog link.",
+        "updateLine": "Could not update the line.",
+        "lineNotFound": "That line no longer exists. Refresh the contract.",
+        "contractNotEditable": "Lines can only be edited on draft or active contracts.",
+        "siteNotInOrg": "That site belongs to a different organization.",
+        "groupNotInOrg": "That device group belongs to a different organization.",
+        "invalidLinePatch": "Those changes aren’t valid for this line type.",
+        "priceNotRepresentable": "That price has too many decimal places for {{currency}}.",
+        "catalogItemNotFound": "That catalog item isn’t available on this contract."
       },
       "toast": {
         "contractCreated": "Contract created",
         "lineAdded": "Line added",
         "lineRemoved": "Line removed",
-        "contractActivated": "Contract activated"
+        "contractActivated": "Contract activated",
+        "lineUpdated": "Line updated"
       },
       "schedule": {
         "title": "Schedule",
@@ -180,7 +226,8 @@
         "unitPrice": "Unit price",
         "qty": "Qty",
         "tax": "Tax",
-        "empty": "No lines yet. Add a recurring line below."
+        "empty": "No lines yet. Add a recurring line below.",
+        "edit": "Edit"
       },
       "addLine": {
         "integrationHint": "Add from an integration — it pre-fills a line.",
@@ -188,6 +235,20 @@
         "addFromPax8Catalog": "Add from Pax8 catalog",
         "importFromTdSynnex": "Import from TD SYNNEX",
         "lineType": "Line type",
+        "allowanceToggle": "Include a fixed quantity, then handle extras",
+        "allowanceHint": "The line bills the included quantity every period, even when fewer devices are counted.",
+        "includedQuantity": "Included quantity",
+        "overageMode": "Extras beyond the included quantity",
+        "overageBill": "Bill extras",
+        "overageFlag": "Flag extras for review",
+        "overageUnitPrice": "Price per extra unit",
+        "allowanceRequired": "Enter an included quantity, and a price when you bill extras.",
+        "deviceRoles": "Device roles (a device is billed when its role is one of these)",
+        "deviceRolesRequired": "Pick at least one role.",
+        "deviceGroup": "Device group (bills its members; dynamic groups are evaluated at billing time)",
+        "selectGroup": "Select a group",
+        "deviceGroupRequired": "Pick a group.",
+        "deviceGroupsLoadFailed": "Couldn't load this organization's device groups.",
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",
@@ -207,6 +268,16 @@
         "priceLookupFailed": "Could not look up the {{currency}} price.",
         "priceNotRepresentable": "The saved {{currency}} price for this item is not valid in {{currency}} — correct it in the catalog, or clear the catalog link and enter a manual line.",
         "priceSourceOrgOverride": "Organization-specific price for {{org}}"
+      },
+      "editLine": {
+        "save": "Save line",
+        "cancel": "Cancel",
+        "typeLocked": "Line type can’t be changed. Remove the line and add a new one.",
+        "priceFromCatalog": "Price comes from the catalog. Clear the catalog link to set it by hand.",
+        "refreshPrice": "Refresh price from catalog",
+        "restoreCatalogLink": "Restore catalog link",
+        "unlinkNeedsPrice": "Enter a unit price and tax setting to clear the catalog link.",
+        "noChanges": "Nothing to save yet."
       },
       "estimate": {
         "title": "Estimated this period",
@@ -239,6 +310,10 @@
       "backToContractsText": "Back to contracts",
       "newContract": "New contract",
       "doneEditing": "Done editing"
+    },
+    "list": {
+      "estimateUnavailable": "Estimate unavailable: a device group on this contract could not be evaluated",
+      "estimateExcluded": "Excludes {{count}} contract(s) whose estimate is unavailable"
     },
     "contractsList": {
       "title": "Contracts",
@@ -509,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "workstations", "server": "servers", "printer": "printers", "router": "routers", "switch": "switches", "firewall": "firewalls",
+        "access_point": "access points", "phone": "phones", "iot": "IoT devices", "camera": "cameras", "nas": "NAS devices"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Bill by device set", "typeLabel": "Device set",
+        "types": { "per_device": "Per device", "per_device_role": "Per device role", "per_device_group": "Per device group", "per_seat": "Per seat" },
+        "rolesLabel": "Device roles", "groupLabel": "Device group", "siteLabel": "Site (optional)", "allSites": "All sites",
+        "quantityAuto": "Quantity is counted automatically", "autoSummary": "Auto quantity · {{count}} {{set}} · estimated",
+        "driftChip": "count changed: {{stored}} → {{live}}", "refresh": "Refresh counts", "estimateError": "Couldn’t check the live device count.", "pickerError": "Couldn’t load device groups or sites. Refresh and try again.",
+        "groupDeleted": "Device group “{{name}}” was deleted — pick another", "siteDeleted": "Site “{{name}}” was deleted — pick another",
+        "typeLocked": "A device set cannot be changed after the line is created — remove the line and add it again.",
+        "includedLabel": "Included quantity", "overageModeLabel": "Above the allowance", "overageBill": "Bill each extra unit", "overageFlag": "Report for review", "overagePriceLabel": "Overage price",
+        "driftToast": "{{count}} line(s) no longer match the live device count: {{lines}}",
+        "retargetToast": "{{count}} line(s) need a device group or site re-picked for this organization"
+      },
       "actions": {
         "addImage": "Add image",
         "addLine": "Add line",
@@ -557,7 +650,7 @@
       "addSection": {
         "captionPlaceholder": "Caption (optional)",
         "headingPlaceholder": "Heading text",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
@@ -695,7 +788,8 @@
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
-        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",
@@ -875,7 +969,7 @@
         "preparedForPlaceholder": "Override the customer name",
         "showPreparedBy": "Show “prepared by” (your company)",
         "imageLabel": "Cover image",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "removeImage": "Remove image"
       },
       "ghost": {
@@ -1134,6 +1228,29 @@
         "untitled": "a newer version"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change quote currency",
+        "description": "This draft quote is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the quote's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the quote's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Quote currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the quote currency."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Feed price currency unknown — enter a {{currency}} price",
       "feedPriceIn": "Feed price is {{feedCurrency}} — enter a {{currency}} price",
@@ -1165,6 +1282,12 @@
       "warehouses": "Warehouses: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.", "estimate": "Estimated quantity — billed at the actual number of {{set}} each billing period.",
+        "setDevices": "devices", "setSeats": "seats", "setGroup": "devices in “{{name}}”", "atSite": "{{set}} at {{site}}",
+        "allowanceBill": "Includes {{included}}; additional units billed at {{price}} each.",
+        "allowanceFlag": "Includes {{included}}; additional units are reported for review, not billed automatically."
+      },
       "additionalItems": "Additional items",
       "contract": {
         "download": "Download contract",
@@ -1499,6 +1622,7 @@
       "messageLabel": "Message (optional)",
       "messagePlaceholder": "Add a short note for the customer…",
       "includePdfLabel": "Attach the invoice PDF",
+      "includeDeviceAppendixLabel": "Include billed devices appendix",
       "signaturePreviewLabel": "Your signature will be added:",
       "invalidEmail": "Not a valid email address: {{addresses}}",
       "tooManyRecipients": "Up to {{max}} addresses.",
@@ -1554,6 +1678,29 @@
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change invoice currency",
+        "description": "This draft invoice is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the invoice's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the invoice's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Invoice currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the invoice currency."
+      }
+    },
     "deposit": {
       "duePrefix": "Deposit of",
       "dueSuffix": "due — {{paid}} of {{total}} paid.",
@@ -1576,6 +1723,21 @@
       "tax": "Tax",
       "total": "Total",
       "allHidden": "All lines are internal-only. Use “Show cost & margin” to view them."
+    },
+    "devices": {
+      "title": "Billed devices",
+      "toggle": "Devices ({{count}})",
+      "notRecorded": "Device detail was not recorded for this invoice.",
+      "hostname": "Hostname",
+      "role": "Role",
+      "countedAs": "Counted as",
+      "included": "Included",
+      "overage": "Overage",
+      "removed": "Device removed",
+      "showing": "Showing {{shown}} of {{total}}",
+      "flaggedHeading": "Flagged, not billed",
+      "empty": "No devices were counted for this line.",
+      "loadError": "Could not load the device list."
     },
     "paymentMethods": {
       "cash": "Cash",
@@ -1622,6 +1784,8 @@
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
@@ -1674,7 +1838,9 @@
       "lastSynced": "Last synced {{when}}",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
-      "pushFailed": "Failed to push the invoice to QuickBooks."
+      "pushFailed": "Failed to push the invoice to QuickBooks.",
+      "voidedHint": "This invoice is voided — there is nothing to push to QuickBooks.",
+      "remoteDeletedHint": "This invoice was deleted in QuickBooks. Pushing again would create a duplicate — resolve it in QuickBooks first."
     }
   },
   "invoiceDocument": {
@@ -1918,6 +2084,8 @@
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",
       "description": "Currency, tax, numbering, and terms applied to new quotes and invoices across your customers.",
+      "deviceAppendix": "Include billed devices appendix on invoice PDFs",
+      "deviceAppendixHelp": "Adds a page listing every device counted on each invoice line. Off by default; the choice is frozen when an invoice is issued.",
       "documentPageSize": "Page size",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Letter",

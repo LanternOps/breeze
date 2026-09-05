@@ -11,6 +11,7 @@ export default function WorkspacePage() {
     createTab,
     closeTab,
     switchTab,
+    renameTab,
     restoreWorkspace,
     cleanupAllStreams,
   } = useWorkspaceStore();
@@ -63,6 +64,7 @@ export default function WorkspacePage() {
             activeTabId={activeTabId}
             onSelectTab={switchTab}
             onCloseTab={closeTab}
+            onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
           />
           {activeTab ? (

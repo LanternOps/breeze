@@ -3,6 +3,7 @@
 import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
+import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
@@ -196,6 +197,7 @@ export const DEFAULT_PERMISSIONS = [
   // Audit
   { resource: 'audit', action: 'read', description: 'View audit logs' },
   { resource: 'audit', action: 'export', description: 'Export audit logs' },
+  { resource: 'audit', action: 'manage', description: 'Manage the audit log retention policy' },
 
   // Reports
   { resource: 'reports', action: 'read', description: 'View reports and report data' },
@@ -334,6 +336,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'topology:read', 'topology:write',
       'remote:access',
       'audit:read',
+      'audit:manage',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
       // An org admin may tighten their own org's agent policy. Creating a
@@ -1147,7 +1150,10 @@ export async function seedDefaultAdmin() {
           name: 'Default Partner',
           slug: 'default-partner',
           type: 'msp',
-          plan: 'enterprise'
+          plan: 'enterprise',
+          // #4520: keep the seeded dev partner on the same inbound opt-out
+          // default real partners get, so local behaviour matches production.
+          settings: applyNewPartnerDefaultSettings()
         })
         .returning();
       await seedSystemTicketStatuses(tx, newPartner!.id);

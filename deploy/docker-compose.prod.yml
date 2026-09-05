@@ -94,6 +94,10 @@ x-api-env: &api-env
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
+  # Agent diagnostic log retention (worker role; all optional, see .env.example).
+  AGENT_LOG_RETENTION_DAYS: ${AGENT_LOG_RETENTION_DAYS:-}
+  AGENT_LOG_RETENTION_BATCH_SIZE: ${AGENT_LOG_RETENTION_BATCH_SIZE:-}
+  AGENT_LOG_RETENTION_MAX_BATCHES: ${AGENT_LOG_RETENTION_MAX_BATCHES:-}
   METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
@@ -107,12 +111,28 @@ x-api-env: &api-env
   SMTP_PORT: ${SMTP_PORT:-587}
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASS: ${SMTP_PASS:-}
+  # #3905 — transport deadlines (optional; in-code defaults apply when unset:
+  # SMTP 30s inactivity, Mailgun 120s whole-request).
+  SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+  MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
   # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature
   # can be enabled from .env. Same gap class as IS_HOSTED above.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # QuickBooks Online accounting integration. All optional: unset leaves the
+  # integration dark. Mapped explicitly because Compose only interpolates vars
+  # listed in this block — a value in .env alone is never seen by the API
+  # (the IS_HOSTED / #570 failure mode; Phase C's sandbox walkthrough needed a
+  # manual override for exactly this).
+  QBO_CLIENT_ID: ${QBO_CLIENT_ID:-}
+  QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET:-}
+  QBO_REDIRECT_URI: ${QBO_REDIRECT_URI:-}
+  QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-}
+  # Intuit's app-level webhook verifier token. Unset -> the webhook route
+  # answers 503 and the 15-minute reconcile sweep is the only pull path.
+  QBO_WEBHOOK_VERIFIER_TOKEN: ${QBO_WEBHOOK_VERIFIER_TOKEN:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.
@@ -274,6 +294,21 @@ x-api-env: &api-env
   # Empty === unset for both readers, so unset keeps the code defaults.
   EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
   FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
+  # Outbox / anomaly-incident retention (#4210). Read by the three daily
+  # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
+  # in the worker role — the worker service inherits this same *api-env
+  # anchor, so mapping them here reaches both containers. Empty === unset for
+  # every reader, so the `${VAR:-}` form keeps the code defaults
+  # (14 days / 5000 rows per batch / 50 batches per run).
+  TICKET_OUTBOX_RETENTION_DAYS: ${TICKET_OUTBOX_RETENTION_DAYS:-}
+  TICKET_OUTBOX_RETENTION_BATCH_SIZE: ${TICKET_OUTBOX_RETENTION_BATCH_SIZE:-}
+  TICKET_OUTBOX_RETENTION_MAX_BATCHES: ${TICKET_OUTBOX_RETENTION_MAX_BATCHES:-}
+  INTENT_OUTBOX_RETENTION_DAYS: ${INTENT_OUTBOX_RETENTION_DAYS:-}
+  INTENT_OUTBOX_RETENTION_BATCH_SIZE: ${INTENT_OUTBOX_RETENTION_BATCH_SIZE:-}
+  INTENT_OUTBOX_RETENTION_MAX_BATCHES: ${INTENT_OUTBOX_RETENTION_MAX_BATCHES:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_DAYS: ${METRIC_ANOMALY_INCIDENT_RETENTION_DAYS:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE: ${METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES: ${METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES:-}
 
 services:
   binaries-init:
@@ -610,9 +645,14 @@ secrets:
   turn_secret:
     environment: TURN_SECRET
   # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
-  # target attributes. /dev/null keeps dark deployments optional; when enabled,
-  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  # target attributes. docker/secrets/.empty-jwk (a tracked empty regular file)
+  # keeps dark deployments optional; when enabled, the source JWK must already
+  # have numeric owner 1001:1001 and mode 0400. Do NOT default this to
+  # /dev/null: bind-mounting that character device and remounting it read-only
+  # inside overlayfs is rejected by the kernel on some host kernel/storage-
+  # driver combinations, failing `docker compose up` for anyone who never
+  # touched this feature (#2991). See docker/secrets/README.md.
   m365_graph_read_executor_signing_private_jwk:
-    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-../docker/secrets/.empty-jwk}
   m365_graph_actions_executor_signing_private_jwk:
-    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-../docker/secrets/.empty-jwk}

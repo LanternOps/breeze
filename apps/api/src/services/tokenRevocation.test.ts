@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Redis } from 'ioredis';
+import { pgOffsetlessTimestamp } from '../testUtils/pgOffsetlessTimestamp';
 
 const dbMocks = vi.hoisted(() => ({
   update: vi.fn(),
@@ -253,6 +254,41 @@ describe('tokenRevocation', () => {
       );
     });
 
+    // #4480: a caller that mints a REPLACEMENT session and then runs this
+    // cleanup would otherwise revoke its own brand-new token whenever more
+    // than a second elapsed between mint and cleanup — `iat <= now - 1` reads
+    // as revoked at /auth/refresh. Clamping the cutoff below the issuance
+    // instant keeps the replacement alive while still cutting off every token
+    // that predates it.
+    it('clamps the cutoff below a caller-supplied issuance instant', async () => {
+      const { redis, mockMulti } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      const issuedAt = Math.floor(Date.now() / 1000) - 30;
+
+      await revokeAllUserTokens('user-1', { preserveTokensIssuedAtOrAfter: issuedAt });
+
+      expect(mockMulti.setex).toHaveBeenCalledWith(
+        'token:revoked_after:user-1',
+        expect.any(Number),
+        String(issuedAt - 1)
+      );
+    });
+
+    it('never widens the cutoff past the default when the issuance instant is in the future', async () => {
+      const { redis, mockMulti } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      const defaultCutoff = Math.floor(Date.now() / 1000) - 1;
+
+      await revokeAllUserTokens('user-1', {
+        preserveTokensIssuedAtOrAfter: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const cutoffCall = mockMulti.setex.mock.calls.find(
+        (call: unknown[]) => call[0] === 'token:revoked_after:user-1'
+      );
+      expect(Number(cutoffCall?.[2])).toBeLessThanOrEqual(defaultCutoff);
+    });
+
     it('sets both access and revoked_after keys via multi', async () => {
       const { redis, mockMulti } = createMockRedis();
       mockGetRedis.mockReturnValue(redis);
@@ -301,20 +337,73 @@ describe('tokenRevocation', () => {
   });
 
   describe('isTokenIssuedBeforePasswordChange', () => {
+    // #4059 gap 1: `passwordChangedAt` arrives from `users.password_changed_at`,
+    // a `timestamp` (no tz) column (apps/api/src/db/schema/users.ts). postgres.js
+    // parses that offsetless wire value with a bare `new Date(...)`, so the Date
+    // object handed to this function carries the UTC wall clock re-read as the
+    // HOST's local time — wrong by exactly the process's UTC offset on any
+    // non-UTC host. A fixture built from a literal `new Date(ms)` is unfaithful
+    // to that: it carries the true instant, which coincides with the misparsed
+    // value only when the host runs UTC. `pgOffsetlessTimestamp` (below)
+    // reproduces the actual driver round-trip using the process's real TZ, so
+    // these cases have teeth under `vitest.config.tz.ts` (TZ=America/Denver)
+    // and are a no-op under the default UTC CI run — same pattern already used
+    // for `sso_sessions.created_at` in routes/sso.reauth.test.ts (#4041).
     it('rejects tokens issued before passwordChangedAt', () => {
       expect(
-        isTokenIssuedBeforePasswordChange(1_700_000_000, new Date(1_700_000_010_000))
+        isTokenIssuedBeforePasswordChange(1_700_000_000, pgOffsetlessTimestamp(1_700_000_010_000))
       ).toBe(true);
     });
 
     it('allows tokens issued in the same second as passwordChangedAt', () => {
       expect(
-        isTokenIssuedBeforePasswordChange(1_700_000_010, new Date(1_700_000_010_500))
+        isTokenIssuedBeforePasswordChange(1_700_000_010, pgOffsetlessTimestamp(1_700_000_010_500))
       ).toBe(false);
     });
 
     it('fails closed for missing iat after a password change', () => {
-      expect(isTokenIssuedBeforePasswordChange(undefined, new Date())).toBe(true);
+      expect(isTokenIssuedBeforePasswordChange(undefined, pgOffsetlessTimestamp(Date.now()))).toBe(true);
+    });
+
+    // The two cases above are only non-vacuous under the real TZ pin
+    // (vitest.config.tz.ts), and only in the direction that pin's offset
+    // happens to exercise. `offsetlessTimestampFromHostAt` (mirroring the
+    // override-based simulation #4041 introduced in services/sso.test.ts)
+    // fakes an arbitrary host offset directly on the Date instance, so both
+    // directions of the bug are proven regardless of the process's actual TZ
+    // — these two pass or fail identically whether run via `vitest run` (UTC)
+    // or `vitest.config.tz.ts` (America/Denver).
+    function offsetlessTimestampFromHostAt(trueUtcMs: number, offsetMinutes: number): Date {
+      const naive = new Date(trueUtcMs + offsetMinutes * 60_000);
+      Object.defineProperty(naive, 'getTimezoneOffset', {
+        value: () => offsetMinutes,
+        configurable: true,
+      });
+      return naive;
+    }
+
+    it('rejects a token genuinely issued before the password change on a host east of UTC (auth-bypass direction)', () => {
+      const trueChangeMs = Date.UTC(2026, 0, 1, 12, 0, 0);
+      const tokenIssuedAt = Math.floor(trueChangeMs / 1000) - 3600; // truly 1h before the change
+
+      // Europe/Berlin (CET, UTC+1) -> getTimezoneOffset() = -60. An
+      // uncorrected read is 1h EARLIER than the true instant, which would
+      // make a stale token (issued before the real change) look like it was
+      // issued after it — the exact auth-bypass direction #4018 was filed for.
+      const east = offsetlessTimestampFromHostAt(trueChangeMs, -60);
+      expect(isTokenIssuedBeforePasswordChange(tokenIssuedAt, east)).toBe(true);
+    });
+
+    it('does not falsely revoke a token issued well after the password change on a host west of UTC', () => {
+      const trueChangeMs = Date.UTC(2026, 0, 1, 12, 0, 0);
+      const tokenIssuedAt = Math.floor(trueChangeMs / 1000) + 3 * 3600; // truly 3h after the change
+
+      // America/Denver (MDT, UTC-6) -> getTimezoneOffset() = 360. An
+      // uncorrected read is 6h LATER than the true instant, which would make
+      // a fresh token (issued after the real change) look stale and force a
+      // spurious logout.
+      const west = offsetlessTimestampFromHostAt(trueChangeMs, 360);
+      expect(isTokenIssuedBeforePasswordChange(tokenIssuedAt, west)).toBe(false);
     });
   });
 

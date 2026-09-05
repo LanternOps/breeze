@@ -2,6 +2,36 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { deviceRoutes } from './devices';
 
+const { evaluateCapability, partnerTrustMode, requireCapability } = vi.hoisted(() => {
+  const evaluateCapability = vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true }));
+  return {
+    evaluateCapability,
+    partnerTrustMode: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
+    requireCapability: vi.fn((capability: string) => async (c: any, next: any) => {
+      const auth = c.get('auth');
+      if (!auth?.partnerId) return next();
+      const decision = await evaluateCapability(capability, {
+        partnerId: auth.partnerId,
+        userId: auth.user?.id,
+        orgId: auth.orgId ?? undefined,
+      });
+      if (!decision.allow) {
+        return c.json({
+          error: decision.code,
+          capability: decision.capability,
+          reason: decision.reason,
+          reviewRequested: false,
+          meetingUrl: null,
+        }, 403);
+      }
+      return next();
+    }),
+  };
+});
+
+vi.mock('../services/partnerTrust', () => ({ evaluateCapability, requireCapability }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
+
 vi.mock('../services', () => ({}));
 
 // core.ts (decommission handler) imports both terminateDeviceRemoteSessions and
@@ -127,6 +157,16 @@ vi.mock('../db', () => {
   dbMock.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(dbMock));
 
   return {
+    // `getCurrentDbAccessContext` is listed even though no test here currently
+    // reaches it: GET /devices/:id resolves the remote-access launcher through
+    // `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts), which imports
+    // all four context helpers BY NAME. A factory missing one throws
+    // "No <name> export is defined on the mock" at call time — and the route
+    // swallows that into `remoteAccessLaunchSkipReason: 'config_error'`, so a
+    // test could go on passing while silently exercising the failure branch
+    // instead of the real path. `undefined` models a request-scoped (non-system)
+    // caller, which is the shape these routes actually run in. See #3419.
+    getCurrentDbAccessContext: vi.fn(() => undefined),
     runOutsideDbContext: vi.fn((fn) => fn()),
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -145,6 +185,8 @@ vi.mock('../services/deviceUninstallDrain', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // routes/devices/events.ts builds module-level SQL fragments from auditLogs at import time (#4835).
+  auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
   deviceHardware: { deviceId: 'deviceId' },
   deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
@@ -208,6 +250,8 @@ describe('device routes', () => {
   let app: Hono;
 
   beforeEach(() => {
+    partnerTrustMode.mockReturnValue('off');
+    evaluateCapability.mockResolvedValue({ allow: true });
     // resetAllMocks clears mockReturnValueOnce queues, preventing test pollution
     vi.resetAllMocks();
     // Restore factory default chains
@@ -278,6 +322,44 @@ describe('device routes', () => {
   });
 
   describe('POST /devices/onboarding-token', () => {
+    it('returns 403 for probation before minting an onboarding token', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: 'org-123',
+          partnerId: 'partner-1',
+          accessibleOrgIds: ['org-123'],
+          canAccessOrg: (orgId: string) => orgId === 'org-123',
+          orgCondition: vi.fn(),
+        });
+        return next();
+      });
+      evaluateCapability.mockResolvedValueOnce({
+        allow: false,
+        code: 'TRUST_PROBATION',
+        capability: 'installer_distribute',
+        reason: 'probation_default_deny',
+      });
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        error: 'TRUST_PROBATION',
+        capability: 'installer_distribute',
+      }));
+      expect(evaluateCapability).toHaveBeenCalledWith('installer_distribute', expect.objectContaining({
+        partnerId: 'partner-1',
+      }));
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('should require orgId for partner/system contexts with multiple accessible orgs', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {

@@ -84,6 +84,7 @@ reportScopeMocks.resolveRequestReportAuthority.mockImplementation(
   async (auth: AuthContext, orgId: string) => ({
     ok: true,
     authority: {
+      principalKind: 'user',
       scope: auth.allowedSiteIds === undefined
         ? { version: 1, kind: 'unrestricted', orgId }
         : { version: 1, kind: 'restricted', orgId, siteIds: auth.allowedSiteIds },
@@ -369,6 +370,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'unrestricted', orgId: 'org-1' },
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -460,6 +462,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValueOnce({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'restricted', orgId: 'org-1', siteIds: [] },
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -499,6 +502,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: restrictedScope,
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -523,6 +527,42 @@ describe('SR5-06 generate_report — run scope gating', () => {
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(mockDb.update).not.toHaveBeenCalled();
     expect(result.success).not.toBe(true);
+  });
+
+  it('records AI-tool saved report runs with the acting user requester provenance', async () => {
+    reportScopeMocks.intersectSiteScopes.mockReturnValue({
+      version: 1,
+      kind: 'unrestricted',
+      orgId: 'org-1',
+    });
+    reportScopeMocks.siteScopeFingerprint.mockReturnValue('f'.repeat(64));
+    reportScopeMocks.persistedSiteScopeValues.mockReturnValue({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: 'u1',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      executionScopePrincipalKind: 'user',
+    });
+    mockDb.select.mockReturnValue(definitionSelectChain());
+    const values = vi.fn(() => ({
+      returning: () => Promise.resolve([{ id: 'run-1' }]),
+    }));
+    mockDb.insert.mockReturnValue({ values });
+    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+
+    const result = JSON.parse(await handlerFor('generate_report')(
+      { action: 'generate', reportId: 'rep1' },
+      makeAuth(undefined),
+    ));
+
+    expect(result.success).toBe(true);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      requestedByKind: 'user',
+      requestedByUserId: 'u1',
+      requestedByPortalUserId: null,
+    }));
   });
 
   it('rolls back run deletion when the guarded definition delete loses its scope race', async () => {
@@ -573,5 +613,128 @@ describe('SR5-20 manage_patches — compliance site scoping', () => {
     });
     const r = await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1'));
     expect(JSON.parse(r).snapshot.id).toBe('snap1');
+  });
+});
+
+// ============================================================================
+// manage_maintenance_windows — site-axis read scoping (#3654)
+//
+// `maintenanceWindowWhere` filters on the org/partner axis only, so before this
+// the tool disclosed every maintenance window in the org to a site-restricted
+// caller — the same enumeration step the HTTP exploit in #3654 starts from.
+// (The tool's create/update/delete actions are disabled upstream, so only the
+// read surface is reachable here.)
+// ============================================================================
+describe('manage_maintenance_windows — site-axis read scoping (#3654)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const winA = {
+    id: 'w-a', name: 'Site A night', orgId: 'org-1', targetType: 'site',
+    siteIds: ['site-A'], groupIds: null, deviceIds: null,
+    startTime: null, endTime: null, recurrence: 'once', status: 'scheduled',
+    suppressAlerts: true, suppressPatching: true,
+  };
+  const winForbidden = { ...winA, id: 'w-b', name: 'Site FORBIDDEN night', siteIds: ['site-FORBIDDEN'] };
+  const winAll = { ...winA, id: 'w-all', name: 'Org wide', targetType: 'all', siteIds: null };
+
+  function mockList(rows: unknown[]) {
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }),
+    });
+  }
+
+  it('hides a window targeting only a forbidden site from list', async () => {
+    mockList([winA, winForbidden, winAll]);
+
+    const raw = await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(['site-A']));
+    const body = JSON.parse(raw as string);
+
+    // The `all` window really does suppress the caller's own fleet, so it stays
+    // visible; the forbidden-site one must not.
+    expect(body.windows.map((w: { id: string }) => w.id)).toEqual(['w-a', 'w-all']);
+    expect(body.showing).toBe(2);
+    expect(raw).not.toContain('site-FORBIDDEN');
+  });
+
+  it('does not leak the site-axis columns it filters on', async () => {
+    mockList([winA]);
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(['site-A'])) as string);
+
+    expect(body.windows[0]).not.toHaveProperty('siteIds');
+    expect(body.windows[0]).not.toHaveProperty('groupIds');
+    expect(body.windows[0]).not.toHaveProperty('deviceIds');
+    expect(body.windows[0]).not.toHaveProperty('orgId');
+    expect(body.windows[0].id).toBe('w-a');
+  });
+
+  it('leaves an unrestricted caller seeing every window (no regression)', async () => {
+    mockList([winA, winForbidden, winAll]);
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')({ action: 'list' }, makeAuth(undefined)) as string);
+
+    expect(body.windows.map((w: { id: string }) => w.id)).toEqual(['w-a', 'w-b', 'w-all']);
+  });
+
+  it('refuses to fetch a forbidden-site window by id', async () => {
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([winForbidden]) }) }),
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-b' }, makeAuth(['site-A'])
+    ) as string;
+
+    expect(JSON.parse(raw).error).toBe('Maintenance window not found or access denied');
+    // The occurrence read must never happen — it would disclose the window too.
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fetches an in-scope window by id', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([winA]) }) }) };
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) };
+    });
+
+    const body = JSON.parse(await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-a' }, makeAuth(['site-A'])
+    ) as string);
+
+    expect(body.window.id).toBe('w-a');
+  });
+
+  it('filters BOTH the active and the scheduled sets in active_now', async () => {
+    // active_now runs two queries and merges them; a filter applied to only one
+    // would leak the other. Forbidden window comes back in the ACTIVE set.
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      const rows = call++ === 0 ? [winForbidden] : [winA];
+      return { from: () => ({ where: () => Promise.resolve(rows) }) };
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')({ action: 'active_now' }, makeAuth(['site-A'])) as string;
+    const body = JSON.parse(raw);
+
+    expect(body.activeWindows.map((w: { id: string }) => w.id)).toEqual(['w-a']);
+    expect(body.count).toBe(1);
+    expect(raw).not.toContain('site-FORBIDDEN');
+    expect(body.activeWindows[0]).not.toHaveProperty('siteIds');
+  });
+
+  it('narrows a spanning window to the caller\u2019s own sites on get', async () => {
+    const spanning = { ...winA, id: 'w-span', siteIds: ['site-A', 'site-FORBIDDEN'] };
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([spanning]) }) }) };
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) };
+    });
+
+    const raw = await handlerFor('manage_maintenance_windows')(
+      { action: 'get', windowId: 'w-span' }, makeAuth(['site-A'])
+    ) as string;
+
+    expect(JSON.parse(raw).window.siteIds).toEqual(['site-A']);
+    expect(raw).not.toContain('site-FORBIDDEN');
   });
 });

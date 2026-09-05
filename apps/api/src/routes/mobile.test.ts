@@ -26,6 +26,7 @@ const {
   emitAlertStateFeedbackMock,
   writeRouteAuditMock,
   executeScriptOnDevicesMock,
+  assertDeviceExecuteAllowedMock,
   rateLimitState,
   authState
 } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ const {
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
   writeRouteAuditMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  assertDeviceExecuteAllowedMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
@@ -108,6 +110,11 @@ vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: executeScriptOnDevicesMock
 }));
 
+vi.mock('../services/partnerTrust.commands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/partnerTrust.commands')>()),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
+
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitAlertStateFeedback: emitAlertStateFeedbackMock
 }));
@@ -152,19 +159,75 @@ const mockSelectOrderChain = (result: unknown) => ({
   })
 });
 
-const mockSelectLeftJoinChain = (result: unknown) => ({
-  from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            offset: vi.fn().mockResolvedValue(result)
-          })
-        })
+// Supports any number of chained `.leftJoin(...)` calls before `.where(...)` —
+// the inbox query joins devices, alert_rules and alert_templates in sequence
+// (#4535), so a fixed single-leftJoin shape would throw
+// "leftJoin is not a function" on the second call.
+const mockSelectLeftJoinChain = (result: unknown) => {
+  const joinable: { leftJoin: unknown; where: unknown } = {} as never;
+  joinable.leftJoin = vi.fn().mockReturnValue(joinable);
+  joinable.where = vi.fn().mockReturnValue({
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue(result)
       })
+    })
+  });
+  return {
+    from: vi.fn().mockReturnValue(joinable)
+  };
+};
+
+// Same shape as `mockSelectOrderChain`, but records the `where` condition and
+// the `orderBy` args the route actually passed — used by the #3770 cursor
+// tests to assert the keyset predicate carries the right anchor and that
+// legacy vs. cursor mode order by different columns.
+const mockSelectOrderChainCapturing = (
+  result: unknown,
+  capture: { where?: unknown; orderByArgs?: unknown[] }
+) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn((where: unknown) => {
+      capture.where = where;
+      return {
+        orderBy: vi.fn((...args: unknown[]) => {
+          capture.orderByArgs = args;
+          return {
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockResolvedValue(result)
+            })
+          };
+        })
+      };
     })
   })
 });
+
+// Same idea as `mockSelectOrderChainCapturing`, for the inbox query's
+// leftJoin-then-where-then-orderBy shape.
+const mockSelectLeftJoinChainCapturing = (
+  result: unknown,
+  capture: { where?: unknown; orderByArgs?: unknown[] }
+) => {
+  const joinable: { leftJoin: unknown; where: unknown } = {} as never;
+  joinable.leftJoin = vi.fn().mockReturnValue(joinable);
+  joinable.where = vi.fn((where: unknown) => {
+    capture.where = where;
+    return {
+      orderBy: vi.fn((...args: unknown[]) => {
+        capture.orderByArgs = args;
+        return {
+          limit: vi.fn().mockReturnValue({
+            offset: vi.fn().mockResolvedValue(result)
+          })
+        };
+      })
+    };
+  });
+  return {
+    from: vi.fn().mockReturnValue(joinable)
+  };
+};
 
 const objectContains = (value: unknown, needle: string, seen = new WeakSet<object>()): boolean => {
   if (typeof value === 'string') return value === needle;
@@ -205,19 +268,19 @@ const mockDeleteReturning = (result: unknown) => ({
 describe('mobile cursor decoding', () => {
   it('returns null when the cursor id is not a UUID', () => {
     const cursor = Buffer.from(JSON.stringify({
-      ts: '2026-07-28T12:00:00.000Z',
+      key: '2026-07-28T12:00:00.000Z',
       id: 'not-a-uuid',
     })).toString('base64url');
 
     expect(decodeCursor(cursor)).toBeNull();
   });
 
-  it('decodes a cursor with a valid UUID id', () => {
+  it('decodes a cursor with a valid UUID id, key kept verbatim', () => {
     const id = '11111111-1111-4111-8111-111111111111';
-    const cursor = encodeCursor('2026-07-28T12:00:00.000Z', id);
+    const cursor = encodeCursor('2026-07-28T12:00:00.123456', id);
 
     expect(decodeCursor(cursor!)).toEqual({
-      ts: new Date('2026-07-28T12:00:00.000Z'),
+      key: '2026-07-28T12:00:00.123456',
       id,
     });
   });
@@ -237,6 +300,7 @@ describe('mobile routes', () => {
     rateLimitState.allowed = true;
     vi.mocked(db.transaction).mockReset();
     executeScriptOnDevicesMock.mockReset();
+    assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
     _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
@@ -707,7 +771,8 @@ describe('mobile routes', () => {
               deviceId: '11111111-2222-4333-8444-555555555555',
               deviceHostname: 'host-1',
               deviceOsType: 'linux',
-              deviceStatus: 'online'
+              deviceStatus: 'online',
+              category: 'Security'
             },
             {
               id: 'alert-2',
@@ -722,7 +787,10 @@ describe('mobile routes', () => {
               deviceId: null,
               deviceHostname: null,
               deviceOsType: null,
-              deviceStatus: null
+              deviceStatus: null,
+              // Alerts can be created without a rule, so the joined category
+              // is nullable.
+              category: null
             }
           ]) as any
         );
@@ -737,6 +805,11 @@ describe('mobile routes', () => {
       expect(body.pagination.total).toBe(2);
       expect(body.data[0].device).toBeDefined();
       expect(body.data[1].device).toBeNull();
+      // The alert category comes from the rule's template (#4535) — the
+      // client mapper needs it to show something other than the always-'alert'
+      // constant the removed TYPE row used to display.
+      expect(body.data[0].category).toBe('Security');
+      expect(body.data[1].category).toBeNull();
     });
 
     it('should require organization context for org scope', async () => {
@@ -782,32 +855,39 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
+            // devices -> alert_rules -> alert_templates: three chained
+            // leftJoins before the where clause (#4535).
             leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn((where: unknown) => {
-                captured.rowsWhere = where;
-                return {
-                  orderBy: vi.fn().mockReturnValue({
-                    limit: vi.fn().mockReturnValue({
-                      offset: vi.fn().mockResolvedValue([
-                        {
-                          id: 'alert-allowed',
-                          orgId: 'org-123',
-                          status: 'active',
-                          severity: 'critical',
-                          title: 'Allowed alert',
-                          message: 'Allowed device alert',
-                          triggeredAt: new Date(),
-                          acknowledgedAt: null,
-                          resolvedAt: null,
-                          deviceId: DEVICE_ALLOWED,
-                          deviceHostname: 'allowed-host',
-                          deviceOsType: 'linux',
-                          deviceStatus: 'online'
-                        }
-                      ])
-                    })
+              leftJoin: vi.fn().mockReturnValue({
+                leftJoin: vi.fn().mockReturnValue({
+                  where: vi.fn((where: unknown) => {
+                    captured.rowsWhere = where;
+                    return {
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([
+                            {
+                              id: 'alert-allowed',
+                              orgId: 'org-123',
+                              status: 'active',
+                              severity: 'critical',
+                              title: 'Allowed alert',
+                              message: 'Allowed device alert',
+                              triggeredAt: new Date(),
+                              acknowledgedAt: null,
+                              resolvedAt: null,
+                              deviceId: DEVICE_ALLOWED,
+                              deviceHostname: 'allowed-host',
+                              deviceOsType: 'linux',
+                              deviceStatus: 'online',
+                              category: null
+                            }
+                          ])
+                        })
+                      })
+                    };
                   })
-                };
+                })
               })
             })
           })
@@ -871,6 +951,106 @@ describe('mobile routes', () => {
         DEVICE_DENIED
       ]);
       expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    // #3770: nextCursor used to be computed only inside `if (cursor)`, so a
+    // cold-start caller (no cursor to send) could never obtain one, and the
+    // Date round-trip truncated triggered_at to millisecond precision, which
+    // could skip rows sitting between the truncated cursor and the real
+    // boundary.
+    describe('cursor pagination (#3770)', () => {
+      const row = (id: string, triggeredAtIso: string, triggeredAtKey: string) => ({
+        id,
+        orgId: 'org-123',
+        status: 'active',
+        severity: 'critical',
+        title: `Alert ${id}`,
+        message: 'msg',
+        triggeredAt: new Date(triggeredAtIso),
+        triggeredAtKey,
+        acknowledgedAt: null,
+        resolvedAt: null,
+        deviceId: null,
+        deviceHostname: null,
+        deviceOsType: null,
+        deviceStatus: null,
+        category: null
+      });
+
+      it('a cold-start request (no cursor) returns a usable nextCursor when more rows exist', async () => {
+        // Deliberately give `triggeredAt` (the millisecond-capped Date) a
+        // DIFFERENT value than `triggeredAtKey` (the full-precision text) on
+        // the boundary row — if the route ever regresses to building the
+        // cursor from `triggeredAt` instead of `triggeredAtKey`, this proves
+        // it by asserting the exact string that comes back.
+        const rows = [
+          row('aaaaaaaa-0000-4000-8000-000000000001', '2026-07-28T12:00:00.999Z', '2026-07-28T12:00:00.999999'),
+          row('aaaaaaaa-0000-4000-8000-000000000002', '2026-07-28T11:00:00.111Z', '2026-07-28T11:00:00.111111'),
+          row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')
+        ];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChain(rows) as any); // 3 rows for limit=2 => hasMore
+
+        const res = await app.request('/mobile/alerts/inbox?limit=2', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(body.data.map((a: { id: string }) => a.id)).toEqual(['aaaaaaaa-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-000000000002']);
+        expect(body.pagination.total).toBe(3);
+        expect(body.pagination.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(body.pagination.nextCursor);
+        // Full microsecond precision from `triggeredAtKey` — NOT the
+        // millisecond-truncated `triggeredAt.toISOString()` value.
+        expect(decoded).toEqual({ key: '2026-07-28T11:00:00.111111', id: 'aaaaaaaa-0000-4000-8000-000000000002' });
+      });
+
+      it('following nextCursor reaches the next page and terminates with nextCursor: null on the last page', async () => {
+        const page1Rows = [
+          row('aaaaaaaa-0000-4000-8000-000000000001', '2026-07-28T12:00:00.999Z', '2026-07-28T12:00:00.999999'),
+          row('aaaaaaaa-0000-4000-8000-000000000002', '2026-07-28T11:00:00.111Z', '2026-07-28T11:00:00.111111'),
+          row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')
+        ];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChain(page1Rows) as any);
+
+        const page1 = await app.request('/mobile/alerts/inbox?limit=2', { method: 'GET' });
+        const page1Body = await page1.json();
+        const cursor: string = page1Body.pagination.nextCursor;
+        expect(cursor).toBeTruthy();
+
+        const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChainCapturing(
+              [row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')],
+              captured
+            ) as any
+          );
+
+        const page2 = await app.request(`/mobile/alerts/inbox?limit=2&cursor=${encodeURIComponent(cursor)}`, {
+          method: 'GET'
+        });
+        const page2Body = await page2.json();
+
+        // No overlap with page 1, no gap before alert-3 — the walk continued
+        // from exactly where it left off.
+        expect(page2Body.data.map((a: { id: string }) => a.id)).toEqual(['aaaaaaaa-0000-4000-8000-000000000003']);
+        // Last page: only 1 row came back for limit=2, so there is nothing more.
+        expect(page2Body.pagination.nextCursor).toBeNull();
+
+        // The keyset predicate must carry the cursor's FULL-precision key,
+        // untruncated — this is the actual #3770 regression check. A
+        // `.toISOString()` round-trip would have collapsed it to
+        // '2026-07-28T11:00:00.111Z' and could skip real rows between the
+        // truncated value and the true boundary.
+        expect(objectContains(captured.where, '2026-07-28T11:00:00.111111')).toBe(true);
+        expect(objectContains(captured.where, '2026-07-28T11:00:00.111Z')).toBe(false);
+      });
     });
   });
 
@@ -1340,6 +1520,100 @@ describe('mobile routes', () => {
       expect(objectContains(captured.countWhere, SITE_ALLOWED)).toBe(false);
       expect(objectContains(captured.rowsWhere, SITE_ALLOWED)).toBe(false);
     });
+
+    // #3770: nextCursor used to be computed only inside `if (cursor)`, so a
+    // cold-start caller (no cursor to send) could never obtain one. The
+    // keyset also used to run on the nullable, mutable `last_seen_at` column;
+    // it now keys cursor mode on the NOT NULL, immutable `hostname` instead
+    // (ported from `routes/devices/core.ts`), and only cursor mode (no
+    // explicit `?page=`, or a `cursor` present) ever returns a nextCursor —
+    // legacy `?page=N` keeps its old `last_seen_at DESC` order and never
+    // upgrades into the keyset mid-walk.
+    describe('cursor pagination (#3770)', () => {
+      const row = (id: string, hostname: string) => ({
+        id,
+        orgId: 'org-123',
+        siteId: 'site-1',
+        hostname,
+        displayName: hostname,
+        osType: 'linux',
+        status: 'online',
+        lastSeenAt: new Date()
+      });
+
+      it('a cold-start request (no page, no cursor) orders by hostname ASC and returns a nextCursor when more rows exist', async () => {
+        const captured: { orderByArgs?: unknown[] } = {};
+        const rows = [row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectOrderChainCapturing(rows, captured) as any); // 3 rows for limit=2 => hasMore
+
+        const res = await app.request('/mobile/devices?limit=2', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((d: { id: string }) => d.id)).toEqual(['dddddddd-0000-4000-8000-00000000000a', 'dddddddd-0000-4000-8000-00000000000b']);
+        expect(body.pagination.total).toBe(3);
+        expect(body.pagination.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(body.pagination.nextCursor);
+        expect(decoded).toEqual({ key: 'b-host', id: 'dddddddd-0000-4000-8000-00000000000b' });
+
+        // Cursor mode orders by hostname ASC, id ASC — not last_seen_at.
+        expect(captured.orderByArgs?.length).toBe(2);
+        expect(objectContains(captured.orderByArgs, 'hostname')).toBe(true);
+      });
+
+      it('following nextCursor reaches the next page (no duplicates/gaps) and returns nextCursor: null once exhausted', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectOrderChain([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')]) as any
+          );
+
+        const page1 = await app.request('/mobile/devices?limit=2', { method: 'GET' });
+        const page1Body = await page1.json();
+        const cursor: string = page1Body.pagination.nextCursor;
+        expect(cursor).toBeTruthy();
+
+        const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectOrderChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any);
+
+        const page2 = await app.request(`/mobile/devices?limit=2&cursor=${encodeURIComponent(cursor)}`, {
+          method: 'GET'
+        });
+        const page2Body = await page2.json();
+
+        // No overlap with page 1 ([dev-a, dev-b]), no gap before dev-c.
+        expect(page2Body.data.map((d: { id: string }) => d.id)).toEqual(['dddddddd-0000-4000-8000-00000000000c']);
+        // Only 1 row came back for limit=2 — nothing more to walk.
+        expect(page2Body.pagination.nextCursor).toBeNull();
+
+        // The keyset predicate anchors on page 1's last row (b-host / dev-b).
+        expect(objectContains(captured.where, 'b-host')).toBe(true);
+        expect(objectContains(captured.where, 'dddddddd-0000-4000-8000-00000000000b')).toBe(true);
+      });
+
+      it('an explicit ?page=N request keeps the legacy last_seen_at order and never returns a nextCursor', async () => {
+        const captured: { orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectOrderChainCapturing([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host')], captured) as any
+          );
+
+        const res = await app.request('/mobile/devices?page=1&limit=1', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Legacy contract: never mints a cursor, even though 2 rows came back
+        // for limit=1 (hasMore would be true in cursor mode).
+        expect(body.pagination.nextCursor).toBeNull();
+        expect(objectContains(captured.orderByArgs, 'last_seen_at')).toBe(true);
+      });
+    });
   });
 
   describe('POST /mobile/devices/:id/actions', () => {
@@ -1679,8 +1953,43 @@ describe('mobile routes', () => {
       expect('ignoredParameters' in body).toBe(false);
     });
 
-    it.skip('should submit device action commands', async () => {
-      // Skipped: Complex command submission mock required
+    it('returns a trust probation denial without inserting a device command', async () => {
+      const { TrustDeniedError } = await import('../services/partnerTrust.commands');
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: mobileDeviceId, orgId: 'org-123', status: 'online', siteId: null }
+        ]) as any
+      );
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_PROBATION',
+          'probation_default_deny',
+          mobileDeviceId,
+          'reboot',
+        ),
+      );
+
+      const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reboot' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_PROBATION',
+        capability: 'device_execute',
+        reason: 'probation_default_deny',
+      });
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('should submit device action commands when trust allows execution', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online' }
@@ -1701,6 +2010,11 @@ describe('mobile routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commandId).toBe('cmd-1');
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
     });
 
     // #3409 PR0 Task 3: the org-equality invariant itself now lives inside

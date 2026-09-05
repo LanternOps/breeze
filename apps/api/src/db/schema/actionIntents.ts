@@ -86,12 +86,15 @@ export type ActionIntentOriginPrincipalKind =
 // Widened in wave 2 (#3823): a DENIED or EXPIRED intent previously wrote no
 // outbox row at all, so a requester whose chat turn had ended could never be
 // told the outcome. Pinned by a CHECK in SQL — see
-// 2026-09-04-ai-agent-notifications.sql.
+// 2026-09-04-ai-agent-notifications.sql. Widened again for #4798: a
+// CANCELLED intent had the same gap — see
+// 2026-10-08-100300-intent-cancelled-outbox-event.sql.
 export const intentOutboxEventEnum = [
   'intent_created',
   'intent_approved',
   'intent_rejected',
   'intent_expired',
+  'intent_cancelled',
   'pam.desired_state_changed',
 ] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
@@ -448,6 +451,10 @@ export const intentOutbox = pgTable(
   (table) => ({
     intentIdIdx: index('intent_outbox_intent_id_idx').on(table.intentId),
     pamActuationIdIdx: index('intent_outbox_pam_actuation_id_idx').on(table.pamActuationId),
+    // #4210 — supports intentOutboxRetention.ts's delivered-row cutoff scan
+    // (published_at < cutoff), the mirror image of the unpublished partial
+    // index below.
+    publishedAtIdx: index('intent_outbox_published_at_idx').on(table.publishedAt),
     // Note: the partial index intent_outbox_unpublished_idx (WHERE
     // published_at IS NULL) is declared in the SQL migration only — Drizzle's
     // index DSL doesn't model partial indexes cleanly (same precedent as

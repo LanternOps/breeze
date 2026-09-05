@@ -159,6 +159,23 @@ describe('sendButtonLabel', () => {
   it('reports the comment itself while the POST is in flight', () => {
     expect(sendButtonLabel({ chips: [], busy: true })).toBe('Working…');
   });
+
+  it('uses the caller idle label so the button can name the visibility', () => {
+    expect(sendButtonLabel({ chips: [], busy: false, idleLabel: 'Add internal note' })).toBe(
+      'Add internal note'
+    );
+    expect(sendButtonLabel({ chips: [], busy: false, idleLabel: 'Send reply' })).toBe('Send reply');
+  });
+
+  it('does not let the idle label mask an in-flight state', () => {
+    // The mode-specific copy must never sit on a button that is already
+    // sending — "Send reply" on a disabled, mid-POST button reads as "nothing
+    // happened, tap again".
+    expect(sendButtonLabel({ chips: [], busy: true, idleLabel: 'Send reply' })).toBe('Working…');
+    expect(
+      sendButtonLabel({ chips: [chip({ status: 'uploading' })], busy: false, idleLabel: 'Send reply' })
+    ).toBe('Sending 1 of 1…');
+  });
 });
 
 describe('attachDisabledReason', () => {

@@ -112,6 +112,26 @@ export function useSystemsData() {
   const lastFetchAt = useRef<number>(0);
   const inFlight = useRef<boolean>(false);
 
+  // Monotonic counter bumped whenever a fresh `activeAlerts` snapshot lands —
+  // NOT whenever `refresh()` resolves. This is the freshness primitive
+  // `dispatchAcknowledge`'s pending-ack release needs (#3782): `refresh()`
+  // resolving proves nothing about `activeAlerts` specifically, since it can
+  // coalesce into an unrelated in-flight call (the coalesced call returns
+  // `false` without fetching anything itself) or resolve `true` when every
+  // OTHER slice landed but `activeAlerts` rejected. Tied to `activeAlerts`
+  // rather than `alerts` because `activeIssues` — and therefore the rows
+  // `pendingAcks` hides — is built from `activeAlerts`, not `alerts`.
+  //
+  // Exposed two ways: the state value (`activeAlertsGeneration`) so a
+  // consumer can re-run an effect when it changes, and a ref-backed getter
+  // (`getActiveAlertsGeneration`) so a caller mid-request can read the
+  // CURRENT value at the moment it actually needs it (e.g. right after an
+  // acknowledge is confirmed, which can be 13-15s after the callback was
+  // created) instead of a value captured in a stale closure.
+  const activeAlertsGenerationRef = useRef<number>(0);
+  const [activeAlertsGeneration, setActiveAlertsGeneration] = useState<number>(0);
+  const getActiveAlertsGeneration = useCallback(() => activeAlertsGenerationRef.current, []);
+
   // Returns whether THIS call fetched and at least one slice arrived. Note what
   // that does NOT mean: it is false when the call coalesces into an in-flight
   // request that may yet succeed, and it is true when unrelated slices arrived
@@ -161,6 +181,14 @@ export function useSystemsData() {
         listOrganizations(),
       ]);
       const results = { summary, alerts, activeAlerts, devices, orgs };
+      // Bump BEFORE the reportInternalError loop below, which can throw and
+      // is caught by the outer catch (see its comment): activeAlerts already
+      // genuinely arrived by this point regardless of what happens next, so
+      // the freshness signal must not be lost to an unrelated failure.
+      if (activeAlerts.status === 'fulfilled') {
+        activeAlertsGenerationRef.current += 1;
+        setActiveAlertsGeneration(activeAlertsGenerationRef.current);
+      }
       // The raw messages are internal (function name + HTTP status) — report
       // them to Sentry and keep only a static string in UI state (issue #3141).
       for (const reason of rejectionReasons(results)) {
@@ -390,5 +418,7 @@ export function useSystemsData() {
     setFilterOrgId,
     refresh,
     refreshIfStale,
+    activeAlertsGeneration,
+    getActiveAlertsGeneration,
   };
 }

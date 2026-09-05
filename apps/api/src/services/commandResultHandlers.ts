@@ -33,6 +33,8 @@ import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
 import { captureException } from './sentry';
+import { applyScriptCustomFieldWrites } from './customFields/scriptWriteBack';
+import type { ScriptCustomFieldWriteSummary } from '../db/schema/scripts';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // #3097: one definition of the agent command-result shape for BOTH transports.
 // `schemas.ts` measures the 1 MB cap with `Buffer.byteLength` (bytes); the copy
@@ -333,6 +335,43 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const executionId = payload?.executionId as string | undefined;
+
+    // #2698 — a script may write its own device's custom fields by emitting
+    // `::breeze:custom-fields:: {...}` on stdout (or, from agent Wave 3, a
+    // versioned `result.customFieldWrites` envelope). Deliberately placed
+    // ahead of the executionId guards and outside the exit-code branch: a
+    // script that discovers a fact and then exits non-zero, or that was
+    // dispatched without a (valid) executionId, has still discovered it.
+    //
+    // Its own try/catch: losing a custom-field write must never cost the
+    // stdout persistence this handler exists for. That is exactly the
+    // regression class documented at length below (#3162, #3607).
+    let customFieldResult: ScriptCustomFieldWriteSummary | null = null;
+    try {
+      customFieldResult = await applyScriptCustomFieldWrites({
+        deviceId: resolvedDeviceId,
+        agentId,
+        commandId: command.id,
+        stdout,
+        resultEnvelope: result.result,
+      });
+      if (customFieldResult && customFieldResult.rejected.length > 0) {
+        console.warn('[AgentWs] script custom-field write-back rejected entries', {
+          commandId: command.id,
+          deviceId: resolvedDeviceId,
+          rejected: customFieldResult.rejected,
+        });
+      }
+    } catch (err) {
+      // The summary is discarded rather than partially persisted: a half-built
+      // summary would misreport what actually landed. Engineering still sees
+      // the failure via Sentry; the operator sees a run with no write-back,
+      // which is the honest reading of "we do not know what happened".
+      console.error(`[AgentWs] Custom-field write-back failed for command ${command.id}:`, err);
+      captureException(err, undefined, { commandId: command.id, agentId });
+      customFieldResult = null;
+    }
+
     // #3162: `script_executions.id` is a uuid column, so a non-uuid
     // executionId makes the UPDATE below throw with `invalid input syntax for
     // type uuid` — swallowed by the catch at the bottom of this function,
@@ -374,6 +413,8 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         stdout: stdout != null ? redactSecretsFromOutput(stdout) : null,
         stderr: redactOptionalSecretText(result.stderr) ?? null,
         errorMessage: redactOptionalSecretText(result.error) ?? null,
+        // #2698 — null for every run that wrote nothing, the vast majority.
+        customFieldResult,
       };
 
       const updatedExecutions = await db
@@ -615,6 +656,35 @@ async function handlePamActuationV2Result({
   return { kind: 'pam', classification };
 }
 
+/**
+ * #3525 closer 2 of 5. The agent's `script_cancel` ack is the ONLY evidence
+ * that lets an execution terminalise as `cancelled`, so it must never be
+ * silently dropped on either transport. Imported dynamically for the same
+ * reason the route-level dispatch is: `scriptCancellation` pulls the scripts
+ * schema module into the graph, and several suites here partially mock
+ * `db/schema`.
+ */
+async function handleScriptCancelResult({ agentId, commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const { applyScriptCancelAck } = await import('./scriptCancellation');
+    await applyScriptCancelAck({
+      // The transport-authorized id, never one read off the payload — same
+      // invariant as every other handler in this file.
+      cancelCommandId: commandId,
+      result: (result ?? null) as Record<string, unknown> | null,
+    });
+  } catch (err) {
+    // Both transports CAS the device_commands row to a terminal status BEFORE
+    // dispatching here, so the agent will never resend this ack — losing it
+    // leaves the execution in `cancelling` until the sweep (closer 5) gives up
+    // and records `unconfirmed`. Degraded but not stranded, so this is
+    // reported rather than rethrown; the tags are what let an on-call engineer
+    // find the affected row from the alert. Matches handleScriptResult.
+    console.error(`[AgentWs] Failed to apply script cancel ack for ${agentId}:`, err);
+    captureException(err, undefined, { commandId, agentId });
+  }
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -628,6 +698,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vault_sync: handleVaultSyncResult,
   snmp_poll: handleSnmpPollResult,
   script: handleScriptResult,
+  script_cancel: handleScriptCancelResult,
   sensitive_data_scan: handleSensitiveDataResult,
   encrypt_file: handleSensitiveDataResult,
   secure_delete_file: handleSensitiveDataResult,

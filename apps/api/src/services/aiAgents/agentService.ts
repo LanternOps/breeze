@@ -240,12 +240,20 @@ function updatePolicyColumns(
   };
 }
 
-type AgentChange = 'created' | 'updated' | 'disabled';
+/**
+ * `enabled` is the un-archive in `POST /:id/enable` (routes/aiAgents.ts) — the
+ * inverse of `disabled`, and the reason this union is not private to this file:
+ * that route owns the write but must record it through the SAME pair of side
+ * effects, or the one agent mutation implemented outside this service silently
+ * skips the `ai.agent.policy_changed` broadcast every other one publishes.
+ */
+type AgentChange = 'created' | 'updated' | 'disabled' | 'enabled';
 
 async function recordAgentAudit(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await createAuditLog({
     orgId: row.orgId,
@@ -255,11 +263,13 @@ async function recordAgentAudit(
     action: `ai.agent.${change}`,
     resourceType: 'ai_agent',
     resourceId: row.id,
+    resourceName: row.name,
     details: {
       agentId: row.id,
       kind: row.kind,
       ownerScope: row.partnerId === null ? 'organization' : 'partner',
       partnerId: row.partnerId,
+      ...extraDetails,
     },
     result: 'success',
   });
@@ -327,13 +337,29 @@ async function publishPolicyChanged(
   }
 }
 
-async function recordMutation(
+/**
+ * The two side effects EVERY agent mutation owes: an awaited `ai.agent.<change>`
+ * audit row and the `ai.agent.policy_changed` broadcast in-flight runners read.
+ *
+ * Exported because `POST /:id/enable` writes its row in the route layer (the
+ * lock, the tenancy predicate and the conflict pre-check are reused there, but
+ * the write itself never moved into this service). It used to audit through
+ * `writeRouteAudit` — the fire-and-forget variant — and publish nothing at all,
+ * so un-archiving an agent was the one mutation whose policy change no runner
+ * ever heard about. Route-layer writers call THIS, not the two halves.
+ *
+ * @param extraDetails merged into the audit `details` after the standard keys,
+ *   for facts only the caller knows (e.g. that an un-archive deliberately
+ *   leaves `enabled` false).
+ */
+export async function recordAgentMutation(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await Promise.all([
-    recordAgentAudit(row, auth, change),
+    recordAgentAudit(row, auth, change, extraDetails),
     publishPolicyChanged(row, auth.user.id, change),
   ]);
 }
@@ -535,7 +561,7 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
-  await recordMutation(row, auth, 'created');
+  await recordAgentMutation(row, auth, 'created');
   return row;
 }
 
@@ -607,7 +633,7 @@ export async function updateAgent(
     if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
       await syncManagedAutomation(row.id, managedPatch);
     }
-    await recordMutation(row, auth, 'updated');
+    await recordAgentMutation(row, auth, 'updated');
     return row;
   });
 }
@@ -635,6 +661,6 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
   // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
   // so soft-disable must also stop the wiring from generating queue traffic.
   await setManagedAutomationEnabled(row.id, false);
-  await recordMutation(row, auth, 'disabled');
+  await recordAgentMutation(row, auth, 'disabled');
   return row;
 }

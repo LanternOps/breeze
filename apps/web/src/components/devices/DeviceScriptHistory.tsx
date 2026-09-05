@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, CheckCircle, XCircle, Loader2, AlertTriangle, Clock, AlertOctagon } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, CheckCircle, XCircle, Loader2, AlertTriangle, Clock, AlertOctagon, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
+import { showToast } from '../shared/Toast';
+import ScriptExecutionModal from '../scripts/ScriptExecutionModal';
+import type { Script } from '../scripts/ScriptList';
+import type { ScriptParameter } from '../scripts/ScriptForm';
+import type { ScriptAdmissionResult } from '@breeze/shared';
+import { RunContextChip, type RunContextValue } from '../common/RunContext';
 
 type ScriptExecution = {
   id?: string;
@@ -20,11 +27,29 @@ type ScriptExecution = {
   createdAt?: string;
   durationMs?: number;
   durationSeconds?: number;
+  // #4885 — the runtime values this execution was submitted with. See the
+  // same field on ExecutionHistory's ScriptExecution; the API's SELECT was
+  // extended for this device-scoped endpoint alongside this change.
+  parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System".
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
+};
+
+type ScriptWithDetails = Script & {
+  parameters?: ScriptParameter[];
+  content?: string;
 };
 
 type DeviceScriptHistoryProps = {
   deviceId: string;
   timezone?: string;
+  // #4886 — highlight (and auto-open) the execution a post-run redirect sent
+  // the operator here to watch. Comes from the `#scripts/<executionId>` hash
+  // (DeviceDetails.tsx); undefined for an ordinary tab visit.
+  highlightExecutionId?: string;
 };
 
 const statusStyles: Record<string, string> = {
@@ -197,14 +222,31 @@ function OutputSection({
   );
 }
 
-export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScriptHistoryProps) {
+export default function DeviceScriptHistory({ deviceId, timezone, highlightExecutionId }: DeviceScriptHistoryProps) {
   const { t } = useTranslation('devices');
+  const { t: tScripts } = useTranslation('scripts');
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string>();
   const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
-  const [selectedExecution, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  const [selectedExecutionSnapshot, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  // Follow refreshed results while details are open, retaining the last
+  // selected row if it falls outside the history endpoint's latest 50 runs.
+  const selectedExecution = selectedExecutionSnapshot && (
+    executions.find(item => item.id && item.id === selectedExecutionSnapshot.id) ?? selectedExecutionSnapshot
+  );
+  // #4885 "Run again" — the fetched script definition (parameters, OS types,
+  // runAs) needed to open ScriptExecutionModal, plus the loading/error state
+  // for that fetch. Cleared on close so a stale script never lingers across
+  // two different "Run again" clicks.
+  const [runAgainScript, setRunAgainScript] = useState<ScriptWithDetails | null>(null);
+  const [runAgainParameters, setRunAgainParameters] = useState<Record<string, string | number | boolean>>({});
+  const [runAgainLoading, setRunAgainLoading] = useState(false);
+  // #4886 — only auto-open the highlighted execution once per id, so closing
+  // it (or a routine 10s poll refresh) doesn't keep re-opening it in the
+  // operator's face.
+  const autoOpenedHighlightRef = useRef<string | undefined>(undefined);
 
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -248,6 +290,74 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
       };
     });
   }, [executions, effectiveTimezone]);
+
+  // #4886 — once the highlighted execution shows up in the fetched list, open
+  // its details automatically so a post-run redirect actually lands the
+  // operator watching the result, not just staring at a list.
+  useEffect(() => {
+    if (!highlightExecutionId) {
+      autoOpenedHighlightRef.current = undefined;
+      return;
+    }
+    if (autoOpenedHighlightRef.current === highlightExecutionId) return;
+    const match = executions.find(item => item.id === highlightExecutionId);
+    if (!match) return;
+    autoOpenedHighlightRef.current = highlightExecutionId;
+    setSelectedExecution(match);
+  }, [highlightExecutionId, executions]);
+
+  // #4885 "Run again" — fetch the script's current parameter definitions
+  // (osTypes/runAs/parameters) so ScriptExecutionModal has what it needs, then
+  // open it pre-filled with this device and the execution's runtime values.
+  const handleRunAgain = async (execution: ScriptExecution) => {
+    if (!execution.scriptId) return;
+    setSelectedExecution(null);
+    setRunAgainLoading(true);
+    try {
+      const response = await fetchWithAuth(`/scripts/${execution.scriptId}`);
+      if (!response.ok) {
+        throw new Error(tScripts('scriptExecutionsPage.errors.fetchScript'));
+      }
+      const data = await response.json();
+      setRunAgainScript(data.script ?? data);
+      setRunAgainParameters(execution.parameters ?? {});
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : tScripts('scriptExecutionsPage.errors.fetchScript'),
+      });
+    } finally {
+      setRunAgainLoading(false);
+    }
+  };
+
+  const handleCloseRunAgain = () => {
+    setRunAgainScript(null);
+    setRunAgainParameters({});
+  };
+
+  const handleExecuteRunAgain = async (
+    scriptId: string,
+    deviceIds: string[],
+    parameters: Record<string, string | number | boolean>,
+    runAs: 'system' | 'user'
+  ): Promise<ScriptAdmissionResult> => {
+    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ deviceIds, parameters, runAs })
+    });
+
+    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
+
+    if (!response.ok) {
+      throw new Error(extractApiError(data, tScripts('scriptExecutionsPage.errors.execute')));
+    }
+
+    if (data.targets.some(target => target.admission === 'admitted')) {
+      await fetchHistory(true);
+    }
+    return data;
+  };
 
   if (loading) {
     return (
@@ -322,7 +432,13 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 rows.map(row => (
                   <tr
                     key={row.id}
-                    className="text-sm cursor-pointer hover:bg-muted/40 transition"
+                    className={cn(
+                      'text-sm cursor-pointer hover:bg-muted/40 transition',
+                      // #4886 — the row a post-run redirect sent the operator
+                      // here to watch, so it's findable even after they close
+                      // the auto-opened details modal.
+                      row.id === highlightExecutionId && 'bg-primary/5 ring-1 ring-inset ring-primary/40'
+                    )}
                     onClick={() => setSelectedExecution(row.raw)}
                   >
                     <td className="px-4 py-3 font-medium">{row.name}</td>
@@ -436,6 +552,12 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                     )}
                   </p>
                 </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.runAs')}</p>
+                  <p className="text-sm font-medium mt-1">
+                    <RunContextChip runAs={selectedExecution.runAs} targetSessionId={selectedExecution.targetSessionId} />
+                  </p>
+                </div>
               </div>
 
               {/* Output Sections */}
@@ -458,7 +580,23 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-end border-t px-6 py-4">
+            <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+              {selectedExecution.scriptId && (
+                <button
+                  type="button"
+                  data-testid="device-script-run-again"
+                  disabled={runAgainLoading}
+                  onClick={() => void handleRunAgain(selectedExecution)}
+                  className="inline-flex h-10 items-center gap-1.5 rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {runAgainLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-4 w-4" />
+                  )}
+                  {t('deviceScriptHistory.runAgain')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setSelectedExecution(null)}
@@ -471,6 +609,18 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
         </div>
         );
       })()}
+
+      {/* #4885 "Run again" — pre-filled execute flow */}
+      {runAgainScript && (
+        <ScriptExecutionModal
+          script={runAgainScript}
+          isOpen
+          onClose={handleCloseRunAgain}
+          onExecute={handleExecuteRunAgain}
+          initialDeviceIds={[deviceId]}
+          initialParameters={runAgainParameters}
+        />
+      )}
     </>
   );
 }

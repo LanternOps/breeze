@@ -67,6 +67,14 @@ const intersect = (a: string[], b: string[]): string[] => a.filter((value) => b.
 const intersectOptional = (a?: string[], b?: string[]): string[] | undefined =>
   a && b ? intersect(a, b) : a ?? b;
 
+// Limit keys merged with Math.max instead of Math.min. Everything else is
+// tighten-only (the org may only narrow). `promoteThreshold` (v9, C3) is a
+// BAR, not a budget: a partner who requires 50 verified executions before a
+// key becomes promote-eligible must not be undercut by an org row asking for
+// 5. Named here, not inline, so a future limit that needs the same exception
+// is one addition to this set instead of a special case buried in the loop.
+const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold']);
+
 function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): AiAgentLimits {
   const partner = partnerLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
   const org = orgLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
@@ -75,8 +83,9 @@ function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): Ai
   for (const key of Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>) {
     const partnerValue = partner[key];
     const orgValue = org[key];
+    const useMax = MAX_MERGED_LIMIT_KEYS.has(key);
     if (typeof partnerValue === 'boolean' && typeof orgValue === 'boolean') {
-      merged[key] = partnerValue && orgValue;
+      merged[key] = useMax ? partnerValue || orgValue : partnerValue && orgValue;
       continue;
     }
     // mergeAgentPolicies is exported and pure, so a later caller can hand it a
@@ -88,7 +97,7 @@ function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): Ai
     const partnerFinite = Number.isFinite(partnerNumber);
     const orgFinite = Number.isFinite(orgNumber);
     merged[key] = partnerFinite && orgFinite
-      ? Math.min(partnerNumber, orgNumber)
+      ? (useMax ? Math.max(partnerNumber, orgNumber) : Math.min(partnerNumber, orgNumber))
       : partnerFinite
         ? partnerNumber
         : orgFinite
@@ -153,9 +162,32 @@ export function mergeAgentPolicies(
       // treatment, for the identical reason: a partner-wide baseline row
       // must never blanket-enable unattended ticket writes for every org
       // under it. See AiAgentTriggers.ticketAutonomousWrites's docstring.
+      //
+      // C3 (P2-5, release-blocking) — `actAssets.supervisedActionKeys` joins
+      // that list: it resolves to `[]` here, not the partner's own list.
+      // Partner `supervisedActionKeys` is a CEILING (what an org MAY be
+      // granted), never an inherited GRANT (what it HAS) — only an org row
+      // is a grant. With no org row there is nothing granted, so the
+      // effective set is empty even though the partner baseline names keys.
+      // Promotion (`manage_ai_agents:authorize_supervised_key`) is the only
+      // writer that ever adds a key to an org row; demotion is the only one
+      // that ever removes one. See the general-merge branch below for the
+      // "org row present" case — unchanged: intersect(partner, org).
+      //
+      // Only overridden when the partner's actAssets actually carries the
+      // key: a pre-this-deploy row's stored jsonb has no `supervisedActionKeys`
+      // property at all (schemaVersion predates it, same as the general-merge
+      // branch's `?? []` handling), and every read site already reads the
+      // field as `effective.actAssets.supervisedActionKeys ?? []`
+      // (policyDecide.ts), so `undefined` and `[]` are equivalent at every
+      // consumer. Leaving it untouched here keeps this fast path a true
+      // passthrough for every other partner-only agent, unchanged by C3.
       effective: {
         ...partner,
         triggers: { ...partner.triggers, anomalyEnabled: undefined, ticketAutonomousWrites: undefined },
+        actAssets: partner.actAssets.supervisedActionKeys !== undefined
+          ? { ...partner.actAssets, supervisedActionKeys: [] }
+          : partner.actAssets,
       },
       provenance,
     };

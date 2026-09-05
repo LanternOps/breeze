@@ -3,6 +3,7 @@ import { Plus, Trash2, Search, ChevronDown, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { extractApiError } from "@/lib/apiError";
 import { fetchWithAuth } from "../../stores/auth";
+import { runAction, handleActionError } from "@/lib/runAction";
 import { DEVICE_ROLES, getDeviceRoleLabel } from "@/lib/deviceRoles";
 import HelpTooltip from "../shared/HelpTooltip";
 import OrganizationScopePanel from "./OrganizationScopePanel";
@@ -292,65 +293,66 @@ export default function AssignmentsTab({
     if (!policyId || (!isPartnerLevel && !newTargetId.trim())) return;
     setAddingAssignment(true);
     setError(undefined);
+    const fallback = i18n.t(
+      "policies:configurationPolicies.assignmentsTab.failedToAddAssignment",
+    );
     try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${policyId}/assignments`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            level: newLevel,
-            // Omit targetId entirely for Partner-Wide — the server uses the
-            // caller's / policy's own partner_id and ignores any client value.
-            ...(isPartnerLevel ? {} : { targetId: newTargetId.trim() }),
-            priority: Number(newPriority) || 0,
-            ...(newRoleFilter.length > 0 ? { roleFilter: newRoleFilter } : {}),
-            ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
+      // runAction, not a bare fetch + setError: this was a silent mutation —
+      // a failed assign looked identical to a successful one, since the
+      // inline error banner is easy to miss above the fold on this page.
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/configuration-policies/${policyId}/assignments`, {
+            method: "POST",
+            body: JSON.stringify({
+              level: newLevel,
+              // Omit targetId entirely for Partner-Wide — the server uses the
+              // caller's / policy's own partner_id and ignores any client value.
+              ...(isPartnerLevel ? {} : { targetId: newTargetId.trim() }),
+              priority: Number(newPriority) || 0,
+              ...(newRoleFilter.length > 0
+                ? { roleFilter: newRoleFilter }
+                : {}),
+              ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
+            }),
           }),
-        },
-      );
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(
-          extractApiError(
-            data,
-            i18n.t(
-              "policies:configurationPolicies.assignmentsTab.failedToAddAssignment",
-            ),
-          ),
-        );
-      }
+        errorFallback: fallback,
+        successMessage: i18n.t(
+          "policies:configurationPolicies.assignmentsTab.assignmentAdded",
+        ),
+      });
       setNewTargetId("");
       setNewPriority("0");
       setNewRoleFilter([]);
       setNewOsFilter([]);
       await fetchAssignments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      handleActionError(err, fallback);
     } finally {
       setAddingAssignment(false);
     }
   };
   const handleRemoveAssignment = async (aid: string) => {
     setError(undefined);
+    const fallback = i18n.t(
+      "policies:configurationPolicies.assignmentsTab.failedToRemoveAssignment",
+    );
     try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${policyId}/assignments/${aid}`,
-        { method: "DELETE" },
-      );
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => null);
-        throw new Error(
-          extractApiError(
-            errBody,
-            i18n.t(
-              "policies:configurationPolicies.assignmentsTab.failedToRemoveAssignment",
-            ),
+      // runAction, not a bare fetch + setError — see handleAddAssignment.
+      await runAction({
+        request: () =>
+          fetchWithAuth(
+            `/configuration-policies/${policyId}/assignments/${aid}`,
+            { method: "DELETE" },
           ),
-        );
-      }
+        errorFallback: fallback,
+        successMessage: i18n.t(
+          "policies:configurationPolicies.assignmentsTab.assignmentRemoved",
+        ),
+      });
       await fetchAssignments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      handleActionError(err, fallback);
     }
   };
   // Role + OS filter pickers — shared by the org-owned and partner-wide add cards.

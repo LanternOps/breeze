@@ -70,7 +70,45 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	res.Stdout = redact(res.Stdout)
 	res.Stderr = redact(res.Stderr)
 	res.Error = redact(res.Error)
+	// #2698: delivered secretEnv values ride the script's real process
+	// environment, so a script can echo one into a customFieldWrites marker
+	// value — and that value is extracted from stdout BEFORE SanitizeOutput
+	// even runs (that ordering is the entire point of Wave 3), so it is not
+	// caught by the pattern-based sanitizer either. Unlike Stdout/Stderr/
+	// Error, res.Result is never persisted as free-text log output — it is
+	// written into a device's custom fields, a location any org user with
+	// device-read access can see. Redact it with the same exact-value
+	// redactor so a delivered secret cannot be exfiltrated through a custom
+	// field. (secretEnv never reaches the user-helper path at all — see the
+	// #3409 refusal above — so this exclusively covers the local-executor
+	// build site, which is exactly where the risk is.)
+	redactCustomFieldValues(res.Result, redact)
 	return res
+}
+
+// redactCustomFieldValues strips delivered-secret values out of a
+// customFieldWrites envelope's string field values, in place. Non-string
+// values (numbers, booleans) cannot contain an exact-value secret match, and
+// the server rejects non-scalar custom field values outright
+// (validateValue.ts), so only string values need scrubbing.
+func redactCustomFieldValues(result any, redact func(string) string) {
+	envelope, ok := result.(map[string]any)
+	if !ok {
+		return
+	}
+	writes, ok := envelope["customFieldWrites"].(map[string]any)
+	if !ok {
+		return
+	}
+	fields, ok := writes["fields"].(map[string]any)
+	if !ok {
+		return
+	}
+	for k, v := range fields {
+		if s, ok := v.(string); ok {
+			fields[k] = redact(s)
+		}
+	}
 }
 
 // handleScriptInner is the original handler body. Every return it makes flows
@@ -87,14 +125,11 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		RunAs:      tools.GetPayloadString(cmd.Payload, "runAs", ""),
 	}
 	script.RunAs = strings.TrimSpace(script.RunAs)
-	if params, ok := cmd.Payload["parameters"].(map[string]any); ok {
-		script.Parameters = make(map[string]string, len(params))
-		for k, v := range params {
-			if s, ok := v.(string); ok {
-				script.Parameters[k] = s
-			}
-		}
-	}
+	// Shared with userhelper.Client.executeScript, which rebuilds this same
+	// struct on the far side of the runAs=user IPC hop — see #4882, where only
+	// this site decoded parameters and every user-context script ran without
+	// them.
+	script.Parameters = executor.ParametersFromPayload(cmd.Payload["parameters"])
 	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
 	// parameters block: secrets ride the process environment (buildEnvironment)
 	// and must never reach SubstituteParameters or validateScript, which would
@@ -205,10 +240,28 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	if scriptResult.Error != "" && strings.Contains(scriptResult.Error, "timed out") {
 		status = "timeout"
 	}
-	return tools.CommandResult{
+
+	// #2698: pull markers out of RAW stdout, BEFORE SanitizeOutput. The
+	// sanitizer rewrites `token=`/`secret=`-shaped substrings, which corrupts a
+	// marker's JSON past recovery — the server's stdout-scanning fallback
+	// (Wave 1) can only see post-sanitizer text, which is exactly the gap this
+	// closes. The marker lines are stripped so the operator's saved output is
+	// the script's real output.
+	customFields, cleanedStdout := executor.ExtractCustomFields(scriptResult.Stdout)
+	if strings.Contains(cleanedStdout, executor.CustomFieldMarker) {
+		// A marker-prefixed line survived extraction: it was rejected by one of
+		// ExtractCustomFields' caps (line count / key count / payload size) or
+		// failed to parse as JSON. The line itself stays visible in the
+		// persisted stdout by design, but nothing else surfaces the rejection —
+		// log so it's diagnosable without reverse-engineering the caps.
+		log.Warn("script printed a custom-field marker that was not applied (parse failure or cap exceeded)",
+			"commandId", cmd.ID)
+	}
+
+	result := tools.CommandResult{
 		Status:   status,
 		ExitCode: scriptResult.ExitCode,
-		Stdout:   executor.SanitizeOutput(scriptResult.Stdout),
+		Stdout:   executor.SanitizeOutput(cleanedStdout),
 		Stderr:   executor.SanitizeOutput(scriptResult.Stderr),
 		// Error is deliberately raw here: handleScript sanitizes it for every
 		// exit path, including the NewErrorResult return above that never
@@ -217,6 +270,15 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
+	if len(customFields) > 0 {
+		result.Result = map[string]any{
+			"customFieldWrites": map[string]any{
+				"schemaVersion": 1,
+				"fields":        customFields,
+			},
+		}
+	}
+	return result
 }
 
 // isRunningElevated is an indirection over privilege.IsRunningAsRoot so the
@@ -408,6 +470,16 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err.Error())
 		} else {
 			if stdout, ok := nested["stdout"].(string); ok {
+				// #2698: the marker was ALREADY extracted from raw stdout, and
+				// stripped, inside the user-helper process itself (userhelper/
+				// client.go executeScript) — before that process's own
+				// SanitizeOutput call. Re-extracting here would run on stdout
+				// that has already been through SanitizeOutput once (over the
+				// IPC round trip), which would corrupt any marker whose JSON
+				// contains a token/secret/password-shaped key exactly like the
+				// local-executor path is designed to avoid. So this site only
+				// re-sanitizes (idempotent — the helper already sanitized this
+				// text) and does not call ExtractCustomFields again.
 				cmdResult.Stdout = executor.SanitizeOutput(stdout)
 			}
 			if stderr, ok := nested["stderr"].(string); ok {
@@ -415,6 +487,9 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			}
 			if exitCode, ok := nested["exitCode"].(float64); ok {
 				cmdResult.ExitCode = int(exitCode)
+			}
+			if writes, ok := nested["customFieldWrites"]; ok && writes != nil {
+				cmdResult.Result = map[string]any{"customFieldWrites": writes}
 			}
 		}
 	}

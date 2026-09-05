@@ -6,19 +6,33 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { deviceScriptsHref } from '@/lib/deviceScriptsLink';
+import { RunContextSelect, RunContextChip, type RunContextChoice, type RunContextValue } from '../common/RunContext';
+import { fetchLiveSessions, type LiveSession } from '@/services/deviceActions';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
 import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
-import type { ScriptAdmissionResult } from '@breeze/shared';
+import type { ScriptAdmissionResult, ExecutionStatus } from '@breeze/shared';
 
 export type TestDevice = {
   id: string;
   hostname: string;
   os: OSType;
   status: 'online' | 'offline' | 'maintenance';
+  /**
+   * #4888 — decides whether a `runAs: 'user'` test run can pin a specific
+   * Windows session. Only an on-demand helper has per-session targeting; an
+   * always-on helper (or a null mode) runs in whichever interactive session it
+   * owns, and the API rejects a `targetSessionId` it cannot honour.
+   */
+  helperLifecycleMode: 'always-on' | 'on-demand' | null;
 };
 
-type TestRunStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+// Reuses the shared execution-status union (not a private copy) so a widened
+// DB enum value is a compile error here too, not a silent missing switch case
+// (#3525 W01 — the same unguarded-status bug ExecutionHistory/ExecutionDetails
+// had, just not yet exercised here since the API doesn't emit 'cancelling' yet).
+type TestRunStatus = ExecutionStatus;
 
 type TestRunExecution = {
   id: string;
@@ -27,6 +41,14 @@ type TestRunExecution = {
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
+  /**
+   * #4888 — the context the run ACTUALLY used, as recorded on the execution
+   * row. Read from the poll response rather than echoed back from what this
+   * component sent, so the header reports the server's resolution (including
+   * the script default it filled in) rather than the client's intent.
+   */
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
 };
 
 type ScriptTestRunnerProps = {
@@ -42,6 +64,13 @@ type ScriptTestRunnerProps = {
   onTestDeviceChange?: (deviceId: string | null) => void;
   /** Reports the most recent test-run execution id for the AI panel context. */
   onExecutionChange?: (executionId: string | null) => void;
+  /**
+   * The script form's CURRENT `runAs` value (#4888). Used only to name the
+   * "Script default (…)" option — the run itself sends no `runAs` while that
+   * option is selected, so the server keeps resolving the default, including
+   * `elevated`, which is not a launch-time choice.
+   */
+  scriptRunAs?: RunContextValue;
 };
 
 const POLL_INTERVAL_MS = 2000;
@@ -66,6 +95,7 @@ export default function ScriptTestRunner({
   onSaveChanges,
   onTestDeviceChange,
   onExecutionChange,
+  scriptRunAs,
 }: ScriptTestRunnerProps) {
   const { t } = useTranslation('scripts');
   // One state object, not three correlated ones, and it carries the `key` (the
@@ -88,7 +118,16 @@ export default function ScriptTestRunner({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [phase, setPhase] = useState<'idle' | 'saving' | 'starting' | 'polling'>('idle');
   const [execution, setExecution] = useState<TestRunExecution | null>(null);
+  const [executionDeviceId, setExecutionDeviceId] = useState<string>('');
   const [runError, setRunError] = useState<string | null>(null);
+  // #4888 — null means "send no runAs and let the server resolve the script's
+  // saved default". That has to be the initial value, not a prefill of
+  // `scriptRunAs`: the launch-time enum has no 'elevated', so prefilling an
+  // elevated script's control would silently downgrade the very next test run
+  // to 'system'.
+  const [runAs, setRunAs] = useState<RunContextChoice | null>(null);
+  const [targetSessionId, setTargetSessionId] = useState<number | null>(null);
+  const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   // Set when polling gave up (permanent poll error / deadline) so the user can
   // re-read THAT execution instead of starting a second run on a real device.
   const [retryExecutionId, setRetryExecutionId] = useState<string | null>(null);
@@ -144,6 +183,7 @@ export default function ScriptTestRunner({
               hostname: String(d.hostname ?? ''),
               os: (d.osType ?? d.os ?? '') as TestDevice['os'],
               status: (d.status ?? 'offline') as TestDevice['status'],
+              helperLifecycleMode: (d.helperLifecycleMode ?? null) as TestDevice['helperLifecycleMode'],
             });
           }
         }
@@ -238,6 +278,41 @@ export default function ScriptTestRunner({
     }
     return result;
   }, [parameters]);
+
+  // #4888 — session targeting is only offered where the API will accept it:
+  // one device, `runAs: 'user'`, and an ON-DEMAND helper (an always-on helper
+  // owns whichever session it was started in). Anything else and the picker
+  // stays hidden and `targetSessionId` stays null, rather than rendering a
+  // control whose value the server would reject.
+  const pinnedDevice = compatibleDevices.find(d => d.id === selectedDeviceId);
+  const showSessionTarget =
+    runAs === 'user' && !!selectedDeviceId && pinnedDevice?.helperLifecycleMode === 'on-demand';
+
+  useEffect(() => {
+    if (!showSessionTarget || !selectedDeviceId) {
+      setLiveSessions([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessions = await fetchLiveSessions(selectedDeviceId);
+        if (!cancelled) setLiveSessions(sessions);
+      } catch {
+        // A probe failure is not a run failure — offering only "any active
+        // session" is a working degrade, and the run itself will report the
+        // real problem if the helper genuinely is unreachable.
+        if (!cancelled) setLiveSessions([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showSessionTarget, selectedDeviceId]);
+
+  // A session id pinned against a device (or context) that no longer supports
+  // one must not ride along on the next POST — the API refuses the pair.
+  useEffect(() => {
+    if (!showSessionTarget && targetSessionId !== null) setTargetSessionId(null);
+  }, [showSessionTarget, targetSessionId]);
 
   const pollExecution = useCallback(async (executionId: string) => {
     const token = ++pollTokenRef.current;
@@ -334,6 +409,12 @@ export default function ScriptTestRunner({
             deviceIds: [selectedDeviceId],
             parameters: defaultParameters,
             triggerType: 'manual',
+            // #4888 — omitted entirely on "Script default" so the server keeps
+            // resolving `script.runAs` (which may be 'elevated', a value this
+            // control cannot express). Sending 'system' there would be a
+            // silent downgrade.
+            ...(runAs ? { runAs } : {}),
+            ...(showSessionTarget && targetSessionId != null ? { targetSessionId } : {}),
           }),
         }),
         errorFallback: t('testRunner.errors.execute'),
@@ -349,6 +430,7 @@ export default function ScriptTestRunner({
         return;
       }
 
+      setExecutionDeviceId(selectedDeviceId);
       setExecution({ id: executionId, status: 'pending' });
       onExecutionChange?.(executionId);
       setPhase('polling');
@@ -363,7 +445,7 @@ export default function ScriptTestRunner({
     }
   };
 
-  const selectedDevice = compatibleDevices.find(d => d.id === selectedDeviceId);
+  const selectedDevice = pinnedDevice;
   const busy = phase !== 'idle';
   const running = execution && !TERMINAL_STATUSES.includes(execution.status);
 
@@ -373,6 +455,7 @@ export default function ScriptTestRunner({
       case 'pending':
       case 'queued':
       case 'running':
+      case 'cancelling':
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-700">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -438,6 +521,25 @@ export default function ScriptTestRunner({
             </option>
           ))}
         </select>
+        {/* #4888 — the Test Run used to launch with whatever the form's
+            advanced-settings default happened to be, with nothing on screen
+            saying which. "Script default" stays selected until the author
+            deliberately overrides it, so the button's behaviour is unchanged
+            for anyone who ignores this control. */}
+        <RunContextSelect
+          value={runAs}
+          onChange={setRunAs}
+          allowScriptDefault
+          scriptDefault={scriptRunAs ?? null}
+          disabled={!scriptId || busy}
+          testId="test-run-context"
+          sessionTarget={showSessionTarget ? {
+            sessions: liveSessions,
+            value: targetSessionId,
+            onChange: setTargetSessionId,
+            testId: 'test-run-session-target',
+          } : undefined}
+        />
         <button
           type="button"
           onClick={handleRun}
@@ -453,6 +555,19 @@ export default function ScriptTestRunner({
               : t('testRunner.run')}
         </button>
         {statusChip()}
+        {/* The context the run ACTUALLY used, straight off the execution row —
+            not an echo of what this component sent. That distinction is the
+            point: a run that inherited the script default reports the resolved
+            value, so "why did this behave differently?" stops being a guess
+            (#4882). */}
+        {execution && (
+          <RunContextChip
+            runAs={execution.runAs ?? null}
+            targetSessionId={execution.targetSessionId ?? null}
+            withLabel
+            testId="test-run-effective-context"
+          />
+        )}
         {execution && typeof execution.exitCode === 'number' && (
           <span className={cn(
             'inline-flex items-center rounded px-2 py-0.5 text-xs font-mono',
@@ -461,10 +576,27 @@ export default function ScriptTestRunner({
             {t('testRunner.exitCode', { code: execution.exitCode })}
           </span>
         )}
+        {/* #4886 — once this run has an execution id, link straight to it on
+            the device's own Scripts tab (same hash convention as the
+            post-run redirects elsewhere) rather than only the script-wide
+            history list. */}
+        {execution?.id && executionDeviceId && (
+          <a
+            href={deviceScriptsHref(executionDeviceId, execution.id)}
+            data-testid="test-view-on-device"
+            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {t('testRunner.viewOnDevice')}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
         {scriptId && (
           <a
             href={`/scripts/${scriptId}/executions`}
-            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            className={cn(
+              'inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground',
+              !(execution?.id && executionDeviceId) && 'ml-auto'
+            )}
           >
             {t('testRunner.viewHistory')}
             <ExternalLink className="h-3 w-3" />
@@ -507,9 +639,24 @@ export default function ScriptTestRunner({
 
       {execution && !running && TERMINAL_STATUSES.includes(execution.status) && (
         <div className="space-y-3 border-t p-3">
-          {execution.errorMessage && (
-            <p className="text-sm text-destructive">{execution.errorMessage}</p>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            {execution.errorMessage ? (
+              <p className="text-sm text-destructive">{execution.errorMessage}</p>
+            ) : <span />}
+            {/* #4885 — an explicit action beside the result, rather than
+                relying on the operator noticing the header's Run button is
+                enabled again. */}
+            <button
+              type="button"
+              onClick={handleRun}
+              disabled={busy || !selectedDeviceId || missingRequiredParams.length > 0}
+              data-testid="test-run-again"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t('testRunner.runAgain')}
+            </button>
+          </div>
           <OutputSection
             title={t('executionDetails.output.stdout')}
             content={execution.stdout ?? undefined}

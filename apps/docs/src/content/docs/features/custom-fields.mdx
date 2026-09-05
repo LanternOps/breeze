@@ -137,6 +137,7 @@ curl -X POST /api/v1/custom-fields \
       "choices": ["Finance", "Engineering", "Sales", "Support"]
     },
     "required": true,
+    "scriptWrite": false,
     "defaultValue": null,
     "deviceTypes": null,
     "createdAt": "2026-02-18T12:00:00.000Z",
@@ -180,6 +181,86 @@ The device update endpoint validates each custom field value against this schema
 | `number` | Integer or decimal |
 | `boolean` | `true` or `false` |
 | `null` | Removes the field from the device |
+
+---
+
+## Writing custom fields from a script
+
+A script running on a device can set that device's own custom fields directly from its output — no API key, no device UUID, and no extra network call. This is the equivalent of Ninja-Property-Set for Breeze.
+
+<Aside type="caution">
+  **This is not a secrets channel.** The write-back marker rides the script's stdout, and stdout is persisted to the execution record where any user with `scripts:read` can see it. The value is also visible on the device record afterward. Never write a password, API key, or other secret through this feature — use a [secret variable](/features/scripts/#secret-variables-in-scripts) instead.
+</Aside>
+
+### Enabling it on a field
+
+Script write-back is opt-in per field definition, and off by default. Turn on **Allow scripts to write this field** (`scriptWrite: true`) on the field's definition — see [Creating a field definition](#creating-a-field-definition) — before any script can set it. A script targeting a field with `scriptWrite: false` (or a field that doesn't exist) has that write rejected.
+
+### The marker
+
+Print a line to stdout in this exact form:
+
+```
+::breeze:custom-fields:: {"key":"value"}
+```
+
+The text after the marker must be a single JSON object whose keys are field keys and whose values are the new field values. `null` clears a field, exactly like the device PATCH endpoint. A script can emit the marker more than once; later lines win for a repeated key.
+
+<Tabs>
+  <TabItem label="PowerShell">
+```powershell
+$fields = @{ ram_slot_type = 'DDR5-5600'; free_dimm_slots = 2 }
+Write-Output "::breeze:custom-fields:: $($fields | ConvertTo-Json -Compress)"
+```
+  </TabItem>
+  <TabItem label="Bash">
+```bash
+echo "::breeze:custom-fields:: {\"ram_slot_type\":\"DDR5-5600\",\"free_dimm_slots\":2}"
+```
+  </TabItem>
+  <TabItem label="Python">
+```python
+import json
+print("::breeze:custom-fields:: " + json.dumps({"ram_slot_type": "DDR5-5600"}))
+```
+  </TabItem>
+</Tabs>
+
+### Type coercion and validation
+
+Each value is validated and coerced against the target field's declared `type`, using the same rules as [accepted value types](#accepted-value-types) above:
+
+| Field type | Coercion |
+|---|---|
+| `text` | Coerced to a string; rejected if it exceeds the field's `maxLength` or fails its `pattern` |
+| `number` | Coerced to a number; rejected if it falls outside `min`/`max` |
+| `boolean` | Accepts `true`/`false` (JSON booleans) |
+| `dropdown` | The value must be one of the field's declared `options.choices` |
+| `date` | Must parse as a valid date string |
+
+A value that fails coercion or validation is rejected for that key only — it does not fail the rest of the marker or the script run itself.
+
+### Reading the result
+
+Every execution that emitted at least one marker gets a `customFieldResult` summary (`{ applied: string[], rejected: [{ key, reason }] }`), visible in the execution's detail view in the web UI and via `GET /scripts/executions/:executionId`. `rejected[].reason` is one of:
+
+| Reason | Meaning |
+|---|---|
+| `unknown_field` | No custom field definition matches that key |
+| `not_script_writable` | The field exists but `scriptWrite` is off |
+| `not_applicable_to_device` | The field's `deviceTypes` excludes this device |
+| `invalid_type` / `out_of_range` / `not_a_choice` / `too_long` / `invalid_date` | The value failed type coercion or validation — see the table above |
+| `marker_unparseable` | The marker line's JSON could not be parsed — see the sanitizer caveat below |
+| `too_many_lines` / `too_many_keys` / `marker_too_large` | The marker exceeded the script's per-run limits (20 marker lines, 50 keys, 8 KB of marker JSON) |
+| `forbidden_key` | The key was `__proto__`, `constructor`, or `prototype` |
+
+A silently-rejected write is exactly the failure this summary exists to prevent — check it whenever a value you expected doesn't show up on the device.
+
+<Aside type="caution">
+  **Sanitizer interaction.** Script output is scanned for likely secrets before being stored (see [Output sanitization](/features/scripts/#output-sanitization)) — a marker whose JSON happens to contain a key like `token`, `secret`, or `password` gets rewritten (`key=[REDACTED]`) before the server ever sees it, which breaks the JSON and surfaces as `marker_unparseable`. Avoid field keys and values that look secret-shaped.
+</Aside>
+
+To read a custom field value back into a script as an input, bind a script parameter with source **From a device custom field** — see [Parameter sources](/features/scripts/#parameter-sources).
 
 ---
 
@@ -292,6 +373,7 @@ All endpoints require authentication and an appropriate scope (`organization`, `
     placeholder?: string;
   };
   required?: boolean;    // Default: false
+  scriptWrite?: boolean; // Default: false - see "Writing custom fields from a script"
   defaultValue?: unknown;
   deviceTypes?: ("windows" | "macos" | "linux")[];
   orgId?: string;        // UUID - omit for org-scoped users
@@ -312,6 +394,7 @@ All endpoints require authentication and an appropriate scope (`organization`, `
     placeholder?: string;
   };
   required?: boolean;
+  scriptWrite?: boolean;
   defaultValue?: unknown;
   deviceTypes?: ("windows" | "macos" | "linux")[] | null;
 }

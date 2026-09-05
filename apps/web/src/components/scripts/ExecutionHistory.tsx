@@ -1,11 +1,25 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
-export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+import { executionRowStatusConfig as statusConfig } from './executionStatus';
+import type { ExecutionStatus } from '@breeze/shared';
+import type { RunContextValue } from '@/components/common/RunContext';
+export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
+
+// #2698: per-run summary of the script custom-field write-back. Mirrors
+// `ScriptCustomFieldWriteSummary` in apps/api/src/db/schema/scripts.ts — kept
+// as a local type rather than a cross-package import since apps/web does not
+// depend on apps/api. `rejected.reason` is one of the
+// CustomFieldWriteRejection values documented in
+// apps/api/src/services/customFields/scriptWriteBack.ts.
+export type ScriptCustomFieldWriteResult = {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+};
 
 export type ScriptExecution = {
   id: string;
@@ -14,12 +28,31 @@ export type ScriptExecution = {
   deviceId: string;
   deviceHostname: string;
   status: ExecutionStatus;
-  startedAt: string;
+  // NULL from the API for any execution the agent hasn't picked up yet
+  // (`pending`) — `started_at` is only ever written once a run actually
+  // starts.
+  startedAt: string | null;
   completedAt?: string;
   exitCode?: number;
   stdout?: string;
   stderr?: string;
   duration?: number; // in seconds
+  // NULL/absent for every run that emitted no `::breeze:custom-fields::`
+  // marker. Only present once the execution-detail endpoint has been fetched
+  // (the list endpoint omits it, same as stdout/stderr).
+  customFieldResult?: ScriptCustomFieldWriteResult | null;
+  // #4885 — the runtime values this execution was submitted with. Both
+  // GET /scripts/:id/executions and GET /scripts/executions/:id already
+  // return `script_executions.parameters` on the wire; this was simply never
+  // declared on the type any consumer read through. Powers "Run again".
+  parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System". Surfaced
+  // in ExecutionDetails; the list row here is already at 7 columns and has
+  // no room for a compact indicator without crowding the table.
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
 };
 
 type ExecutionHistoryProps = {
@@ -30,22 +63,33 @@ type ExecutionHistoryProps = {
   timezone?: string;
 };
 
-const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  failed: { label: 'status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
-  timeout: { label: 'status.timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
-};
-
-function formatDuration(seconds?: number): string {
-  if (seconds === undefined || seconds === null) return '-';
+export function formatDuration(seconds?: number): string {
+  if (seconds === undefined || seconds === null) return '—';
   if (seconds < 1) return '<1s';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
+}
+
+/**
+ * The list/detail endpoints never return `script_executions.duration` — only
+ * `startedAt`/`completedAt` are on the wire (apps/api/src/routes/scripts.ts).
+ * Prefer an explicit `duration` if a future payload ever supplies one, else
+ * derive it from the two timestamps, else give up honestly.
+ */
+export function computeDurationSeconds(execution: {
+  duration?: number;
+  startedAt?: string | null;
+  completedAt?: string;
+}): number | undefined {
+  if (execution.duration !== undefined && execution.duration !== null) return execution.duration;
+  if (!execution.startedAt || !execution.completedAt) return undefined;
+  const start = new Date(execution.startedAt).getTime();
+  const end = new Date(execution.completedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+  return Math.max(0, (end - start) / 1000);
 }
 
 function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): string {
@@ -118,7 +162,10 @@ export default function ExecutionHistory({
 
       let matchesDate = true;
       if (dateFilter !== 'all') {
-        const executionDate = new Date(execution.startedAt);
+        // A pending execution has no startedAt yet ("" parses to an Invalid
+        // Date, so every comparison below is false) -- it can't match any
+        // specific-date filter, but still shows under "All time".
+        const executionDate = new Date(execution.startedAt ?? '');
         const diffMs = now.getTime() - executionDate.getTime();
         const diffHours = diffMs / (1000 * 60 * 60);
         const diffDays = diffMs / (1000 * 60 * 60 * 24);
@@ -158,10 +205,10 @@ export default function ExecutionHistory({
           cmp = a.status.localeCompare(b.status);
           break;
         case 'startedAt':
-          cmp = a.startedAt.localeCompare(b.startedAt);
+          cmp = (a.startedAt ?? '').localeCompare(b.startedAt ?? '');
           break;
         case 'duration':
-          cmp = (a.duration ?? 0) - (b.duration ?? 0);
+          cmp = (computeDurationSeconds(a) ?? 0) - (computeDurationSeconds(b) ?? 0);
           break;
         case 'exitCode':
           cmp = (a.exitCode ?? -1) - (b.exitCode ?? -1);
@@ -202,10 +249,13 @@ export default function ExecutionHistory({
           >
             <option value="all">{t('executionHistory.filters.allStatus')}</option>
             <option value="pending">{t('executionHistory.status.pending')}</option>
+            <option value="queued">{t('executionHistory.status.queued')}</option>
             <option value="running">{t('executionHistory.status.running')}</option>
+            <option value="cancelling">{t('executionHistory.status.cancelling')}</option>
             <option value="completed">{t('executionHistory.status.completed')}</option>
             <option value="failed">{t('executionHistory.status.failed')}</option>
             <option value="timeout">{t('executionHistory.status.timeout')}</option>
+            <option value="cancelled">{t('executionHistory.status.cancelled')}</option>
           </select>
           <select
             value={dateFilter}
@@ -310,7 +360,7 @@ export default function ExecutionHistory({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(execution.startedAt, t, timezone)}
+                      {execution.startedAt ? formatDateTime(execution.startedAt, t, timezone) : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {execution.status === 'running' ? (
@@ -319,7 +369,7 @@ export default function ExecutionHistory({
                           {t('executionHistory.status.running')}
                         </span>
                       ) : (
-                        formatDuration(execution.duration)
+                        formatDuration(computeDurationSeconds(execution))
                       )}
                     </td>
                     <td className="px-4 py-3">

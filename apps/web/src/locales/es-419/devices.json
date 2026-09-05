@@ -298,6 +298,26 @@
     "resolve": "Resolver",
     "promote": "Promover"
   },
+  "deviceBillingCard": {
+    "title": "Facturación",
+    "uncovered": "Ninguna línea de contrato activa factura este dispositivo.",
+    "viewContracts": "Ver contratos",
+    "notBillable": {
+      "decommissioned": "No facturado — este dispositivo está dado de baja",
+      "ephemeral": "No facturado — este dispositivo es de sesión de soporte efímera",
+      "not_billable": "No facturado — este dispositivo no es facturable actualmente"
+    },
+    "error": {
+      "generic": "No se pudo cargar la cobertura de facturación.",
+      "groupEvaluation": "No se pudo evaluar un grupo de dispositivos de un contrato activo ({{group}}). La cobertura es desconocida."
+    },
+    "matchedBy": {
+      "org": "Toda la organización",
+      "site": "Este sitio",
+      "role": "Rol: {{role}}",
+      "group": "Grupo: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Se activó la recopilación de métricas de arranque. Los datos aparecerán después del próximo ciclo de inicio o recopilación.",
     "failedToTriggerCollection": "No se pudo activar la recopilación",
@@ -509,6 +529,7 @@
     "s": "s",
     "decommissionCancelled": "Remoción cancelada",
     "permanentDeleteCancelled": "Eliminación permanente cancelada",
+    "permanentlyDeletedWithWarning": "{{hostname}} fue eliminado, pero {{warning}}",
     "failedToQueueScript": "No se pudo poner en cola el script",
     "loadingDevice": "Cargando dispositivo...",
     "backToDevices": "Volver a dispositivos",
@@ -568,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Estado de la copia de seguridad, trabajos, instantáneas y verificación",
     "theOsReportsAPendingReboot": "El OS informa un reinicio pendiente (registro Windows/marcadores de reinicio requerido Linux).",
     "rebootPending": "Reinicio pendiente",
+    "restartScheduled": "Reinicio programado",
+    "restartInProgress": "Reiniciando",
+    "restartScheduledFor": "Reinicio programado para {{time}}",
+    "restartInProgressAt": "Reinicio iniciado a las {{time}}",
+    "restartDeadline": "Debe reiniciarse antes de {{time}}",
+    "restartPostponed": "Pospuesto {{used}} de {{max}}",
+    "restartPostponedTooltip": "Cuántas veces la persona que usa este dispositivo ha pospuesto el reinicio, del total permitido por la política.",
+    "restartCannotBePostponed": "No se puede posponer",
+    "restartSourcePatchJob": "Solicitado por una instalación de parches",
+    "restartSourceMaintenanceWindow": "Solicitado por una ventana de mantenimiento",
+    "restartSourceManual": "Solicitado por un técnico",
+    "restartSourceUnknown": "Reinicio programado",
     "agentV": "Agente v",
     "uptime": "tiempo de actividad",
     "lastSeen": "Visto por última vez",
@@ -631,6 +664,7 @@
     "retry": "Reintentar",
     "activities": "Actividades",
     "total": "total)",
+    "totalAtLeast": "{{count}} o más",
     "searchActivities": "Buscar actividades...",
     "all": "Todo",
     "success": "Éxito",
@@ -650,7 +684,8 @@
     "details": "Detalles",
     "showing": "Mostrando",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "No hay más actividad"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "No se pudo recuperar el estado del sistema de archivos",
@@ -733,6 +768,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "No se pudo guardar el grupo de dispositivos",
     "failedToDeleteGroup": "No se pudo eliminar el grupo",
+    "billedByContracts": "Este grupo se factura mediante {{count}} contrato(s): {{names}}. Primero elimina esas líneas de contrato.",
+    "billedByContractsCount": "Este grupo se factura mediante {{count}} contrato(s). Primero elimina esas líneas de contrato.",
+    "quotedByQuotes": "Este grupo tiene precio en {{count}} cotización(es) abierta(s): {{names}}. Elimina primero esas líneas de cotización.",
+    "quotedByQuotesCount": "Este grupo tiene precio en {{count}} cotización(es) abierta(s). Elimina primero esas líneas de cotización.",
     "failedToRunScriptOnGroups": "No se pudo ejecutar el script en grupos",
     "failedToApplyPolicyToGroups": "No se pudo aplicar la política a los grupos",
     "failedToMoveDevice": "No se pudo mover el dispositivo",
@@ -1058,6 +1097,7 @@
     "of": "de",
     "devices": "dispositivos",
     "advancedFilterActive": "Filtro avanzado activo",
+    "advancedFilterFailed": "No se pudo cargar el filtro; no se muestra ningún dispositivo",
     "filterByDeviceClass": "Filtrar por clase de dispositivo",
     "filterByVpn": "Filtrar por VPN",
     "allVpn": "Todo VPN",
@@ -1226,6 +1266,8 @@
       "installOsPatches": "Aplicar parches OS pendientes ({{count}})",
       "installThirdPartyPatches": "Aplicar parches de terceros ({{count}})",
       "lastScan": "Último escaneo: {{label}}",
+      "managePatches": "Administrar parches",
+      "managedByPolicy": "Administrado por la política:",
       "pendingApprovalCount": "({{count}} pendiente de aprobación)",
       "polling": "Consultando...",
       "refreshPatchData": "Actualizar datos del parche",
@@ -1473,12 +1515,14 @@
       "completedAt": "Completado en",
       "duration": "Duración",
       "exitCode": "Código de salida",
+      "runAs": "Contexto de ejecución",
       "startedAt": "Comenzó en"
     },
     "noOutput": "Sin salida",
     "output": "Salida",
     "refreshing": "Actualizando...",
     "running": "En ejecución...",
+    "runAgain": "Ejecutar de nuevo",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Cancelado",
@@ -1758,6 +1802,7 @@
     "title": "Dispositivos",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
+      "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",
@@ -1789,8 +1834,9 @@
       "networkSkipped": "Dispositivos de red {{count}} omitidos: esta acción se aplica solo a los dispositivos del agente.",
       "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "permanentDeleteCancelled": "Eliminación permanente cancelada",
-      "permanentDeleting": "Eliminación permanente",
+      "permanentDeleting": "Eliminando permanentemente {{hostname}}…",
       "permanentlyDeleted": "Eliminado permanentemente",
+      "permanentlyDeletedWithWarning": "{{hostname}} fue eliminado, pero {{warning}}",
       "restored": "Restaurado",
       "scriptQueueFailed": "Error en la cola de script",
       "scriptQueuedMany": "Script en cola muchos",

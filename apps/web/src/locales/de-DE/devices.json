@@ -298,6 +298,26 @@
     "resolve": "Lösen",
     "promote": "Fördern"
   },
+  "deviceBillingCard": {
+    "title": "Abrechnung",
+    "uncovered": "Keine aktive Vertragsposition rechnet dieses Gerät ab.",
+    "viewContracts": "Verträge anzeigen",
+    "notBillable": {
+      "decommissioned": "Nicht abgerechnet — dieses Gerät ist stillgelegt",
+      "ephemeral": "Nicht abgerechnet — dieses Gerät ist ein temporäres Support-Sitzungsgerät",
+      "not_billable": "Nicht abgerechnet — dieses Gerät ist derzeit nicht abrechenbar"
+    },
+    "error": {
+      "generic": "Abrechnungsabdeckung konnte nicht geladen werden.",
+      "groupEvaluation": "Eine Gerätegruppe eines aktiven Vertrags konnte nicht ausgewertet werden ({{group}}). Die Abdeckung ist unbekannt."
+    },
+    "matchedBy": {
+      "org": "Organisationsweit",
+      "site": "Dieser Standort",
+      "role": "Rolle: {{role}}",
+      "group": "Gruppe: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Die Erfassung der Boot-Metriken wurde ausgelöst. Die Daten werden nach dem nächsten Start- oder Erfassungszyklus angezeigt.",
     "failedToTriggerCollection": "Die Erfassung konnte nicht ausgelöst werden",
@@ -509,6 +529,7 @@
     "s": "s",
     "decommissionCancelled": "Entfernen abgebrochen",
     "permanentDeleteCancelled": "Permanentes Löschen abgebrochen",
+    "permanentlyDeletedWithWarning": "{{hostname}} wurde gelöscht, aber {{warning}}",
     "failedToQueueScript": "Das Skript konnte nicht in die Warteschlange gestellt werden",
     "loadingDevice": "Gerät wird geladen...",
     "backToDevices": "Zurück zu den Geräten",
@@ -568,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",
     "theOsReportsAPendingReboot": "Das Betriebssystem meldet einen ausstehenden Neustart (Markierungen für Windows-Registrierung/Linux-Neustart erforderlich).",
     "rebootPending": "Neustart steht aus",
+    "restartScheduled": "Neustart geplant",
+    "restartInProgress": "Wird neu gestartet",
+    "restartScheduledFor": "Neustart geplant für {{time}}",
+    "restartInProgressAt": "Neustart gestartet um {{time}}",
+    "restartDeadline": "Muss bis {{time}} neu gestartet werden",
+    "restartPostponed": "{{used}} von {{max}} verschoben",
+    "restartPostponedTooltip": "Wie oft die Person, die dieses Gerät verwendet, den Neustart verschoben hat, von dem durch die Richtlinie erlaubten Kontingent.",
+    "restartCannotBePostponed": "Kann nicht verschoben werden",
+    "restartSourcePatchJob": "Angefordert durch eine Patch-Installation",
+    "restartSourceMaintenanceWindow": "Angefordert durch ein Wartungsfenster",
+    "restartSourceManual": "Angefordert durch einen Techniker",
+    "restartSourceUnknown": "Geplanter Neustart",
     "agentV": "Agent v",
     "uptime": "Betriebszeit",
     "lastSeen": "Zuletzt gesehen",
@@ -631,6 +664,7 @@
     "retry": "Versuchen Sie es noch einmal",
     "activities": "Aktivitäten",
     "total": "insgesamt)",
+    "totalAtLeast": "{{count}} oder mehr",
     "searchActivities": "Aktivitäten suchen...",
     "all": "Alle",
     "success": "Erfolg",
@@ -650,7 +684,8 @@
     "details": "Details",
     "showing": "Zeigt",
     "text": "–",
-    "of": "von"
+    "of": "von",
+    "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dateisystemstatus konnte nicht abgerufen werden",
@@ -733,6 +768,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Die Gerätegruppe konnte nicht gespeichert werden",
     "failedToDeleteGroup": "Die Gruppe konnte nicht gelöscht werden",
+    "billedByContracts": "Diese Gruppe wird über {{count}} Vertrag/Verträge abgerechnet: {{names}}. Entfernen Sie zuerst die entsprechenden Vertragspositionen.",
+    "billedByContractsCount": "Diese Gruppe wird über {{count}} Vertrag/Verträge abgerechnet. Entfernen Sie zuerst die entsprechenden Vertragspositionen.",
+    "quotedByQuotes": "Diese Gruppe wird von {{count}} offenen Angebot(en) bepreist: {{names}}. Entfernen Sie zuerst diese Angebotspositionen.",
+    "quotedByQuotesCount": "Diese Gruppe wird von {{count}} offenen Angebot(en) bepreist. Entfernen Sie zuerst diese Angebotspositionen.",
     "failedToRunScriptOnGroups": "Das Skript konnte nicht für Gruppen ausgeführt werden",
     "failedToApplyPolicyToGroups": "Die Richtlinie konnte nicht auf Gruppen angewendet werden",
     "failedToMoveDevice": "Gerät konnte nicht verschoben werden",
@@ -1058,6 +1097,7 @@
     "of": "von",
     "devices": "Geräte",
     "advancedFilterActive": "Erweiterter Filter aktiv",
+    "advancedFilterFailed": "Filter konnte nicht geladen werden – es werden keine Geräte angezeigt",
     "filterByDeviceClass": "Nach Geräteklasse filtern",
     "filterByVpn": "Filtern Sie nach VPN",
     "allVpn": "Alles VPN",
@@ -1226,6 +1266,8 @@
       "installOsPatches": "Ausstehende Betriebssystem-Patches installieren ({{count}})",
       "installThirdPartyPatches": "Installieren Sie Patches von Drittanbietern ({{count}})",
       "lastScan": "Letzter Scan: {{label}}",
+      "managePatches": "Patches verwalten",
+      "managedByPolicy": "Verwaltet durch Richtlinie:",
       "pendingApprovalCount": "({{count}} bis zur Genehmigung)",
       "polling": "Abfrage läuft...",
       "refreshPatchData": "Patchdaten aktualisieren",
@@ -1473,12 +1515,14 @@
       "completedAt": "Abgeschlossen am",
       "duration": "Dauer",
       "exitCode": "Exit-Code",
+      "runAs": "Ausführungskontext",
       "startedAt": "Begonnen um"
     },
     "noOutput": "Keine Ausgabe",
     "output": "Ausgabe",
     "refreshing": "Wird aktualisiert...",
     "running": "Wird ausgeführt...",
+    "runAgain": "Erneut ausführen",
     "scriptFallback": "Skript",
     "status": {
       "cancelled": "Abgesagt",
@@ -1758,6 +1802,7 @@
     "title": "Geräte",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
+      "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
@@ -1789,8 +1834,9 @@
       "networkSkipped": "{{count}} Netzwerkgerät(e) übersprungen – diese Aktion gilt nur für Agent-Geräte.",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
-      "permanentDeleting": "Endgültiges Löschen",
+      "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
       "permanentlyDeleted": "Endgültig gelöscht",
+      "permanentlyDeletedWithWarning": "{{hostname}} wurde gelöscht, aber {{warning}}",
       "restored": "Wiederhergestellt",
       "scriptQueueFailed": "Skriptwarteschlange fehlgeschlagen",
       "scriptQueuedMany": "Skriptausführungen in die Warteschlange gestellt",

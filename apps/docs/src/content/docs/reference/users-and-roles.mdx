@@ -214,13 +214,33 @@ If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the u
 
 MFA verification is rate-limited separately from login.
 
+<Aside type="note" title="Integrators: a wrong code and an expired session have different status codes">
+  A **rejected proof** — a wrong six-digit code, a wrong recovery code, or a wrong step-up password — returns **`400`** with a stable machine-readable `code`:
+
+  ```json
+  { "error": "Invalid MFA code", "message": "Invalid MFA code", "code": "mfa_code_invalid" }
+  ```
+
+  A **dead credential** — an expired or invalid `tempToken`, or an expired bearer token — returns **`401`**:
+
+  ```json
+  { "error": "Invalid or expired MFA session" }
+  ```
+
+  Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), and `invalid_credentials` (a rejected step-up password or enrollment grant). Never branch on the human-readable `error`/`message` text — it is not part of the contract.
+
+  This applies to `/auth/mfa/*` and `/auth/phone/*`, and to the two other endpoints that verify a password supplied in the request body: `POST /auth/change-password` and `POST /auth/account-deletion-request`. Both answer a rejected password with `400` and `code: "invalid_credentials"`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit — or, on those two endpoints, mid-flow for a mistyped password.
+</Aside>
+
 ### Disabling MFA
 
 Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. If the organisation enforces MFA, the endpoint returns `403`.
 
 ### Recovery Codes
 
-Recovery codes are generated during MFA setup and stored as hashed values. To regenerate codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This replaces all existing codes.
+Recovery codes are generated during MFA setup and stored as hashed values. They are **shown once, at enrolment, and cannot be displayed again** — the dashboard has no "view codes" action, because the server keeps only hashes. A user who did not save them needs new ones.
+
+To replace the codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This invalidates every existing code immediately, including printed copies, and returns the replacements once. In the dashboard this is **Regenerate recovery codes** under profile security settings, behind an explicit confirmation.
 
 ### Admin MFA Reset (Lost Authenticator)
 
@@ -259,6 +279,8 @@ Authenticated users can change their password via `POST /auth/change-password` b
   SSO-provisioned users do not have a password. The change password endpoint returns `400` for these accounts.
 </Aside>
 
+A **wrong `currentPassword`** also returns `400`, with the stable body `{ "error": "Current password is incorrect", "message": "Current password is incorrect", "code": "invalid_credentials" }`. It previously returned `401`; branch on the status and on `code`, never on the message text. `401` from this endpoint now means only that the bearer token is dead.
+
 ---
 
 ## Single Sign-On (SSO)
@@ -296,7 +318,7 @@ Provider status can be `active`, `inactive`, or `testing`. Only `active` provide
 
 ### SSO Check
 
-The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced.
+The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced. The dashboard login page does not have an `orgId` to pass this endpoint until after a user has chosen an organisation, so it instead discovers SSO from the typed email address via `POST /auth/sso-discovery` — see [Login Page Discovery](/reference/sso/#login-page-discovery) in the SSO reference.
 
 ---
 
@@ -311,7 +333,7 @@ Every user-to-scope association includes a `roleId`. The role determines what th
 
 Roles can be **system** (built-in, immutable) or **custom** (created by administrators).
 
-Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enroll a TOTP authenticator. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
+Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enrol an MFA method. The enrolment screen offers whichever methods the organisation allows -- an authenticator app, SMS, or a passkey. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
 
 ### Permission Model
 

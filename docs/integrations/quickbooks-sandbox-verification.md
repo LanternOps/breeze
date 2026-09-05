@@ -332,6 +332,194 @@ committed to this repository.
     and capture the exact fault text Breeze surfaces.**
     Result: NOT TESTABLE in this realm (single-currency; every customer is USD, so no non-home `CurrencyRef` exists). Customer currency capture itself is verified: `remote_currency_code=USD` persisted on both org mappings. Re-run against a multi-currency realm.
 
+### Phase D checklist (payment pull-back)
+
+**Status: EXECUTED 2026-09-02 (~16:05–16:19 UTC) against the live Intuit
+default US sandbox company ("Sandbox Company_US", USD, single-currency).**
+Build: main at `f316986fc` (PR #4531 squash) on a per-worktree dev stack with
+Caddy pinned to `localhost:3001`; webhook delivered through a Cloudflare
+quick tunnel registered as the Intuit app's **Development** webhook endpoint
+(Invoice + Payment event groups, classic payload format). Tester: Todd
+Hebebrand (Intuit login + OAuth consent) with Claude driving the API, DB and
+QuickBooks-side calls. Results: 17–25 PASS (9/9); 26 NOT REPRODUCIBLE via a
+Redis outage (see the item). One cosmetic defect found and fixed in the same
+PR: the worker's run line logged `cursorAfter=null` on every run because it
+was emitted before the cursor CAS (`accountingReconcileWorker.ts`). Follow-ups
+worth filing are listed after item 26. Same rules as Sections 2/2a above:
+dedicated sandbox company, no credentials or realm IDs committed to this
+repository.
+
+Payment pull-back (Phase D, migration
+`apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql`): QBO-origin
+payments mirror into Breeze via the Intuit webhook (latency optimisation, one
+region only) and the 15-minute `accounting-reconcile` CDC sweep (the
+guaranteed path in every region).
+
+Intuit allows exactly **one webhook URL per app**, and the hosted contract
+uses one Intuit app for both regions, so only the US deployment ever receives
+webhook notifications — the EU deployment (and any self-hosted install with
+no public webhook URL) relies entirely on the 15-minute sweep, which reaches
+the same end state on its own. `POST /api/v1/webhooks/quickbooks` verifies
+every delivery against `QBO_WEBHOOK_VERIFIER_TOKEN` (HMAC over the raw body);
+with the token unset the route answers `503` on every request rather than
+`200`, so Intuit keeps retrying instead of an unconfigured region silently
+swallowing notifications. Setting up the tunnel for item 17 below requires
+`QBO_WEBHOOK_VERIFIER_TOKEN` to be present in the target environment's
+`.env` **and** mapped in that environment's compose `environment:` block —
+per this repo's rule for new required env vars (CLAUDE.md, "Required env
+vars" — a value sitting only in `.env` is not sufficient; compose
+interpolation only happens for vars listed in the service's `environment:`
+block).
+
+17. **Register the webhook URL through a tunnel and confirm Intuit's verifier
+    handshake**, then receive a PARTIAL payment against a pushed invoice in
+    QBO and confirm Breeze flips the invoice to `partially_paid` within
+    seconds with a "QuickBooks" badge on the payment row.
+    Result: PASS. Handshake: with `QBO_WEBHOOK_VERIFIER_TOKEN` unset the
+    route answered `503` (local and through the tunnel); after setting it and
+    recreating the API, a bogus `intuit-signature` answered `401`. Pushed
+    INV-2026-0001 ($200, one mapped catalog item, mapped customer) then
+    created an $80 Payment in QBO via the API at 16:09:27Z. Intuit delivered
+    within ~1 s (`202`, `entityCounts: { Payment: 1 }`), the reconcile run
+    logged `trigger=webhook applied=1`, and the invoice read `partially_paid`
+    / `amount_paid 80.00` / `balance 120.00`. Invoice detail page: PAYMENTS
+    row "$80.00 · Other · 9/2/2026" with the "QUICKBOOKS / via QuickBooks"
+    badge. Audit: `accounting.payment.pulled` with remotePaymentId/
+    remoteInvoiceId. Mapping row `payment` = `<PaymentId>/<InvoiceId>`,
+    `synced`. `cdc_cursor` advanced to the QBO response time.
+
+18. **Record the remaining balance in QBO** and confirm Breeze flips to
+    `paid` with `paid_at` stamped.
+    Result: PASS. $120 Payment created in QBO at 16:10:12Z → webhook →
+    invoice `paid`, `amount_paid 200.00`, `balance 0.00`, `paid_at` stamped
+    `2026-09-02 16:10:13`. UI: Status "Paid", BALANCE DUE $0.00, both payment
+    rows badged "via QuickBooks".
+
+19. **Replay the same Intuit notification** (re-deliver from the Intuit
+    dashboard, or re-run "Sync now") and confirm NO duplicate payment row
+    appears and the run logs `replayed`.
+    Result: PASS. "Sync now" (`POST /accounting/quickbooks/reconcile` →
+    `{ enqueued: true }`) ran `trigger=manual applied=0 replayed=2`; still
+    exactly two `invoice_payments` rows and two `payment` mapping rows.
+    (Intuit's dashboard has no re-deliver button for Development webhooks;
+    the sweep/manual path exercises the same idempotency claim.)
+
+20. **Delete the payment in QBO** and confirm Breeze deletes only that
+    payment row, recomputes the invoice, and writes an
+    `accounting.payment.reversed` audit entry — while a manually recorded
+    payment on the same invoice survives untouched.
+    Result: PASS, in two halves. (a) Deleted Payment 151 ($120) in QBO →
+    `reversed=1`; only that row was removed, invoice back to
+    `partially_paid` / `amount_paid 80.00`, audit
+    `accounting.payment.reversed` `{ reason: "deleted_in_quickbooks",
+    amount: "120.00", remotePaymentId: "151" }`, its mapping row gone.
+    (b) Recorded a manual $50 check payment in Breeze, then deleted Payment
+    150 ($80) in QBO → `reversed=1`; the manual $50 row survived untouched
+    (`partially_paid`, `amount_paid 50.00`, zero `payment` mapping rows).
+    Observation (follow-up, not Phase D's bug): `invoices.paid_at` keeps its
+    original stamp after a reversal drops the status back to
+    `partially_paid` — the engine only ever sets `paidAt` on the transition
+    to `paid` and nothing clears it; Phase D is the first path that reduces
+    `amount_paid`.
+
+21. **Disable the webhook and let the 15-minute sweep run with a stale
+    cursor** — confirm the same end state is reached with no webhook at all
+    (this is the guaranteed path in every region; only the US deployment
+    receives Intuit notifications).
+    Result: PASS. Killed the tunnel (so Intuit's deliveries failed), created a
+    $30 Payment on the same invoice at 16:12:27Z, and waited: the BullMQ
+    repeatable fired at 16:15:05Z with `trigger=sweep applied=1
+    cursorBefore=16:11:42Z`, invoice `partially_paid` / `amount_paid 80.00`
+    (50 manual + 30). Same end state as the webhook path, with no webhook.
+
+22. **Record the observed CDC paging behaviour**: make more than 1000 payment
+    changes in one window if feasible, otherwise capture a normal response's
+    `QueryResponse` block verbatim (`startPosition`, `maxResults`,
+    `totalCount`) so decision 3's window-halving can be confirmed or replaced
+    with a real cursor.
+    Result: PASS (captured; >1000 changes not feasible in the sandbox). A
+    direct `GET /cdc?entities=Payment,Invoice&changedSince=…` at 16:12:25Z
+    returned two `QueryResponse` blocks: Payment
+    `{ startPosition: null, maxResults: 2, totalCount: 2 }` (2 entities,
+    both `status: "Deleted"` stubs) and Invoice
+    `{ startPosition: 1, maxResults: 1, totalCount: 1 }`. Note
+    `startPosition` is absent on one block and `1` on the other, and CDC has
+    no upper-bound parameter — this is why decision 3's window-halving was
+    replaced by `/query` paging with the `overflowed` dirty flag (the shipped
+    design), which this run did not trigger.
+
+23. **Toggle `pull_payments` off** and confirm the next sweep no-ops for that
+    connection (no QBO call at all), then toggle it back on and confirm the
+    backlog lands on the following run.
+    Result: PASS. `PATCH settings { pullPayments: false }`, created a $10
+    Payment in QBO, "Sync now" → the route still enqueued
+    (`{ enqueued: true }`) but the worker returned before any QuickBooks
+    call: no run line, `cdc_cursor` unchanged (16:15:35Z), `amount_paid`
+    unchanged. `{ pullPayments: true }` + "Sync now" → `applied=1`, the $10
+    landed (`amount_paid 90.00`). Observation: the skip is silent (no log
+    line at all); a debug-level line would help an operator distinguish
+    "disabled" from "never ran".
+
+24. **Void an invoice in QBO** and confirm the Breeze invoice mapping flips
+    to `error` / "Deleted in QuickBooks" in the sync card and is never
+    auto-resurrected.
+    Result: PASS. Voided Invoice 153 (INV-2026-0003) in QBO via the API;
+    "Sync now" → `invoicesMarkedDeleted=1`, mapping `error` /
+    "Deleted in QuickBooks". Invoice detail sync card: "Sync failed —
+    Deleted in QuickBooks". Two further runs re-reported
+    `invoicesMarkedDeleted=1` (the void is still inside the CDC window) and
+    the mapping stayed `error` — never auto-resurrected. The Breeze invoice
+    itself stays `sent` with its balance; the card still offers
+    "Push to QuickBooks" (see follow-ups).
+
+25. **Record a QBO payment against an invoice Breeze has voided** and confirm
+    the invoice mapping flips to `error` with the message "Payment received
+    in QuickBooks against a voided invoice", the void header's `amount_paid`
+    and `balance` are left untouched, and the run outcome is `invoice_void`
+    (not a retried failure).
+    Result: PASS, via the real race. With the tunnel down, created a $40
+    Payment against Invoice 152 (INV-2026-0002) in QBO, then voided
+    INV-2026-0002 in Breeze. Breeze's void → QBO void job was rejected
+    (`accounting-void-… failed: QuickBooks rejected the invoice sync
+    (HTTP 400)` — the invoice already had a payment applied), which is exactly
+    the divergence this item guards. "Sync now" → `invoiceVoid=1 failed=0`,
+    mapping `error` / "Payment pull: Payment received in QuickBooks against
+    a voided invoice", no `invoice_payments` row, void header untouched
+    (`amount_paid 0.00`, `balance 100.00`). Invoice detail sync card shows
+    "Sync failed — Payment pull: Payment received in QuickBooks against a
+    voided invoice".
+
+26. **Trigger "Sync now" while Redis/BullMQ is unavailable (or the queue add
+    otherwise fails)** and confirm the route still answers HTTP 200 with
+    `{ enqueued: false }` rather than a silent success, and that the web UI
+    shows the warning toast "Payment sync could not be queued. Try again
+    shortly." rather than the success toast — this is the quiet-failure-UI
+    guard and is Playwright-worthy as its own regression test independent of
+    a live sandbox.
+    Result: NOT REPRODUCIBLE via a Redis outage. With the stack's Redis
+    container stopped, the API's rate limiter fails closed and every request
+    answers `429 { "error": "Too many requests" }` before the reconcile route
+    runs; the web app then bounces the session to `/login`, so "Sync now" is
+    unreachable. The `200 { enqueued: false }` branch and its warning toast
+    are covered by `routes/accounting/reconcile.test.ts` ("200 { enqueued:
+    false } … and the audit records it") and
+    `QuickbooksIntegration.test.tsx` ("never reports { enqueued: false } as a
+    success"). The Playwright regression this item asks for should mock the
+    route's `200 { enqueued: false }` response rather than take Redis down.
+
+Follow-ups surfaced by this run (not fixed here):
+
+- `invoices.paid_at` is never cleared when a QuickBooks reversal drops the
+  status from `paid` back to `partially_paid` (item 20).
+- The `pull_payments = false` skip in the reconcile worker is silent
+  (item 23).
+- A voided (Breeze) or QBO-deleted invoice's sync card still offers
+  "Push to QuickBooks" (items 24/25); the button should probably hide or
+  explain itself on a terminal invoice.
+- The Intuit Development webhook endpoint was left pointing at the
+  now-dead quick-tunnel URL; Intuit will retry and eventually disable it.
+  Re-register before the next walk. The Production tab is untouched.
+
 ### How to fill this in on the next run
 
 1. Copy the "Evidence header" and "Checklist" blocks above into a new
@@ -347,7 +535,8 @@ committed to this repository.
    committing).
 4. Migrations referenced by this feature:
    `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
-   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C).
+   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C),
+   `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D).
 
 ---
 
@@ -488,6 +677,16 @@ no new production code was needed or added to prove this out.
 ---
 
 ## Change log
+
+### (this PR) — 2026-09-02, first live Phase D sandbox run
+
+Section 2's Phase D checklist executed against the live default US sandbox:
+items 17–25 PASS, item 26 not reproducible via a Redis outage (fenced
+upstream by the fail-closed rate limiter; branch covered by unit tests).
+Fixed inline: `accountingReconcileWorker.ts` logged `cursorAfter=null` on
+every run because the run line fired before the cursor CAS. Four follow-ups
+recorded under item 26.
+
 
 Newest first. Each entry records what changed in the branch since the
 previous automated-gate run, so a reader can tell whether the recorded

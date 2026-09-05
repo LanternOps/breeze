@@ -7,13 +7,6 @@ import {
 } from './pushUnavailableCopy';
 
 describe('pushUnavailableCopy', () => {
-  it('names Android for the not-built-yet reason (#3118)', () => {
-    const copy = pushUnavailableCopy('android_push_not_configured');
-    expect(copy.notificationsRow).toMatch(/Android/);
-    expect(copy.notificationsRow).toMatch(/aren't available/i);
-    expect(copy.pairedDevicesHint).toMatch(/Android/);
-  });
-
   it('names the simulator for not_physical_device', () => {
     const copy = pushUnavailableCopy('not_physical_device');
     expect(copy.notificationsRow).toMatch(/simulator/i);
@@ -29,7 +22,7 @@ describe('pushUnavailableCopy', () => {
   });
 
   it('never phrases the paired-devices hint as an error or a user mistake', () => {
-    for (const reason of ['android_push_not_configured', 'not_physical_device', null]) {
+    for (const reason of ['not_physical_device', null]) {
       const copy = pushUnavailableCopy(reason);
       expect(copy.pairedDevicesHint).not.toMatch(/error|failed|wrong/i);
     }
@@ -37,7 +30,7 @@ describe('pushUnavailableCopy', () => {
 });
 
 describe('notificationsRowCopy (#3143)', () => {
-  const REASONS = ['android_push_not_configured', 'not_physical_device', 'permission_denied', 'something_new', null];
+  const REASONS = ['not_physical_device', 'permission_denied', 'something_new', null];
   const STATUSES: PushRowStatus[] = ['idle', 'ok', 'failed', 'unsupported'];
 
   it("only 'ok' may claim pushes are being delivered", () => {
@@ -62,7 +55,7 @@ describe('notificationsRowCopy (#3143)', () => {
   });
 
   it("'unsupported' reuses the reason-specific #3118 copy verbatim", () => {
-    for (const reason of ['android_push_not_configured', 'not_physical_device', null]) {
+    for (const reason of ['not_physical_device', null]) {
       const copy = notificationsRowCopy('unsupported', reason);
       const base = pushUnavailableCopy(reason);
       expect(copy.description).toBe(base.notificationsRow);

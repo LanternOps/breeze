@@ -298,6 +298,26 @@
     "resolve": "Résoudre",
     "promote": "Promotion"
   },
+  "deviceBillingCard": {
+    "title": "Facturation",
+    "uncovered": "Aucune ligne de contrat active ne facture cet appareil.",
+    "viewContracts": "Voir les contrats",
+    "notBillable": {
+      "decommissioned": "Non facturé — cet appareil est mis hors service",
+      "ephemeral": "Non facturé — cet appareil est un appareil de session de support éphémère",
+      "not_billable": "Non facturé — cet appareil n'est pas facturable actuellement"
+    },
+    "error": {
+      "generic": "Impossible de charger la couverture de facturation.",
+      "groupEvaluation": "Un groupe d'appareils d'un contrat actif n'a pas pu être évalué ({{group}}). La couverture est inconnue."
+    },
+    "matchedBy": {
+      "org": "Toute l'organisation",
+      "site": "Ce site",
+      "role": "Rôle : {{role}}",
+      "group": "Groupe : {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Collecte des métriques de démarrage déclenchée. Les données apparaîtront après le prochain démarrage ou le prochain cycle de collecte.",
     "failedToTriggerCollection": "Impossible de déclencher la collecte",
@@ -509,6 +529,7 @@
     "s": "s",
     "decommissionCancelled": "Retrait annulé",
     "permanentDeleteCancelled": "Suppression permanente annulée",
+    "permanentlyDeletedWithWarning": "{{hostname}} a été supprimé, mais {{warning}}",
     "failedToQueueScript": "Impossible de mettre en file d’attente le script",
     "loadingDevice": "Dispositif de chargement...",
     "backToDevices": "Retour aux appareils",
@@ -568,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "État de sauvegarde, tâches, instantanés et vérification",
     "theOsReportsAPendingReboot": "Le système d’exploitation signale un redémarrage imminent (Windows registre / Linux marqueurs de redémarrage requis).",
     "rebootPending": "Redémarrage en attente",
+    "restartScheduled": "Redémarrage programmé",
+    "restartInProgress": "Redémarrage en cours",
+    "restartScheduledFor": "Redémarrage programmé pour {{time}}",
+    "restartInProgressAt": "Redémarrage démarré à {{time}}",
+    "restartDeadline": "Doit redémarrer avant {{time}}",
+    "restartPostponed": "Reporté {{used}} fois sur {{max}}",
+    "restartPostponedTooltip": "Nombre de fois où la personne utilisant cet appareil a reporté le redémarrage, sur le nombre autorisé par la stratégie.",
+    "restartCannotBePostponed": "Ne peut pas être reporté",
+    "restartSourcePatchJob": "Demandé par une installation de correctifs",
+    "restartSourceMaintenanceWindow": "Demandé par une fenêtre de maintenance",
+    "restartSourceManual": "Demandé par un technicien",
+    "restartSourceUnknown": "Redémarrage programmé",
     "agentV": "Agent c",
     "uptime": "Disponibilité",
     "lastSeen": "Dernière apparition",
@@ -631,6 +664,7 @@
     "retry": "Réessayer",
     "activities": "Activités",
     "total": "total)",
+    "totalAtLeast": "{{count}} ou plus",
     "searchActivities": "Rechercher des activités...",
     "all": "Tous",
     "success": "Succès",
@@ -650,7 +684,8 @@
     "details": "Détails",
     "showing": "Affichage",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossible de récupérer l’état du système de fichiers",
@@ -733,6 +768,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossible d’enregistrer le groupe de périphériques",
     "failedToDeleteGroup": "Impossible de supprimer le groupe",
+    "billedByContracts": "Ce groupe est facturé par {{count}} contrat(s) : {{names}}. Supprimez d’abord ces lignes de contrat.",
+    "billedByContractsCount": "Ce groupe est facturé par {{count}} contrat(s). Supprimez d’abord ces lignes de contrat.",
+    "quotedByQuotes": "Ce groupe est tarifé par {{count}} devis ouvert(s) : {{names}}. Supprimez d'abord ces lignes de devis.",
+    "quotedByQuotesCount": "Ce groupe est tarifé par {{count}} devis ouvert(s). Supprimez d'abord ces lignes de devis.",
     "failedToRunScriptOnGroups": "Impossible d’exécuter un script sur les groupes",
     "failedToApplyPolicyToGroups": "Impossible d’appliquer la politique aux groupes",
     "failedToMoveDevice": "Impossible de déplacer l’appareil",
@@ -1058,6 +1097,7 @@
     "of": "de",
     "devices": "Dispositifs",
     "advancedFilterActive": "Filtre actif avancé",
+    "advancedFilterFailed": "Échec du chargement du filtre — aucun appareil affiché",
     "filterByDeviceClass": "Filtrer par classe de dispositif",
     "filterByVpn": "Filtrer par VPN",
     "allVpn": "Tous VPN",
@@ -1226,6 +1266,8 @@
       "installOsPatches": "Installer les correctifs du système d’exploitation en attente ({{count}})",
       "installThirdPartyPatches": "Installer des correctifs tiers ({{count}})",
       "lastScan": "Dernier scan : {{label}}",
+      "managePatches": "Gérer les patches",
+      "managedByPolicy": "Géré par la politique :",
       "pendingApprovalCount": "({{count}} en attente d’approbation)",
       "polling": "Sondages...",
       "refreshPatchData": "Actualiser les données des correctifs",
@@ -1473,12 +1515,14 @@
       "completedAt": "Achevé à",
       "duration": "Durée",
       "exitCode": "Code de sortie",
+      "runAs": "Contexte d’exécution",
       "startedAt": "Démarré le"
     },
     "noOutput": "Aucune sortie",
     "output": "Production",
     "refreshing": "Rafraîchissant...",
     "running": "En cours…",
+    "runAgain": "Exécuter à nouveau",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Annulé",
@@ -1758,6 +1802,7 @@
     "title": "Dispositifs",
     "toasts": {
       "actionFailed": "Échec de {{action}} sur {{hostname}}",
+      "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
@@ -1789,8 +1834,9 @@
       "networkSkipped": "{{count}} Périphérique(s) réseau sauté(s) — cette action s’applique uniquement aux dispositifs agent.",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
-      "permanentDeleting": "Suppression permanente",
+      "permanentDeleting": "Suppression permanente de {{hostname}} en cours…",
       "permanentlyDeleted": "Supprimé définitivement",
+      "permanentlyDeletedWithWarning": "{{hostname}} a été supprimé, mais {{warning}}",
       "restored": "Restauré",
       "scriptQueueFailed": "File d’attente de scripts échouée",
       "scriptQueuedMany": "Script en file d’attente de nombreux",

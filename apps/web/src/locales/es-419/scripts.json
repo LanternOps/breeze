@@ -149,6 +149,7 @@
       "webhookSecret": "Secreto de webhook (opcional)",
       "mode": "Modo",
       "script": "Script",
+      "runAs": "Ejecutar como",
       "notificationChannel": "Canal de notificación",
       "severity": "Gravedad",
       "message": "Mensaje",
@@ -281,7 +282,8 @@
       "partial": "Parcial",
       "running": "En ejecución",
       "pending": "Pendiente",
-      "skipped": "Saltado"
+      "skipped": "Saltado",
+      "cancelled": "Cancelado"
     },
     "empty": "No hay historial de ejecución disponible.",
     "triggeredBy": {
@@ -618,8 +620,33 @@
       "stdout": "Salida estándar (salida estándar)",
       "stderr": "Error estándar (stderr)"
     },
+    "customFields": {
+      "title": "Escrituras de campos personalizados",
+      "applied": "Aplicados",
+      "rejected": "Rechazados",
+      "none": "Ninguno",
+      "reasons": {
+        "unknown_field": "No hay una definición de campo coincidente",
+        "not_script_writable": "El campo no admite escritura por script",
+        "not_applicable_to_device": "El campo no aplica a este tipo de dispositivo",
+        "device_not_found": "Dispositivo no encontrado",
+        "invalid_type": "El valor tiene el tipo incorrecto",
+        "out_of_range": "El valor está fuera de rango",
+        "not_a_choice": "El valor no es una de las opciones permitidas del campo",
+        "too_long": "El valor es demasiado largo",
+        "invalid_date": "El valor no es una fecha válida",
+        "marker_unparseable": "No se pudo analizar el marcador como JSON",
+        "too_many_lines": "Demasiadas líneas de marcador en esta ejecución",
+        "too_many_keys": "Demasiadas claves en el marcador",
+        "marker_too_large": "El marcador superó el límite de tamaño",
+        "forbidden_key": "La clave no está permitida",
+        "envelope_unparseable": "No se pudo analizar el resultado estructurado",
+        "envelope_unsupported_version": "El resultado estructurado usó una versión no compatible"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Copiar al portapapeles"
+      "copyToClipboard": "Copiar al portapapeles",
+      "runAgain": "Ejecutar de nuevo"
     },
     "title": "Detalles de ejecución",
     "statusDescription": {
@@ -627,20 +654,31 @@
       "completed": "Script completado con éxito",
       "failed": "La ejecución del script falló",
       "timeout": "Se agotó el tiempo de ejecución del script",
-      "pending": "El script está esperando ser ejecutado."
+      "pending": "El script está esperando ser ejecutado.",
+      "queued": "El script está en cola para enviarse al dispositivo",
+      "cancelling": "Detención solicitada; esperando confirmación del dispositivo.",
+      "cancelled": "El script se detuvo en el dispositivo"
     },
     "fields": {
       "startedAt": "Comenzó en",
       "duration": "Duración",
       "exitCode": "Código de salida",
-      "completedAt": "Completado en"
+      "completedAt": "Completado en",
+      "runAs": "Contexto de ejecución"
     },
     "status": {
       "running": "En ejecución...",
       "pending": "Pendiente",
       "completed": "Terminado",
       "failed": "Fallido",
-      "timeout": "Tiempo de espera"
+      "timeout": "Tiempo de espera",
+      "queued": "En cola",
+      "cancelling": "Deteniendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
+      "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
+      "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
     }
   },
   "executionHistory": {
@@ -661,7 +699,14 @@
       "running": "En ejecución...",
       "completed": "Terminado",
       "failed": "Fallido",
-      "timeout": "Tiempo de espera"
+      "timeout": "Tiempo de espera",
+      "queued": "En cola",
+      "cancelling": "Deteniendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
+      "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
+      "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -762,7 +807,8 @@
     "errors": {
       "fetch": "No se pudo recuperar el script",
       "generic": "Se produjo un error",
-      "save": "No se pudo guardar el script"
+      "save": "No se pudo guardar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "created": "Script creado",
@@ -772,6 +818,7 @@
     "actions": {
       "backToScripts": "Volver a scripts",
       "executionHistory": "Historial de ejecución",
+      "duplicate": "Duplicar",
       "create": "Crear script",
       "saveChanges": "Guardar cambios"
     },
@@ -1035,6 +1082,8 @@
       "variablePlaceholder": "p.ej. vendor_token",
       "fieldLabel": "Clave del campo personalizado",
       "fieldPlaceholder": "p.ej. asset_tag",
+      "fieldHelp": "Ingresa la Clave de Campo que se muestra en Configuración → Campos Personalizados (distingue mayúsculas de minúsculas). Lectura: una vez vinculado, el valor resuelto se entrega al script como cualquier parámetro normal, sin mostrar ninguna solicitud. Escritura: para guardar un nuevo valor, haz que el script llame a la API de campos personalizados del dispositivo con una solicitud PATCH y una clave de API.",
+      "fieldHelpAriaLabel": "Acerca de la vinculación de campo personalizado del dispositivo",
       "builtinLabel": "Propiedad",
       "chooseTitle": "Elegir una variable",
       "secretRejected": "\"{{key}}\" es secreta: se rechazará el guardado. Elige una variable que no sea secreta.",
@@ -1080,6 +1129,7 @@
     "actions": {
       "runTitle": "Ejecutar script",
       "editTitle": "Editar script",
+      "duplicateTitle": "Duplicar script",
       "deleteTitle": "Eliminar script"
     },
     "pagination": {
@@ -1200,7 +1250,8 @@
       "delete": "No se pudo eliminar el script",
       "deleteTryAgain": "No se pudo eliminar el script. Inténtelo de nuevo.",
       "alreadyInLibrary": "\"{{name}}\" ya está en su biblioteca",
-      "import": "No se pudo importar el script"
+      "import": "No se pudo importar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "deleting": "Eliminando \"{{name}}\"...",
@@ -1287,6 +1338,8 @@
     "offlineWarning": "El dispositivo seleccionado está desconectado — la ejecución esperará hasta que se reconecte.",
     "exitCode": "salida {{code}}",
     "viewHistory": "Ver historial",
+    "runAgain": "Ejecutar de nuevo",
+    "viewOnDevice": "Ver en el dispositivo",
     "status": {
       "pending": "En cola",
       "running": "En ejecución",
@@ -1294,7 +1347,8 @@
       "failed": "Fallida",
       "timeout": "Tiempo agotado",
       "queued": "En cola",
-      "cancelled": "Cancelada"
+      "cancelled": "Cancelada",
+      "cancelling": "Deteniendo…"
     },
     "errors": {
       "execute": "No se pudo iniciar la ejecución de prueba",

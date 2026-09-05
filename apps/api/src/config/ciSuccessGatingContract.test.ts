@@ -49,6 +49,12 @@ const UNGATED_JOBS = new Set([
   'ci-success', // the aggregate itself
   'main-red-alert', // runs after ci-success, alerts on a red main
   'rust-check-windows', // deliberately excluded, documented at its job definition: path-filtered and usually skipped
+  // Deliberately non-blocking WHILE IT EARNS TRUST, not a gap: it builds three dev images
+  // and boots a six-service stack (pg+redis+api+web+portal+caddy) to run the #3906 portal
+  // hydration guard, so an infra hiccup there must not red a PR yet. The promotion
+  // criterion — a week of green, then move it into ci-success needs: with an env var and a
+  // blocking assertion — is recorded at its job definition in ci.yml.
+  'portal-dev-e2e',
   'check-migrations', // KNOWN GAP, not policy - see comment below
   'lint-agent', // KNOWN GAP
   'test-agent-race', // KNOWN GAP

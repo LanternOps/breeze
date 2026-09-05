@@ -776,7 +776,19 @@
     "failedToRefreshSettings": "QuickBooks ayarları yenilenemedi.",
     "homeCurrency": "Ana para birimi",
     "multiCurrency": "Çoklu para birimi",
-    "multiCurrencyUnknown": "Bilinmiyor — kontrol için ayarları yenileyin"
+    "multiCurrencyUnknown": "Bilinmiyor — kontrol için ayarları yenileyin",
+    "pullPayments": "Ödeme eşitleme",
+    "pullPaymentsDescription": "QuickBooks'ta kaydedilen ödemeleri Breeze faturalarına geri çekin.",
+    "pullPaymentsEnabled": "Ödemeler QuickBooks'tan eşitlenecek",
+    "pullPaymentsDisabled": "Ödemeler artık QuickBooks'tan eşitlenmeyecek",
+    "failedToUpdatePullPayments": "Ödeme eşitleme ayarı güncellenemedi.",
+    "lastPaymentSync": "Son ödeme eşitlemesi",
+    "never": "Hiçbir zaman",
+    "syncNow": "Şimdi eşitle",
+    "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
+    "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
+    "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı. Şimdi eşitlemek için ödeme eşitlemesini açın.",
+    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
   },
   "securityIntegration": {
     "notConfigured": "Yapılandırılmadı ",

@@ -7,6 +7,7 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -178,6 +179,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     auth: AuthContext;
     permissions: UserPermissions;
+    trustState: PartnerTrustState;
   }
 }
 

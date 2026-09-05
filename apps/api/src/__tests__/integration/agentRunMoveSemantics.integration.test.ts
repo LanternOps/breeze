@@ -36,6 +36,7 @@ import {
   alerts,
   devices,
   metricAnomalyIncidents,
+  ticketComments,
   tickets,
 } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
@@ -421,79 +422,211 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     expect(movedRun.deviceId).toBeNull();
   });
 
-  it('#4215: the REAL move route detaches ticket_id on device-less ticket runs, and only those', async () => {
-    // The fifth device-lineage FK. Unlike the four above it is unreachable
-    // from `WHERE device_id = <moved>`: a triage run on a ticket carries
-    // ticket_id with a NULL device_id (trigger_kind 'ticket'), so the
-    // device-keyed detach never sees it while `tickets` IS in
-    // getDeviceOrgDenormalizedTables() — the ticket follows the device to the
-    // target org and the retained source-org run is left naming a foreign
-    // ticket. Both the route and breeze_cascade_device_org_id() now run a
-    // second, ticket-keyed statement; this drives the route end to end.
-    //
-    // The second run/ticket pair is the discriminator: a ticket NOT bound to
-    // the moved device stays in the source org, so its run must keep its
-    // ticket_id. Without it a detach that simply nulled every ticket_id would
-    // pass this test.
+  /**
+   * #4215 fixture. `ticket_id` is the fifth device-lineage FK and the only one
+   * unreachable from `WHERE device_id = <moved>`: a triage run on a ticket
+   * carries ticket_id with a NULL device_id (trigger_kind 'ticket'), so the
+   * device-keyed detach never sees it — while `tickets` IS in
+   * getDeviceOrgDenormalizedTables(), so the ticket follows the device to the
+   * target org and the retained source-org run is left naming a foreign ticket.
+   *
+   * Three run/ticket pairs, so the assertions below discriminate rather than
+   * just confirm:
+   *  - `movingTicketRun` — device-less run on the moved device's ticket. MUST
+   *    detach. The case the bug missed entirely.
+   *  - `deviceAndTicketRun` — run with BOTH device_id = moved AND that same
+   *    ticket. MUST detach both. The device-keyed statement does not carry
+   *    ticket_id, so only the new statement can sever this half.
+   *  - `orphanTicketRun` — device-LESS ticket that stays in the source org.
+   *    MUST keep ticket_id. Rejects a blanket "null every ticket_id".
+   *  - `otherDeviceTicketRun` — ticket bound to a DIFFERENT, non-moving device
+   *    in the source org. MUST keep ticket_id. Rejects the subtler
+   *    `WHERE device_id IS NOT NULL`, which the orphan case alone would pass.
+   */
+  async function seedTicketRunLineage(env: {
+    partner: { id: string };
+    orgA: { id: string };
+    siteA: { id: string };
+    user: { id: string };
+    device: { id: string };
+  }) {
     const adminDb = getTestDb() as any;
+    const [agent] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgents)
+        .values({
+          orgId: env.orgA.id,
+          partnerId: null,
+          kind: 'triage',
+          name: 'Triage',
+          createdBy: env.user.id,
+        })
+        .returning(),
+    );
+    const otherDevice = await insertDevice(env.orgA.id, env.siteA.id);
+
+    const unique = randomUUID().slice(0, 8);
+    const newTicket = async (label: string, deviceId: string | null) => {
+      const [row] = await adminDb
+        .insert(tickets)
+        .values({
+          orgId: env.orgA.id,
+          partnerId: env.partner.id,
+          deviceId,
+          ticketNumber: `RUNMOVE-${label}-${unique}`,
+          subject: `ticket fixture ${label}`,
+          source: 'manual',
+        })
+        .returning();
+      return row as typeof tickets.$inferSelect;
+    };
+    const ticketOnDevice = await newTicket('DEV', env.device.id);
+    const ticketOrphan = await newTicket('ORPHAN', null);
+    const ticketOtherDevice = await newTicket('OTHERDEV', otherDevice.id);
+
+    const [movingTicketRun, deviceAndTicketRun, orphanTicketRun, otherDeviceTicketRun] =
+      await withSystemDbAccessContext(() =>
+        db
+          .insert(aiAgentRuns)
+          .values([
+            {
+              ...runValues(agent!.id, env.orgA.id, `run-move-ticket-${randomUUID()}`),
+              triggerKind: 'ticket',
+              deviceId: null,
+              ticketId: ticketOnDevice.id,
+            },
+            {
+              ...runValues(agent!.id, env.orgA.id, `run-move-dev-ticket-${randomUUID()}`),
+              triggerKind: 'ticket',
+              deviceId: env.device.id,
+              ticketId: ticketOnDevice.id,
+            },
+            {
+              ...runValues(agent!.id, env.orgA.id, `run-stay-orphan-${randomUUID()}`),
+              triggerKind: 'ticket',
+              deviceId: null,
+              ticketId: ticketOrphan.id,
+            },
+            {
+              ...runValues(agent!.id, env.orgA.id, `run-stay-otherdev-${randomUUID()}`),
+              triggerKind: 'ticket',
+              deviceId: null,
+              ticketId: ticketOtherDevice.id,
+            },
+          ])
+          .returning(),
+      );
+    // Guard the fixture itself: a device-LESS ticket run is the whole point,
+    // and the discriminators must not accidentally name the moving device.
+    expect(movingTicketRun!.deviceId).toBeNull();
+    expect(deviceAndTicketRun!.deviceId).toBe(env.device.id);
+    expect(ticketOtherDevice.deviceId).not.toBe(env.device.id);
+
+    // #4644 — reverse pointer: ticket_comments.agent_run_id. ticket_comments has
+    // no org_id (child-via-parent tenancy through tickets), so a comment on
+    // ticketOnDevice travels to the target org along with its ticket while the
+    // run it names stays in the source org (same class as the
+    // metric_anomaly_incidents reverse pointer above). One comment per run,
+    // matching the run fixture's own discriminators: two on the ticket that
+    // moves (must both null), two on tickets that stay (must both survive).
+    const newComment = async (ticketId: string, runId: string) => {
+      const [row] = await adminDb
+        .insert(ticketComments)
+        .values({
+          ticketId,
+          authorType: 'internal',
+          commentType: 'comment',
+          content: `AI note fixture for run ${runId}`,
+          isPublic: false,
+          originPrincipalKind: 'ai_agent',
+          agentRunId: runId,
+        })
+        .returning();
+      return row as typeof ticketComments.$inferSelect;
+    };
+    const movingComment = await newComment(ticketOnDevice.id, movingTicketRun!.id);
+    const deviceAndTicketComment = await newComment(ticketOnDevice.id, deviceAndTicketRun!.id);
+    const orphanComment = await newComment(ticketOrphan.id, orphanTicketRun!.id);
+    const otherDeviceComment = await newComment(ticketOtherDevice.id, otherDeviceTicketRun!.id);
+
+    return {
+      ticketOnDevice,
+      ticketOrphan,
+      ticketOtherDevice,
+      movingTicketRun: movingTicketRun!,
+      deviceAndTicketRun: deviceAndTicketRun!,
+      orphanTicketRun: orphanTicketRun!,
+      otherDeviceTicketRun: otherDeviceTicketRun!,
+      movingComment,
+      deviceAndTicketComment,
+      orphanComment,
+      otherDeviceComment,
+    };
+  }
+
+  /** Post-move expectations shared by the route path and the direct-SQL path. */
+  async function expectTicketLineageSevered(
+    seeded: Awaited<ReturnType<typeof seedTicketRunLineage>>,
+    orgA: { id: string },
+    orgB: { id: string },
+  ) {
+    const adminDb = getTestDb() as any;
+    const ticketOrg = async (id: string) => {
+      const [row] = await adminDb.select().from(tickets).where(eq(tickets.id, id));
+      return row.orgId as string;
+    };
+    const run = async (id: string) => {
+      const [row] = await adminDb.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, id));
+      return row as typeof aiAgentRuns.$inferSelect;
+    };
+
+    // Only the moved device's ticket changed org.
+    expect(await ticketOrg(seeded.ticketOnDevice.id)).toBe(orgB.id);
+    expect(await ticketOrg(seeded.ticketOrphan.id)).toBe(orgA.id);
+    expect(await ticketOrg(seeded.ticketOtherDevice.id)).toBe(orgA.id);
+
+    // Runs stay in the source org; pointers at the departed ticket are severed.
+    const moved = await run(seeded.movingTicketRun.id);
+    expect(moved.orgId).toBe(orgA.id);
+    expect(moved.ticketId).toBeNull();
+
+    const both = await run(seeded.deviceAndTicketRun.id);
+    expect(both.orgId).toBe(orgA.id);
+    expect(both.ticketId).toBeNull();
+    expect(both.deviceId).toBeNull();
+
+    // Runs whose ticket never left keep it.
+    const orphan = await run(seeded.orphanTicketRun.id);
+    expect(orphan.orgId).toBe(orgA.id);
+    expect(orphan.ticketId).toBe(seeded.ticketOrphan.id);
+
+    const otherDevice = await run(seeded.otherDeviceTicketRun.id);
+    expect(otherDevice.orgId).toBe(orgA.id);
+    expect(otherDevice.ticketId).toBe(seeded.ticketOtherDevice.id);
+
+    // #4644 — reverse pointer: comments on the ticket that followed the device
+    // must have their agent_run_id severed; comments on tickets that stayed
+    // behind must keep theirs.
+    const comment = async (id: string) => {
+      const [row] = await adminDb.select().from(ticketComments).where(eq(ticketComments.id, id));
+      return row as typeof ticketComments.$inferSelect;
+    };
+    expect((await comment(seeded.movingComment.id)).agentRunId).toBeNull();
+    expect((await comment(seeded.deviceAndTicketComment.id)).agentRunId).toBeNull();
+    expect((await comment(seeded.orphanComment.id)).agentRunId).toBe(seeded.orphanTicketRun.id);
+    expect((await comment(seeded.otherDeviceComment.id)).agentRunId).toBe(
+      seeded.otherDeviceTicketRun.id,
+    );
+  }
+
+  it('#4215: the REAL move route detaches ticket_id on device-less ticket runs, and only those', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const { partner, organization: orgA, site: siteA, user, role } = env;
     const orgB = await createOrganization({ partnerId: partner.id });
     const siteB = await createSite({ orgId: orgB.id });
 
     const device = await insertDevice(orgA.id, siteA.id);
-    const [agent] = await withSystemDbAccessContext(() =>
-      db
-        .insert(aiAgents)
-        .values({ orgId: orgA.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
-        .returning(),
-    );
-
-    const unique = randomUUID().slice(0, 8);
-    const [ticketOnDevice] = await adminDb
-      .insert(tickets)
-      .values({
-        orgId: orgA.id,
-        partnerId: partner.id,
-        deviceId: device.id,
-        ticketNumber: `RUNMOVE-DEV-${unique}`,
-        subject: 'ticket bound to the moving device',
-        source: 'manual',
-      })
-      .returning();
-    const [ticketElsewhere] = await adminDb
-      .insert(tickets)
-      .values({
-        orgId: orgA.id,
-        partnerId: partner.id,
-        deviceId: null,
-        ticketNumber: `RUNMOVE-OTHER-${unique}`,
-        subject: 'ticket that stays in the source org',
-        source: 'manual',
-      })
-      .returning();
-
-    const [movingTicketRun, stayingTicketRun] = await withSystemDbAccessContext(() =>
-      db
-        .insert(aiAgentRuns)
-        .values([
-          {
-            ...runValues(agent!.id, orgA.id, `run-move-ticket-${randomUUID()}`),
-            triggerKind: 'ticket',
-            deviceId: null,
-            ticketId: ticketOnDevice.id,
-          },
-          {
-            ...runValues(agent!.id, orgA.id, `run-stay-ticket-${randomUUID()}`),
-            triggerKind: 'ticket',
-            deviceId: null,
-            ticketId: ticketElsewhere.id,
-          },
-        ])
-        .returning(),
-    );
-    // Guard the fixture itself: a device-less ticket run is the whole point.
-    expect(movingTicketRun!.deviceId).toBeNull();
+    const seeded = await seedTicketRunLineage({ partner, orgA, siteA, user, device });
 
     const token = await createAccessToken({
       sub: user.id,
@@ -517,32 +650,36 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     });
     expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
 
-    // The device's ticket followed it; the unrelated one did not.
-    const [movedTicket] = await adminDb
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, ticketOnDevice.id));
-    expect(movedTicket.orgId).toBe(orgB.id);
-    const [stayedTicket] = await adminDb
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, ticketElsewhere.id));
-    expect(stayedTicket.orgId).toBe(orgA.id);
+    await expectTicketLineageSevered(seeded, orgA, orgB);
+  });
 
-    // The run stayed home with ticket_id severed — no cross-tenant pointer.
-    const [detached] = await adminDb
-      .select()
-      .from(aiAgentRuns)
-      .where(eq(aiAgentRuns.id, movingTicketRun!.id));
-    expect(detached.orgId).toBe(orgA.id);
-    expect(detached.ticketId).toBeNull();
+  it('#4215: a direct devices.org_id flip (no route) severs ticket_id via breeze_cascade_device_org_id()', async () => {
+    // Attribution. The route case above cannot tell the two detach sites
+    // apart: breeze_cascade_device_org_id() is an AFTER ROW trigger on the
+    // devices UPDATE, so it fires first and the route's own statements then
+    // match nothing. This case removes the route entirely — a bare
+    // `UPDATE devices SET org_id/site_id` on the admin connection, which is
+    // what orgMerge's device re-home and any direct-SQL caller look like
+    // (orgMergeRegistry marks ai_agent_runs leave-for-erasure, so the merge
+    // engine never repoints it and the trigger is the ONLY thing severing
+    // ticket_id there). Without the new migration this fails.
+    const adminDb = getTestDb() as any;
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
 
-    // ...and the run whose ticket never left is untouched.
-    const [untouched] = await adminDb
-      .select()
-      .from(aiAgentRuns)
-      .where(eq(aiAgentRuns.id, stayingTicketRun!.id));
-    expect(untouched.orgId).toBe(orgA.id);
-    expect(untouched.ticketId).toBe(ticketElsewhere.id);
+    const device = await insertDevice(orgA.id, siteA.id);
+    const seeded = await seedTicketRunLineage({ partner, orgA, siteA, user, device });
+
+    await adminDb
+      .update(devices)
+      .set({ orgId: orgB.id, siteId: siteB.id })
+      .where(eq(devices.id, device.id));
+
+    const [moved] = await adminDb.select().from(devices).where(eq(devices.id, device.id));
+    expect(moved.orgId, 'fixture: the devices org flip must have landed').toBe(orgB.id);
+
+    await expectTicketLineageSevered(seeded, orgA, orgB);
   });
 });

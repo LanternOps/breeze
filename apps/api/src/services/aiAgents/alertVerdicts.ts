@@ -475,6 +475,10 @@ export function projectAlertAiVerdictSummary(row: AiAlertVerdictRow): AlertAiVer
     rationale: row.rationale,
     patternKind: row.pattern?.kind ?? null,
     feedback: row.feedback,
+    // Raw user id only — no join to `users` available here (#4445). Callers
+    // that want a display name (`feedbackByName`) resolve it themselves via
+    // `withAlertActorNames`, same as `acknowledgedByName`/`resolvedByName`.
+    feedbackBy: row.feedbackBy,
     suggestedIntentId: row.suggestedIntentId,
     createdAt: row.createdAt.toISOString(),
   };

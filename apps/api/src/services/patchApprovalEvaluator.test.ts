@@ -818,6 +818,118 @@ describe('category rules — repaired semantics (#spec 2026-08-04)', () => {
   });
 });
 
+describe('category rule autoApproveUnrated (#3758)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('auto-approves a null-severity patch matching a category rule with autoApproveUnrated: true', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], autoApproveUnrated: true },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('holds a null-severity patch matching a category rule without autoApproveUnrated', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'] },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('auto-approves a severity:"unknown" patch matching a category rule with autoApproveUnrated: true (same as null)', async () => {
+    // Before this wave, the category-rule guard used `!patch.severity || ...`,
+    // so a truthy 'unknown' value skipped the null-check branch entirely and
+    // fell straight into the allowlist check — a different, more fragile code
+    // path than the ring-level guard's null handling. Pin both variants here.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'unknown' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], autoApproveUnrated: true },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('holds a severity:"unknown" patch matching a category rule without autoApproveUnrated', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'unknown' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        { category: 'security', autoApprove: true, autoApproveSeverities: ['critical'] },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does NOT hold an unrated patch by deferral when autoApproveUnrated is true but a recent releaseDate still falls inside the deferral window', async () => {
+    // autoApproveUnrated only clears the severity gate — deferral is a
+    // separate, still-active gate downstream. A patch released "today" under
+    // a 5-day deferral window must still be held even though it now passes
+    // the unrated-severity check.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: null, releaseDate: new Date().toISOString() })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [
+        {
+          category: 'security',
+          autoApprove: true,
+          autoApproveSeverities: ['critical'],
+          autoApproveUnrated: true,
+          deferralDaysOverride: 5,
+        },
+      ],
+      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+});
+
 // ---- Ring-level auto-approve (#1317): enabled + severities + deferral ----
 describe('ring-level auto-approve', () => {
   beforeEach(() => {
@@ -966,6 +1078,80 @@ describe('ring-level auto-approve', () => {
     // Only the critical patch auto-approves; the null-severity one is held.
     expect(result.map((r) => r.patchId)).toEqual([P2]);
     expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('auto-approves a null-severity patch when autoApproveUnrated is true', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: null })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('auto-approves a severity:"unknown" patch when autoApproveUnrated is true (same as null)', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'unknown' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('still holds a null-severity patch when autoApproveUnrated is false (default)', async () => {
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: null })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('autoApproveUnrated is additive, not standalone: an empty OS severity set still approves nothing even with autoApproveUnrated: true', async () => {
+    // The empty-severities fail-closed check runs before the unrated-severity
+    // check (ringAutoApprove.severities.length === 0 short-circuits first),
+    // so autoApproveUnrated cannot substitute for at least one selected
+    // severity or thirdPartyApps — it only widens an already-configured gate.
+    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: null })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does NOT approve an unrated OS patch by deferral when autoApproveUnrated is true but a recent releaseDate still falls inside the ring deferral window', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: null, releaseDate: new Date().toISOString() })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 5, autoApproveUnrated: true },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('disabled ring auto-approve approves nothing without a manual approval', async () => {
@@ -1829,7 +2015,7 @@ describe('ring auto-approve — third-party dual consent (#spec 2026-08-04)', ()
 describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-04)', () => {
   it('derives thirdPartyApps=true for a legacy enabled row with recognized severities', () => {
     const cfg = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 3 });
-    expect(cfg).toEqual({ enabled: true, severities: ['critical'], deferralDays: 3, thirdPartyApps: true, thirdPartyDeferralDays: null });
+    expect(cfg).toEqual({ enabled: true, severities: ['critical'], deferralDays: 3, thirdPartyApps: true, thirdPartyDeferralDays: null, autoApproveUnrated: false });
   });
 
   it('derives thirdPartyApps=false for legacy enabled rows with no recognized severities', () => {

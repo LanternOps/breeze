@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -59,6 +60,7 @@ import {
   LayoutGrid,
   Cpu,
   TrendingUp,
+  Power,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -306,6 +308,7 @@ export const navSections: NavSection[] = [
     icon: Building,
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
@@ -332,6 +335,12 @@ export const navSections: NavSection[] = [
       { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
       { name: 'LLM Provider Catalog', labelKey: 'nav.llmProviderCatalog', href: '/admin/llm-provider-catalog', icon: Cpu, platformAdminOnly: true },
       { name: 'Connected Apps', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      // #4208 — the platform-wide AI emergency stop's first UI. The
+      // write surface (routes/admin/aiKillState.ts) shipped in #3828/PR #4168
+      // with no console because production had zero platform admins; this
+      // adds the console path once one exists. The SQL fallback documented in
+      // docs/deploy/ai-kill-switch.md still works and remains the runbook.
+      { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
     ],
   },
 ];

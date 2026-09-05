@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/__tests__/integration/**/*.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
       // convention). It uses the shared integration setup via setupFiles plus an
@@ -114,6 +115,11 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB proof for the backup queue lifecycle guards
+      // (#4923): queued admission vs. the worker's dispatch-time running
+      // marker, starting-promotes-once, late queued pings, terminal rejection.
+      // The mocked unit suite only substring-matches the generated CASE SQL.
+      'src/services/backupProgress.integration.test.ts',
       // Co-located real-DB integration test for the intent stale-execution
       // reaper: proves the COALESCE(execution_started_at, decided_at) < now()
       // - interval predicate the mocked unit suite can't verify against a
@@ -172,13 +178,6 @@ export default defineConfig({
       // mocked unit suite (which mocks `../services/m365ToolsHeadless`
       // wholesale) can't exercise this.
       'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
-      // Co-located real-DB integration test for the two-replica runtime
-      // extension reconcile + failure policy (Task 8, issue #2619). Forks two
-      // genuinely separate child processes against the real reconciler/
-      // migrator/state-store; needs the real, already-migrated :5433 database
-      // this config's globalSetup provides. Belongs here, not the unit
-      // runner (no DB, no child-process fork target).
-      'src/extensions/twoReplicaReconcile.integration.test.ts',
       // Co-located real-Redis integration test for the #2707 approver-device
       // register grant chain (mint -> validate -> consume -> replay rejected,
       // cross-operation isolation, TTL): imports `__tests__/integration/setup`
@@ -312,6 +311,13 @@ export default defineConfig({
       // the RLS scaffolding work. Tracked as a follow-up issue; the
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
+      // integration-suite-coverage.integration.test.ts (#4522) is pure
+      // static analysis — it reads this very file's include/exclude
+      // arrays and walks `src/**/*.integration.test.ts` from disk. It
+      // MUST NOT be hooked to setup.ts (real postgres pool + TRUNCATE);
+      // see vitest.config.integration-suite-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file

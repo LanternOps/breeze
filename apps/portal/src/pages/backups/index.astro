@@ -1,0 +1,60 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { BackupOverview } from '../../components/portal/BackupOverview';
+import { BackupDeviceTable } from '../../components/portal/BackupDeviceTable';
+import { ErrorNotice } from '../../components/portal/ui';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+
+const config = buildServerApiConfig(Astro.request);
+// The dashboard rides along only for `timezone`: neither backups DTO carries
+// the org's zone (packages/shared/src/types/portalVisibility.ts — unlike
+// SecurityDevicesDto and PortalRunsDto, which do), and a server-rendered stamp
+// without it prints the droplet's clock under the customer's date. It is
+// fetched in parallel and its failure is not the page's failure. Adding
+// `timezone` to the two backups DTOs would retire this call.
+const [overview, devices, dashboard] = await Promise.all([
+  portalApi.getBackupOverview(config),
+  portalApi.getBackupDevices({ page: 1, limit: 100 }, config),
+  portalApi.getDashboard(config),
+]);
+
+if (overview.statusCode === 401 || devices.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+const timezone = dashboard.data?.timezone ?? 'UTC';
+
+// The overview's `no_data` keys on a passed verification, not on backups. The
+// device ledger is what actually knows whether anything has been backed up, so
+// the page tells the summary rather than letting it contradict the rows below.
+const backupDevices = devices.data?.data ?? [];
+const hasBackupActivity = backupDevices.some(
+  (device) => device.configured && device.lastRestorePointAt !== null
+);
+---
+
+<PortalLayout title="Backups">
+  {
+    overview.data ? (
+      <BackupOverview
+        overview={overview.data}
+        timezone={timezone}
+        hasBackupActivity={hasBackupActivity}
+      />
+    ) : (
+      <div data-testid="portal-backup-error">
+        {/* The transport error is ours to read, not the customer's: they can
+            act on "ask your IT team", never on a connection string. */}
+        <ErrorNotice>We couldn't load your backups just now. Your IT team can help.</ErrorNotice>
+      </div>
+    )
+  }
+  <BackupDeviceTable
+    devices={backupDevices}
+    total={devices.data?.pagination.total}
+    timezone={timezone}
+    error={devices.error}
+  />
+</PortalLayout>

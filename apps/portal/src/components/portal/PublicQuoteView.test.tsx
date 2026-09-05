@@ -57,7 +57,18 @@ const DETAIL: PublicQuoteDetail = {
     termsAndConditions: 'Customer-facing terms and conditions.',
   },
   blocks: [],
-  lines: [],
+  lines: [
+    {
+      id: 'monthly-line', blockId: null, name: 'Monthly service', description: '',
+      quantity: '1.00', unitPrice: '75.00', lineTotal: '75.00', recurrence: 'monthly',
+      customerVisible: true, sortOrder: 0,
+    },
+    {
+      id: 'annual-line', blockId: null, name: 'Annual service', description: '',
+      quantity: '1.00', unitPrice: '25.00', lineTotal: '25.00', recurrence: 'annual',
+      customerVisible: true, sortOrder: 1,
+    },
+  ],
   branding: {
     partnerName: 'Lantern IT',
     logoUrl: null,
