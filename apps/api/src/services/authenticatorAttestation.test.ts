@@ -37,10 +37,17 @@ vi.mock('./sentry', () => ({ ...sentryMocks }));
 // It cannot be exercised for real through this seam — the dispatcher always
 // pins the live Apple root, by design.
 const { appAttestMock } = vi.hoisted(() => ({ appAttestMock: { verifyAppAttestAttestation: vi.fn() } }));
-vi.mock('./attestation/appleAppAttest', () => ({ ...appAttestMock }));
+// Only the FUNCTION is replaced. `AppAttestVerificationError` stays real, because
+// the dispatcher branches on `instanceof` it — a stubbed stand-in class would
+// make the "rejection vs. defect" test pass against a fake taxonomy.
+vi.mock('./attestation/appleAppAttest', async (importActual) => ({
+  ...(await importActual<typeof import('./attestation/appleAppAttest')>()),
+  ...appAttestMock,
+}));
 
 
 import { getRedis } from './redis';
+import { AppAttestVerificationError } from './attestation/appleAppAttest';
 import {
   ATTEMPT_TTL_SECONDS,
   consumeRegistrationAttempt,
@@ -264,9 +271,9 @@ describe('verifyPlatformAttestation', () => {
     expect(JSON.stringify(result.evidence)).not.toContain(passingVerifier.receiptB64);
   });
 
-  it('downgrades to unattested when the verifier throws — never a 5xx', async () => {
+  it('downgrades to unattested when the verifier REJECTS — never a 5xx, never a page', async () => {
     appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
-      throw new Error('App Attest attestation rejected: fmt is not apple-appattest');
+      throw new AppAttestVerificationError('fmt is not apple-appattest');
     });
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
@@ -280,7 +287,60 @@ describe('verifyPlatformAttestation', () => {
       keyId: null,
       evidence: {},
       appIntegrityVerifiedAt: null,
+      // The reason travels with the result so the route can put it in the
+      // audit row. A misconfigured appId/environment rejects 100% of genuine
+      // enrolments and looks identical, per request, to one forged blob — a
+      // console line cannot be aggregated after the fact, an audit field can.
+      failureReason: 'fmt is not apple-appattest',
     });
+    // A rejection is the verifier working. Paging on it would make every
+    // dev-build probe a Sentry event and train everyone to ignore the channel.
+    expect(sentryMocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('REPORTS a non-rejection throw — a broken verifier is a defect, not attacker noise', async () => {
+    // A TypeError out of tiny-cbor or @peculiar/x509 after a dependency bump
+    // downgrades every legitimate iOS device in the fleet. No client can
+    // provoke this shape, so it must not share a channel with the ones that can.
+    appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
+      throw new TypeError('cbor.decode is not a function');
+    });
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.basis).toBe('unattested');
+    expect(result.failureReason).toBe('verifier error: TypeError');
+    expect(sentryMocks.captureException).toHaveBeenCalledWith(
+      expect.any(TypeError),
+      undefined,
+      expect.objectContaining({ reason: 'app_attest_verifier_error' }),
+    );
+  });
+
+  it('carries NO failureReason for a platform with no verifier wired', async () => {
+    const result = await verifyPlatformAttestation({
+      attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    // "Not implemented" and "ran and refused" must stay distinguishable, or the
+    // audit signal above cannot be read as evidence of anything.
+    expect(result.failureReason).toBeUndefined();
+  });
+
+  it('carries NO failureReason on the success path', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.failureReason).toBeUndefined();
   });
 
   it('resolves unattested for Android — no verifier is wired until W04', async () => {
@@ -297,7 +357,7 @@ describe('verifyPlatformAttestation', () => {
 
   it('returns a fresh evidence object each call — a caller cannot poison the next registration', async () => {
     appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
-      throw new Error('rejected');
+      throw new AppAttestVerificationError('rejected');
     });
     const first = await verifyPlatformAttestation({
       attestation: iosAttestation,

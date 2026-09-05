@@ -698,6 +698,11 @@ authenticatorRoutes.post(
         ...(attested.verifiedAt && !attestationHolds
           ? { attestationDowngraded: attested.basis }
           : {}),
+        // Why a presented attestation was refused. Queryable, unlike the
+        // server log line — this is what makes a fleet-wide misconfiguration
+        // (stale appId, wrong App Attest environment) visible as a spike in one
+        // reason rather than as an unexplained absence of L4-capable devices.
+        ...(attested.failureReason ? { attestationFailureReason: attested.failureReason } : {}),
         mobileDeviceId,
         ...(mobileDeviceHeader && !mobileDeviceId
           ? { mobileDeviceHeaderUnresolved: mobileDeviceHeader }

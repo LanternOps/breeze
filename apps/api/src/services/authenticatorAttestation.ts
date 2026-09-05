@@ -5,7 +5,10 @@ import { APPLE_APP_ATTEST_APP_ID, appleAppAttestEnvironment } from '../config/en
 import { getRedis } from './redis';
 import { captureException } from './sentry';
 import type { MobileKeyAlg } from './mobileHwKey';
-import { verifyAppAttestAttestation } from './attestation/appleAppAttest';
+import {
+  AppAttestVerificationError,
+  verifyAppAttestAttestation,
+} from './attestation/appleAppAttest';
 
 /**
  * Attested mobile approver-key registration (#1374, feature #4707 wave W02).
@@ -153,6 +156,25 @@ export interface AttestationResult {
   /** NORMALIZED, SERVER-VERIFIED claims only — never a raw client blob. */
   evidence: Record<string, unknown>;
   appIntegrityVerifiedAt: Date | null;
+  /**
+   * Why a presented attestation did NOT verify. Set only alongside
+   * `basis: 'unattested'`, and only when a verifier actually ran and rejected —
+   * never for a platform with no verifier wired.
+   *
+   * This exists because the failure that matters most is not the forged blob,
+   * it is the MISCONFIGURATION: a stale APPLE_APP_ATTEST_APP_ID or a wrong
+   * APPLE_APP_ATTEST_ENVIRONMENT rejects 100% of genuine enrolments, fleet-wide
+   * and indefinitely, and every one of those rejections looks — request by
+   * request — exactly like a single attacker being turned away. A console line
+   * cannot be aggregated after the fact; an audit-log field can, which turns
+   * "why did nobody reach L4 last month" into one query instead of a stdout
+   * grep against whatever retention happens to survive.
+   *
+   * The verifier's own reason strings are safe to persist: they describe the
+   * SERVER's checks ("rpIdHash does not match the configured appId"), never
+   * client-supplied bytes.
+   */
+  failureReason?: string;
 }
 
 /** The single unattested outcome, built fresh each call so a caller mutating the
@@ -192,9 +214,18 @@ export async function verifyPlatformAttestation(input: {
  * the shapes that land here are client-provokable (a development build against
  * a production-configured server, a stale attempt, a genuinely forged blob) and
  * none of them should block a technician from enrolling a device that is still
- * useful at lower tiers. The reason is logged rather than returned: the route
- * writes the audit row, and `evidence` on an unattested result must stay empty
- * so no unverified claim is ever persisted.
+ * useful at lower tiers. `evidence` stays empty on that path so no unverified
+ * claim is ever persisted; the reason travels back on `failureReason` for the
+ * route to record in the audit row.
+ *
+ * But "the verifier refused" and "the verifier BROKE" are different events and
+ * must not share a log line. An `AppAttestVerificationError` is a decision the
+ * verifier reached on purpose; anything else — a TypeError from a tiny-cbor or
+ * @peculiar/x509 upgrade, a RangeError from a parser regression — means every
+ * legitimate Apple blob in the fleet is now being downgraded and NOBODY would
+ * know, because it reads exactly like ordinary attacker noise. That one gets
+ * captureException, the same call `consumeRegistrationAttempt` above makes for
+ * the same reason.
  */
 function verifyIosAttestation(
   attestation: Extract<MobileAttestation, { platform: 'ios' }>,
@@ -214,11 +245,30 @@ function verifyIosAttestation(
       environment,
     });
   } catch (err) {
+    const expected = err instanceof AppAttestVerificationError;
+    const reason = expected
+      ? err.reason
+      : `verifier error: ${err instanceof Error ? err.name : 'unknown'}`;
+    if (!expected) {
+      // Not a rejection — a defect. No client can provoke a non-
+      // AppAttestVerificationError out of a pure function whose every failure
+      // path goes through reject(), so this is our bug or a dependency's, and
+      // it is silently costing every iOS device its L4 eligibility.
+      captureException(err, undefined, {
+        area: 'authenticator_attestation',
+        reason: 'app_attest_verifier_error',
+      });
+    }
+    // appId is logged too: a stale team/bundle id is the single likeliest cause
+    // of a fleet-wide rejection, and it is the one value an operator cannot see
+    // from the outside.
     console.warn('[authenticator-attest] App Attest verification failed', {
+      appId,
       environment,
-      reason: err instanceof Error ? err.message : 'unknown',
+      reason,
+      expected,
     });
-    return unattested();
+    return { ...unattested(), failureReason: reason };
   }
 
   // The App Attest key and the APPROVAL key are two different keys. App Attest

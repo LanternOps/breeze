@@ -295,6 +295,73 @@ describe('verifyAppAttestAttestation', () => {
     ).toThrow(/attestation/i);
   });
 
+  // The `rootCertificatesPem` array is the seam a future multi-root rotation
+  // would use, so its failure modes are worth pinning now rather than after
+  // someone points it at config.
+  it('rejects an unparseable trust anchor rather than falling through to "untrusted"', async () => {
+    const f = await mintAppAttestFixture({ appId: APP_ID });
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: f.attestationObjectB64,
+        keyIdB64: f.keyIdB64,
+        clientDataHash: f.clientDataHash,
+        appId: APP_ID,
+        environment: 'production',
+        rootCertificatesPem: ['-----BEGIN CERTIFICATE-----\nnot-a-cert\n-----END CERTIFICATE-----'],
+      }),
+    ).toThrow(/attestation/i);
+  });
+
+  it('rejects an empty trust-anchor list rather than trusting everything', async () => {
+    const f = await mintAppAttestFixture({ appId: APP_ID });
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: f.attestationObjectB64,
+        keyIdB64: f.keyIdB64,
+        clientDataHash: f.clientDataHash,
+        appId: APP_ID,
+        environment: 'production',
+        rootCertificatesPem: [],
+      }),
+    ).toThrow(/attestation/i);
+  });
+
+  it('accepts the correct root when several anchors are configured', async () => {
+    const f = await mintAppAttestFixture({ appId: APP_ID });
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: f.attestationObjectB64,
+        keyIdB64: f.keyIdB64,
+        clientDataHash: f.clientDataHash,
+        appId: APP_ID,
+        environment: 'production',
+        // Rotation shape: one stale anchor alongside the live one.
+        rootCertificatesPem: [APPLE_APP_ATTEST_ROOT_CA_PEM, f.rootPem],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects an x5c longer than a real Apple chain', async () => {
+    const f = await mintAppAttestFixture({ appId: APP_ID });
+    const chain = (
+      decodeAttestation(f.attestationObjectB64).get('attStmt') as Map<string, unknown>
+    ).get('x5c') as Uint8Array[];
+    const tampered = tamperAttestation(f.attestationObjectB64, (obj) => {
+      const attStmt = obj.get('attStmt') as Map<string, unknown>;
+      attStmt.set('x5c', [chain[0], chain[1], chain[1], chain[1], chain[1]]);
+    });
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: tampered,
+        keyIdB64: f.keyIdB64,
+        clientDataHash: f.clientDataHash,
+        appId: APP_ID,
+        environment: 'production',
+        rootCertificatesPem: [f.rootPem],
+      }),
+    ).toThrow(/attestation/i);
+  });
+
   it('rejects malformed CBOR without throwing an unhandled error type', async () => {
     const f = await mintAppAttestFixture({ appId: APP_ID });
     expect(() =>
@@ -333,6 +400,64 @@ describe('verifyAppAttestAttestation', () => {
     const tampered = tamperAttestation(f.attestationObjectB64, (obj) => {
       const authData = obj.get('authData') as Uint8Array;
       obj.set('authData', authData.slice(0, 40));
+    });
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: tampered,
+        keyIdB64: f.keyIdB64,
+        clientDataHash: f.clientDataHash,
+        appId: APP_ID,
+        environment: 'production',
+        rootCertificatesPem: [f.rootPem],
+      }),
+    ).toThrow(/attestation/i);
+  });
+
+  it('rejects an x5c whose only element IS the pinned root (self-anchoring)', () => {
+    // A one-element chain [pinnedRoot] satisfies the anchoring loop by
+    // construction — the root is self-signed, so it "verifies against itself"
+    // and its subject matches its own issuer. Nothing downstream may treat that
+    // as an attestation. Hand-built rather than fixture-derived precisely
+    // because the fixture cannot express it.
+    const rootDer = new crypto.X509Certificate(APPLE_APP_ATTEST_ROOT_CA_PEM).raw;
+    const authData = Buffer.concat([
+      crypto.createHash('sha256').update(APP_ID, 'utf8').digest(),
+      Buffer.from([0x40]),
+      Buffer.alloc(4),
+      Buffer.concat([Buffer.from('appattest', 'ascii'), Buffer.alloc(7, 0)]),
+      Buffer.from([0x00, 0x20]),
+      Buffer.alloc(32, 7),
+    ]);
+    const attestationObject = encodeCBOR(
+      new Map<string | number, CBORType>([
+        ['fmt', 'apple-appattest'],
+        [
+          'attStmt',
+          new Map<string | number, CBORType>([
+            ['x5c', [new Uint8Array(rootDer)]],
+            ['receipt', new Uint8Array(8)],
+          ]),
+        ],
+        ['authData', new Uint8Array(authData)],
+      ]),
+    );
+    expect(() =>
+      verifyAppAttestAttestation({
+        attestationObjectB64: Buffer.from(attestationObject).toString('base64'),
+        keyIdB64: Buffer.alloc(32, 7).toString('base64'),
+        clientDataHash: Buffer.alloc(32),
+        appId: APP_ID,
+        environment: 'production',
+      }),
+    ).toThrow(/attestation/i);
+  });
+
+  it('rejects an x5c that repeats the credCert as its own issuer', async () => {
+    const f = await mintAppAttestFixture({ appId: APP_ID });
+    const tampered = tamperAttestation(f.attestationObjectB64, (obj) => {
+      const attStmt = obj.get('attStmt') as Map<string, unknown>;
+      const chain = attStmt.get('x5c') as Uint8Array[];
+      attStmt.set('x5c', [chain[0], chain[0]]);
     });
     expect(() =>
       verifyAppAttestAttestation({
