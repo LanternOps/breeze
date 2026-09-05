@@ -244,6 +244,10 @@ const TARGET_GLOBS = [
   // Partner trust queue actions promote, restrict, or irreversibly suspend a
   // partner. Every POST must retain runAction feedback for the operator.
   'src/components/admin/TrustQueue.tsx',
+  // Configuration-policy assignments (pre-release sweep, paper cut): the
+  // assign/unassign mutations here were bare fetchWithAuth calls with no
+  // toast — a failed assign or unassign looked identical to a successful one.
+  'src/components/configurationPolicies/AssignmentsTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -555,10 +559,11 @@ describe('no silent mutations in targeted set', () => {
     // approve/suspend action), plus TrustQueue.tsx (partner trust probation,
     // #4549 W07 — the admin trust queue page's approve/suspend actions).
     // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
-    // main added 3 in parallel, so the true merged count was 113. This commit
-    // adds 1 more (TrustQueue.tsx), so the count is now 114 — bump it
+    // main added 3 in parallel, so the true merged count was 113. A prior
+    // commit added 1 more (TrustQueue.tsx) to reach 114. This commit adds 1
+    // more (AssignmentsTab.tsx), so the count is now 115 — bump it
     // deliberately on every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(114);
+    expect(absoluteFiles.length).toBe(115);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

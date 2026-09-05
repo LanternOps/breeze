@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Esta política não tem uma organização, portanto os destinos da atribuição não podem ser listados.",
       "failedToAddAssignment": "Falha ao adicionar a atribuição",
       "failedToRemoveAssignment": "Falha ao remover a atribuição",
+      "assignmentAdded": "Atribuição adicionada",
+      "assignmentRemoved": "Atribuição removida",
       "roleFilter": "Filtro de função",
       "optional": "(opcional)",
       "noRestrictionAppliesToAllDeviceRoles": "Sem restrição - aplica-se a todas as funções de dispositivo",

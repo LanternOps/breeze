@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Questo criterio non ha un'organizzazione, quindi non è possibile elencare le destinazioni di assegnazione.",
       "failedToAddAssignment": "Impossibile aggiungere l'assegnazione",
       "failedToRemoveAssignment": "Impossibile rimuovere l'assegnazione",
+      "assignmentAdded": "Assegnazione aggiunta",
+      "assignmentRemoved": "Assegnazione rimossa",
       "roleFilter": "Filtro ruolo",
       "optional": "(facoltativo)",
       "noRestrictionAppliesToAllDeviceRoles": "Nessuna restrizione - si applica a tutti i ruoli dispositivo",

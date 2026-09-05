@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Esta política no tiene organización, por lo que no se pueden enumerar los objetivos de asignación.",
       "failedToAddAssignment": "No se pudo agregar la tarea",
       "failedToRemoveAssignment": "No se pudo eliminar la tarea",
+      "assignmentAdded": "Tarea agregada",
+      "assignmentRemoved": "Tarea eliminada",
       "roleFilter": "Filtro de roles",
       "optional": "(opcional)",
       "noRestrictionAppliesToAllDeviceRoles": "Sin restricciones: se aplica a todas las funciones del dispositivo",

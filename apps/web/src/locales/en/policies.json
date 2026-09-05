@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "This policy has no organization, so assignment targets cannot be listed.",
       "failedToAddAssignment": "Failed to add assignment",
       "failedToRemoveAssignment": "Failed to remove assignment",
+      "assignmentAdded": "Assignment added",
+      "assignmentRemoved": "Assignment removed",
       "roleFilter": "Role Filter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "No restriction - applies to all device roles",
