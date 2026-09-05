@@ -891,7 +891,7 @@ export async function seedRoles() {
     // over-privilege a row the seed never owned. Scope is pinned because the
     // ownership boundary the reconcile migration enforces is
     // scope='partner' AND is_system; the seed must not be looser. Tenant
-    // copies are reconciled by the 2026-10-01-200000 migration, not here.
+    // copies are reconciled by the 2026-10-09-000700 migration, not here.
     const [existing] = await db
       .select()
       .from(roles)
