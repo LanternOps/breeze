@@ -131,8 +131,9 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    required consumer failed to initialize or lost Redis — check
    `docker logs breeze-worker` for `[CRITICAL][worker] Failed to initialize
    <name>` before proceeding. Feature-gated consumers (`EVENT_DISPATCH_MODE`,
-   `BREEZE_AI_AGENTS_ENABLED`, abuse signals) are declared optional when their
-   flag is off, so a default box converges to `ready: true` on its own.
+   `BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are declared optional
+   when their flag is off. The abuse-signals consumer is required when either
+   abuse signals or partner trust is enabled; both must be off to disable it.
 4. **Flip the API to `api`-only role:**
    ```bash
    ssh root@<droplet> "cd /opt/breeze && \

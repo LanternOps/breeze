@@ -50,7 +50,9 @@ the zero-dependents condition, and the absence of `--wait`. The worker's
 verdict is the same continuous consumer-readiness rule as the API's, scoped to
 the consumers the `worker` role starts (`BREEZE_ROLE`) with flag-gated
 consumers (`EVENT_DISPATCH_MODE`, `BREEZE_AI_AGENTS_ENABLED`,
-abuse signals) declared optional when off; see `docs/deploy/worker-split.md`
+`AUDIT_CHAIN_VERIFY_ENABLED`) declared optional when off. The abuse-signals
+consumer is required when either abuse signals or partner trust is enabled.
+See `docs/deploy/worker-split.md`
 for the rollout runbook that reads it. The deploy admission gate probes the
 public API hostname only — it proves the `api` container's readiness for its
 configured role, not the worker's.

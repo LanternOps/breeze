@@ -102,8 +102,10 @@ appear in this body. The counts depend on the process role (`BREEZE_ROLE`)
 and on feature flags: an `api`-role process counts only the socket-owner
 consumers it starts, a `worker`-role process only the global ones, and
 consumers behind an off feature flag (`EVENT_DISPATCH_MODE`,
-`BREEZE_AI_AGENTS_ENABLED`, abuse signals) are counted as `optionalDisabled`
-rather than blocking readiness. The numbers above are illustrative.
+`BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are counted as
+`optionalDisabled` rather than blocking readiness. The shared abuse-signals
+consumer is required when either abuse signals or partner trust is enabled;
+it is optional only when both are off. The numbers above are illustrative.
 
 The optional `worker` container (Compose profile `worker-split`) serves its
 own `/health/ready` on its `API_PORT`. When its readiness evaluator runs, the
