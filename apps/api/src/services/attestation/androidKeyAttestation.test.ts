@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { SecurityLevel, VerifiedBootState } from '@peculiar/asn1-android';
 import { describe, expect, it } from 'vitest';
 import { verifyAndroidKeyAttestation } from './androidKeyAttestation';
+import { GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM } from './googleHardwareAttestationRoots';
 import {
   mintAndroidKeyAttestationFixture,
   type AndroidKeyAttestationFixture,
@@ -257,9 +258,10 @@ describe('verifyAndroidKeyAttestation (#1374 W04)', () => {
 
   // The shipped trust anchors must actually load and must actually be used.
   it('pins self-signed Google hardware attestation roots', () => {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const pem = readFileSync(path.join(here, 'googleHardwareAttestationRoots.pem'), 'utf8');
-    const certs = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+    const certs =
+      GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM.match(
+        /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+      ) ?? [];
     expect(certs.length).toBeGreaterThanOrEqual(4);
     for (const c of certs) {
       const parsed = new crypto.X509Certificate(c);
@@ -267,6 +269,33 @@ describe('verifyAndroidKeyAttestation (#1374 W04)', () => {
       // issuer would silently need a parent we do not have.
       expect(parsed.verify(parsed.publicKey)).toBe(true);
     }
+  });
+
+  /**
+   * The production image copies only `apps/api/dist` (plus node_modules,
+   * packages, ee, migrations, assets) — never `apps/api/src`. A `readFileSync`
+   * of the `.pem` beside the source module therefore resolves under
+   * `/app/apps/api/dist`, throws ENOENT, and downgrades 100% of Android
+   * registrations to `unattested` — in production only, never in a test or in
+   * dev. So the roots ship as a TS constant that the bundler inlines.
+   *
+   * The `.pem` stays committed as the auditable provenance artifact (it is what
+   * you re-download from Google and diff). These two assertions are what stop
+   * the pair from drifting, and stop either from being swapped for a different
+   * CA set without a failing test.
+   */
+  it('inlines the roots as a TS constant byte-identical to the committed .pem', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const onDisk = readFileSync(path.join(here, 'googleHardwareAttestationRoots.pem'), 'utf8');
+    expect(GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM).toBe(onDisk);
+  });
+
+  it('pins the SHA-256 of the root set recorded in the PR body', () => {
+    const digest = crypto
+      .createHash('sha256')
+      .update(GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM, 'utf8')
+      .digest('hex');
+    expect(digest).toBe('f2256be131ef0db817d78e1e5c1223af67e70d78827d516170a2cf7af9e36fcb');
   });
 
   it('defaults to the pinned Google roots, so a self-minted chain is refused', async () => {

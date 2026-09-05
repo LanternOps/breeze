@@ -1,7 +1,4 @@
 import crypto from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   AttestationApplicationId,
   AuthorizationList,
@@ -14,6 +11,7 @@ import {
 } from '@peculiar/asn1-android';
 import { AsnParser } from '@peculiar/asn1-schema';
 import { Certificate } from '@peculiar/asn1-x509';
+import { GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM } from './googleHardwareAttestationRoots';
 
 /**
  * Android Key Attestation verifier (#1374, feature #4707 wave W04).
@@ -131,11 +129,6 @@ function octetsToBuffer(value: { buffer: ArrayBuffer } | ArrayBuffer | undefined
 // Pinned trust anchors
 // ---------------------------------------------------------------------------
 
-const ROOTS_PEM_PATH = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  'googleHardwareAttestationRoots.pem',
-);
-
 let cachedRootSpkis: Set<string> | null = null;
 
 function spkiFingerprint(key: crypto.KeyObject): string {
@@ -173,12 +166,16 @@ function trustedRootSpkis(rootCertificatesPem?: string[]): Set<string> {
     );
   }
   if (!cachedRootSpkis) {
-    const certs = parsePemCertificates(readFileSync(ROOTS_PEM_PATH, 'utf8'));
+    // Inlined, never read from disk: the production image ships no `src/` tree,
+    // so a readFileSync here would ENOENT in production only. See
+    // googleHardwareAttestationRoots.ts for the full reasoning.
+    const certs = parsePemCertificates(GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM);
     if (certs.length === 0) {
-      // A build that shipped an empty/mangled PEM would otherwise trust nothing
-      // and reject every real device with a confusing "not a pinned root".
+      // A build that shipped an empty/mangled constant would otherwise trust
+      // nothing and reject every real device with a confusing "not a pinned
+      // root".
       throw new AndroidKeyAttestationError(
-        'no Google hardware attestation roots pinned — googleHardwareAttestationRoots.pem is empty or unparseable',
+        'no Google hardware attestation roots pinned — GOOGLE_HARDWARE_ATTESTATION_ROOTS_PEM is empty or unparseable',
       );
     }
     cachedRootSpkis = new Set(certs.map((cert) => spkiFingerprint(cert.publicKey)));
