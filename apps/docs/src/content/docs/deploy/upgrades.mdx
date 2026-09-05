@@ -20,7 +20,9 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    Database migrations are forward-only. Rolling the container tag back does not roll the schema back. See [Backup & Restore](/security/backup/).
 
-2. **Update the version in `.env`**
+2. **Diff your Compose files against the tagged release** and merge the required changes before pulling images; follow [Compose file changes](#compose-file-changes), preserving your local configuration. Back up `.env`, the active Compose files, and overrides alongside the database backup.
+
+3. **Update the version in `.env`**
 
    ```bash
    # Set to the version you want (e.g. 0.11.3)
@@ -29,7 +31,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    This also selects the agent release your fleet is offered, so set it to a version that is **published** on GitHub, not one that has only been tagged. See [Binary Distribution](/deploy/binaries/#github-mode-default).
 
-3. **Pull and restart**
+4. **Pull and restart**
 
    ```bash
    docker compose pull
@@ -41,21 +43,68 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
 
-4. **Verify**
+5. **Verify**
 
    ```bash
    # Check API health
    curl -s https://breeze.yourdomain.com/health | jq .version
 
+   # Check all running image versions
+   docker compose images
+
    # Check agent version (on the device)
    breeze-agent version
    ```
+
+   Also sign in through your public URL and confirm agents resume checking in. `/health` bypasses the HTTPS redirect and can stay healthy while a stale proxy address sends other requests into a redirect loop.
 
 </Steps>
 
 <Aside type="tip">
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
+
+## Compose file changes
+
+`docker compose pull` updates images; it does **not** download a new `docker-compose.yml`, override file, or `.env.example`. Current images can therefore run with old network settings or missing environment mappings. Review the configuration shipped with **every target release**, including when skipping versions; the entries below highlight changes that need operator action, not a complete Compose changelog.
+
+Fetch a separate copy of the target release's Compose file and compare it with the one you actually deploy. Replace the placeholder with the published release tag matching your intended `BREEZE_VERSION`:
+
+```bash
+release_tag="v<target-version>"
+release_compose=$(mktemp)
+curl --fail --show-error --location \
+  "https://raw.githubusercontent.com/LanternOps/breeze/${release_tag}/docker-compose.yml" \
+  --output "$release_compose" && diff -u docker-compose.yml "$release_compose"
+```
+
+`diff` exits with status 1 when differences exist; a failed download must be resolved before continuing. If you deploy `deploy/docker-compose.prod.yml` or additional override files, compare those same paths at the same tag too. Review the tagged `.env.example` and any configuration files referenced by changed services.
+
+Merge the required changes into your backed-up local files, preserving custom services, domains, mounts, secrets, and proxy topology. Do not overwrite `.env` with `.env.example`. Add required variables to both `.env` and the appropriate service's `environment:` mapping; setting `.env` alone does not pass a variable to the container. For digest-pinned deployments, update the image references to the target release as well as `BREEZE_VERSION`.
+
+Validate the merged configuration before the pull/restart step:
+
+```bash
+docker compose config --quiet
+```
+
+Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
+
+### v0.95.0 — stable Caddy address and proxy trust
+
+The [v0.95.0 Compose file](https://github.com/LanternOps/breeze/blob/v0.95.0/docker-compose.yml) introduced these coupled settings. If your deployed file predates them, apply all three even if your images are already newer:
+
+| Compose setting | Required action |
+|---|---|
+| `networks.breeze.ipam.config.subnet` uses `BREEZE_DOCKER_SUBNET` | Merge the IPAM configuration. If the shipped subnet overlaps another Docker network, host route, or VPN, choose a non-overlapping subnet in `.env`. |
+| `services.caddy.networks.breeze.ipv4_address` uses `BREEZE_CADDY_IP` | Merge the static address pin. If you customize the subnet, choose an unused Caddy address inside it and set `BREEZE_CADDY_IP` alongside `BREEZE_DOCKER_SUBNET`. |
+| `services.api.environment.TRUSTED_PROXY_CIDRS` defaults to `BREEZE_CADDY_IP` with a `/32` mask | Merge the derived default. An explicit `TRUSTED_PROXY_CIDRS` in `.env` or an override takes precedence: remove a stale override when using bundled Caddy, or set it to the actual immediate proxy's stable address for a custom topology. |
+
+Keep `TRUST_PROXY_HEADERS=true` when using the bundled proxy. Do not widen trust to an entire private network to work around an address mismatch. A proxy's dynamically assigned address can move after a container recreation or host reboot.
+
+Changing an existing network's IPAM/subnet requires recreating that network during a maintenance window; `docker compose restart` cannot apply it. For a standalone stack whose network is used only by that stack, stop/remove its containers and network with `docker compose down`, then recreate them with `docker compose up -d` after pulling the target images. **Do not use `down -v`**, which deletes named data volumes. If other containers share the network, coordinate their migration before recreating it. This network migration takes longer than the routine image-only restart described above.
+
+Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
 
