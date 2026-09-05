@@ -52,15 +52,71 @@ export interface DeviceCandidate {
   method: DeviceMatchMethod;
 }
 
-export interface DeviceResolution {
-  outcome: DeviceRowOutcome;
-  deviceId: string | null;
-  method: DeviceMatchMethod | null;
-  /** Populated for `ambiguous` and `identity-conflict`; ordered by the presentational ranking. */
-  candidates: DeviceCandidate[];
-  /** Populated for `identity-conflict`: which identifiers disagreed, in precedence order. */
-  conflictingMethods?: DeviceMatchMethod[];
+/**
+ * Discriminated on `outcome` so the pairing rules are the TYPE, not a comment:
+ * only a resolved row can carry a `deviceId`, and only an `identity-conflict`
+ * carries `conflictingMethods`. W07/W08/W09 construct and consume these, and a
+ * flat record would let any of them mint `{ outcome: 'ambiguous', deviceId }` —
+ * exactly the "silently picked one" failure this wave exists to prevent.
+ *
+ * Still plain JSON: every arm is literals, strings, nulls and arrays, so it
+ * round-trips through the HTTP boundary identically to a flat interface.
+ *
+ * `candidates` is ordered by the presentational ranking and is empty on every
+ * arm but `ambiguous` and `identity-conflict`.
+ */
+interface DeviceResolutionEvidence {
+  /**
+   * Identifiers the row DID supply that carried no information — today only
+   * `serial`, when the value is on the agent's junk denylist. Absent when
+   * nothing was discarded.
+   *
+   * This exists because "no serial column" and "every serial in this export is
+   * the BIOS filler string" both fail to match, and only the second is a
+   * data-quality problem the operator can act on. Without it, a mis-mapped CSV
+   * column is a wall of indistinguishable `not-found`s.
+   */
+  discardedIdentifiers?: DeviceMatchMethod[];
 }
+
+export type DeviceResolution = DeviceResolutionEvidence & (
+  | {
+      outcome: 'matched';
+      deviceId: string;
+      method: Exclude<DeviceMatchMethod, 'link'>;
+      candidates: DeviceCandidate[];
+      conflictingMethods?: never;
+    }
+  | {
+      outcome: 'link-match';
+      deviceId: string;
+      method: 'link';
+      candidates: DeviceCandidate[];
+      conflictingMethods?: never;
+    }
+  | {
+      outcome: 'ambiguous';
+      deviceId: null;
+      method: null;
+      candidates: DeviceCandidate[];
+      conflictingMethods?: never;
+    }
+  | {
+      outcome: 'not-found' | 'org-not-found';
+      deviceId: null;
+      method: null;
+      candidates: DeviceCandidate[];
+      conflictingMethods?: never;
+    }
+  | {
+      outcome: 'identity-conflict';
+      deviceId: null;
+      method: null;
+      candidates: DeviceCandidate[];
+      /** Which identifiers disagreed, in precedence order. Never empty. */
+      conflictingMethods: DeviceMatchMethod[];
+    }
+);
 
 /**
  * One value assignment on an import row. W08 owns the coercion and validation

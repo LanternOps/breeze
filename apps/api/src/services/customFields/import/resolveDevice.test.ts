@@ -104,6 +104,18 @@ describe('resolveDeviceRow', () => {
     expect(r.outcome).toBe('not-found');
   });
 
+  it('resolves through the default system when a csv link exists', () => {
+    // The positive half of the fallback: absence-of-match above would also hold
+    // if the fallback were broken and produced a key nothing could ever match.
+    const withCsv = buildDeviceResolutionSnapshot({
+      reachableOrgIds: [ORG_A],
+      devices: [device({ deviceId: D1 })],
+      links: [{ deviceId: D1, system: 'csv', externalId: 'uid-1', sourceInstance: null }],
+    });
+    expect(resolveDeviceRow(row({ externalId: 'uid-1' }), withCsv))
+      .toMatchObject({ outcome: 'link-match', deviceId: D1, method: 'link' });
+  });
+
   it('a serial beats an AMBIGUOUS hostname', () => {
     const r = resolveDeviceRow(row({ serialNumber: 'S-D1', hostname: 'shared-name' }), snapshot);
     expect(r).toMatchObject({ outcome: 'matched', deviceId: D1, method: 'serial' });
@@ -160,6 +172,35 @@ describe('resolveDeviceRow', () => {
       lastSeenAt: '2024-06-01T00:00:00.000Z',
       enrolledAt: '2025-01-01T00:00:00.000Z',
     });
+  });
+
+  it('lets the higher-precedence identifier supply the candidates when BOTH are ambiguous', () => {
+    // Nothing is singular, so no axis can win on identity — but the candidate
+    // list the operator is shown must still come from the stronger identifier.
+    const bothAmbiguous = buildDeviceResolutionSnapshot({
+      reachableOrgIds: [ORG_A],
+      devices: [
+        device({ deviceId: D1, hostname: 'dup-host', serialNumber: 'DUP-SERIAL' }),
+        device({ deviceId: D2, hostname: 'dup-host', serialNumber: 'DUP-SERIAL' }),
+        device({ deviceId: ONLINE_NEWER, hostname: 'dup-host', serialNumber: 'OTHER' }),
+      ],
+      links: [],
+    });
+    const r = resolveDeviceRow(row({ serialNumber: 'DUP-SERIAL', hostname: 'dup-host' }), bothAmbiguous);
+    expect(r.outcome).toBe('ambiguous');
+    expect(r.candidates.every((c) => c.method === 'serial')).toBe(true);
+    expect(r.candidates.map((c) => c.deviceId).sort()).toEqual([D1, D2].sort());
+  });
+
+  it('refuses a three-identifier row where a majority agrees but one disagrees', () => {
+    // There is no voting. Two identifiers agreeing does not license overriding
+    // the third — the row is wrong and the operator has to look at it.
+    const r = resolveDeviceRow(
+      row({ deviceId: D1, serialNumber: 'S-D1', hostname: 'wkstn-d2' }),
+      snapshot,
+    );
+    expect(r.outcome).toBe('identity-conflict');
+    expect(r.conflictingMethods).toEqual(['id', 'serial', 'hostname']);
   });
 
   it('ranks by enrolment age within a status tier, oldest first', () => {
@@ -225,6 +266,24 @@ describe('resolveDeviceRow', () => {
   it('returns not-found for a row that supplies no usable identifier at all', () => {
     const r = resolveDeviceRow(row({ hostname: '   ', serialNumber: '  ' }), snapshot);
     expect(r.outcome).toBe('not-found');
+    // Nothing was DISCARDED — the row simply had nothing. A blank cell must not
+    // be reported as a data-quality problem.
+    expect(r.discardedIdentifiers).toBeUndefined();
+  });
+
+  it('reports a supplied-but-junk serial as discarded, distinct from an absent one', () => {
+    const junk = resolveDeviceRow(row({ serialNumber: 'Default string' }), snapshot);
+    expect(junk).toMatchObject({ outcome: 'not-found' });
+    expect(junk.discardedIdentifiers).toEqual(['serial']);
+
+    const absent = resolveDeviceRow(row({ serialNumber: null }), snapshot);
+    expect(absent.discardedIdentifiers).toBeUndefined();
+  });
+
+  it('still reports a discarded serial on a row that matched by another identifier', () => {
+    const r = resolveDeviceRow(row({ serialNumber: 'unknown', hostname: 'wkstn-d1' }), snapshot);
+    expect(r).toMatchObject({ outcome: 'matched', deviceId: D1, method: 'hostname' });
+    expect(r.discardedIdentifiers).toEqual(['serial']);
   });
 });
 
@@ -247,6 +306,29 @@ describe('buildDeviceResolutionSnapshot', () => {
     expect(resolveDeviceRow(row({ deviceId: D1 }), snap)).toMatchObject({
       outcome: 'matched', deviceId: D1, method: 'id',
     });
+  });
+
+  it('does not let a separator inside system or external_id forge a different link key', () => {
+    // The database key is a TUPLE — ('datto rmm', '', 'x') and ('datto', 'rmm',
+    // 'x') are two distinct rows under device_external_links_uniq. A key built
+    // by joining the three parts with an ordinary character collapses them into
+    // one, which would make a row match a link that Postgres considers unrelated.
+    const snap = buildDeviceResolutionSnapshot({
+      reachableOrgIds: [ORG_A],
+      devices: [device({ deviceId: D1 }), device({ deviceId: D2 })],
+      links: [
+        // ('csv', '', 'a b')
+        { deviceId: D1, system: 'csv', externalId: 'a b', sourceInstance: null },
+        // ('csv', ' a', 'b') — a DIFFERENT row under the unique index.
+        { deviceId: D2, system: 'csv', externalId: 'b', sourceInstance: ' a' },
+      ],
+    });
+    expect(resolveDeviceRow(row({ externalSystem: 'csv', externalId: 'a b' }), snap))
+      .toMatchObject({ outcome: 'link-match', deviceId: D1 });
+    expect(resolveDeviceRow(
+      row({ externalSystem: 'csv', externalSourceInstance: ' a', externalId: 'b' }),
+      snap,
+    )).toMatchObject({ outcome: 'link-match', deviceId: D2 });
   });
 
   it('treats a link whose device is not in the snapshot as unresolved', () => {

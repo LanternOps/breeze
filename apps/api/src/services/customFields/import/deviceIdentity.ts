@@ -4,12 +4,17 @@
  * Junk hardware-identity values, ported VERBATIM from the Go agent's
  * cleanHardwareIdentityValue (agent/internal/collectors/hardware.go:156-190).
  *
- * The agent applies it only on Windows (hardware_windows.go:136); Linux reads
- * raw DMI (hardware_linux.go:35) and macOS shells out to system_profiler
- * (hardware_darwin.go:36), and both write the raw value through. So these
- * values are ALREADY in device_hardware.serial_number and must be filtered on
- * BOTH sides of an import join — otherwise every Linux box reporting
- * "Default string" collapses into one giant ambiguous group.
+ * For the field this module cares about — SerialNumber — only Windows cleans
+ * it (hardware_windows.go:136, via firstCleanHardwareIdentityValue). Linux
+ * writes it raw from DMI (hardware_linux.go:35) and macOS raw from
+ * system_profiler (hardware_darwin.go:46, shelled out at :36). Linux DOES call
+ * cleanHardwareIdentityValue for its motherboard fields (hardware_linux.go:38-40),
+ * so do not read this as "the agent only calls it on Windows" — it is the
+ * SerialNumber pipeline specifically that goes unfiltered off Windows.
+ *
+ * So these values are ALREADY in device_hardware.serial_number and must be
+ * filtered on BOTH sides of an import join — otherwise every Linux box
+ * reporting "Default string" collapses into one giant ambiguous group.
  *
  * It is an EXACT list, not a general all-zeros pattern: a zero run of a
  * different length passes straight through, in Go and here. Do not "improve" it

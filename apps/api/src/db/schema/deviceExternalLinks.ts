@@ -23,9 +23,12 @@ import { organizations } from './orgs';
  * or two unrelated CSVs both keyed `'1'`) is a BACKFILL rather than a migration
  * of a live unique key.
  *
- * The unique index is expression-based (`COALESCE`), which Drizzle cannot model
- * — it lives only in `2026-10-10-100000-device-external-links.sql` and is
- * asserted by `deviceExternalLinks.integration.test.ts`.
+ * The `.sql` migration is the source of truth for every index and constraint
+ * here, including the expression-based unique key — this repo does not drive
+ * migrations from Drizzle at all (`drizzle-kit generate`/`push` are unused; see
+ * `scripts/check-drift.ts`). The declaration below models the same index for
+ * typed query-building, and `deviceExternalLinks.integration.test.ts` asserts
+ * the shipped one against the live catalog.
  *
  * Deliberately no json/jsonb column: open containers are `excludedOpen` in the
  * tenant-export policy and would be dropped from exports.

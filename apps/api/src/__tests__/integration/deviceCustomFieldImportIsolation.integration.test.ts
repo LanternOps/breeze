@@ -16,8 +16,8 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { deviceHardware, devices } from '../../db/schema';
-import { deviceExternalLinks } from '../../db/schema';
+import { sql } from 'drizzle-orm';
+import { deviceExternalLinks, deviceHardware, devices } from '../../db/schema';
 import {
   loadDeviceResolutionSnapshot,
   resolveDeviceRow,
@@ -99,11 +99,21 @@ async function seedWorld() {
   const dJunk2 = await seedDevice({
     orgId: orgA!.id, siteId: siteOne!.id, hostname: 'wkstn-junk-2', serialNumber: 'To Be Filled By O.E.M.',
   });
+  // A freshly-enrolled machine that has never reported hardware: no
+  // device_hardware row at all, so an inner join would drop it entirely.
+  const dNoHardware = await seedDevice({
+    orgId: orgA!.id, siteId: siteOne!.id, hostname: 'wkstn-no-hardware', serialNumber: null,
+  });
 
   await getTestDb().insert(deviceExternalLinks).values([
     {
       deviceId: dSiteOne, orgId: orgA!.id, partnerId: partnerA!.id,
       system: 'datto_rmm', externalId: 'uid-shared',
+    },
+    // Linked, but on the site a restricted caller cannot reach.
+    {
+      deviceId: dSiteTwo, orgId: orgA!.id, partnerId: partnerA!.id,
+      system: 'datto_rmm', externalId: 'uid-site-2',
     },
     {
       deviceId: dPartnerB, orgId: orgB!.id, partnerId: partnerB!.id,
@@ -124,6 +134,7 @@ async function seedWorld() {
     dPartnerB,
     dJunk1,
     dJunk2,
+    dNoHardware,
   };
 }
 
@@ -157,6 +168,19 @@ describe('device resolution isolation — app layer, under a SYSTEM DB context',
     const result = await resolve(
       { hostname: 'wkstn-partner-b' },
       { partnerId: w.partnerA, accessibleOrgIds: null, allowedSiteIds: null },
+    );
+    expect(result.outcome).toBe('not-found');
+  });
+
+  runDb('a link lookup is confined to the calling partner\'s organizations', async () => {
+    // Defence in depth, not an independent proof of the `partnerId` predicate on
+    // the link query: `orgIds` is already partner-filtered, so the org predicate
+    // alone would produce this result. What it does prove is that the two
+    // together confine the lookup, which is what the caller relies on.
+    const w = await seedWorld();
+    const result = await resolve(
+      { externalSystem: 'datto_rmm', externalId: 'uid-shared' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA2], allowedSiteIds: null },
     );
     expect(result.outcome).toBe('not-found');
   });
@@ -205,6 +229,89 @@ describe('device resolution isolation — app layer, under a SYSTEM DB context',
     expect(unknown.outcome).toBe('org-not-found');
   });
 
+  runDb('the site boundary holds for the deviceId and link axes too, not just hostname', async () => {
+    // The link query carries no site predicate of its own — site enforcement for
+    // BOTH of these axes comes from the device-detail query's reach predicate.
+    // If that were dropped, an explicit device id or a known external id would
+    // walk straight past the site restriction.
+    const w = await seedWorld();
+    const siteScope: DeviceResolutionScope = {
+      partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: [w.siteOne],
+    };
+
+    expect((await resolve({ deviceId: w.dSiteTwo }, siteScope)).outcome).toBe('not-found');
+    expect((await resolve({ deviceId: w.dSiteOne }, siteScope)))
+      .toMatchObject({ outcome: 'matched', deviceId: w.dSiteOne, method: 'id' });
+
+    // dLinkedSiteTwo carries a link but lives on the barred site.
+    expect((await resolve(
+      { externalSystem: 'datto_rmm', externalId: 'uid-site-2' },
+      siteScope,
+    )).outcome).toBe('not-found');
+    expect(await resolve({ externalSystem: 'datto_rmm', externalId: 'uid-shared' }, siteScope))
+      .toMatchObject({ outcome: 'link-match', deviceId: w.dSiteOne });
+  });
+
+  runDb('resolves a device that has no device_hardware row at all', async () => {
+    // The loader LEFT JOINs device_hardware; an inner join would silently drop
+    // every device that has never reported hardware from id and hostname
+    // resolution, which is a whole class of freshly-enrolled machines.
+    const w = await seedWorld();
+    const result = await resolve(
+      { hostname: 'wkstn-no-hardware' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: null },
+    );
+    expect(result).toMatchObject({ outcome: 'matched', deviceId: w.dNoHardware, method: 'hostname' });
+    expect(result.candidates).toEqual([]);
+  });
+
+  runDb('never resolves a device whose organization is soft-deleted', async () => {
+    const w = await seedWorld();
+    await getTestDb().execute(
+      sql`UPDATE organizations SET deleted_at = now() WHERE id = ${w.orgA}::uuid`
+    );
+    const result = await resolve(
+      { hostname: 'wkstn-site-1' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: null },
+    );
+    expect(result.outcome).toBe('not-found');
+  });
+
+  runDb('resolves a MULTI-ROW batch, each row on its own identifier', async () => {
+    // Every production caller submits a whole file at once; the single-row
+    // helper above never exercises the IN-list paths with more than one value,
+    // nor link-derived ids folding back into the device fetch.
+    const w = await seedWorld();
+    const rows: DeviceCustomFieldImportRow[] = [
+      row({ deviceId: w.dSiteOne }),
+      row({ serialNumber: 'sn-site-2' }),
+      row({ hostname: 'wkstn-org-a2' }),
+      row({ externalSystem: 'datto_rmm', externalId: 'uid-site-2' }),
+      row({ hostname: 'wkstn-partner-b' }),
+    ];
+    const scope: DeviceResolutionScope = {
+      partnerId: w.partnerA, accessibleOrgIds: null, allowedSiteIds: null,
+    };
+    const snapshot = await loadDeviceResolutionSnapshot(rows, scope);
+    const outcomes = rows.map((r) => resolveDeviceRow(r, snapshot));
+
+    expect(outcomes.map((o) => o.outcome)).toEqual([
+      'matched', 'matched', 'matched', 'link-match', 'not-found',
+    ]);
+    expect(outcomes.map((o) => o.deviceId)).toEqual([
+      w.dSiteOne, w.dSiteTwo, w.dOrgA2, w.dSiteTwo, null,
+    ]);
+  });
+
+  runDb('an EMPTY site reach reaches nothing, just like an empty org reach', async () => {
+    const w = await seedWorld();
+    const result = await resolve(
+      { hostname: 'wkstn-site-1' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: [] },
+    );
+    expect(result.outcome).toBe('not-found');
+  });
+
   runDb('an EMPTY reach array reaches nothing rather than degrading into "no filter"', async () => {
     const w = await seedWorld();
     const result = await resolve(
@@ -243,6 +350,29 @@ describe('device resolution isolation — app layer, under a SYSTEM DB context',
     expect(result.outcome).toBe('identity-conflict');
     expect(result.conflictingMethods).toEqual(['serial', 'hostname']);
     expect(result.deviceId).toBeNull();
+  });
+
+  runDb('a reachable org whose identifier resolves to nothing is not-found, NOT org-not-found', async () => {
+    const w = await seedWorld();
+    // The only identifier in the batch is an external id with no link row, so
+    // the loader learns nothing about any device — but the org IS reachable and
+    // the answer must say so. Collapsing to an empty snapshot here would report
+    // `org-not-found` for a tenant the caller can plainly see, which is both
+    // wrong and the opposite of the non-disclosure rule's intent.
+    const result = await resolve(
+      { organizationId: w.orgA, externalSystem: 'datto_rmm', externalId: 'no-such-uid' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: null },
+    );
+    expect(result.outcome).toBe('not-found');
+  });
+
+  runDb('a row with a reachable org and no usable identifier is not-found, NOT org-not-found', async () => {
+    const w = await seedWorld();
+    const result = await resolve(
+      { organizationId: w.orgA, serialNumber: 'Default string' },
+      { partnerId: w.partnerA, accessibleOrgIds: [w.orgA], allowedSiteIds: null },
+    );
+    expect(result.outcome).toBe('not-found');
   });
 
   runDb('a row naming an out-of-reach device id does not resolve it', async () => {

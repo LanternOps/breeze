@@ -21,7 +21,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   db,
   withDbAccessContext,
@@ -244,6 +244,67 @@ describe('device_external_links — durable device identity for re-import', () =
       sql`SELECT 1 FROM device_external_links WHERE device_id = ${f.d1}::uuid`
     )) as unknown as unknown[];
     expect(rows).toHaveLength(0);
+  });
+
+  runDb('ALLOWS an ordinary partner-context INSERT (the policy is not always-false)', async () => {
+    // Without this, every other RLS assertion in the file stays green even if
+    // `WITH CHECK` regressed to always-false and no real import could write.
+    const f = await seedFixture();
+    const inserted = await withDbAccessContext(partnerCtx(f.partnerA, [f.orgA]), () => insertLink({
+      deviceId: f.d1, orgId: f.orgA, partnerId: f.partnerA, system: 'datto_rmm', externalId: 'uid-ok',
+    }));
+    expect(inserted[0]?.id).toBeDefined();
+  });
+
+  runDb('ALLOWS an ordinary partner-context UPDATE and DELETE of the caller\'s own link', async () => {
+    const f = await seedFixture();
+    const [created] = await sys(() => insertLink({
+      deviceId: f.d1, orgId: f.orgA, partnerId: f.partnerA, system: 'datto_rmm', externalId: 'uid-rw',
+    }));
+    const updated = await withDbAccessContext(partnerCtx(f.partnerA, [f.orgA]), () =>
+      db.update(deviceExternalLinks)
+        .set({ label: 'renamed' })
+        .where(eq(deviceExternalLinks.id, created!.id))
+        .returning({ id: deviceExternalLinks.id })
+    );
+    expect(updated).toHaveLength(1);
+
+    const deleted = await withDbAccessContext(partnerCtx(f.partnerA, [f.orgA]), () =>
+      db.delete(deviceExternalLinks)
+        .where(eq(deviceExternalLinks.id, created!.id))
+        .returning({ id: deviceExternalLinks.id })
+    );
+    expect(deleted).toHaveLength(1);
+  });
+
+  runDb('a cross-partner UPDATE and DELETE reach zero rows', async () => {
+    // RLS filters UPDATE/DELETE silently rather than raising 42501, so the
+    // proof is a zero row count plus the row still being there afterwards.
+    const f = await seedFixture();
+    const [victim] = await sys(() => insertLink({
+      deviceId: f.dOtherPartner, orgId: f.orgB, partnerId: f.partnerB, system: 'datto_rmm', externalId: 'uid-b-rw',
+    }));
+
+    const updated = await withDbAccessContext(partnerCtx(f.partnerA, [f.orgA]), () =>
+      db.update(deviceExternalLinks)
+        .set({ label: 'hijacked' })
+        .where(eq(deviceExternalLinks.id, victim!.id))
+        .returning({ id: deviceExternalLinks.id })
+    );
+    expect(updated).toHaveLength(0);
+
+    const deleted = await withDbAccessContext(partnerCtx(f.partnerA, [f.orgA]), () =>
+      db.delete(deviceExternalLinks)
+        .where(eq(deviceExternalLinks.id, victim!.id))
+        .returning({ id: deviceExternalLinks.id })
+    );
+    expect(deleted).toHaveLength(0);
+
+    const survivors = await sys(() => db.execute(
+      sql`SELECT label FROM device_external_links WHERE id = ${victim!.id}::uuid`
+    )) as unknown as Array<{ label: string | null }>;
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]?.label).toBeNull();
   });
 
   runDb('rejects a cross-partner forge INSERT with an RLS violation (42501)', async () => {
