@@ -720,7 +720,13 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 			}
 		}
 
-		if err := c.executor.Cancel(executionID); err != nil {
+		// #3525: mirror the agent-side structured outcome. "no such execution"
+		// used to come back as a failed IPC result, indistinguishable from a
+		// failed kill — and the agent needs the difference to decide whether
+		// not_found is the whole fleet's answer.
+		c.executor.SetCancelCommandID(executionID, cmd.CommandID)
+		outcome, err := c.executor.Cancel(executionID, getIntOrDefault(payload, "graceSeconds", defaultCancelGraceSeconds))
+		if err != nil {
 			return ipc.IPCCommandResult{
 				CommandID: cmd.CommandID,
 				Status:    "failed",
@@ -730,7 +736,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 		resultJSON, err := json.Marshal(map[string]any{
 			"executionId": executionID,
-			"cancelled":   true,
+			"outcome":     string(outcome),
+			"cancelled":   outcome == executor.CancelTerminated,
 		})
 		if err != nil {
 			return ipc.IPCCommandResult{
@@ -1410,6 +1417,10 @@ func getStringOrDefault(m map[string]any, key, def string) string {
 	}
 	return def
 }
+
+// defaultCancelGraceSeconds mirrors the agent-side default when a script_cancel
+// payload omits graceSeconds. executor.Cancel clamps it to 0..MaxGraceSeconds.
+const defaultCancelGraceSeconds = 5
 
 func getIntOrDefault(m map[string]any, key string, def int) int {
 	if v, ok := m[key].(float64); ok {

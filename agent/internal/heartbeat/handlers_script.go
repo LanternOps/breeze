@@ -335,6 +335,31 @@ func resolveRunAsSession(broker *sessionbroker.Broker, runAs string) *sessionbro
 	return broker.SessionForUser(target)
 }
 
+const (
+	// scriptCancelHelperTimeoutSeconds is the per-helper IPC budget for a
+	// script_cancel. helperCommandTimeout adds 5s, and the result MUST exceed
+	// the 30s maximum grace (executor.MaxGraceSeconds, spec OD2-B): the old
+	// value of 10 gave a 15s wait, so a 30s cancel timed the IPC out while the
+	// helper was still escalating and the agent reported a failure for a kill
+	// that was about to succeed.
+	scriptCancelHelperTimeoutSeconds = 40
+
+	// defaultCancelGraceSeconds matches the server's default when a request
+	// omits graceSeconds. executor.Cancel clamps to 0..MaxGraceSeconds.
+	defaultCancelGraceSeconds = 5
+)
+
+// handleScriptCancel stops a running script and reports what actually happened.
+//
+// All three outcomes (terminated / not_found / kill_failed) come back as a
+// SUCCESS result carrying {executionId, outcome, cancelled}: the server closes
+// the execution's cancel_state differently for each, and an error string cannot
+// carry that distinction — the previous implementation returned
+// tools.NewErrorResult for "no such execution" AND for a genuinely failed kill.
+// Only a genuinely malformed payload is still an error result.
+//
+// `cancelled` is true only for `terminated`. It feeds the server's honesty
+// contract: script_executions.status may become 'cancelled' only on proof.
 func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	executionID, errResult := tools.RequirePayloadString(cmd.Payload, "executionId")
@@ -342,39 +367,130 @@ func handleScriptCancel(h *Heartbeat, cmd Command) tools.CommandResult {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
+	grace := cancelGraceSeconds(cmd.Payload)
 
-	if err := h.executor.Cancel(executionID); err != nil {
-		if h.sessionBroker == nil {
-			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
-		}
-
-		var helperErr error
-		for _, session := range h.runAsHelperSessions() {
-			resp, sendErr := h.sendCommandToUserHelper(session, cmd, 10)
-			if sendErr != nil {
-				helperErr = sendErr
-				continue
-			}
-			if resp.Status == "completed" {
-				return tools.NewSuccessResult(map[string]any{
-					"executionId": executionID,
-					"cancelled":   true,
-				}, time.Since(start).Milliseconds())
-			}
-			if resp.Error != "" {
-				helperErr = errors.New(resp.Error)
-			}
-		}
-
-		if helperErr != nil {
-			return tools.NewErrorResult(helperErr, time.Since(start).Milliseconds())
-		}
+	// Name the responsible command BEFORE asking, so the script's own result
+	// can carry cancelledByCommandId even if it wins the race with our ack.
+	h.executor.SetCancelCommandID(executionID, cmd.ID)
+	outcome, err := h.executor.Cancel(executionID, grace)
+	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+
+	// A runAs=user script runs inside a user helper's OWN executor, so our
+	// not_found says nothing about it. Every other outcome is already decided
+	// locally — fanning out then would risk a second kill of an unrelated id.
+	if outcome == executor.CancelNotFound {
+		outcome = h.cancelViaUserHelpers(cmd, executionID, outcome)
+	}
+
+	log.Info("script cancel resolved",
+		"commandId", cmd.ID, "executionId", executionID,
+		"outcome", string(outcome), "graceSeconds", grace)
+
 	return tools.NewSuccessResult(map[string]any{
 		"executionId": executionID,
-		"cancelled":   true,
+		"outcome":     string(outcome),
+		"cancelled":   outcome == executor.CancelTerminated,
 	}, time.Since(start).Milliseconds())
+}
+
+// cancelGraceSeconds reads the requested graceful-shutdown window from the
+// command payload. JSON decoding gives float64; the string arm tolerates a
+// stringified value. executor.Cancel clamps whatever comes back.
+func cancelGraceSeconds(payload map[string]any) int {
+	raw, ok := payload["graceSeconds"]
+	if !ok {
+		return defaultCancelGraceSeconds
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed
+		}
+	}
+	return defaultCancelGraceSeconds
+}
+
+// cancelViaUserHelpers fans a cancel out to every run_as_user helper and folds
+// their answers into one outcome.
+//
+// not_found is returned ONLY when every helper also reports not_found — an
+// unreachable or erroring helper may still own the process, and the server
+// treats not_found as "revert, nothing proven" rather than "kill failed".
+// Ranking is terminated > kill_failed > not_found: an execution lives in at
+// most one helper, so a single `terminated` is proof.
+func (h *Heartbeat) cancelViaUserHelpers(cmd Command, executionID string, local executor.CancelOutcome) executor.CancelOutcome {
+	sessions := h.runAsHelperSessions()
+	if len(sessions) == 0 {
+		return local
+	}
+
+	outcome := local
+	for _, session := range sessions {
+		resp, sendErr := h.sendCommandToUserHelper(session, cmd, scriptCancelHelperTimeoutSeconds)
+		if sendErr != nil {
+			log.Warn("user-helper script cancel failed",
+				"sessionId", session.SessionID, "executionId", executionID, "error", sendErr.Error())
+			outcome = strongerCancelOutcome(outcome, executor.CancelKillFailed)
+			continue
+		}
+		outcome = strongerCancelOutcome(outcome, decodeHelperCancelOutcome(session.SessionID, resp))
+	}
+	return outcome
+}
+
+// decodeHelperCancelOutcome reads a helper's structured outcome. Anything it
+// cannot positively read as one of the three known outcomes grades as
+// kill_failed: a helper that answered something we do not understand may well
+// still be running the script, and claiming not_found there would let the
+// server revert the execution as if nothing had been running.
+func decodeHelperCancelOutcome(sessionID string, resp *ipc.IPCCommandResult) executor.CancelOutcome {
+	if resp == nil || resp.Status != "completed" {
+		return executor.CancelKillFailed
+	}
+	var nested struct {
+		Outcome string `json:"outcome"`
+	}
+	if len(resp.Result) == 0 || json.Unmarshal(resp.Result, &nested) != nil {
+		log.Warn("user helper returned an undecodable script cancel result", "sessionId", sessionID)
+		return executor.CancelKillFailed
+	}
+	switch executor.CancelOutcome(nested.Outcome) {
+	case executor.CancelTerminated:
+		return executor.CancelTerminated
+	case executor.CancelNotFound:
+		return executor.CancelNotFound
+	case executor.CancelKillFailed:
+		return executor.CancelKillFailed
+	}
+	// A pre-#3525 helper reports {cancelled:true} with no outcome. It acked the
+	// instant it asked, which proves nothing, so it does not earn `terminated`.
+	log.Warn("user helper returned no script cancel outcome; grading as kill_failed",
+		"sessionId", sessionID, "outcome", nested.Outcome)
+	return executor.CancelKillFailed
+}
+
+func strongerCancelOutcome(current, next executor.CancelOutcome) executor.CancelOutcome {
+	if cancelOutcomeRank(next) > cancelOutcomeRank(current) {
+		return next
+	}
+	return current
+}
+
+func cancelOutcomeRank(outcome executor.CancelOutcome) int {
+	switch outcome {
+	case executor.CancelTerminated:
+		return 2
+	case executor.CancelKillFailed:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func handleScriptListRunning(h *Heartbeat, _ Command) tools.CommandResult {

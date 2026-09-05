@@ -182,6 +182,31 @@ func TestCancelBeforeRegistrationPreventsTheScriptFromStarting(t *testing.T) {
 	}
 }
 
+func TestCancelReportsKillFailedWhenContainmentWasNeverEstablished(t *testing.T) {
+	skipWithoutBash(t)
+	// The fail-closed rule: on Windows an RDS session job can deny the Job
+	// Object assignment, so the script runs but its children are not ours to
+	// kill. A cancel must never claim `terminated` in that state, even when the
+	// leader itself dies cleanly.
+	e := newTestExecutor()
+	done := make(chan *ScriptResult, 1)
+	go func() { r, _ := e.Execute(sleepScript("id-6", 60)); done <- r }()
+	r := waitForRunning(t, e, "id-6")
+
+	r.mu.Lock()
+	r.contained = false
+	r.mu.Unlock()
+
+	outcome, err := e.Cancel("id-6", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != CancelKillFailed {
+		t.Fatalf("outcome = %q, want kill_failed for an uncontained execution", outcome)
+	}
+	<-done
+}
+
 func TestClampGraceBoundsTheRequestedWindow(t *testing.T) {
 	for _, tc := range []struct{ in, want int }{{-1, 0}, {0, 0}, {5, 5}, {30, 30}, {31, 30}, {9999, 30}} {
 		if got := clampGrace(tc.in); got != tc.want {
