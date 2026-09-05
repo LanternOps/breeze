@@ -396,8 +396,8 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 | `capabilities` | Helper -> Agent | Report display, notification, capture, clipboard capabilities |
 | `command` | Agent -> Helper | Execute a command in the user session (scripts, screenshots, computer actions) |
 | `command_result` | Helper -> Agent | Command execution result with status, output, and error |
-| `notify` | Agent -> Helper | Show a desktop notification to the user |
-| `notify_result` | Helper -> Agent | Whether the notification was delivered |
+| `notify` | Agent -> Helper | Show a desktop notification to the user. May carry a list of buttons, in which case the Helper draws a real modal dialog rather than a passing toast |
+| `notify_result` | Helper -> Agent | Whether the notification was delivered, and which button the user pressed |
 | `tray_update` | Agent -> Helper | Update tray icon status, tooltip, and menu items |
 | `desktop_start` | Agent -> Helper | Start a remote desktop capture session |
 | `desktop_stop` | Agent -> Helper | Stop a remote desktop capture session |
@@ -408,6 +408,10 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 | `sas_response` | Agent -> Helper | SAS request result |
 | `ping` / `pong` | Bidirectional | Keepalive (5-second interval) |
 | `disconnect` | Either | Graceful shutdown signal |
+
+<Aside type="note" title="Restart prompts on Linux do not use the Helper">
+  The end-user restart prompt described in [Patch Management](/features/patch-management/) is drawn by the Helper on Windows and macOS, through the `notify` message above. There is no Helper binary for Linux — on a Linux endpoint the agent itself draws the dialog in the signed-in user's graphical session using `zenity`, and falls back to a plain `notify-send` notification (which the user cannot postpone from) when `zenity` is not installed.
+</Aside>
 
 ### Session Security
 
