@@ -30,11 +30,40 @@
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { customFieldDefinitions } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
+import { getTestDb } from './setup';
+
+const MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-10-10-100300-custom-field-definition-integrity.sql',
+);
+
+/**
+ * Replay the real migration by path (the repo's established shape — see
+ * `alertNotificationSendIdentity.integration.test.ts`). `autoMigrate.test.ts`
+ * asserts every such reference resolves, so a rename of the migration turns
+ * into a unit-job failure rather than an ENOENT minutes into Integration Tests.
+ *
+ * Runs as the privileged test role, mirroring how migrations actually run.
+ */
+async function replayMigration(): Promise<void> {
+  await getTestDb().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
+}
+
+/** Remove the constraint + indexes so dirty rows can be forged, as prod's would be. */
+async function dropIntegrityObjects(): Promise<void> {
+  await getTestDb().execute(sql`
+    ALTER TABLE public.custom_field_definitions
+      DROP CONSTRAINT IF EXISTS custom_field_definitions_one_owner_chk`);
+  await getTestDb().execute(sql`DROP INDEX IF EXISTS custom_field_definitions_org_key_uq`);
+  await getTestDb().execute(sql`DROP INDEX IF EXISTS custom_field_definitions_partner_key_uq`);
+}
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -71,9 +100,14 @@ afterEach(async () => {
   if (createdKeys.length === 0) return;
   const keys = [...new Set(createdKeys)];
   createdKeys.length = 0;
-  // `inArray`, not a raw `= ANY(${keys}::text[])`: postgres.js binds a JS array
-  // to a raw `sql` fragment as a single scalar parameter, so the cast raises
-  // 22P02 "malformed array literal" at bind time rather than matching anything.
+  // `inArray`, not a raw `= ANY(${keys}::text[])`. Drizzle's `sql` tag expands
+  // an interpolated JS array into a parenthesized list of SEPARATE bound
+  // parameters — `($1, $2, $3)` — not a Postgres array literal, so the
+  // `::text[]` cast fails instead of matching anything. The SQLSTATE depends
+  // on the element count, which makes it especially easy to misdiagnose:
+  // 22P02 "malformed array literal" for one element (observed here), 42846
+  // "cannot cast type record to text[]" for several. Not a postgres.js
+  // limitation — the driver serializes a real array fine on its own.
   await sys(() => db.delete(customFieldDefinitions).where(
     inArray(customFieldDefinitions.fieldKey, keys),
   ));
@@ -128,11 +162,18 @@ describe('custom_field_definitions integrity constraints (#3257 W02)', () => {
     });
 
     /**
-     * The two unique indexes are PARTIAL and per-axis, not one composite over
-     * two nullable columns. This is the test that would fail if someone
-     * "simplified" them into `UNIQUE (org_id, partner_id, field_key)`: under a
-     * composite, every partner-wide row has `org_id NULL`, btree treats NULLs
-     * as distinct, and the partner axis would enforce nothing at all.
+     * Uniqueness is per-OWNER, not global: two customers of the same MSP must
+     * both be able to define `asset_tag`. A blanket `UNIQUE (field_key)` would
+     * break every multi-tenant partner on day one.
+     *
+     * This test does NOT discriminate the shipped partial-per-axis indexes
+     * from a composite `UNIQUE (org_id, partner_id, field_key)` — both orgs
+     * here carry distinct non-NULL `org_id`s, so neither design lets them
+     * collide. The test that catches that particular "simplification" is
+     * `rejects a second partner-wide definition with the same field_key`
+     * above: under a composite, every partner-wide row has `org_id NULL`,
+     * btree treats NULLs as distinct, and the partner axis would enforce
+     * nothing at all.
      */
     it('scopes uniqueness to ONE owner — two different orgs may both define asset_tag', async () => {
       const partner = await createPartner();
@@ -208,6 +249,91 @@ describe('custom_field_definitions integrity constraints (#3257 W02)', () => {
            WHERE field_key = 'update_orphan_key'`)),
         '23514',
       );
+    });
+  });
+
+  /**
+   * The migration's own abort path. This is the guard standing between a dirty
+   * prod database and a deploy, and nothing else in this suite exercises it:
+   * by the time any other test runs, autoMigrate has already applied the file
+   * once, cleanly, against an empty table.
+   *
+   * It matters because the failure is asymmetric. `RAISE WARNING` alone would
+   * return SUCCESS and autoMigrate would record the file as applied FOREVER
+   * (it wraps each file in `client.begin`; only an exception rolls that back),
+   * leaving prod permanently without the constraint while the ledger claims
+   * otherwise. So the file WARNs the detail and then RAISEs — and that pairing
+   * is what these tests pin. Deleting either RAISE fails one of them.
+   *
+   * Each test restores the shipped state in `finally` by replaying the same
+   * migration, which doubles as a live proof that re-application is a true
+   * no-op (the pg_constraint guard skips; both indexes are IF NOT EXISTS).
+   */
+  describe('deploy abort on pre-existing bad data', () => {
+    it('aborts with P0001 and names the offending (owner, field_key) pairs', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      try {
+        await dropIntegrityObjects();
+        await insertDefinition({ orgId: org.id, name: 'Asset Tag', fieldKey: 'dirty_dupe' });
+        await insertDefinition({ orgId: org.id, name: 'Asset Tag 2', fieldKey: 'dirty_dupe' });
+
+        let raised: unknown;
+        try {
+          await replayMigration();
+        } catch (err) {
+          raised = err;
+        }
+
+        expect(raised, 'the migration must ABORT, not warn and continue').toBeDefined();
+        expect(pgErrorCode(raised)).toBe('P0001');
+        // The operator must be able to act on this without running a second
+        // query, so the message carries the count and the remediation rule.
+        const detail = JSON.stringify(raised);
+        expect(detail).toMatch(/duplicate \(owner, field_key\) pairs/);
+        expect(detail).toMatch(/resolve them by hand before deploying/);
+      } finally {
+        await sys(() => db.delete(customFieldDefinitions).where(
+          inArray(customFieldDefinitions.fieldKey, ['dirty_dupe']),
+        ));
+        await replayMigration();
+      }
+    });
+
+    it('aborts with P0001 on a pre-existing ownerless row', async () => {
+      try {
+        await dropIntegrityObjects();
+        await insertDefinition({ name: 'Orphan', fieldKey: 'dirty_orphan' });
+
+        let raised: unknown;
+        try {
+          await replayMigration();
+        } catch (err) {
+          raised = err;
+        }
+
+        expect(raised, 'the migration must ABORT, not warn and continue').toBeDefined();
+        expect(pgErrorCode(raised)).toBe('P0001');
+        expect(JSON.stringify(raised)).toMatch(/org XOR partner rule/);
+      } finally {
+        await sys(() => db.delete(customFieldDefinitions).where(
+          inArray(customFieldDefinitions.fieldKey, ['dirty_orphan']),
+        ));
+        await replayMigration();
+      }
+    });
+
+    it('re-applies cleanly, leaving the constraint and both indexes in place', async () => {
+      await replayMigration();
+
+      const objects = await sys(() => db.execute(sql`
+        SELECT conname AS name FROM pg_constraint
+         WHERE conname = 'custom_field_definitions_one_owner_chk'
+        UNION ALL
+        SELECT indexname FROM pg_indexes
+         WHERE indexname IN ('custom_field_definitions_org_key_uq',
+                             'custom_field_definitions_partner_key_uq')`));
+      expect(objects).toHaveLength(3);
     });
   });
 });
