@@ -2,8 +2,8 @@
 /**
  * Pre-archive check for release builds of the Breeze RMM mobile app.
  *
- * ⚠️ THIS SCRIPT IS NOT A GATE. Nothing invokes it — there is no mobile build
- * workflow, no Fastlane lane, no archive script — and the real release path is
+ * ⚠️ THIS SCRIPT IS NOT A GATE. Nothing invokes it — the mobile CI build
+ * only compiles an unsigned Debug simulator app, and the real release path is
  * a human pressing Product → Archive in Xcode, which does not run it. That is
  * not a hypothetical weakness: this file's DSN check was correct for 90 days
  * while the breeze-mobile Sentry project recorded zero events, because nobody
