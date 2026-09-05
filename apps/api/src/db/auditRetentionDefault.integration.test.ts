@@ -9,7 +9,7 @@ import { createOrganization, createPartner } from '../__tests__/integration/db-u
 import { getAppDb, getTestDb } from '../__tests__/integration/setup';
 import { pruneExpiredAuditLogs } from '../jobs/auditRetention';
 
-const migration = readFileSync(new URL('../../migrations/2026-10-09-000200-default-org-audit-retention.sql', import.meta.url), 'utf8');
+const migration = readFileSync(new URL('../../migrations/2026-10-09-000201-default-org-audit-retention.sql', import.meta.url), 'utf8');
 const policies = (orgId: string) => getTestDb().select().from(auditRetentionPolicies).where(eq(auditRetentionPolicies.orgId, orgId));
 
 function orgValues(partnerId: string, id = randomUUID()) {
