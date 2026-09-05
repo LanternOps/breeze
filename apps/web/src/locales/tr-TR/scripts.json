@@ -805,7 +805,8 @@
     "errors": {
       "fetch": "Komut dosyası getirilemedi",
       "generic": "Bir hata oluştu",
-      "save": "Komut dosyası kaydedilemedi"
+      "save": "Komut dosyası kaydedilemedi",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "created": "Komut dosyası oluşturuldu",
@@ -815,6 +816,7 @@
     "actions": {
       "backToScripts": "Komut Dosyalarına Geri Dön",
       "executionHistory": "Yürütme Geçmişi",
+      "duplicate": "Çoğalt",
       "create": "Komut Dosyası Oluştur",
       "saveChanges": "Değişiklikleri Kaydet"
     },
@@ -1125,6 +1127,7 @@
     "actions": {
       "runTitle": "Komut dosyasını çalıştır",
       "editTitle": "Komut dosyasını düzenle",
+      "duplicateTitle": "Komut dosyasını çoğalt",
       "deleteTitle": "Komut dosyasını sil"
     },
     "pagination": {
@@ -1245,7 +1248,8 @@
       "delete": "Komut dosyası silinemedi",
       "deleteTryAgain": "Komut dosyası silinemedi. Lütfen tekrar deneyin.",
       "alreadyInLibrary": "\"{{name}}\" zaten kitaplığınızda",
-      "import": "Komut dosyası içe aktarılamadı"
+      "import": "Komut dosyası içe aktarılamadı",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "deleting": "\"{{name}}\" siliniyor...",

@@ -805,7 +805,8 @@
     "errors": {
       "fetch": "Das Skript konnte nicht abgerufen werden",
       "generic": "Es ist ein Fehler aufgetreten",
-      "save": "Das Skript konnte nicht gespeichert werden"
+      "save": "Das Skript konnte nicht gespeichert werden",
+      "duplicate": "Das Skript konnte nicht dupliziert werden"
     },
     "toast": {
       "created": "Skript erstellt",
@@ -815,6 +816,7 @@
     "actions": {
       "backToScripts": "Zurück zu Skripten",
       "executionHistory": "Ausführungsgeschichte",
+      "duplicate": "Duplizieren",
       "create": "Skript erstellen",
       "saveChanges": "Änderungen speichern"
     },
@@ -1125,6 +1127,7 @@
     "actions": {
       "runTitle": "Skript ausführen",
       "editTitle": "Skript bearbeiten",
+      "duplicateTitle": "Skript duplizieren",
       "deleteTitle": "Skript löschen"
     },
     "pagination": {
@@ -1245,7 +1248,8 @@
       "delete": "Das Skript konnte nicht gelöscht werden",
       "deleteTryAgain": "Das Skript konnte nicht gelöscht werden. Bitte versuchen Sie es erneut.",
       "alreadyInLibrary": "„{{name}}“ ist bereits in Ihrer Bibliothek",
-      "import": "Skript konnte nicht importiert werden"
+      "import": "Skript konnte nicht importiert werden",
+      "duplicate": "Das Skript konnte nicht dupliziert werden"
     },
     "toast": {
       "deleting": "„{{name}}“ wird gelöscht...",

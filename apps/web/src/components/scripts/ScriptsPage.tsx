@@ -15,6 +15,8 @@ import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { cloneScript } from '@/lib/api/scripts';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -58,6 +60,7 @@ export default function ScriptsPage() {
   const [systemScripts, setSystemScripts] = useState<SystemScript[]>([]);
   const [loadingLibrary, setLoadingLibrary] = useState(false);
   const [importingId, setImportingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
@@ -126,6 +129,27 @@ export default function ScriptsPage() {
 
   const handleEdit = (script: Script) => {
     void navigateTo(`/scripts/${script.id}`);
+  };
+
+  // #4887: one-click same-scope duplicate from the list row. Landing on the
+  // new draft (rather than refreshing the list in place) is the point of
+  // duplicating — the user is about to edit it.
+  const handleDuplicate = async (script: Script) => {
+    if (duplicatingId) return;
+    setDuplicatingId(script.id);
+    try {
+      const cloned = await runAction<{ id: string }>({
+        request: () => cloneScript(script.id),
+        errorFallback: t('scriptsPage.errors.duplicate'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+      else await fetchScripts();
+    } catch (err) {
+      handleActionError(err, t('scriptsPage.errors.duplicate'));
+    } finally {
+      setDuplicatingId(null);
+    }
   };
 
   const handleDelete = (script: Script) => {
@@ -373,6 +397,7 @@ export default function ScriptsPage() {
           scripts={scripts}
           onRun={handleRun}
           onEdit={handleEdit}
+          onDuplicate={(script) => void handleDuplicate(script)}
           onDelete={handleDelete}
           organizations={organizations}
         />

@@ -805,7 +805,8 @@
     "errors": {
       "fetch": "Failed to fetch script",
       "generic": "An error occurred",
-      "save": "Failed to save script"
+      "save": "Failed to save script",
+      "duplicate": "Failed to duplicate script"
     },
     "toast": {
       "created": "Script created",
@@ -815,6 +816,7 @@
     "actions": {
       "backToScripts": "Back to Scripts",
       "executionHistory": "Execution History",
+      "duplicate": "Duplicate",
       "create": "Create Script",
       "saveChanges": "Save Changes"
     },
@@ -1125,6 +1127,7 @@
     "actions": {
       "runTitle": "Run script",
       "editTitle": "Edit script",
+      "duplicateTitle": "Duplicate script",
       "deleteTitle": "Delete script"
     },
     "pagination": {
@@ -1245,7 +1248,8 @@
       "delete": "Failed to delete script",
       "deleteTryAgain": "Failed to delete script. Please try again.",
       "alreadyInLibrary": "\"{{name}}\" is already in your library",
-      "import": "Failed to import script"
+      "import": "Failed to import script",
+      "duplicate": "Failed to duplicate script"
     },
     "toast": {
       "deleting": "Deleting \"{{name}}\"...",
