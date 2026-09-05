@@ -57,6 +57,7 @@ import {
   assertAppRoleBootstrapped,
   hashSql,
   hasNoTransactionDirective,
+  extractDefinedFunctionNames,
   splitSqlStatements,
   CHECKSUM_RECONCILIATIONS,
   planMigrations,
@@ -287,6 +288,81 @@ describe('autoMigrate', () => {
     });
   });
 
+  describe('extractDefinedFunctionNames', () => {
+    it('returns an empty array for a file that defines no function', () => {
+      expect(extractDefinedFunctionNames('ALTER TABLE devices ADD COLUMN IF NOT EXISTS foo text;')).toEqual([]);
+    });
+
+    it('extracts a schema-qualified CREATE OR REPLACE FUNCTION, lowercased', () => {
+      const sql = 'CREATE OR REPLACE FUNCTION public.Breeze_Guard_Pam_Device_Org_Move()\nRETURNS trigger\nAS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;';
+      expect(extractDefinedFunctionNames(sql)).toEqual(['public.breeze_guard_pam_device_org_move']);
+    });
+
+    it('extracts every function/procedure a real multi-definer migration redefines', () => {
+      // Trimmed shape of apps/api/migrations/2026-09-17-pam-device-move-guard.sql:
+      // two CREATE OR REPLACE FUNCTION statements in one file.
+      const sql = `
+CREATE OR REPLACE FUNCTION public.breeze_guard_pam_device_org_move()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
+  RETURNS SETOF text
+  LANGUAGE sql
+  STABLE
+  AS $$
+  SELECT 1;
+$$;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual([
+        'public.breeze_device_child_orgid_tables',
+        'public.breeze_guard_pam_device_org_move',
+      ]);
+    });
+
+    it('recognizes bare CREATE FUNCTION and CREATE [OR REPLACE] PROCEDURE, without the "OR REPLACE" branch', () => {
+      const sql = `
+CREATE FUNCTION public.plain_new_function() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+CREATE PROCEDURE public.plain_procedure() LANGUAGE sql AS $$ SELECT 1; $$;
+CREATE OR REPLACE PROCEDURE public.replaced_procedure() LANGUAGE sql AS $$ SELECT 1; $$;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual([
+        'public.plain_new_function',
+        'public.plain_procedure',
+        'public.replaced_procedure',
+      ]);
+    });
+
+    it('ignores a CREATE OR REPLACE FUNCTION mentioned only in a line comment', () => {
+      const sql = [
+        '-- Idempotent throughout: ADD COLUMN IF NOT EXISTS, DO-guarded constraint add,',
+        '-- CREATE OR REPLACE FUNCTION public.should_not_count(). autoMigrate wraps this',
+        '-- file in one transaction -- no inner BEGIN/COMMIT.',
+        '',
+        'ALTER TABLE action_intents ADD COLUMN IF NOT EXISTS approval_scope text;',
+      ].join('\n');
+      expect(extractDefinedFunctionNames(sql)).toEqual([]);
+    });
+
+    it('dedupes a name defined more than once in the same file', () => {
+      const sql = `
+CREATE OR REPLACE FUNCTION public.dup() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION public.dup() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual(['public.dup']);
+    });
+
+    it('is case-insensitive on the CREATE/FUNCTION keywords themselves', () => {
+      expect(extractDefinedFunctionNames('create or replace function public.lower_kw() returns void as $$ begin end; $$ language plpgsql;'))
+        .toEqual(['public.lower_kw']);
+    });
+  });
+
   describe('splitSqlStatements', () => {
     it('splits a typical CREATE INDEX CONCURRENTLY migration', () => {
       const sql = `-- @no-transaction
@@ -473,6 +549,24 @@ describe('CHECKSUM_RECONCILIATIONS', () => {
 });
 
 describe('migration filename conventions', () => {
+  it('#3205 W07: the billing-evidence migrations sort A -> B -> C and A is no-transaction', () => {
+    const dir = path.join(__dirname, '../../migrations');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-.*\.sql$/.test(f))
+      .sort((a, b) => a.localeCompare(b));
+    const a = files.findIndex((f) => f.endsWith('-billing-evidence-fk-targets.sql'));
+    const b = files.findIndex((f) => f.endsWith('-101200-billing-evidence.sql'));
+    const c = files.findIndex((f) => f.endsWith('-device-move-exclude-billing-evidence.sql'));
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+    // A builds indexes CONCURRENTLY, which is illegal inside a transaction.
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[a]!), 'utf8'))).toBe(true);
+    // B and C are ordinary transactional files.
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[b]!), 'utf8'))).toBe(false);
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[c]!), 'utf8'))).toBe(false);
+  });
+
   it('adds no new migration to the closed 2026-08-06 reserved block', () => {
     const onDisk = listMigrationFilenames().filter((filename) =>
       filename.startsWith(RESERVED_MIGRATION_DATE),
@@ -640,6 +734,139 @@ describe('migration filename conventions', () => {
     // flaky version of this guard is indistinguishable from the renamed-
     // migration ENOENT it exists to move out of Integration Tests.
   }, 60_000);
+});
+
+describe('migration ordering vs a remote ref (--against-ref, pre-push guard)', () => {
+  // The commit-time guard (--staged, above) can only see history already
+  // reachable from the branch's own HEAD. It is blind to a migration that
+  // lands on origin/main AFTER the branch was cut — which is exactly what
+  // happened on 2026-10-03: a branch carrying 2026-10-02-100001-… passed the
+  // commit-time guard clean, while origin/main had meanwhile gained
+  // 2026-10-03-audit-chain-verify-range.sql, which sorts after it. CI's
+  // "Check Migrations" job (running against the merge commit) would have
+  // caught it, but only after a push and a red run — the file had to be
+  // renamed and pushed again. --against-ref exists to catch this locally,
+  // in a pre-push hook, before that round-trip.
+  //
+  // This drives the guard against a REAL temporary git repo (with a bare
+  // "origin" remote) rather than the fixture-directory technique the
+  // --staged tests above use, because the new mode's whole job is to diff
+  // two refs — there is no ref to diff without an actual repository.
+  function git(args: string[], cwd: string): string {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(
+        `git ${args.join(' ')} (cwd=${cwd}) failed:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+      );
+    }
+    return result.stdout;
+  }
+
+  function runGuard(
+    cwd: string,
+    args: string[],
+  ): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync('bash', [GUARD_SCRIPT, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, BREEZE_MIGRATIONS_DIR: 'migrations' },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  // Builds: a bare "origin" remote, a work tree with a base migration pushed
+  // to origin/main, then a "feature" branch cut from that base — mirroring a
+  // real branch-and-push flow.
+  function makeRepo(): { dir: string; origin: string } {
+    const dir = mkdtempSync(path.join(tmpdir(), 'migration-order-work-'));
+    const origin = mkdtempSync(path.join(tmpdir(), 'migration-order-origin-'));
+    git(['init', '--bare', '--initial-branch=main', origin], origin);
+
+    git(['init', '--initial-branch=main', dir], dir);
+    git(['config', 'user.email', 'guard-test@example.com'], dir);
+    git(['config', 'user.name', 'Guard Test'], dir);
+    git(['remote', 'add', 'origin', origin], dir);
+
+    mkdirSync(path.join(dir, 'migrations'));
+    writeFileSync(path.join(dir, 'migrations', '2026-10-01-base.sql'), '-- base\n');
+    git(['add', '.'], dir);
+    git(['commit', '-m', 'base'], dir);
+    git(['push', 'origin', 'main'], dir);
+
+    git(['checkout', '-b', 'feature'], dir);
+    return { dir, origin };
+  }
+
+  function cleanup(repo: { dir: string; origin: string }): void {
+    rmSync(repo.dir, { recursive: true, force: true });
+    rmSync(repo.origin, { recursive: true, force: true });
+  }
+
+  it('passes when the branch\'s new migration sorts after the newest on origin/main', () => {
+    const repo = makeRepo();
+    try {
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-04-feature.sql'), '-- feature\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'feature migration'], repo.dir);
+      git(['fetch', 'origin', 'main'], repo.dir);
+
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('OK');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('fails, naming the offending file and the remedy, when origin/main gained a migration meanwhile that sorts after the branch\'s new one', () => {
+    const repo = makeRepo();
+    try {
+      // The branch adds a migration that looks fine relative to its own
+      // history (sorts after the base it was cut from)...
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-02-100001-feature.sql'), '-- feature\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'feature migration'], repo.dir);
+
+      // ...but meanwhile origin/main gained a migration that sorts AFTER it.
+      git(['checkout', 'main'], repo.dir);
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-03-main-progressed.sql'), '-- main\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'main progressed'], repo.dir);
+      git(['push', 'origin', 'main'], repo.dir);
+      git(['checkout', 'feature'], repo.dir);
+      git(['fetch', 'origin', 'main'], repo.dir);
+
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('2026-10-02-100001-feature.sql');
+      expect(result.stderr).toContain('2026-10-03-main-progressed.sql');
+      expect(result.stderr.toLowerCase()).toContain('rename');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('passes with no violations when the branch adds no new migrations', () => {
+    const repo = makeRepo();
+    try {
+      git(['fetch', 'origin', 'main'], repo.dir);
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('fails with a clear error, not a false OK, when the given ref does not exist', () => {
+    const repo = makeRepo();
+    try {
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/does-not-exist']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('origin/does-not-exist');
+    } finally {
+      cleanup(repo);
+    }
+  });
 });
 
 describe('core migration ordering', () => {

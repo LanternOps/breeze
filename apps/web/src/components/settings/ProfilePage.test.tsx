@@ -11,7 +11,7 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn() }) }
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) }
   )
 }));
 
@@ -455,6 +455,66 @@ describe('ProfilePage MFA setup', () => {
     const [, init] = setupCall!;
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({ currentPassword: 'hunter2-pw' });
+  });
+});
+
+describe('ProfilePage — change password (#4660)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // #4660: POST /auth/change-password used to reject a wrong currentPassword
+  // with a bare 401; it now answers 400 with a body carrying `message:
+  // 'Current password is incorrect'`, which handlePasswordChange reads via
+  // `errorData.message` (not `errorData.error`). This pins that the server's
+  // actual reason reaches the user inline instead of silently falling back
+  // to the generic "failed to change password" copy.
+  it('shows the server-provided message when currentPassword is rejected with 400', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/auth/change-password') {
+        return makeJsonResponse(
+          {
+            error: 'Current password is incorrect',
+            message: 'Current password is incorrect',
+            code: 'invalid_credentials'
+          },
+          false,
+          400
+        );
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: false,
+          hasPassword: true
+        }}
+      />
+    );
+
+    // The page has two "Current password" inputs (the MFA confirm-password
+    // prompt and this Change Password form); query the change-password
+    // form's fields by their unambiguous ids rather than by label text.
+    const currentPasswordInput = document.getElementById('currentPassword') as HTMLInputElement;
+    const newPasswordInput = document.getElementById('newPassword') as HTMLInputElement;
+    const confirmPasswordInput = document.getElementById('confirmPassword') as HTMLInputElement;
+    expect(currentPasswordInput).not.toBeNull();
+
+    fireEvent.change(currentPasswordInput, { target: { value: 'wrong-current-pw' } });
+    fireEvent.change(newPasswordInput, { target: { value: 'brand-new-pw-1' } });
+    fireEvent.change(confirmPasswordInput, { target: { value: 'brand-new-pw-1' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    expect(await screen.findByText('Current password is incorrect')).toBeTruthy();
   });
 });
 

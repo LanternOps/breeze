@@ -295,6 +295,7 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
       deferralDays: 0,
       thirdPartyApps: true,
       thirdPartyDeferralDays: 12,
+      autoApproveUnrated: false,
     });
   });
 

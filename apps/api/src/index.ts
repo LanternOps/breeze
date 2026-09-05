@@ -118,6 +118,7 @@ import { metricsRoutes, metricsMiddleware } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { partnerTrustRoutes } from './routes/partnerTrust';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -171,6 +172,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
+import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
   captureException,
   captureMessage,
@@ -948,6 +950,7 @@ api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
+api.route('/partner/trust', partnerTrustRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -1573,6 +1576,12 @@ async function bootstrap(): Promise<void> {
   }
 
   await runStartupChecks();
+
+  // #3128: advisory scan for PAM rules pinned to a risk tier no tool resolves
+  // to any more. Tool tiers are static code, so a deploy is the only moment a
+  // stored rule can go stale — boot is exactly when to look. Never throws;
+  // runs after loadBuiltinExtensions so extension tool tiers are resolvable.
+  await reportStalePamRuleTiers();
 
   // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
   // configure_defaults) so they are ready before the first request. The unauth

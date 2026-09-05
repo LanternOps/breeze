@@ -298,6 +298,26 @@
     "resolve": "Risolvi",
     "promote": "Promuovi"
   },
+  "deviceBillingCard": {
+    "title": "Fatturazione",
+    "uncovered": "Nessuna riga di contratto attiva fattura questo dispositivo.",
+    "viewContracts": "Vedi contratti",
+    "notBillable": {
+      "decommissioned": "Non fatturato — questo dispositivo è dismesso",
+      "ephemeral": "Non fatturato — questo dispositivo è un dispositivo di sessione di supporto effimera",
+      "not_billable": "Non fatturato — questo dispositivo non è attualmente fatturabile"
+    },
+    "error": {
+      "generic": "Impossibile caricare la copertura di fatturazione.",
+      "groupEvaluation": "Non è stato possibile valutare un gruppo di dispositivi di un contratto attivo ({{group}}). La copertura è sconosciuta."
+    },
+    "matchedBy": {
+      "org": "Intera organizzazione",
+      "site": "Questa sede",
+      "role": "Ruolo: {{role}}",
+      "group": "Gruppo: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Raccolta delle metriche di avvio avviata. I dati verranno visualizzati dopo il prossimo avvio o ciclo di raccolta.",
     "failedToTriggerCollection": "Impossibile avviare la raccolta",
@@ -569,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Stato backup, processi, snapshot e verifica",
     "theOsReportsAPendingReboot": "L'OS segnala un riavvio in sospeso (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Riavvio in sospeso",
+    "restartScheduled": "Riavvio programmato",
+    "restartInProgress": "Riavvio in corso",
+    "restartScheduledFor": "Riavvio programmato per le {{time}}",
+    "restartInProgressAt": "Riavvio avviato alle {{time}}",
+    "restartDeadline": "Deve riavviarsi entro le {{time}}",
+    "restartPostponed": "Rimandato {{used}} di {{max}}",
+    "restartPostponedTooltip": "Numero di volte in cui la persona che utilizza questo dispositivo ha rimandato il riavvio, sul totale consentito dai criteri.",
+    "restartCannotBePostponed": "Non può essere rimandato",
+    "restartSourcePatchJob": "Richiesto da un'installazione di patch",
+    "restartSourceMaintenanceWindow": "Richiesto da una finestra di manutenzione",
+    "restartSourceManual": "Richiesto da un tecnico",
+    "restartSourceUnknown": "Riavvio programmato",
     "agentV": "Agente v",
     "uptime": "Tempo di attività",
     "lastSeen": "Ultima visualizzazione",
@@ -632,6 +664,7 @@
     "retry": "Riprova",
     "activities": "Attività",
     "total": "in totale)",
+    "totalAtLeast": "{{count}} o più",
     "searchActivities": "Cerca attività...",
     "all": "Tutte",
     "success": "Riuscito",
@@ -651,7 +684,8 @@
     "details": "Dettagli",
     "showing": "Visualizzati",
     "text": "–",
-    "of": "di"
+    "of": "di",
+    "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Impossibile recuperare lo stato del filesystem",
@@ -734,6 +768,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossibile salvare il gruppo di dispositivi",
     "failedToDeleteGroup": "Impossibile eliminare il gruppo",
+    "billedByContracts": "Questo gruppo è fatturato da {{count}} contratto/i: {{names}}. Rimuovi prima le relative righe contrattuali.",
+    "billedByContractsCount": "Questo gruppo è fatturato da {{count}} contratto/i. Rimuovi prima le relative righe contrattuali.",
+    "quotedByQuotes": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i: {{names}}. Rimuovi prima quelle righe di preventivo.",
+    "quotedByQuotesCount": "Questo gruppo è quotato in {{count}} preventivo/i aperto/i. Rimuovi prima quelle righe di preventivo.",
     "failedToRunScriptOnGroups": "Impossibile eseguire lo script sui gruppi",
     "failedToApplyPolicyToGroups": "Impossibile applicare il criterio ai gruppi",
     "failedToMoveDevice": "Impossibile spostare il dispositivo",
@@ -1059,6 +1097,7 @@
     "of": "di",
     "devices": "dispositivi",
     "advancedFilterActive": "Filtro avanzato attivo",
+    "advancedFilterFailed": "Impossibile caricare il filtro: nessun dispositivo visualizzato",
     "filterByDeviceClass": "Filtra per classe dispositivo",
     "filterByVpn": "Filtra per VPN",
     "allVpn": "Tutte le VPN",
@@ -1227,6 +1266,8 @@
       "installOsPatches": "Installa patch OS in sospeso ({{count}})",
       "installThirdPartyPatches": "Installa patch di terze parti ({{count}})",
       "lastScan": "Ultima scansione: {{label}}",
+      "managePatches": "Gestisci patch",
+      "managedByPolicy": "Gestito dal criterio:",
       "pendingApprovalCount": "({{count}} in attesa di approvazione)",
       "polling": "Polling...",
       "refreshPatchData": "Aggiorna dati patch",
@@ -1474,12 +1515,14 @@
       "completedAt": "Completato il",
       "duration": "Durata",
       "exitCode": "Codice di uscita",
+      "runAs": "Contesto di esecuzione",
       "startedAt": "Avviato il"
     },
     "noOutput": "Nessun output",
     "output": "Output",
     "refreshing": "Aggiornamento...",
     "running": "In esecuzione...",
+    "runAgain": "Esegui di nuovo",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Annullato",
@@ -1763,6 +1806,7 @@
     "title": "Dispositivi",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
+      "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
       "alreadyPendingTail": "Già in sospeso",
       "bulkActionFailed": "Azione in blocco non riuscita",

@@ -88,6 +88,7 @@ describe('evaluateGroupMembership persisted site scope', () => {
         filterConditions: filter,
         filterFieldsUsed: ['osType'],
       }], true))
+      .mockReturnValueOnce(selectChain([]))
       .mockReturnValueOnce(selectChain([]));
     mockEvaluateFilter.mockResolvedValue({ deviceIds: [], totalCount: 0, evaluatedAt: new Date() });
 

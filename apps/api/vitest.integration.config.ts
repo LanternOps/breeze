@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/__tests__/integration/**/*.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
       // convention). It uses the shared integration setup via setupFiles plus an
@@ -172,13 +173,6 @@ export default defineConfig({
       // mocked unit suite (which mocks `../services/m365ToolsHeadless`
       // wholesale) can't exercise this.
       'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
-      // Co-located real-DB integration test for the two-replica runtime
-      // extension reconcile + failure policy (Task 8, issue #2619). Forks two
-      // genuinely separate child processes against the real reconciler/
-      // migrator/state-store; needs the real, already-migrated :5433 database
-      // this config's globalSetup provides. Belongs here, not the unit
-      // runner (no DB, no child-process fork target).
-      'src/extensions/twoReplicaReconcile.integration.test.ts',
       // Co-located real-Redis integration test for the #2707 approver-device
       // register grant chain (mint -> validate -> consume -> replay rejected,
       // cross-operation isolation, TTL): imports `__tests__/integration/setup`
@@ -312,6 +306,13 @@ export default defineConfig({
       // the RLS scaffolding work. Tracked as a follow-up issue; the
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
+      // integration-suite-coverage.integration.test.ts (#4522) is pure
+      // static analysis — it reads this very file's include/exclude
+      // arrays and walks `src/**/*.integration.test.ts` from disk. It
+      // MUST NOT be hooked to setup.ts (real postgres pool + TRUNCATE);
+      // see vitest.config.integration-suite-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file

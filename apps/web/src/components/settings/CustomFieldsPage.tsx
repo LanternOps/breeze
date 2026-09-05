@@ -2,9 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, Search, Settings, ChevronDown, AlertCircle } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '../../lib/authScope';
+import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
 import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from '@breeze/shared';
 import { asList } from '@/lib/asList';
+import HelpTooltip from '../shared/HelpTooltip';
 
 interface CustomField extends Omit<CustomFieldDefinition, 'createdAt' | 'updatedAt'> {
   createdAt: string | Date;
@@ -46,10 +50,30 @@ export default function CustomFieldsPage() {
   const [formFieldKey, setFormFieldKey] = useState('');
   const [formType, setFormType] = useState<CustomFieldType>('text');
   const [formRequired, setFormRequired] = useState(false);
+  const [formScriptWrite, setFormScriptWrite] = useState(false);
   const [formDefaultValue, setFormDefaultValue] = useState<unknown>(null);
   const [formDeviceTypes, setFormDeviceTypes] = useState<string[]>([]);
   const [formOptions, setFormOptions] = useState<CustomFieldOptions>({});
   const [dropdownChoices, setDropdownChoices] = useState<Array<{ label: string; value: string }>>([]);
+
+  // Partner-wide ownership (#2135 step 6). A partner-scope tech whose token
+  // never resolved partner-wide capability (orgAccess='selected') got a 403
+  // from this very modal: the form never sent an ownership key, so every
+  // create fell through to the route's partner-wide branch, which
+  // canManagePartnerWidePolicies then refused. Absent canManagePartnerWide
+  // means a session persisted before the field existed — treat as capable,
+  // matching the server (which still gates every write regardless).
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const showOwnerScope = isPartnerScope && canManagePartnerWide;
+  const [formOwnerScope, setFormOwnerScope] = useState<OwnerScope>(defaultOwnerScope);
+  // Only a user who may manage partner-wide state can edit/delete a
+  // partner-wide row — routes/customFields.ts canEditField refuses
+  // otherwise, and an unconditional button just trades a create 403 for a
+  // delete 403.
+  const canMutateField = (field: CustomField) =>
+    field.orgId !== null || canManagePartnerWide;
 
   const fetchFields = useCallback(async () => {
     try {
@@ -97,6 +121,7 @@ export default function CustomFieldsPage() {
     setFormFieldKey('');
     setFormType('text');
     setFormRequired(false);
+    setFormScriptWrite(false);
     setFormDefaultValue(null);
     setFormDeviceTypes([]);
     setFormOptions({});
@@ -107,6 +132,7 @@ export default function CustomFieldsPage() {
   const handleOpenCreate = () => {
     resetForm();
     setSelectedField(null);
+    setFormOwnerScope(defaultOwnerScope);
     setModalMode('create');
   };
 
@@ -116,11 +142,12 @@ export default function CustomFieldsPage() {
     setFormFieldKey(field.fieldKey);
     setFormType(field.type as CustomFieldType);
     setFormRequired(field.required);
+    setFormScriptWrite(field.scriptWrite);
     setFormDefaultValue(field.defaultValue);
     setFormDeviceTypes(field.deviceTypes ?? []);
     setFormOptions((field.options as CustomFieldOptions) ?? {});
     setDropdownChoices(
-      (field.options as CustomFieldOptions)?.choices ?? []
+      normalizeChoices((field.options as CustomFieldOptions | null)?.choices)
     );
     setFormError(null);
     setModalMode('edit');
@@ -135,6 +162,24 @@ export default function CustomFieldsPage() {
     setModalMode('closed');
     setSelectedField(null);
     resetForm();
+  };
+
+  // Rows created before the shared {label,value} shape existed — or via the
+  // API directly — may still store choices as a bare string[] (the route's
+  // customFieldChoiceSchema union still accepts it for exactly this reason).
+  // Opening such a row for edit without normalizing left every choice input
+  // blank (reading .label/.value off a string), and the length-only guard at
+  // submit didn't catch it, so saving silently wiped the dropdown's choices
+  // (options.choices = dropdownChoices.filter(c => c.label && c.value) => []).
+  const normalizeChoices = (
+    raw: unknown
+  ): Array<{ label: string; value: string }> => {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) =>
+      typeof entry === 'string'
+        ? { label: entry, value: entry }
+        : { label: (entry as { label?: string })?.label ?? '', value: (entry as { value?: string })?.value ?? '' }
+    );
   };
 
   const generateFieldKey = (name: string): string => {
@@ -230,14 +275,37 @@ export default function CustomFieldsPage() {
         if (formOptions.pattern) options.pattern = formOptions.pattern;
       }
 
+      // Exactly one ownership key on create, never both — the route 400s on
+      // both. A partner-scope user always gets one: the selector's choice
+      // when they may manage partner-wide state, otherwise this org
+      // (defaulting a non-capable tech to org-owned is the actual fix for
+      // the 403 above — omitting the key here would fall through to the
+      // route's partner-wide branch and reproduce it). An org-scope user
+      // sends neither; the route derives orgId from their own auth context.
+      // currentOrgId can be null during the org-context unresolved/loading
+      // window (useDefaultOwnerScope defaults to org-owned there too) — send
+      // {} rather than a literal orgId:null, which createCustomFieldRequest
+      // Schema rejects (orgId is .optional(), not .nullable()) and would
+      // reproduce this very PR's 403 bug under that race.
+      const ownerKey =
+        modalMode === 'create' && isPartnerScope
+          ? showOwnerScope && formOwnerScope === 'partner'
+            ? { partnerId: getJwtClaims().partnerId }
+            : currentOrgId
+              ? { orgId: currentOrgId }
+              : {}
+          : {};
+
       const payload = {
         name: trimmedName,
         fieldKey: trimmedKey,
         type: formType,
         required: formRequired,
+        scriptWrite: formScriptWrite,
         defaultValue: formDefaultValue,
         deviceTypes: formDeviceTypes.length > 0 ? formDeviceTypes : null,
-        options: Object.keys(options).length > 0 ? options : null
+        options: Object.keys(options).length > 0 ? options : null,
+        ...ownerKey
       };
 
       const url = modalMode === 'edit' && selectedField
@@ -307,6 +375,7 @@ export default function CustomFieldsPage() {
         </div>
         <button
           type="button"
+          data-testid="custom-field-add"
           onClick={handleOpenCreate}
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
@@ -375,6 +444,7 @@ export default function CustomFieldsPage() {
                 <th className="px-4 py-3">{t('customFieldsPage.columns.key')}</th>
                 <th className="px-4 py-3">{t('common:labels.type')}</th>
                 <th className="px-4 py-3">{t('common:labels.required')}</th>
+                <th className="px-4 py-3">{t('customFieldsPage.columns.scriptWrite')}</th>
                 <th className="px-4 py-3">{t('customFieldsPage.columns.deviceTypes')}</th>
                 <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
@@ -383,7 +453,17 @@ export default function CustomFieldsPage() {
               {filteredFields.map((field) => (
                 <tr key={field.id} className="hover:bg-muted/20">
                   <td className="px-4 py-3">
-                    <div className="font-medium">{field.name}</div>
+                    <div className="font-medium">
+                      {field.name}
+                      {field.orgId === null && (
+                        <span
+                          data-testid="custom-field-all-orgs-badge"
+                          className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                        >
+                          {t('customFieldsPage.allOrganizations')}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
@@ -407,6 +487,15 @@ export default function CustomFieldsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
+                    {field.scriptWrite ? (
+                      <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                        {t('customFieldsPage.columns.scriptWrite')}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
                     {field.deviceTypes && field.deviceTypes.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {field.deviceTypes.map((dt) => (
@@ -424,22 +513,28 @@ export default function CustomFieldsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEdit(field)}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                        title={t('common:actions.edit')}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDelete(field)}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
-                        title={t('common:actions.delete')}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {canMutateField(field) && (
+                        <>
+                          <button
+                            type="button"
+                            data-testid="custom-field-edit"
+                            onClick={() => handleOpenEdit(field)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                            title={t('common:actions.edit')}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="custom-field-delete"
+                            onClick={() => handleOpenDelete(field)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
+                            title={t('common:actions.delete')}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -468,6 +563,7 @@ export default function CustomFieldsPage() {
                   <label className="text-sm font-medium">{t('customFieldsPage.form.displayName')}</label>
                   <input
                     type="text"
+                    data-testid="custom-field-name"
                     value={formName}
                     onChange={(e) => handleNameChange(e.target.value)}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -475,9 +571,16 @@ export default function CustomFieldsPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">{t('customFieldsPage.form.fieldKey')}</label>
+                  <label className="flex items-center gap-1 text-sm font-medium">
+                    {t('customFieldsPage.form.fieldKey')}
+                    <HelpTooltip
+                      text={t('customFieldsPage.form.fieldKeyScriptHelp')}
+                      ariaLabel={t('customFieldsPage.form.fieldKeyScriptHelpAriaLabel')}
+                    />
+                  </label>
                   <input
                     type="text"
+                    data-testid="custom-field-key"
                     value={formFieldKey}
                     onChange={(e) => setFormFieldKey(e.target.value)}
                     disabled={modalMode === 'edit'}
@@ -489,6 +592,36 @@ export default function CustomFieldsPage() {
                   </p>
                 </div>
               </div>
+
+              {modalMode === 'create' && showOwnerScope && (
+                <fieldset className="space-y-2 rounded-md border p-3" data-testid="custom-field-owner">
+                  <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+                    {t('customFieldsPage.ownerScope.legend')}
+                  </legend>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="ownerScope"
+                      value="partner"
+                      data-testid="custom-field-owner-partner"
+                      checked={formOwnerScope === 'partner'}
+                      onChange={() => setFormOwnerScope('partner')}
+                    />
+                    {t('customFieldsPage.ownerScope.allOrganizations')}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="ownerScope"
+                      value="organization"
+                      data-testid="custom-field-owner-org"
+                      checked={formOwnerScope === 'organization'}
+                      onChange={() => setFormOwnerScope('organization')}
+                    />
+                    {t('customFieldsPage.ownerScope.thisOrganizationOnly')}
+                  </label>
+                </fieldset>
+              )}
 
               <div>
                 <label className="text-sm font-medium">{t('customFieldsPage.form.fieldType')}</label>
@@ -672,6 +805,25 @@ export default function CustomFieldsPage() {
                 </label>
               </div>
 
+              <div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="scriptWrite"
+                    data-testid="custom-field-script-write"
+                    checked={formScriptWrite}
+                    onChange={(e) => setFormScriptWrite(e.target.checked)}
+                    className="h-4 w-4 rounded border-muted"
+                  />
+                  <label htmlFor="scriptWrite" className="text-sm font-medium">
+                    {t('customFieldsPage.form.scriptWrite')}
+                  </label>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('customFieldsPage.form.scriptWriteHelp')}
+                </p>
+              </div>
+
               {formError && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {formError}
@@ -688,6 +840,7 @@ export default function CustomFieldsPage() {
                 </button>
                 <button
                   type="submit"
+                  data-testid="custom-field-submit"
                   disabled={submitting}
                   className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                 >

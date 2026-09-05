@@ -87,6 +87,26 @@ vi.mock('../../services/auditService', () => ({
   createAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #3257 W04: the PATCH handler now validates against the bounded definition
+// lookup before merging. Mocked here too (see customFieldValues.test.ts) so
+// this mount-order guard keeps exercising mount order, not validation.
+vi.mock('../../services/customFields/queries', () => ({
+  loadVisibleCustomFieldDefinitions: vi.fn().mockResolvedValue([
+    {
+      id: 'def-note',
+      fieldKey: 'note',
+      name: 'note',
+      type: 'text',
+      options: null,
+      deviceTypes: null,
+      required: false,
+      scriptWrite: false,
+      orgId: '11111111-1111-4111-8111-111111111111',
+      partnerId: null,
+    },
+  ]),
+}));
+
 // Other device sub-routers pulled in by the assembled router import them at
 // module load; stub the heavy ones so the import succeeds.
 vi.mock('../../services/auditEvents', async (importOriginal) => {

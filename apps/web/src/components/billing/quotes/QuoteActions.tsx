@@ -26,6 +26,38 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type TFunction = ReturnType<typeof useTranslation>['t'];
 
+interface QuoteDeviceSetDrift {
+  lineId: string;
+  description: string;
+  storedQuantity: string;
+  liveQuantity: number | null;
+  reason?: 'org_retargeted';
+  error?: 'GROUP_EVALUATION_FAILED' | 'GROUP_DELETED' | 'SITE_DELETED';
+}
+
+function showDeviceSetDriftWarning(
+  t: TFunction,
+  drift: QuoteDeviceSetDrift[] | undefined,
+  action: 'send' | 'retarget',
+): void {
+  if (!drift?.length) return;
+  if (action === 'retarget') {
+    showToast({
+      type: 'warning',
+      message: t('quotes.editor.deviceSet.retargetToast', { count: drift.length }),
+    });
+    return;
+  }
+  const lines = drift.map((entry) => {
+    const detail = entry.error ?? `${entry.storedQuantity} → ${entry.liveQuantity ?? '?'}`;
+    return `${entry.description || entry.lineId}: ${detail}`;
+  }).join('; ');
+  showToast({
+    type: 'warning',
+    message: t('quotes.editor.deviceSet.driftToast', { count: drift.length, lines }),
+  });
+}
+
 /** Whether the "Copy share link" control is actually offered for this quote.
  *
  *  Mirrors assertLinkableQuote (services/quoteLifecycle.ts), which both the
@@ -498,11 +530,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         refresh();
         return;
       }
-      await runAction({
+      const result = await runAction<{ data?: { deviceSetDrift?: QuoteDeviceSetDrift[] } }>({
         request: () => sendQuote(quote.id, lastSendOpts),
         errorFallback: t('quotes.actions.sendError'),
         onUnauthorized: UNAUTHORIZED,
       });
+      showDeviceSetDriftWarning(t, result?.data?.deviceSetDrift, 'send');
       // The refresh lands the draft→sent flip; the post-flip effect below
       // surfaces the same honest delivered/not-delivered outcome as a
       // window-expiry send.
@@ -708,12 +741,17 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     try {
       // Always send the title — an emptied field means "untitled clone" (the API
       // nulls a blank), not "inherit the source title".
-      const result = await runAction<{ data: { id: string } }>({
+      const result = await runAction<{ data: { id: string; deviceSetDrift?: QuoteDeviceSetDrift[] } }>({
         request: () => cloneQuote(quote.id, { orgId: cloneOrgId, title: cloneTitle.trim() }),
         errorFallback: t('quotes.actions.cloneError'),
         successMessage: t('quotes.actions.cloneSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
+      showDeviceSetDriftWarning(
+        t,
+        result?.data?.deviceSetDrift?.filter((entry) => entry.reason === 'org_retargeted'),
+        'retarget',
+      );
       setCloneOpen(false);
       if (result?.data?.id) void navigateTo(`/billing/quotes/${result.data.id}`);
     } catch (err) {
@@ -796,6 +834,27 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     // polling refresh brings in. (The prevStatusRef guard makes a re-run a
     // no-op anyway, but the narrow list keeps that intent explicit.)
   }, [quote.status, quote.sendEmailReason, quote.expiryDate, orgName, can, t]);
+
+  // The customer switcher owns the PATCH, while this shared action surface is
+  // the one place that owns lifecycle warnings. After its detail refresh lands,
+  // an org-id change plus unresolved stamped descriptors is the persisted form
+  // of the server's `reason: 'org_retargeted'` response.
+  const prevOrgIdRef = useRef(quote.orgId);
+  useEffect(() => {
+    const previousOrgId = prevOrgIdRef.current;
+    prevOrgIdRef.current = quote.orgId;
+    if (previousOrgId === quote.orgId) return;
+    const retargeted = lines
+      .filter((line) => line.contractLineType && line.descriptorUnresolved)
+      .map<QuoteDeviceSetDrift>((line) => ({
+        lineId: line.id,
+        description: line.name ?? line.description ?? '',
+        storedQuantity: line.quantity,
+        liveQuantity: null,
+        reason: 'org_retargeted',
+      }));
+    showDeviceSetDriftWarning(t, retargeted, 'retarget');
+  }, [quote.orgId, lines, t]);
 
   const [undoing, setUndoing] = useState(false);
   const undoSend = useCallback(async () => {

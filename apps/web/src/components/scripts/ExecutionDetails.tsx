@@ -1,23 +1,21 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon, ListChecks, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
-import type { ScriptExecution, ExecutionStatus } from './ExecutionHistory';
+import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
+import { executionDetailStatusConfig as statusConfig } from './executionStatus';
+import { RunContextChip } from '@/components/common/RunContext';
 
 type ExecutionDetailsProps = {
   execution: ScriptExecution;
   isOpen: boolean;
   onClose: () => void;
   timezone?: string;
-};
-
-const statusConfig: Record<ExecutionStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'status.pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
-  running: { label: 'status.running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'status.completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
-  failed: { label: 'status.failed', color: 'text-destructive', bgColor: 'bg-destructive/10', icon: XCircle },
-  timeout: { label: 'status.timeout', color: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle }
+  // #4885 — "Run again": re-open the execute flow pre-filled with this
+  // execution's device + parameters. Omitted entirely (no button rendered)
+  // where the host page has nowhere to send it.
+  onRunAgain?: (execution: ScriptExecution) => void;
 };
 
 function formatDuration(seconds?: number): string {
@@ -159,11 +157,94 @@ export function OutputSection({
   );
 }
 
+/**
+ * #2698 — the per-run outcome of the script custom-field write-back. Renders
+ * nothing when the execution emitted no `::breeze:custom-fields::` marker
+ * (`result` is null/undefined). Rejections are always shown when present,
+ * even if nothing was applied — a silently-rejected write is exactly the
+ * failure mode this panel exists to surface.
+ */
+export function CustomFieldWriteSummarySection({
+  result
+}: {
+  result?: ScriptCustomFieldWriteResult | null;
+}) {
+  const { t } = useTranslation('scripts');
+  if (!result) return null;
+
+  // Defensive: the API's declared type guarantees both arrays, but this
+  // value is unvalidated `response.json()` output (ScriptExecutionsPage's
+  // detail fetch spreads it straight into state) — a version-skewed or
+  // partially-serialized payload missing one array must not crash the
+  // whole detail modal.
+  const applied = result.applied ?? [];
+  const rejected = result.rejected ?? [];
+  const hasApplied = applied.length > 0;
+  const hasRejected = rejected.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
+        <ListChecks className="h-4 w-4 text-muted-foreground" />
+        {t('executionDetails.customFields.title')}
+      </h3>
+      <div className="rounded-md border">
+        <div className="space-y-3 p-4">
+          <div data-testid="exec-custom-fields-applied">
+            <p className="text-xs font-medium text-muted-foreground">
+              {t('executionDetails.customFields.applied')}
+            </p>
+            {hasApplied ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {applied.map((key) => (
+                  <code
+                    key={key}
+                    className="rounded bg-success/15 px-1.5 py-0.5 text-xs text-success"
+                  >
+                    {key}
+                  </code>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-1 text-sm italic text-muted-foreground">
+                {t('executionDetails.customFields.none')}
+              </p>
+            )}
+          </div>
+          {hasRejected && (
+            <div data-testid="exec-custom-fields-rejected">
+              <p className="text-xs font-medium text-muted-foreground">
+                {t('executionDetails.customFields.rejected')}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {rejected.map((r) => (
+                  <li key={r.key} className="text-sm">
+                    <code className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+                      {r.key}
+                    </code>
+                    <span className="ml-2 text-muted-foreground">
+                      {t(
+                        /* i18n-dynamic */ `executionDetails.customFields.reasons.${r.reason}`,
+                        { defaultValue: r.reason }
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ExecutionDetails({
   execution,
   isOpen,
   onClose,
-  timezone
+  timezone,
+  onRunAgain
 }: ExecutionDetailsProps) {
   const { t } = useTranslation('scripts');
   if (!isOpen) return null;
@@ -209,15 +290,7 @@ export default function ExecutionDetails({
                   {t(/* i18n-dynamic */ `executionDetails.${statusConfig[execution.status].label}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {execution.status === 'running'
-                    ? t('executionDetails.statusDescription.running')
-                    : execution.status === 'completed'
-                      ? t('executionDetails.statusDescription.completed')
-                      : execution.status === 'failed'
-                        ? t('executionDetails.statusDescription.failed')
-                        : execution.status === 'timeout'
-                          ? t('executionDetails.statusDescription.timeout')
-                          : t('executionDetails.statusDescription.pending')}
+                  {t(/* i18n-dynamic */ `executionDetails.statusDescription.${execution.status}`)}
                 </p>
               </div>
             </div>
@@ -263,6 +336,12 @@ export default function ExecutionDetails({
                 )}
               </p>
             </div>
+            <div className="rounded-md border bg-muted/20 p-4">
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.runAs')}</p>
+              <p className="text-sm font-medium mt-1">
+                <RunContextChip runAs={execution.runAs} targetSessionId={execution.targetSessionId} />
+              </p>
+            </div>
           </div>
 
           {execution.completedAt && (
@@ -291,10 +370,23 @@ export default function ExecutionDetails({
               variant="error"
             />
           </div>
+
+          <CustomFieldWriteSummarySection result={execution.customFieldResult} />
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end border-t px-6 py-4">
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+          {onRunAgain && (
+            <button
+              type="button"
+              data-testid="execution-run-again"
+              onClick={() => onRunAgain(execution)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t('executionDetails.actions.runAgain')}
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}

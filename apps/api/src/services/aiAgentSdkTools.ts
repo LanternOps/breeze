@@ -30,6 +30,8 @@ import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
+import { aiRunContextInputShape } from './scriptRunRequest';
+import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -87,6 +89,25 @@ const SECRET_ACTION_REFUSED_TEXT =
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,
+  /**
+   * The `mcp__<server>__<tool>` name this call was EXPOSED to the model as,
+   * when it differs from the `executeTool` handler `toolName` above. Used for
+   * one thing only: the session-allowlist check, which compares against the
+   * names the caller put in `allowedTools` — i.e. exposed names, not handler
+   * names. Everything downstream (tier, RBAC, rate limit, approval, audit)
+   * stays on `toolName`, because that is where the capability actually lives.
+   *
+   * Pass the FULLY-QUALIFIED, non-empty `mcp__<server>__<tool>` string, not a
+   * bare name. Omit it whenever the two identities coincide — as of writing
+   * that is every tool this file's `breeze` server registers, and every
+   * script-builder tool except `execute_script_on_device` -> `run_script`.
+   * Only script builder's registrations are pinned against drift (see
+   * `scriptBuilderTools.guard.test.ts`); a NEW tool registered here under a
+   * name that differs from its handler must wire this argument, or the
+   * session allowlist will refuse it the way it refused every Script Builder
+   * test run with "Tool 'run_script' is not allowed for this session" (#4883).
+   */
+  mcpToolName?: string,
 ) => Promise<
   | { allowed: true; intentId?: string; context?: ToolExecutionContext }
   | { allowed: false; error: string }
@@ -1065,6 +1086,34 @@ function extraToolResultText(result: SdkToolResult): string {
   return JSON.stringify(result);
 }
 
+/** Levenshtein edit distance — cheapest way to surface a likely-intended
+ *  tool name for a typo without pulling in a fuzzy-match dependency. */
+function levenshteinDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dp: number[][] = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 0; i < rows; i++) dp[i]![0] = i;
+  for (let j = 0; j < cols; j++) dp[0]![j] = j;
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      dp[i]![j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1]![j - 1]!
+        : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
+    }
+  }
+  return dp[rows - 1]![cols - 1]!;
+}
+
+/** The `limit` registered tool names nearest (by edit distance) to `name` —
+ *  used to make an unmatched `onlyTools` entry's likely typo self-evident. */
+function nearestToolNames(name: string, candidates: readonly string[], limit = 3): string[] {
+  return [...candidates]
+    .map((candidate) => ({ candidate, distance: levenshteinDistance(name, candidate) }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit)
+    .map(({ candidate }) => candidate);
+}
+
 /**
  * Creates an SDK MCP server instance with all Breeze tools.
  * Auth context is fetched lazily via the getAuth thunk so all tool handlers
@@ -1087,6 +1136,21 @@ function extraToolResultText(result: SdkToolResult): string {
  * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
  * them to be filtered against. The name-collision guard below is unchanged:
  * it still runs against the full, unfiltered registry.
+ *
+ * `onlyTools` is populated only internally, from hardcoded profile
+ * allowlists (see `aiAgents/runLoop.ts`'s `onlyTools` computation) — never
+ * from request input — so a name in it that matches no registered tool is
+ * always a programming error: a typo in the allowlist, or a tool renamed in
+ * the registry without updating it. (#4447) Since every caller is internal,
+ * that condition throws outside production (test/dev), so the bug is caught
+ * before it ships; in production it degrades to the matched subset rather
+ * than failing a live run, but logs via `console.error` and Sentry-captures
+ * (event code `ai_agent_onlytools_unknown_name`) so it does not vanish the
+ * way the old silent `.filter()` did. The Sentry capture is best-effort, not
+ * guaranteed delivery: on a self-hosted install with no `SENTRY_DSN`,
+ * `captureMessage` is a documented no-op (see `sentry.ts`) and the
+ * `console.error` line is the only surviving signal — an operator has to be
+ * watching API logs, not a Sentry inbox, to catch it there.
  */
 export function createBreezeMcpServer(
   getAuth: () => AuthContext,
@@ -1306,6 +1370,9 @@ export function createBreezeMcpServer(
         scriptId: uuid,
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.string(), z.unknown()).optional(),
+        // #4888 — mirrors toolInputSchemas.run_script; see scriptRunRequest.ts
+        // for why the shape is shared rather than repeated.
+        ...aiRunContextInputShape,
       },
       makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2419,6 +2486,7 @@ export function createBreezeMcpServer(
           'delete_draft',
           'add_line',
           'remove_line',
+          'update_line',
           'activate',
           'pause',
           'resume',
@@ -2708,6 +2776,33 @@ export function createBreezeMcpServer(
   const registeredTools = options?.onlyTools
     ? tools.filter((t) => options.onlyTools!.has(t.name))
     : tools;
+
+  // #4447: a name in onlyTools that matches no registered tool used to be
+  // dropped here with no signal at all. See this function's docstring for
+  // why every caller being internal means this is always a bug, not a
+  // runtime condition, and for the throw/log-and-capture split below.
+  if (options?.onlyTools) {
+    const matchedNames = new Set(registeredTools.map((t) => t.name));
+    const unknownNames = [...options.onlyTools].filter((name) => !matchedNames.has(name));
+    if (unknownNames.length > 0) {
+      const allNames = tools.map((t) => t.name);
+      const detail = unknownNames
+        .map((name) => {
+          const nearest = nearestToolNames(name, allNames);
+          return `"${name}" (nearest: ${nearest.length > 0 ? nearest.join(', ') : 'no close match'})`;
+        })
+        .join('; ');
+      const message = `[createBreezeMcpServer] onlyTools referenced unknown tool name(s): ${detail}`;
+      if (process.env.NODE_ENV !== 'production') {
+        throw new Error(message);
+      }
+      console.error(message);
+      captureMessage('onlyTools referenced unknown tool name(s)', {
+        eventCode: 'ai_agent_onlytools_unknown_name',
+        level: 'error',
+      });
+    }
+  }
 
   return createSdkMcpServer({
     name: 'breeze',

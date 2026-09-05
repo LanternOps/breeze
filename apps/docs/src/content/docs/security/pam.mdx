@@ -88,6 +88,16 @@ A server-side actuation cannot be replayed. The actuator route's proof of approv
 
 The PAM actuator is additionally **disabled by default in every environment** and is only enabled via an explicit server-side flag once just-in-time credentials and agent-side target re-validation are deployed.
 
+### Enablement
+
+PAM actuation on a given device requires three independent gates to all be open at once:
+
+1. **`PAM_ACTUATOR_ENABLED=true`** on the API server. Off by default; without it the actuator route refuses every request regardless of approval state.
+2. **`pam_enabled`** on the agent. The agent's own config must opt it into the PAM actuation path.
+3. **The org's UAC-interception policy.** `uac_interception_enabled` on the org's PAM config (or the resolved `pam` config-policy feature link, which takes precedence) must allow the agent to capture UAC events for that org in the first place -- with no opinion set anywhere, the global default is off.
+
+All three are independently controlled, so a device with the agent flag set but no config-policy link (and no org fallback) still won't intercept anything, and a server with the actuator disabled won't act even on a fully-configured device.
+
 ---
 
 ## Separation of duties
@@ -97,11 +107,9 @@ The separation-of-duties property the system enforces today is **automation cann
 - An AI agent or Helper session **cannot sign off on the action it proposed** -- AI tool actions and unmatched UAC prompts always default to **pending**, waiting on a human (see [Decisioning chain and fail-safe behavior](#decisioning-chain-and-fail-safe-behavior)). Automation can never quietly relax its own approval, and an evaluator outage degrades to pending rather than to an auto-grant.
 
 <Aside type="caution">
-  **Human requester-vs-approver separation is not yet enforced.** The respond route does not compare the approving user against the requester, and the elevation flows that matter here (`uac_intercept`, `tech_jit_admin`) do not record an originating user identity at all (`subjectUserId` is `null` on every insert), so the control plane has nothing to compare against. Today, a user who holds `devices:execute` + MFA can approve a request -- including one tied to their own work. Treat requester/approver separation as an **operational** control: rely on approval reasons, the requester/device context surfaced in the UI, and anomaly alerting, not on a system-enforced block.
+  **Human requester-vs-approver separation has been enforced since v0.82.0 (#1662).** For the `tech_jit_admin` flow, the requesting technician's user id is recorded on the request as `subjectUserId`, and the respond route rejects an APPROVE where the approver matches that `subjectUserId` with `403` (`Requester cannot approve their own elevation request`). Only APPROVE is blocked this way -- a self-DENY still grants nothing, so it remains allowed.
 
-  A self-approval gate is planned but **not active in production**. The mobile *hold-to-confirm* step-up (a deliberate 5-second hold when a user's own phone approves a request for that same user) lives on the separate Helper/mobile approval-request path and is keyed on an `isRecursive` flag. That flag's derivation currently returns `false` for all real traffic -- the requesting-client identity is not yet plumbed through the AI-agent/mobile-MCP path -- so the hold-to-confirm gate does not fire today. It will become active once the mobile-MCP step-up path lands.
-
-  Note that the live UAC-to-mobile fan-out is structurally a non-self-approval regardless: a pending `uac_intercept` elevation fans out one mobile approval request to each *eligible technician*, and those rows are created with `isRecursive: false` because the requester is an end user at the device, never the approving technician. The requester/approver identities differ by construction for that flow even though no system-enforced same-user block exists.
+  `subjectUserId` is `null` only for the `uac_intercept` and `ai_tool_action` flows, where there is no single human requester to compare against: `uac_intercept` originates from an end-user OS prompt, and `ai_tool_action` originates from the AI agent or Helper. For those two flows the self-approval guard has nothing to compare and never fires -- rely on the automation-cannot-self-grant behavior below, approval reasons, and anomaly alerting for those paths instead.
 </Aside>
 
 Every approve, deny, and revoke is gated by:
@@ -135,8 +143,10 @@ Executable rules and signer groups can trust a binary by its Authenticode signer
 - **CN matching (weak, legacy).** A rule's `matchSigner` field -- or a bare-string entry in a signer group -- compares the candidate's certificate **Common Name** (e.g. "Microsoft Corporation") case-insensitively. The CN is a self-asserted display string on the certificate, not a cryptographic identity: an attacker who obtains or crafts a code-signing certificate whose CN matches or mimics a trusted vendor's name can get a malicious binary auto-approved by a rule or group keyed on CN alone. This class of attack was tracked as **issue #1776**.
 - **Thumbprint pinning (strong).** A rule's `matchSignerThumbprint` field -- or a thumbprint-bearing entry in a signer group -- pins the certificate's **SHA-256 leaf-cert thumbprint**, a 64-character lowercase hex digest unique to the exact signing certificate. A look-alike certificate with a spoofed CN has a different key pair and therefore a different thumbprint; it cannot satisfy a thumbprint-pinned rule no matter how convincingly its display name is forged. `matchSigner` and `matchSignerThumbprint` AND together when both are set on a rule (maximum strength: exact certificate AND expected name); a signer-group entry may likewise pin a CN, a thumbprint, or both.
 
-<Aside type="caution">
-  Thumbprint pinning closes the CN look-alike gap, but it is opt-in per rule and per signer-group entry. A rule or group entry that carries only `matchSigner` / a bare CN string remains at the weak tier by the operator's own configuration -- Breeze does not retroactively upgrade existing CN-only rules. Security teams evaluating PAM should audit signer-based rules and prefer thumbprint pins for any rule carrying an auto-approve verdict.
+The matching engine described above is real and covered by tests, but it has nothing to match against yet on Windows:
+
+<Aside type="caution" title="Not yet active in the agent">
+  The Windows agent does not extract an Authenticode signer at all today -- `decodeConsentRequest` in `agent/internal/etwlua/etwlua_windows.go` defers all WinTrust/CryptoAPI signer extraction, so every UAC event it reports carries a `null` signer CN and `null` thumbprint. A thumbprint-pinned rule fails closed against that `null` (see below), and a CN-only rule simply never matches either -- so **no signer-based rule, weak or strong tier, is enforceable in practice today.** Tracked as **issue #2082** (completes #1776). Once the agent emits a thumbprint, prefer thumbprint pins over CN-only rules for anything carrying an auto-approve verdict.
 </Aside>
 
 **Fail-closed guarantee.** A criterion is only ever satisfied when the candidate's data is present; absent data never satisfies a criterion, even when the rule negates it (see [Decisioning chain and fail-safe behavior](#decisioning-chain-and-fail-safe-behavior)). This applies to the thumbprint criterion without exception: if a binary's signer thumbprint cannot be determined -- because it is unsigned, or because the reporting agent predates thumbprint collection -- a rule or signer-group entry pinned to a thumbprint **never matches**. There is no silent fallback to CN-only matching in that case: a thumbprint-pinned rule that can't see a thumbprint fails closed rather than degrading to the weaker check.
@@ -147,12 +157,16 @@ Executable rules and signer groups can trust a binary by its Authenticode signer
 
 ## Offline rule enforcement and staleness
 
-The agent caches the PAM ruleset locally so it can keep enforcing while disconnected from the API. The cache is an **HMAC-SHA256-authenticated JSON envelope**:
+<Aside type="caution" title="Not yet active in the agent">
+  The HMAC-authenticated rule cache described below (`agent/internal/pam`) exists in the agent codebase but is not imported or invoked by anything today. Offline UAC observations are held in a separate on-disk queue (`agent/internal/etwlua/queue.go`) and posted to the API once connectivity returns; the agent does not currently enforce a locally cached ruleset while offline. Treat this section as a description of a built component awaiting wiring, not live behavior.
+</Aside>
+
+Once wired in, the agent would cache the PAM ruleset locally so it can keep enforcing while disconnected from the API. The cache is designed as an **HMAC-SHA256-authenticated JSON envelope**:
 
 - The HMAC is the authoritative trust boundary. Tampering with the file on disk is detected on load, and a mismatch causes the agent to reject the rule body entirely.
 - The HMAC key lives in a separately permissioned `keys/` subdirectory, not alongside the cache file, so a single ACL regression on the data directory cannot expose both the envelope and the key needed to forge a new one. On Windows the cache is additionally locked to a SYSTEM-and-Administrators-only DACL; on Unix it is mode `0600` under a `0750` parent.
 
-Staleness is bounded by two thresholds keyed on the last successful sync:
+Staleness is designed to be bounded by two thresholds keyed on the last successful sync:
 
 | Threshold | Behavior |
 |---|---|
@@ -186,18 +200,19 @@ The **Audit** tab of the Privileged Access console renders this ledger -- filter
 
 - **Standing local-administrator sprawl.** Endpoints carry no permanently privileged user account; admin exists only inside approved windows.
 - **Credential exposure.** The elevation credential is minted, used, and destroyed on the endpoint and never transits the network or lands in a config file.
-- **Automation self-grant.** AI tool actions and unmatched UAC prompts default to **pending** and wait on a human, so automation can never approve the action it proposed. (Note: human requester-vs-approver separation is *not* yet system-enforced -- see [Separation of duties](#separation-of-duties).)
+- **Automation self-grant.** AI tool actions and unmatched UAC prompts default to **pending** and wait on a human, so automation can never approve the action it proposed.
+- **Human self-approval (`tech_jit_admin`).** The requesting technician's user id is recorded as `subjectUserId`, and the respond route rejects an approval where the approver matches it (since v0.82.0, #1662). See [Separation of duties](#separation-of-duties).
 - **Replay of an approval.** Single-use actuation makes an approved request non-replayable.
-- **CN look-alike signer spoofing.** Thumbprint-pinned rules and signer-group entries match the exact SHA-256 Authenticode certificate thumbprint rather than the self-asserted Common Name, so a forged or purchased certificate with a trusted-sounding CN cannot satisfy a thumbprint-pinned rule (#1776); the match fails closed rather than falling back to CN. See [Signer trust: CN matching vs. thumbprint pinning](#signer-trust-cn-matching-vs-thumbprint-pinning).
 - **Tenant cross-contamination.** Forced row-level security plus a composite-FK audit tie keep every request, rule, and audit entry inside its own organization.
 - **Silent failure of the decision engine.** Evaluator errors fail safe to pending, never to auto-approve.
-- **Enforcing dangerously old rules offline.** Cached rules alert at 24 hours and refuse past 7 days.
 
 **PAM does not protect against:**
 
 - **A compromised approver.** If an authenticated, MFA-satisfied operator approves a malicious request, PAM grants it. Mitigations are operational: approval reasons, requester history surfaced in the UI, per-tenant approval-rate limits, and anomaly alerting on approval-rate spikes. Treat approver accounts as the high-value identities they are.
-- **Human self-approval.** The respond route does not yet block a user from approving a request tied to their own work, and the elevation flows do not record an originating user identity, so there is no system-enforced requester-vs-approver split for human-decided requests today. The mobile hold-to-confirm gate that will cover this is not active in production yet. See [Separation of duties](#separation-of-duties).
-- **An existing local-administrator adversary on the endpoint.** The offline staleness gate and self-heal assume an attacker without prior SYSTEM/admin control. A box that is already fully compromised is outside PAM's threat model -- PAM is a privilege-*reduction* control, not endpoint EDR.
+- **Self-approval on the `uac_intercept` and `ai_tool_action` flows.** These flows don't record a single human requester (`subjectUserId` is `null`), so the self-approval guard has nothing to compare and never fires there. Automation self-grant is still blocked independently (see above). See [Separation of duties](#separation-of-duties).
+- **Signer-spoofed binaries.** The signer-matching engine (CN and thumbprint) is real, but the Windows agent doesn't extract a signer yet, so no signer-based rule is enforceable today. See [Signer trust: CN matching vs. thumbprint pinning](#signer-trust-cn-matching-vs-thumbprint-pinning) (#2082).
+- **An offline device enforcing stale or tampered rules.** The HMAC-authenticated rule cache with staleness thresholds is built but not yet wired into the agent's offline path. See [Offline rule enforcement and staleness](#offline-rule-enforcement-and-staleness).
+- **An existing local-administrator adversary on the endpoint.** The dormant-admin self-heal assumes an attacker without prior SYSTEM/admin control (the offline staleness gate, once wired in, would make the same assumption -- see the caveat above). A box that is already fully compromised is outside PAM's threat model -- PAM is a privilege-*reduction* control, not endpoint EDR.
 - **Third-party agent-stack interactions.** UAC-touching code interacts with whatever else is installed. There is a documented production-breaking deadlock between the N-able N-Central agent and `consent.exe` on idle or locked machines that hangs UAC prompts for 4-5 minutes. Validate PAM against the agent stack your customers actually run before enabling it broadly. See the [admin guide's operational notes](/features/pam/#operational-notes).
 - **Non-Windows endpoints.** The dormant-admin lifecycle, secure-desktop injection, and UAC interception are Windows-only. On other platforms the elevation primitives are no-ops.
 

@@ -22,6 +22,7 @@ import {
   getPolicyWithOrgCheck,
   automationPolicyOwnershipCondition,
   getPolicyComplianceMap,
+  complianceSiteCondition,
   buildComplianceSummary,
   extractViolationsFromComplianceDetails,
   getConfigPolicyComplianceRuleInfo,
@@ -36,8 +37,12 @@ export const complianceRoutes = new Hono();
 complianceRoutes.get(
   '/compliance/stats',
   requireScope('organization', 'partner', 'system'),
+  // DEVICES_READ populates c.get('permissions'); without it the site gate
+  // below would be dead code (#4880).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { orgId } = c.req.query();
 
     let orgIds: string[] = [];
@@ -96,23 +101,30 @@ complianceRoutes.get(
 
     const policyIdList = policyIds.map((policy) => policy.id);
 
-    // Legacy compliance rows
+    // Legacy compliance rows. Counts describe devices, so a site-restricted
+    // caller only sees rows for devices in their allowlist (#4880).
     let complianceRows: Array<{ status: string; count: number }> = [];
-    if (policyIdList.length > 0) {
+    if (policyIdList.length > 0 && perms?.allowedSiteIds?.length !== 0) {
       complianceRows = await db
         .select({
           status: automationPolicyCompliance.status,
           count: sql<number>`count(*)`,
         })
         .from(automationPolicyCompliance)
-        .where(inArray(automationPolicyCompliance.policyId, policyIdList))
+        .where(and(
+          inArray(automationPolicyCompliance.policyId, policyIdList),
+          complianceSiteCondition(perms?.allowedSiteIds)
+        ))
         .groupBy(automationPolicyCompliance.status);
     }
 
     // Config policy compliance rows
     const configRuleInfoMap = await getConfigPolicyComplianceRuleInfo(orgIds);
     const configFeatureLinkIds = Array.from(configRuleInfoMap.keys());
-    const configComplianceResult = await getConfigPolicyComplianceStats(configFeatureLinkIds);
+    const configComplianceResult = await getConfigPolicyComplianceStats(
+      configFeatureLinkIds,
+      perms?.allowedSiteIds
+    );
 
     // Merge legacy + config policy compliance rows
     const mergedStatusMap = new Map<string, number>();
@@ -158,8 +170,10 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/summary',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { orgId } = c.req.query();
 
     let orgIds: string[] = [];
@@ -206,8 +220,13 @@ complianceRoutes.get(
       .where(policyCondition);
 
     const policyIds = policiesList.map((policy) => policy.id);
-    const complianceMap = await getPolicyComplianceMap(policyIds);
+    const complianceMap = await getPolicyComplianceMap(policyIds, perms?.allowedSiteIds);
 
+    // Policy inventory (policyCounts, configPolicyCounts, enforcementCounts)
+    // stays org/partner-wide: policies have no site owner. Every device-derived
+    // figure below (per-policy compliance, overall, complianceRate,
+    // nonCompliantDevices) is narrowed to perms.allowedSiteIds when the caller
+    // is site-restricted; null/undefined means unrestricted.
     const policyCounts = await db
       .select({
         total: sql<number>`count(*)`,
@@ -236,7 +255,7 @@ complianceRoutes.get(
     // --- Config policy compliance ---
     const configRuleInfoMap = await getConfigPolicyComplianceRuleInfo(orgIds);
     const configFeatureLinkIds = Array.from(configRuleInfoMap.keys());
-    const configComplianceResult = await getConfigPolicyComplianceStats(configFeatureLinkIds);
+    const configComplianceResult = await getConfigPolicyComplianceStats(configFeatureLinkIds, perms?.allowedSiteIds);
 
     // Build legacy policy entries
     const policies = policiesList.map((policy) => {
@@ -264,36 +283,41 @@ complianceRoutes.get(
       compliance: { total: number; compliant: number; nonCompliant: number; unknown: number };
     }>();
 
+    const enforcementRank = { monitor: 0, warn: 1, enforce: 2 } as Record<string, number>;
+    const stricter = (a: string, b: string) =>
+      (enforcementRank[b] ?? 0) > (enforcementRank[a] ?? 0) ? b : a;
+
     for (const [featureLinkId, ruleInfos] of configRuleInfoMap.entries()) {
+      const first = ruleInfos[0];
+      if (!first) continue;
       const featureLinkCompliance = configComplianceResult.byFeatureLink.get(featureLinkId)
         ?? buildComplianceSummary([]);
+      // Compliance rows are keyed by feature link, and every rule under a link
+      // shares its config policy, so the link's totals are added exactly once.
+      // Rules only contribute their enforcement level (strictest wins).
+      const linkEnforcement = ruleInfos
+        .map((rule) => rule.enforcementLevel)
+        .reduce(stricter, 'monitor');
 
-      for (const ruleInfo of ruleInfos) {
-        const existing = configPolicyGrouped.get(ruleInfo.configPolicyId);
-        if (existing) {
-          existing.compliance.total += featureLinkCompliance.total;
-          existing.compliance.compliant += featureLinkCompliance.compliant;
-          existing.compliance.nonCompliant += featureLinkCompliance.nonCompliant;
-          existing.compliance.unknown += featureLinkCompliance.unknown;
-          // Use the strictest enforcement level
-          if (ruleInfo.enforcementLevel === 'enforce') {
-            existing.enforcementLevel = 'enforce';
-          } else if (ruleInfo.enforcementLevel === 'warn' && existing.enforcementLevel !== 'enforce') {
-            existing.enforcementLevel = 'warn';
-          }
-        } else {
-          configPolicyGrouped.set(ruleInfo.configPolicyId, {
-            configPolicyId: ruleInfo.configPolicyId,
-            configPolicyName: ruleInfo.configPolicyName,
-            enforcementLevel: ruleInfo.enforcementLevel,
-            compliance: {
-              total: featureLinkCompliance.total,
-              compliant: featureLinkCompliance.compliant,
-              nonCompliant: featureLinkCompliance.nonCompliant,
-              unknown: featureLinkCompliance.unknown,
-            },
-          });
-        }
+      const existing = configPolicyGrouped.get(first.configPolicyId);
+      if (existing) {
+        existing.compliance.total += featureLinkCompliance.total;
+        existing.compliance.compliant += featureLinkCompliance.compliant;
+        existing.compliance.nonCompliant += featureLinkCompliance.nonCompliant;
+        existing.compliance.unknown += featureLinkCompliance.unknown;
+        existing.enforcementLevel = stricter(existing.enforcementLevel, linkEnforcement);
+      } else {
+        configPolicyGrouped.set(first.configPolicyId, {
+          configPolicyId: first.configPolicyId,
+          configPolicyName: first.configPolicyName,
+          enforcementLevel: linkEnforcement,
+          compliance: {
+            total: featureLinkCompliance.total,
+            compliant: featureLinkCompliance.compliant,
+            nonCompliant: featureLinkCompliance.nonCompliant,
+            unknown: featureLinkCompliance.unknown,
+          },
+        });
       }
     }
 
@@ -336,7 +360,7 @@ complianceRoutes.get(
       lastCheckedAt: string;
     }> = [];
 
-    if (policyIds.length > 0) {
+    if (policyIds.length > 0 && perms?.allowedSiteIds?.length !== 0) {
       const violationRows = await db
         .select({
           policyId: automationPolicyCompliance.policyId,
@@ -351,7 +375,8 @@ complianceRoutes.get(
         .where(
           and(
             inArray(automationPolicyCompliance.policyId, policyIds),
-            eq(automationPolicyCompliance.status, 'non_compliant')
+            eq(automationPolicyCompliance.status, 'non_compliant'),
+            perms?.allowedSiteIds ? inArray(devices.siteId, perms.allowedSiteIds) : undefined
           )
         );
 
@@ -419,7 +444,8 @@ complianceRoutes.get(
     // --- Non-compliant devices: config policy ---
     const configNonCompliantDevices = await getConfigPolicyNonCompliantDevices(
       configFeatureLinkIds,
-      configRuleInfoMap
+      configRuleInfoMap,
+      perms?.allowedSiteIds
     );
 
     // Merge non-compliant devices from both sources

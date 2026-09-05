@@ -49,7 +49,7 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
 
   const due = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      db.select({ id: contracts.id }).from(contracts).where(
+      db.select({ id: contracts.id, orgId: contracts.orgId }).from(contracts).where(
         and(
           eq(contracts.status, 'active' as never),
           isNotNull(contracts.nextBillingAt),
@@ -81,6 +81,25 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         console.warn(
           '[contract-billing] price-book gap: contract %s line %s item %s has no %s price — billed at the contract snapshot',
           row.id, gap.contractLineId, gap.catalogItemId, gap.currencyCode
+        );
+      }
+      // #3205: a role-billed contract with devices no line covers (unclassified
+      // 'unknown' devices, or roles with no line) still bills — but never silently.
+      if (res.uncoveredDevices && res.uncoveredDevices.total > 0) {
+        console.warn(
+          '[contract-billing] uncovered devices: contract %s has %d billable device(s) no line bills — %s',
+          row.id, res.uncoveredDevices.total, JSON.stringify(res.uncoveredDevices.byRole)
+        );
+      }
+      // #3205 W04 (#4607): overage the operator chose NOT to auto-bill. Never
+      // silent — the money is on the table and only a human can decide to raise
+      // the allowance or add a line. BILLED overage gets no warning: it is on
+      // the invoice, so it is not silence.
+      for (const o of res.overages) {
+        if (o.mode !== 'flag') continue;
+        console.warn(
+          '[contract-billing] flagged overage: contractId=%s orgId=%s lineId=%s counted=%d included=%d overage=%d overageMode=%s',
+          row.id, row.orgId, o.contractLineId, o.counted, o.included, o.overage, o.mode
         );
       }
     } catch (err) {

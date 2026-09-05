@@ -220,6 +220,20 @@ jobs:
       - name: Run site-scope coverage contract test
         run: pnpm --filter=@breeze/api test:site-scope-coverage
 
+      # #4522 — invoiceService.issue.integration.test.ts and
+      # invoicePdf.integration.test.ts were reported as unmatched by any
+      # include list in vitest.integration.config.ts (they run in the
+      # blocking `integration-test` job today, but nothing asserted that
+      # the config's include/exclude lists stay in sync with the files
+      # that actually exist on disk — a newly-added *.integration.test.ts
+      # file could silently fall out of coverage forever). This contract
+      # test is pure static analysis (reads the integration config's own
+      # include/exclude arrays, walks `src/**/*.integration.test.ts` from
+      # disk, no DB/Redis), so it runs here in the fast, blocking job
+      # rather than `integration-test`.
+      - name: Run integration-suite coverage contract test
+        run: pnpm --filter=@breeze/api test:integration-suite-coverage
+
       # RLS session-context contract test (vitest.config.rls.ts). Gates the
       # APPLICATION half of the tenant-isolation contract: that
       # withDbAccessContext stamps exactly the `breeze.*` GUCs the RLS helpers
@@ -829,6 +843,14 @@ jobs:
       - name: Run agent mTLS edge policy guard
         run: pnpm check:agent-mtls-edge-policy
 
+      # #4497: scripts/backup.sh and scripts/restore.sh used to pass
+      # DATABASE_URL (password included) directly on pg_dump's/pg_restore's/
+      # psql's argv, visible to any local user via `ps` for the whole
+      # dump/restore. Covers the PG* URL-splitting helper's parsing and
+      # statically guards both scripts against reintroducing the pattern.
+      - name: Test pg connection env helper (#4497)
+        run: pnpm test:pg-connect-env
+
   build-api:
     name: Build API
     runs-on: ubuntu-latest
@@ -1004,7 +1026,9 @@ jobs:
         run: pnpm build --filter=@breeze/web
 
       - name: Install Chromium for CSP guard
-        run: pnpm --filter @breeze/web exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm --filter @breeze/web exec
 
       - name: CSP drift guard (real-browser)
         run: pnpm --filter @breeze/web run csp:guard
@@ -1318,11 +1342,69 @@ jobs:
       # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
       # was already atomic — so -race would not have caught it; the regression
       # test asserts receiver-visible ordering instead.
+      #
+      # ./internal/elevaccount is the fourth instance of the eventlog/logging
+      # gap, found by #4587: the whole package is netapi32 account lifecycle
+      # behind //go:build windows, and the only Windows-tagged test it had was
+      # a compile-time interface assertion that no job ran. The bug it shipped
+      # was precisely a netapi32 status code the Windows-only code mishandled
+      # (NERR_UserNotFound on an account that was never provisioned, which is
+      # the DEFAULT state of every agent that never enabled PAM), so a gate
+      # that never executes on Windows could not have caught it and cannot
+      # catch the next one. Verified the same way as logging and ipc: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets, its test
+      # binary compiles, and its Windows dependency graph contains no
+      # remote/desktop and no cgo. Its two behavioural tests assert against the
+      # real netapi32 and skip loudly, rather than pass, on a host where
+      # ~breeze_elev exists or local-account queries are not permitted.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+
+      # The step above runs without -v, so a t.Skip is indistinguishable from a
+      # pass in its output. That matters here more than usual: elevaccount's two
+      # behavioural tests are the ONLY live-syscall coverage anywhere of the
+      # #4587 fix, and they skip by design when ~breeze_elev already exists or
+      # when local-account queries are refused. A silent skip would leave the
+      # real netapi32 path — the actual blast radius of the bug — with zero
+      # coverage while CI stayed green, which is the same vacuous-gate failure
+      # the collectors and backup steps below already guard against. Assert both
+      # actually PASSED.
+      - name: Run Windows elevation-account absence tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/elevaccount -run '^Test(VerifyClean|Deprovision)TreatsAbsentAccountAsClean$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # The policy-state registry collector decides whether a batch uploads with
+      # `replace: true` — which deletes every prior row for the device. That
+      # "complete vs partial" judgement is Windows-only code (#3529), so it
+      # executes nowhere else in CI: the macOS/Linux jobs compile the !windows
+      # stub instead. Same -run filter + PASS count as the steps around it,
+      # because the package's inherited Windows backlog (#2523) is still red.
+      - name: Run Windows policy registry state completeness tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsCollectRegistryStateCompleteness$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Software inventory has platform-specific registry behavior. Keep this
       # filtered until the inherited Windows package backlog in #2523 is green,
@@ -2363,6 +2445,46 @@ jobs:
       - name: Run the guided installer end to end
         run: bash scripts/smoke-guided-setup.sh
 
+      - name: Assert self-hosted trust mode does not deny remote sessions
+        run: |
+          set -euo pipefail
+          DEVICE_ID=8d93bc26-30d6-4b76-a7df-f8cc79d2dd98
+          docker exec breeze-postgres psql -v ON_ERROR_STOP=1 -U breeze -d breeze <<SQL
+          INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status)
+          SELECT '${DEVICE_ID}', o.id, s.id, 'guided-smoke-offline-agent', 'guided-smoke-offline', 'linux', 'test', 'amd64', '0.0.0-test', 'offline'
+          FROM organizations o
+          JOIN sites s ON s.org_id = o.id
+          WHERE o.slug = 'default-organization'
+          ORDER BY s.created_at
+          LIMIT 1
+          ON CONFLICT (id) DO UPDATE SET status = 'offline';
+          SQL
+          SEEDED_DEVICE=$(docker exec breeze-postgres psql -At -U breeze -d breeze \
+            -c "SELECT id FROM devices WHERE id = '${DEVICE_ID}'" || true)
+          if [ -z "${SEEDED_DEVICE}" ]; then
+            DEVICE_ID=00000000-0000-4000-8000-000000000000
+          fi
+          LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -H 'Origin: https://localhost' \
+            --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
+          TOKEN=$(jq -er '.tokens.accessToken' <<<"${LOGIN_BODY}")
+          RESPONSE=$(curl -sk -o /tmp/guided-trust-response -w '%{http_code}' \
+            -X POST https://localhost/api/v1/remote/sessions \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "{\"deviceId\":\"${DEVICE_ID}\",\"type\":\"desktop\"}")
+          BODY=$(cat /tmp/guided-trust-response)
+          if [ "${RESPONSE}" = "403" ] && grep -q 'TRUST_' <<<"${BODY}"; then
+            echo "ERROR: self-hosted POST /remote/sessions was blocked by partner trust (${RESPONSE}): ${BODY}"
+            exit 1
+          fi
+          case "${RESPONSE}" in
+            2??|400|404) ;; # 404 is expected if the device (seeded or placeholder) is not yet resolved by the API
+            *) echo "ERROR: unexpected POST /remote/sessions response (${RESPONSE}): ${BODY}"; exit 1 ;;
+          esac
+          echo "Remote session trust smoke passed (${RESPONSE})."
+
       - name: Diagnostics on failure
         if: failure()
         run: bash scripts/smoke-guided-setup.sh logs || true
@@ -2448,8 +2570,9 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        working-directory: e2e-tests
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          working-directory: e2e-tests
 
       - name: Migrate and seed auth contract database
         run: |
@@ -2589,21 +2712,12 @@ jobs:
         working-directory: e2e-tests
         run: pnpm install --ignore-workspace
 
-      # `--with-deps` shells out to `apt-get update`, which intermittently 403s
-      # on packages.microsoft.com from Azure-hosted runners and takes the whole
-      # browser install down with it (exit 100). That repo holds nothing
-      # Playwright needs, so drop it first; if apt still fails, fall back to the
-      # browser-only install — the ubuntu-24.04 runner image already ships
-      # Chromium's shared libraries — and say so loudly rather than silently.
+      # apt 403 guard lives in the composite action (see its description).
       - name: Install Chromium
-        working-directory: e2e-tests
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
-                     /etc/apt/sources.list.d/microsoft*.sources || true
-          if ! pnpm exec playwright install --with-deps chromium; then
-            echo "::warning::playwright install --with-deps failed (apt); retrying without system deps"
-            pnpm exec playwright install chromium
-          fi
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm exec
+          working-directory: e2e-tests
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
       # but node builtins and its own sibling modules, so e2e-tests' tsx runs it
@@ -2616,16 +2730,21 @@ jobs:
       - name: Show the stack descriptor
         run: cat .breeze-stack.json
 
-      # multi-currency.spec.ts is the only spec whose flow reaches the portal
-      # through `waitForHydration` — its `public-quote-accept` step is the exact
+      # multi-currency.spec.ts is the only `waitForHydration` caller whose flow
+      # reaches the portal — its `public-quote-accept` step is the exact
       # assertion #3906 broke and #4540 fixed.
       # `quote-contract-proposal.spec.ts` is the only other `waitForHydration`
       # caller and is EXCLUDED on purpose: it has a known, unrelated
       # pre-existing failure earlier in the WEB flow (AuthOverlay /
       # session-expired on the contracts tab) and never gets as far as its
       # portal step. Add it here once that is fixed.
+      # portal-visibility.spec.ts (#4562 W10) also waits for hydration (its
+      # login island), and this is the only job that stands up Caddy fronting
+      # the portal, so it is the only place the customer-facing portal is
+      # exercised at all. It depends on the portal rows in
+      # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
 
       - name: Upload Playwright report
         if: failure()

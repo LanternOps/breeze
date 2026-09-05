@@ -536,6 +536,7 @@
     "feedbackThanks": "Merci pour votre retour",
     "feedbackTaken": "Quelqu'un a déjà donné son avis sur ce verdict",
     "feedbackFailed": "Échec de l'enregistrement du retour",
+    "feedbackBy": "Avis donné par {{name}}",
     "hideNoise": "Masquer le bruit signalé par l'IA",
     "suggestionPending": "L'IA a suggéré une action — à consulter dans Approbations",
     "none": "Aucun verdict de l'IA pour le moment"

@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Pauschalpreis",
         "perDevice": "Pro Gerät",
+        "perDeviceRole": "Pro Geräterolle",
+        "perDeviceGroup": "Pro Gerätegruppe",
         "perSeat": "Pro Sitzplatz",
         "manual": "Manuelle Menge"
+      },
+      "dynamicGroup": "dynamisch",
+      "deletedGroup": "{{name}} (gelöschte Gruppe)",
+      "coverage": {
+        "uncovered": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
+        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet.",
+        "uncoveredLead": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{counted}} von {{included}} inbegriffen",
+        "includedOnly": "{{included}} inbegriffen",
+        "overBilled": "{{included}} inbegriffen · {{overage}} darüber (berechnet)",
+        "overFlagged": "{{included}} inbegriffen · {{overage}} darüber (markiert)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} über {{included}} inbegriffen, nicht berechnet",
+        "billed": "{{description}} — {{overage}} über {{included}} inbegriffen, zum Überschreitungspreis berechnet"
       },
       "transition": {
         "activate": "Aktivieren",
@@ -31,7 +51,13 @@
         "cancel": "Abbrechen"
       },
       "values": {
-        "auto": "auto"
+        "auto": "auto",
+        "groupDeleted": "Gruppe gelöscht",
+        "siteDeleted": "Standort gelöscht",
+        "siteDeletedNamed": "Standort gelöscht: {{name}}"
+      },
+      "lineScope": {
+        "site": "Standort: {{name}}"
       }
     },
     "contractDetail": {
@@ -67,6 +93,15 @@
         "period": "Zeitraum",
         "generated": "Generiert",
         "invoice": "Rechnung",
+        "outcome": "Ergebnis",
+        "outcomeAllBilled": "Alles abgerechnet",
+        "outcomeUncovered": "{{count}} nicht abgedeckt",
+        "outcomeFlagged": "{{count}} markiert",
+        "outcomeNoDeviceLines": "Keine Gerätepositionen",
+        "outcomeNotRecorded": "Nicht erfasst",
+        "outcomeToggle": "Periodenergebnis anzeigen",
+        "outcomeDevicesEvaluated": "Ausgewertete Geräte: {{count}}",
+        "outcomeBilledOverage": "Abgerechneter Mehrverbrauch: {{count}}",
         "empty": "Es wurden noch keine Rechnungen erstellt.",
         "viewInvoice": "Rechnung ansehen"
       },
@@ -96,6 +131,8 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "flaggedOverage": "{{count}} Position(en) liegen über der inbegriffenen Menge und wurden nicht berechnet: {{names}}",
+        "uncoveredDevices": "Rechnung erstellt, aber {{count}} Gerät(e) werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
       },
@@ -143,13 +180,22 @@
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
         "activateContract": "Der Vertrag konnte nicht aktiviert werden.",
-        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf."
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf.",
+        "updateLine": "Die Position konnte nicht aktualisiert werden.",
+        "lineNotFound": "Diese Position existiert nicht mehr. Aktualisieren Sie den Vertrag.",
+        "contractNotEditable": "Positionen können nur bei Verträgen im Entwurf oder aktiven Verträgen bearbeitet werden.",
+        "siteNotInOrg": "Dieser Standort gehört zu einer anderen Organisation.",
+        "groupNotInOrg": "Diese Gerätegruppe gehört zu einer anderen Organisation.",
+        "invalidLinePatch": "Diese Änderungen sind für diesen Positionstyp nicht gültig.",
+        "priceNotRepresentable": "Dieser Preis hat zu viele Nachkommastellen für {{currency}}.",
+        "catalogItemNotFound": "Dieser Katalogartikel ist für diesen Vertrag nicht verfügbar."
       },
       "toast": {
         "contractCreated": "Vertrag erstellt",
         "lineAdded": "Position hinzugefügt",
         "lineRemoved": "Position entfernt",
-        "contractActivated": "Vertrag aktiviert"
+        "contractActivated": "Vertrag aktiviert",
+        "lineUpdated": "Position aktualisiert"
       },
       "schedule": {
         "title": "Zeitplan",
@@ -180,7 +226,8 @@
         "unitPrice": "Stückpreis",
         "qty": "Menge",
         "tax": "Steuer",
-        "empty": "Noch keine Positionen. Fügen Sie unten eine wiederkehrende Position hinzu."
+        "empty": "Noch keine Positionen. Fügen Sie unten eine wiederkehrende Position hinzu.",
+        "edit": "Bearbeiten"
       },
       "addLine": {
         "integrationHint": "Aus einer Integration hinzufügen – eine Position wird vorab ausgefüllt.",
@@ -188,6 +235,20 @@
         "addFromPax8Catalog": "Aus dem Pax8-Katalog hinzufügen",
         "importFromTdSynnex": "Import aus TD SYNNEX",
         "lineType": "Positionstyp",
+        "allowanceToggle": "Feste Menge einschließen, Rest separat behandeln",
+        "allowanceHint": "Die Position berechnet in jedem Zeitraum die inbegriffene Menge, auch wenn weniger Geräte gezählt werden.",
+        "includedQuantity": "Inbegriffene Menge",
+        "overageMode": "Über die inbegriffene Menge hinaus",
+        "overageBill": "Extras berechnen",
+        "overageFlag": "Extras zur Prüfung markieren",
+        "overageUnitPrice": "Preis je zusätzlicher Einheit",
+        "allowanceRequired": "Geben Sie eine inbegriffene Menge an – und einen Preis, wenn Extras berechnet werden.",
+        "deviceRoles": "Geräterollen (ein Gerät wird abgerechnet, wenn seine Rolle eine davon ist)",
+        "deviceRolesRequired": "Mindestens eine Rolle auswählen.",
+        "deviceGroup": "Gerätegruppe (berechnet ihre Mitglieder; dynamische Gruppen werden zur Abrechnung ausgewertet)",
+        "selectGroup": "Gruppe auswählen",
+        "deviceGroupRequired": "Wählen Sie eine Gruppe.",
+        "deviceGroupsLoadFailed": "Die Gerätegruppen dieser Organisation konnten nicht geladen werden.",
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
@@ -207,6 +268,16 @@
         "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
         "priceNotRepresentable": "Der gespeicherte {{currency}}-Preis dieses Artikels ist in {{currency}} ungültig — korrigieren Sie ihn im Katalog oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
         "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
+      },
+      "editLine": {
+        "save": "Position speichern",
+        "cancel": "Abbrechen",
+        "typeLocked": "Der Positionstyp kann nicht geändert werden. Entfernen Sie die Position und fügen Sie eine neue hinzu.",
+        "priceFromCatalog": "Der Preis stammt aus dem Katalog. Entfernen Sie die Katalogverknüpfung, um ihn manuell zu setzen.",
+        "refreshPrice": "Preis aus dem Katalog aktualisieren",
+        "restoreCatalogLink": "Katalogverknüpfung wiederherstellen",
+        "unlinkNeedsPrice": "Geben Sie einen Stückpreis und die Steuereinstellung an, um die Katalogverknüpfung zu entfernen.",
+        "noChanges": "Noch nichts zu speichern."
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -239,6 +310,10 @@
       "backToContractsText": "Zurück zu den Verträgen",
       "newContract": "Neuer Vertrag",
       "doneEditing": "Bearbeitung abgeschlossen"
+    },
+    "list": {
+      "estimateUnavailable": "Schätzung nicht verfügbar: Eine Gerätegruppe in diesem Vertrag konnte nicht ausgewertet werden",
+      "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
     },
     "contractsList": {
       "title": "Verträge",
@@ -509,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "Arbeitsstationen", "server": "Server", "printer": "Drucker", "router": "Router", "switch": "Netzwerk-Switches", "firewall": "Firewalls",
+        "access_point": "Zugangspunkte", "phone": "Telefone", "iot": "IoT-Geräte", "camera": "Kameras", "nas": "NAS-Geräte"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Nach Gerätesatz abrechnen", "typeLabel": "Gerätesatz",
+        "types": { "per_device": "Pro Gerät", "per_device_role": "Pro Geräterolle", "per_device_group": "Pro Gerätegruppe", "per_seat": "Pro Benutzerplatz" },
+        "rolesLabel": "Geräterollen", "groupLabel": "Gerätegruppe", "siteLabel": "Standort (optional)", "allSites": "Alle Standorte",
+        "quantityAuto": "Menge wird automatisch gezählt", "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
+        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.", "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+        "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
+        "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
+        "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",
+        "driftToast": "{{count}} Position(en) entsprechen nicht mehr der aktuellen Geräteanzahl: {{lines}}",
+        "retargetToast": "{{count}} Position(en) benötigen eine neu gewählte Gerätegruppe oder einen Standort für diese Organisation"
+      },
       "actions": {
         "addImage": "Bild hinzufügen",
         "addLine": "Position hinzufügen",
@@ -1135,6 +1228,29 @@
         "untitled": "eine neuere Version"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Angebotswährung ändern",
+        "description": "Dieses Entwurfsangebot wird in {{currency}} berechnet.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Positionen des Angebots geschieht",
+        "modeClear": "Alle Positionen entfernen",
+        "modeClearHint": "Positionen werden gelöscht. Erforderlich, wenn eine Position manuell oder ein Bündel ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies die Währung des Angebots ändert.",
+        "submit": "Währung ändern"
+      },
+      "toast": {
+        "changed": "Angebotswährung zu {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Angebotswährung konnte nicht geändert werden."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
       "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
@@ -1166,6 +1282,12 @@
       "warehouses": "Lager: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Gesch.", "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
+        "setDevices": "Geräte", "setSeats": "Benutzerplätze", "setGroup": "Geräte in „{{name}}“", "atSite": "{{set}} am Standort {{site}}",
+        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
+        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+      },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
         "download": "Vertrag herunterladen",
@@ -1500,6 +1622,7 @@
       "messageLabel": "Nachricht (optional)",
       "messagePlaceholder": "Kurze Notiz für den Kunden hinzufügen…",
       "includePdfLabel": "Rechnungs-PDF anhängen",
+      "includeDeviceAppendixLabel": "Anhang mit abgerechneten Geräten einschließen",
       "signaturePreviewLabel": "Ihre Signatur wird angehängt:",
       "invalidEmail": "Keine gültige E-Mail-Adresse: {{addresses}}",
       "tooManyRecipients": "Maximal {{max}} Adressen.",
@@ -1555,6 +1678,29 @@
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Rechnungswährung ändern",
+        "description": "Diese Entwurfsrechnung wird in {{currency}} berechnet.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Positionen der Rechnung geschieht",
+        "modeClear": "Alle Positionen entfernen",
+        "modeClearHint": "Positionen werden gelöscht. Erforderlich, wenn eine Position manuell oder ein Bündel ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies die Währung der Rechnung ändert.",
+        "submit": "Währung ändern"
+      },
+      "toast": {
+        "changed": "Rechnungswährung zu {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Rechnungswährung konnte nicht geändert werden."
+      }
+    },
     "deposit": {
       "duePrefix": "Anzahlung von",
       "dueSuffix": "fällig – {{paid}} von {{total}} bezahlt.",
@@ -1577,6 +1723,21 @@
       "tax": "Steuer",
       "total": "Insgesamt",
       "allHidden": "Alle Positionen sind nur intern. Verwenden Sie „Kosten und Marge anzeigen“, um sie einzublenden."
+    },
+    "devices": {
+      "title": "Abgerechnete Geräte",
+      "toggle": "Geräte ({{count}})",
+      "notRecorded": "Für diese Rechnung wurden keine Gerätedetails erfasst.",
+      "hostname": "Hostname",
+      "role": "Rolle",
+      "countedAs": "Gezählt als",
+      "included": "Enthalten",
+      "overage": "Mehrverbrauch",
+      "removed": "Gerät entfernt",
+      "showing": "{{shown}} von {{total}} werden angezeigt",
+      "flaggedHeading": "Markiert, nicht abgerechnet",
+      "empty": "Für diese Position wurden keine Geräte gezählt.",
+      "loadError": "Die Geräteliste konnte nicht geladen werden."
     },
     "paymentMethods": {
       "cash": "Bargeld",
@@ -1677,7 +1838,9 @@
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
       "push": "An QuickBooks übertragen",
       "pushed": "Rechnung an QuickBooks übertragen.",
-      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden."
+      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",
+      "voidedHint": "Diese Rechnung ist storniert — es gibt nichts an QuickBooks zu übertragen.",
+      "remoteDeletedHint": "Diese Rechnung wurde in QuickBooks gelöscht. Ein erneutes Übertragen würde ein Duplikat erzeugen — lösen Sie dies zuerst in QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1921,6 +2084,8 @@
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",
       "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
+      "deviceAppendix": "Anhang mit abgerechneten Geräten in Rechnungs-PDFs aufnehmen",
+      "deviceAppendixHelp": "Fügt eine Seite mit allen Geräten hinzu, die auf jeder Rechnungsposition gezählt wurden. Standardmäßig deaktiviert; die Auswahl wird bei Rechnungsstellung eingefroren.",
       "documentPageSize": "Seitengröße",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "US-Letter",

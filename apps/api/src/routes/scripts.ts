@@ -5,10 +5,10 @@ import {
   exitCodeSeverityMappingSchema,
   scriptParameterDefinitionsEqual,
   scriptParameterDefinitionsSchema,
-  scriptParametersSchema,
 } from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
+import { executeScriptSchema } from '../services/scriptRunRequest';
 import { db } from '../db';
 import {
   scripts,
@@ -42,6 +42,7 @@ import {
   findSecretVariableReferences,
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
+import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
@@ -255,6 +256,15 @@ const createScriptSchema = z.object({
   availability: z.enum(['org', 'partner']).optional()
 });
 
+// Optional retarget/rename body for POST /scripts/:id/clone (#4887). Omitted
+// fields fall back to the source script — see resolveScriptCloneScope.
+// `.strict()` so a mis-keyed field is a 400, not silently ignored (mirrors
+// cloneQuoteSchema).
+const cloneScriptSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  orgId: z.string().guid().optional(),
+}).strict();
+
 const updateScriptSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
@@ -275,48 +285,12 @@ const updateScriptSchema = z.object({
   orgId: z.string().guid().nullable().optional()
 });
 
-export const executeScriptSchema = z
-  .object({
-    // Capped at 500: queueCommand fires an un-awaited, fire-and-forget audit
-    // transaction PER DEVICE for 'script' commands (AUDITED_COMMANDS in
-    // commandQueue.ts). The dispatch loop in scriptExecution.ts is sequential
-    // and awaited, but those audit transactions are not — an unbounded batch
-    // would launch hundreds of concurrent transactions against a pool sized
-    // for far fewer while this request also holds a connection, the same
-    // pool-starvation shape that has caused prior production incidents.
-    deviceIds: z.array(z.string().guid()).min(1).max(500, {
-      message: 'Cannot target more than 500 devices in a single script execution',
-    }),
-    // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared) —
-    // accepts string/number/boolean values, canonicalized to strings once at
-    // dispatch (scriptDispatch.ts). The 64KB cap is kept ON TOP of the
-    // schema's own count/length caps: it bounds the raw JSON body size this
-    // route ever accepts, independent of the canonicalized wire form.
-    parameters: scriptParametersSchema.refine(
-      (val) => JSON.stringify(val).length <= 65536,
-      { message: 'Object too large (max 64KB)' }
-    ).optional(),
-    // Deliberately omits 'automation' even though the DB enum has it (#3162):
-    // that value is provenance minted only by the automation runtime, and an
-    // API caller must not be able to forge it. Don't "fix" this to match the
-    // column type.
-    triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
-    runAs: z.enum(['system', 'user']).optional(),
-    // Windows session to run the user-context script in (RDS session
-    // targeting). Session ids are per-device, hence single-device only.
-    // min(1): session 0 is never an interactive session — the agent rejects
-    // it with a typed error, but rejecting here saves the round trip
-    // (amended during execution after the Task 6 session-0 finding).
-    targetSessionId: z.number().int().min(1).max(65535).optional(),
-  })
-  .refine((d) => d.targetSessionId == null || d.runAs === 'user', {
-    message: 'targetSessionId requires runAs=user',
-    path: ['targetSessionId'],
-  })
-  .refine((d) => d.targetSessionId == null || d.deviceIds.length === 1, {
-    message: 'targetSessionId requires exactly one device',
-    path: ['targetSessionId'],
-  });
+// The execute-request contract lives in services/scriptRunRequest.ts so
+// non-route callers (the AI `run_script` / `execute_script_on_device` tools,
+// #4888) validate an assistant-chosen run context against the SAME object a
+// human request clears. Re-exported here because this has always been its
+// import path.
+export { executeScriptSchema };
 
 const listExecutionsSchema = z.object({
   page: z.string().optional(),
@@ -974,6 +948,53 @@ scriptRoutes.delete(
   }
 );
 
+// POST /scripts/:id/clone - Duplicate an existing script (#4887). Tenancy
+// resolution, the save-time secret checks, and tag copying all live in
+// services/scriptClone.ts (cloneScript) so this handler stays a thin
+// body-parsing + status-mapping wrapper, matching POST /quotes/:id/clone.
+scriptRoutes.post(
+  '/:id/clone',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
+  zValidator('param', scriptIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: scriptId } = c.req.valid('param');
+
+    // Optional retarget/rename body, same discipline as POST /quotes/:id/clone:
+    // an ABSENT body degrades to a plain same-scope clone; ANY non-empty body
+    // that fails to read, parse, or validate is a 400 — never a silent
+    // same-scope clone of a retarget the caller intended.
+    let input: { name?: string; orgId?: string } = {};
+    let raw: string;
+    try { raw = await c.req.text(); } catch { return c.json({ error: 'Failed to read request body' }, 400); }
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = cloneScriptSchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid clone options' }, 400);
+      input = parsed.data;
+    }
+
+    const result = await cloneScript(auth, scriptId, input);
+    if (isScriptCloneError(result)) {
+      return c.json({ error: result.error }, result.status);
+    }
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, result.script.orgId ?? null),
+      action: 'script.clone',
+      resourceType: 'script',
+      resourceId: result.script.id,
+      resourceName: result.script.name,
+      details: { sourceScriptId: scriptId }
+    });
+
+    return c.json(result.script, 201);
+  }
+);
+
 // POST /scripts/:id/execute - Execute script on specific devices
 scriptRoutes.post(
   '/:id/execute',
@@ -1095,6 +1116,11 @@ scriptRoutes.get(
         exitCode: scriptExecutions.exitCode,
         errorMessage: scriptExecutions.errorMessage,
         createdAt: scriptExecutions.createdAt,
+        // #4888 — the run context this row actually ran in. NULL for rows
+        // written before the column existed; the UI renders that as unknown
+        // rather than guessing 'system'.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType
       })
@@ -1138,7 +1164,14 @@ scriptRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #2698 — what the script's custom-field write-back applied/rejected.
+        // NULL for every run that emitted no marker. Wave 2 renders it; without
+        // it here the summary would be stored but unreachable by any caller.
+        customFieldResult: scriptExecutions.customFieldResult,
         createdAt: scriptExecutions.createdAt,
+        // #4888 — see the list endpoint above.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         scriptName: scripts.name,
         scriptLanguage: scripts.language,
         deviceHostname: devices.hostname,

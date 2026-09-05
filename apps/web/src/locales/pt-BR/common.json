@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Postura da frota",
     "dashboard": "Painel",
@@ -41,6 +42,7 @@
     "auditTrail": "Trilha de Auditoria",
     "eventLogs": "Logs de Eventos",
     "partner": "Parceiro",
+    "billing": "Faturamento",
     "organizations": "Organizações",
     "aiUsageBudget": "Uso e Orçamento de IA",
     "aiAgents": "Agentes de IA",
@@ -64,6 +66,7 @@
     "sectionExtensions": "Extensões",
     "variables": "Variáveis",
     "llmProviderCatalog": "Catálogo de Provedores de LLM",
+    "aiKillSwitch": "Interruptor de emergência de IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestão de Frota",
     "sectionBilling": "Faturamento",
@@ -164,6 +167,19 @@
     "none": "Nenhum",
     "optional": "Opcional",
     "required": "Obrigatório"
+  },
+  "runContext": {
+    "label": "Executar como",
+    "scriptDefault": "Padrão do script",
+    "scriptDefaultNamed": "Padrão do script ({{context}})",
+    "system": "Sistema",
+    "user": "Usuário conectado",
+    "elevated": "Elevado",
+    "unknown": "Não registrado",
+    "userInSession": "Usuário conectado (sessão {{session}})",
+    "sessionLabel": "Sessão de destino",
+    "sessionAny": "Qualquer sessão ativa",
+    "effectiveLabel": "Contexto de execução"
   },
   "shared": {
     "accessDenied": {

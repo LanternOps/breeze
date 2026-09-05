@@ -3,7 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationPolicyCompliance, scripts } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   AuthContext,
   listPoliciesSchema,
@@ -16,6 +17,7 @@ import {
   automationPolicyOwnershipCondition,
   normalizePolicyResponse,
   getPolicyComplianceMap,
+  complianceSiteCondition,
   buildComplianceSummary,
 } from './helpers';
 
@@ -25,9 +27,13 @@ export const crudRoutes = new Hono();
 crudRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Each row embeds per-device compliance counts, so this is a device read.
+  // DEVICES_READ also populates c.get('permissions') for the site gate (#4880).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listPoliciesSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -84,7 +90,10 @@ crudRoutes.get(
       .limit(limit)
       .offset(offset);
 
-    const complianceMap = await getPolicyComplianceMap(policiesList.map((policy) => policy.id));
+    const complianceMap = await getPolicyComplianceMap(
+      policiesList.map((policy) => policy.id),
+      perms?.allowedSiteIds
+    );
 
     return c.json({
       data: policiesList.map((policy) => normalizePolicyResponse(policy, complianceMap.get(policy.id))),
@@ -97,9 +106,11 @@ crudRoutes.get(
 crudRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', policyIdSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
 
     if (['compliance'].includes(id)) {
@@ -111,14 +122,20 @@ crudRoutes.get(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    const complianceRows = await db
-      .select({
-        status: automationPolicyCompliance.status,
-        count: sql<number>`count(*)`,
-      })
-      .from(automationPolicyCompliance)
-      .where(eq(automationPolicyCompliance.policyId, id))
-      .groupBy(automationPolicyCompliance.status);
+    // Compliance counts describe devices: narrow to the caller's site allowlist.
+    const complianceRows = perms?.allowedSiteIds?.length === 0
+      ? []
+      : await db
+          .select({
+            status: automationPolicyCompliance.status,
+            count: sql<number>`count(*)`,
+          })
+          .from(automationPolicyCompliance)
+          .where(and(
+            eq(automationPolicyCompliance.policyId, id),
+            complianceSiteCondition(perms?.allowedSiteIds)
+          ))
+          .groupBy(automationPolicyCompliance.status);
 
     let remediationScript: { id: string; name: string } | null = null;
     if (policy.remediationScriptId) {

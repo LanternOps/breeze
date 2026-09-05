@@ -30,8 +30,10 @@ export const SCRIPT_LANGUAGES = ['powershell', 'bash', 'python', 'cmd'] as const
 // Script Run As
 export const SCRIPT_RUN_AS = ['system', 'user', 'elevated'] as const;
 
-// Execution Statuses
-export const EXECUTION_STATUSES = ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] as const;
+// Execution Statuses — canonical source is ../types (EXECUTION_STATUSES), which
+// also carries the transient 'cancelling' state (#3525). Re-exported here so
+// existing `from '../constants'` imports keep working.
+export { EXECUTION_STATUSES } from '../types';
 
 // Role Scopes
 export const ROLE_SCOPES = ['system', 'partner', 'organization'] as const;
@@ -141,6 +143,15 @@ export const MAX_PAGE_SIZE = 100;
 // schemas (server enforcement) and the web bulk runners (client-side guard +
 // friendly message) so the two can never drift.
 export const BULK_ID_LIMIT = 50;
+
+// Hard cap on one AI-agent approvals batch decide (services/approvals/
+// batchDecide.ts's `BATCH_MAX`, which re-exports this). Matches the inbox
+// page size, so "select everything on this page" is always expressible in
+// one call. Shared by the server's enforcement (`loadHomogeneousBatch`
+// 422s `batch_too_large` past it) and the web inbox's client-side guard
+// (#4460) so the two can never drift — the group tap is refused inline
+// instead of round-tripping to learn the cap the hard way.
+export const APPROVAL_BATCH_MAX = 50;
 
 // Session timeouts
 export const ACCESS_TOKEN_EXPIRY = '15m';

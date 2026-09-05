@@ -43,6 +43,8 @@ import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException } from '../../services/sentry';
 import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
+import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
+import { trustDenyBody } from '../../services/partnerTrust';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export const sessionRoutes = new Hono();
@@ -249,17 +251,25 @@ sessionRoutes.post(
     }
 
     // Create session
-    const [session] = await db
-      .insert(remoteSessions)
-      .values({
+    let session: typeof remoteSessions.$inferSelect;
+    try {
+      session = await createRemoteSession('remote', {
         deviceId: data.deviceId,
         orgId: device.orgId,
         userId: auth.user.id,
         type: data.type,
-        status: 'pending',
-        iceCandidates: []
-      })
-      .returning();
+      }) as typeof remoteSessions.$inferSelect;
+    } catch (e) {
+      if (e instanceof RemoteSessionDeniedError) {
+        return c.json(trustDenyBody({
+          allow: false,
+          code: e.code,
+          capability: 'remote_control',
+          reason: e.reason,
+        }, false), 403);
+      }
+      throw e;
+    }
 
     if (!session) {
       return c.json({ error: 'Failed to create session' }, 500);

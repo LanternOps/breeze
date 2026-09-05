@@ -405,3 +405,44 @@ describe('openAttachmentExternally', () => {
     expect(downloadFileAsync).not.toHaveBeenCalled();
   });
 });
+
+describe('uploadTicketAttachment — failures that are NOT a bad connection', () => {
+  const jpeg = { uri: 'file:///tmp/a.jpg', name: 'a.jpg', mimeType: 'image/jpeg', size: 1000, width: 10, height: 10 };
+  const GENERIC = 'Upload failed. Check your connection and try again.';
+
+  it.each([
+    [401, 'Not authenticated'],
+    [403, 'Insufficient permissions'],
+    [404, 'Not Found'],
+  ])('surfaces the server\'s own reason for an HTTP %i instead of blaming the connection', async (status, message) => {
+    coreRequest.mockRejectedValue({ statusCode: status, message });
+
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+
+    expect(err).toBeInstanceOf(AttachmentUploadError);
+    expect(err.message).not.toBe(GENERIC);
+    expect(err.message).toContain(message);
+    expect(err.message).toContain(String(status));
+    // A stale token or a permission gap does not get better by tapping Retry.
+    expect(err.retryable).toBe(false);
+  });
+
+  it('maps ORG_CONTEXT_REQUIRED to its own non-retryable copy', async () => {
+    coreRequest.mockRejectedValue(apiError('ORG_CONTEXT_REQUIRED', 403));
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+    expect(err.code).toBe('ORG_CONTEXT_REQUIRED');
+    expect(err.retryable).toBe(false);
+    expect(err.message).not.toBe(GENERIC);
+  });
+
+  it('names the underlying cause for a failure that never produced a response', async () => {
+    // RN's fetch rejects with a TypeError when it cannot read the file URI or
+    // build the multipart body; that is not a connectivity problem either, and
+    // hiding the message is what made the camera-upload defect undiagnosable.
+    coreRequest.mockRejectedValue(new TypeError('Network request failed'));
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+    expect(err.code).toBe('UPLOAD_FAILED');
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain('Network request failed');
+  });
+});

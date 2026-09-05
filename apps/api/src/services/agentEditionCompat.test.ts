@@ -188,6 +188,7 @@ describe('agent-binary update command types are only named at known sites (#4093
   const ALLOWED = new Set([
     'apps/api/src/services/agentEditionCompat.ts', // the gate itself
     'apps/api/src/services/aiToolsAgentMgmt.ts', // trigger_agent_upgrade — the one dispatcher
+    'apps/api/src/services/partnerTrust.ts', // partner trust probation allowlist classifies these as lifecycle; it never dispatches them
   ]);
 
   function walk(dir: string, out: string[] = []): string[] {

@@ -98,7 +98,12 @@ vi.mock('@xterm/addon-web-links', () => ({
     return {};
   },
 }));
-vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
+// xterm's stylesheet is inlined into the component's chunk (`?inline`) and
+// injected as a single <style> element — see initTerminal and #4152. The
+// sentinel rule below is what the injection cases assert on.
+const XTERM_CSS_SENTINEL = '.xterm-viewport { position: absolute; }';
+
+vi.mock('@xterm/xterm/css/xterm.css?inline', () => ({ default: XTERM_CSS_SENTINEL }));
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -580,5 +585,49 @@ describe('RemoteTerminal hostname prop lifecycle (#4152)', () => {
     expect(await screen.findByRole('button', { name: /disconnect/i })).toBeInTheDocument();
     expect(screen.queryByTestId('terminal-disconnect-overlay')).not.toBeInTheDocument();
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+});
+
+describe('RemoteTerminal layout fills its flex parent (#4510)', () => {
+  it('gives the root wrapper flex-1 min-h-0 so it grows inside a flex column parent', () => {
+    const { container } = renderTerminal();
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toMatch(/\bflex-1\b/);
+    expect(root.className).toMatch(/\bmin-h-0\b/);
+    expect(root.className).toMatch(/\bflex-col\b/);
+  });
+
+  it('keeps the xterm container growing to fill the wrapper while retaining the 400px floor', () => {
+    const { container } = renderTerminal();
+
+    const xtermContainer = container.querySelector('.u-min-h-px-400') as HTMLElement | null;
+    expect(xtermContainer).not.toBeNull();
+    expect(xtermContainer!.className).toMatch(/\bflex-1\b/);
+  });
+});
+
+
+// The stylesheet is not decorative: it positions `.xterm-viewport`, absolutely
+// stacks the `.xterm-screen` canvases and hides `.xterm-helper-textarea` (the
+// offscreen textarea that captures keyboard/IME input). Shipping it inline and
+// attaching it ourselves is what makes a stale hashed .css asset unable to
+// either kill the terminal or silently strip its layout (#4152).
+describe('RemoteTerminal attaches the inlined xterm stylesheet (#4152)', () => {
+  it('injects the stylesheet exactly once, however many times it mounts', async () => {
+    const { unmount } = renderTerminal();
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+
+    const injected = document.querySelectorAll('style#xterm-css');
+    expect(injected).toHaveLength(1);
+    expect(injected[0]!.textContent).toBe(XTERM_CSS_SENTINEL);
+
+    // Every Remote Tools tab switch is a real unmount/remount, so a duplicate
+    // <style> per mount would accumulate for the whole session.
+    unmount();
+    renderTerminal();
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), { timeout: 2000 });
+
+    expect(document.querySelectorAll('style#xterm-css')).toHaveLength(1);
   });
 });

@@ -18,6 +18,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { createAuditLog } from '../../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 
 /**
  * Device custom-field VALUE read/write API.
@@ -59,6 +60,14 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
  * AFTER it, so mounting after `coreRoutes` would re-introduce the session-only
  * `authMiddleware` ahead of our API-key branch and resurrect the 401. See the
  * `hono_router_use_wildcard_root_mount_auth_leak` lesson.
+ *
+ * #3257 W04: a PATCH now requires a matching `custom_field_definitions` row —
+ * a key with no visible definition is rejected `400 unknown_field`, and a
+ * value that doesn't match the definition's declared type is rejected
+ * `400 invalid-custom-field-value`. The `bitlocker_recovery_key` example above
+ * is pre-#3257 framing kept for the auth-flavour narrative; a caller must now
+ * create the field's definition first (`routes/customFields.ts`) before a
+ * PATCH here will accept it.
  */
 export const customFieldValuesRoutes = new Hono();
 
@@ -225,9 +234,28 @@ customFieldValuesRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // Validate every key against its definition BEFORE merging. Custom-field
+    // values are an execution sink (installerVariables substitutes them into
+    // installer command lines) and a targeting control (filterEngine's
+    // custom.<key> selects deployment targets), so an unconstrained
+    // Record<string, string|number|boolean|null> was the wrong contract on
+    // both branches of dualAuth (#3257 W04). All-or-nothing: one PATCH is one
+    // operator action, unlike the importer's partial-apply bulk load.
+    const validation = await validateCustomFieldMap(device.orgId, device.osType, updates);
+    if (!validation.ok) {
+      return c.json(
+        {
+          error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
+          code: 'invalid-custom-field-value',
+          fields: validation.rejected,
+        },
+        400,
+      );
+    }
+
     // Merge with existing values rather than replacing the whole object, matching
     // the PATCH /devices/:id semantics.
-    const merged = { ...readExistingCustomFields(device.customFields), ...updates };
+    const merged = { ...readExistingCustomFields(device.customFields), ...validation.values };
 
     const [updated] = await db
       .update(devices)

@@ -6,6 +6,7 @@ import { recordOpsAlertDelivery } from './abuseMetrics';
 export interface OpsAlertMessage {
   title: string;
   body: string;
+  html?: string;
 }
 
 const DISCORD_CONTENT_LIMIT = 2000;
@@ -68,7 +69,7 @@ async function sendOpsEmail(to: string, msg: OpsAlertMessage): Promise<boolean> 
       to,
       subject: `[Breeze ops] ${msg.title}`,
       text: msg.body,
-      html: `<pre>${msg.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
+      html: msg.html ?? `<pre>${msg.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
     });
     recordOpsAlertDelivery('email', 'success');
     return true;

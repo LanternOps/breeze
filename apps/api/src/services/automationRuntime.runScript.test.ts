@@ -71,7 +71,7 @@ vi.mock('./notificationSenders', () => ({
 }));
 
 import { db } from '../db';
-import { createAutomationRunRecord, executeRunScriptAction } from './automationRuntime';
+import { createAutomationRunRecord, executeRunScriptAction, normalizeAutomationActions } from './automationRuntime';
 
 const EXECUTION_ID = '11111111-2222-4333-8444-555555555555';
 const RUN_ID = '99999999-8888-4777-8666-555555555555';
@@ -378,5 +378,44 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
 
     expect(result.outcome.status).toBe('failed');
     expect(dispatchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #4888 — the automation form now EXPOSES the run-as override, so the value
+ * stops being a field only an API caller could set. Two properties matter:
+ * the override actually reaches dispatch (the form's whole point), and
+ * "Script default" — an absent `runAs` — still resolves to the script row.
+ */
+describe('run_script run-context override (#4888)', () => {
+  it('forwards an action-level runAs to dispatch instead of the script default', async () => {
+    // SCRIPT.runAs is 'system'; the action asks for 'user'.
+    await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1', runAs: 'user' },
+      0,
+      buildContext(),
+    );
+
+    const input = dispatchMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.runAs).toBe('user');
+  });
+
+  /**
+   * `normalizeAutomationActions` is the READ path as well as the write
+   * validator (routes/automations.ts and services/configurationPolicy.ts both
+   * run it over rows loaded from the DB), so an unrecognised stored value must
+   * degrade to "script default" rather than throw and take a live automation
+   * offline.
+   */
+  it('narrows a stored runAs to the enum, dropping anything else to the script default', () => {
+    const [kept] = normalizeAutomationActions([
+      { type: 'run_script', scriptId: 'script-1', runAs: 'elevated' },
+    ]);
+    expect(kept).toMatchObject({ runAs: 'elevated' });
+
+    const [dropped] = normalizeAutomationActions([
+      { type: 'run_script', scriptId: 'script-1', runAs: 'root' },
+    ]);
+    expect((dropped as Record<string, unknown>).runAs).toBeUndefined();
   });
 });

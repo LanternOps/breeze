@@ -22,6 +22,12 @@ const NORMALIZED_PATCH_FACTS = {
   scheduleDayOfMonth: 1,
   rebootPolicy: 'if_required',
   rebootDelayMinutes: 15,
+  // #3207. PATCH_NORMALIZED_MATERIAL_KEYS fails closed on an exact count
+  // mismatch, so this fixture has to track every patch column — a new column
+  // missing here reads as "material tampered with" and blocks the export.
+  rebootAllowDeferral: false,
+  rebootMaxDeferrals: 3,
+  rebootDeferralMinutes: 60,
   exclusiveWindowsUpdate: false,
 };
 

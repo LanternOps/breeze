@@ -336,12 +336,13 @@ export type BundleTargetOptions = {
 
 type ScriptRow = typeof scripts.$inferSelect;
 
-function canReadScript(auth: BundleAuth, script: ScriptRow): boolean {
+export function canReadScript(auth: BundleAuth, script: ScriptRow): boolean {
   if (auth.scope === 'system') return true;
   if (script.isSystem) return true;
-  if (script.orgId && auth.canAccessOrg(script.orgId)) return true;
-  // Partner-wide (and partner-denormalized) rows are readable by the owning
-  // partner's users — same visibility the list route grants.
+  // An org-owned row's denormalized partnerId does not grant access to
+  // sibling organizations outside the caller's organization grants.
+  if (script.orgId) return auth.canAccessOrg(script.orgId);
+  // Only partner-wide rows are shared with the owning partner's users.
   if (script.partnerId && auth.partnerId === script.partnerId) return true;
   return false;
 }
@@ -584,8 +585,17 @@ export async function previewBundle(
   return { target: { ...scope, availability: options.availability }, entries };
 }
 
+/**
+ * A live transaction handle from `db.transaction(async (tx) => …)`, structurally
+ * compatible with `db` itself for the query-builder calls these two functions
+ * make. Lets a caller (script clone, #4887) run the tag-copy atomically with
+ * its own insert; every existing caller omits it and keeps running on the
+ * bare pooled `db`, unchanged.
+ */
+type DbOrTx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** Resolve tag names to ids within the target scope, creating what's missing. */
-async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<string[]> {
+export async function ensureTagIds(scope: ScriptCreateScope, names: string[], dbOrTx: DbOrTx = db): Promise<string[]> {
   if (names.length === 0) return [];
   const unique = [...new Set(names)];
 
@@ -593,7 +603,7 @@ async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<
     ? eq(scriptTags.orgId, scope.orgId)
     : and(isNull(scriptTags.orgId), eq(scriptTags.partnerId, scope.partnerId!));
 
-  const existing = await db
+  const existing = await dbOrTx
     .select({ id: scriptTags.id, name: scriptTags.name })
     .from(scriptTags)
     .where(and(inArray(scriptTags.name, unique), scopeCondition));
@@ -601,7 +611,7 @@ async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<
   const byName = new Map(existing.map((t) => [t.name, t.id]));
   const missing = unique.filter((n) => !byName.has(n));
   if (missing.length > 0) {
-    const created = await db
+    const created = await dbOrTx
       .insert(scriptTags)
       .values(missing.map((name) => ({ name, orgId: scope.orgId, partnerId: scope.partnerId })))
       .returning({ id: scriptTags.id, name: scriptTags.name });
@@ -611,11 +621,11 @@ async function ensureTagIds(scope: ScriptCreateScope, names: string[]): Promise<
   return unique.map((n) => byName.get(n)).filter((id): id is string => typeof id === 'string');
 }
 
-async function linkTags(scriptId: string, tagIds: string[], isExistingScript: boolean) {
+export async function linkTags(scriptId: string, tagIds: string[], isExistingScript: boolean, dbOrTx: DbOrTx = db) {
   if (tagIds.length === 0) return;
   let toLink = tagIds;
   if (isExistingScript) {
-    const links = await db
+    const links = await dbOrTx
       .select({ tagId: scriptToTags.tagId })
       .from(scriptToTags)
       .where(eq(scriptToTags.scriptId, scriptId));
@@ -623,7 +633,7 @@ async function linkTags(scriptId: string, tagIds: string[], isExistingScript: bo
     toLink = tagIds.filter((id) => !already.has(id));
   }
   if (toLink.length > 0) {
-    await db.insert(scriptToTags).values(toLink.map((tagId) => ({ scriptId, tagId })));
+    await dbOrTx.insert(scriptToTags).values(toLink.map((tagId) => ({ scriptId, tagId })));
   }
 }
 

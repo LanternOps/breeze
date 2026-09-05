@@ -34,7 +34,11 @@
     "registerDevice": "Enregistrer cet appareil",
     "decideFailed": "Impossible d'envoyer la décision",
     "approvedToast": "Action approuvée",
-    "deniedToast": "Action refusée"
+    "deniedToast": "Action refusée",
+    "runContextLabel": "Contexte d’exécution :",
+    "runContextChosenByAssistant": "choisi par l’assistant",
+    "runContextScriptDefault": "la valeur par défaut enregistrée du script",
+    "runContextOverrides": "choisi par l’assistant, remplaçant la valeur par défaut enregistrée du script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "En attente de réponse...",
@@ -424,7 +428,9 @@
     "limit": "Jusqu’à 5 conversations simultanées"
   },
   "workspaceTab": {
-    "approvalPending": "Approbation en attente"
+    "approvalPending": "Approbation en attente",
+    "renameLabel": "Renommer la conversation",
+    "renameHint": "Double-cliquez pour renommer"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Nouvel onglet (Cmd+Shift+N)",

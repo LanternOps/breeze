@@ -81,7 +81,7 @@ describe('ringAutoApproveSchema', () => {
     // Stored explicit opt-in carried
     expect(mergeRingAutoApproveWrite(incoming, {
       enabled: true, severities: ['critical'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 9,
-    })).toEqual({ enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: true, thirdPartyDeferralDays: 9 });
+    })).toEqual({ enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: true, thirdPartyDeferralDays: 9, autoApproveUnrated: false });
     // Legacy stored row without the field: derives from stored severities
     expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: ['critical'] }).thirdPartyApps).toBe(true);
     expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: [] }).thirdPartyApps).toBe(false);
@@ -94,13 +94,47 @@ describe('ringAutoApproveSchema', () => {
     })).toMatchObject({ thirdPartyApps: false, thirdPartyDeferralDays: null });
     // Create (no stored row): explicit fail-closed defaults
     expect(mergeRingAutoApproveWrite(incoming, undefined)).toEqual({
-      enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: false, thirdPartyDeferralDays: null,
+      enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false,
     });
   });
 
   it('rejects out-of-range thirdPartyDeferralDays', () => {
     expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 366 }).success).toBe(false);
     expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: -1 }).success).toBe(false);
+  });
+
+  it('accepts autoApproveUnrated as an optional boolean, absent by default', () => {
+    const result = ringAutoApproveSchema.safeParse({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.autoApproveUnrated).toBeUndefined();
+    }
+  });
+
+  it('accepts an explicit autoApproveUnrated: true alongside severities', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.autoApproveUnrated).toBe(true);
+    }
+  });
+
+  it('mergeRingAutoApproveWrite: absent autoApproveUnrated carries the stored value; explicit value wins; create defaults to false', () => {
+    const incoming = ringAutoApproveSchema.parse({ enabled: true, severities: ['low'], deferralDays: 2 });
+    expect(mergeRingAutoApproveWrite(incoming, {
+      enabled: true, severities: ['critical'], deferralDays: 0, autoApproveUnrated: true,
+    }).autoApproveUnrated).toBe(true);
+
+    const explicitOff = ringAutoApproveSchema.parse({
+      enabled: true, severities: ['low'], deferralDays: 0, autoApproveUnrated: false,
+    });
+    expect(mergeRingAutoApproveWrite(explicitOff, {
+      enabled: true, severities: [], deferralDays: 0, autoApproveUnrated: true,
+    }).autoApproveUnrated).toBe(false);
+
+    expect(mergeRingAutoApproveWrite(incoming, undefined).autoApproveUnrated).toBe(false);
   });
 });
 
@@ -218,6 +252,100 @@ describe('patchInlineSettingsSchema app rules + deferral', () => {
 
   it('rejects non-integer autoApproveDeferralDays', () => {
     expect(patchInlineSettingsSchema.safeParse({ autoApproveDeferralDays: 2.5 }).success).toBe(false);
+  });
+});
+
+describe('patchInlineSettingsSchema reboot deferral (#3207)', () => {
+  it('defaults deferral off so existing policies are unchanged', () => {
+    const parsed = patchInlineSettingsSchema.parse({});
+    expect(parsed.rebootAllowDeferral).toBe(false);
+    expect(parsed.rebootMaxDeferrals).toBe(3);
+    expect(parsed.rebootDeferralMinutes).toBe(60);
+  });
+
+  it('rejects a deferral window below 5 minutes', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootDeferralMinutes: 4 })).toThrow();
+  });
+
+  it('rejects a deferral window above 1440 minutes', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootDeferralMinutes: 1441 })).toThrow();
+  });
+
+  it('rejects more than 10 deferrals', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: 11 })).toThrow();
+  });
+
+  it('rejects a negative or non-integer deferral count', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: -1 })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: 2.5 })).toThrow();
+  });
+
+  it('rejects deferral enabled with a zero budget — that is a UI lie, not a policy', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({ rebootAllowDeferral: true, rebootMaxDeferrals: 0 }),
+    ).toThrow(/rebootMaxDeferrals/);
+  });
+
+  it('allows a zero budget while deferral is disabled', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootAllowDeferral: false,
+      rebootMaxDeferrals: 0,
+    });
+    expect(parsed.rebootMaxDeferrals).toBe(0);
+  });
+
+  it('rejects a total deferral budget that cannot fit before the 7-day agent ceiling', () => {
+    // 10 x 1440 = 14400 minutes = 10 days; handleScheduleReboot caps delay at 10080.
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1440,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('accepts a budget that fits inside the ceiling', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootAllowDeferral: true, rebootMaxDeferrals: 6, rebootDeferralMinutes: 1440,
+    });
+    expect(parsed.rebootAllowDeferral).toBe(true);
+    expect(parsed.rebootMaxDeferrals).toBe(6);
+  });
+
+  // The ceiling bounds the WHOLE horizon the API puts on the wire —
+  // computeRebootDeadline returns delay + maxDeferrals x deferralMinutes — so
+  // the warning delay has to be inside the sum, not excluded from it.
+  it('counts rebootDelayMinutes toward the ceiling, not just the deferral product', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 1440,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('accepts a total that lands exactly on the ceiling and rejects one minute past it', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 80,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1000,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 81,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1000,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('leaves a long warning delay alone while deferral is off', () => {
+    // The ceiling is about the deferral horizon; without deferral the delay is
+    // bounded by its own 1-1440 range and nothing else.
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootDelayMinutes: 1440, rebootAllowDeferral: false, rebootMaxDeferrals: 10,
+      rebootDeferralMinutes: 1440,
+    });
+    expect(parsed.rebootDelayMinutes).toBe(1440);
   });
 });
 

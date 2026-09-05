@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, isNotNull, like, ne, type SQL } from 'drizzle-orm';
@@ -93,20 +93,14 @@ const reasonSchema = z.object({
   reason: z.string().trim().min(10, 'reason must be at least 10 characters'),
 });
 
-abuseRoutes.post(
-  '/partners/:id/suspend-for-abuse',
-  requireMfa(),
-  zValidator('json', suspendSchema),
-  async (c) => {
+/** Shared implementation for both the normal admin endpoint and the
+ * TOTP-guarded evidence-card action. Callers must perform their own step-up. */
+export async function suspendPartnerForAbuse(
+  c: Context,
+  partnerId: string,
+  reason: string,
+): Promise<Response> {
     const auth = c.get('auth');
-    const { reason, confirmEmail } = c.req.valid('json');
-    if (confirmEmail.trim().toLowerCase() !== auth.user.email.trim().toLowerCase()) {
-      return c.json(
-        { error: 'confirmEmail must match your account email' },
-        400,
-      );
-    }
-    const partnerId = c.req.param('id');
     const callerId = auth.user.id;
 
     const result = await withSystemDbAccessContext(async () => {
@@ -415,6 +409,22 @@ abuseRoutes.post(
       billingSubscriptionCanceled,
       ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
     });
+}
+
+abuseRoutes.post(
+  '/partners/:id/suspend-for-abuse',
+  requireMfa(),
+  zValidator('json', suspendSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { reason, confirmEmail } = c.req.valid('json');
+    if (confirmEmail.trim().toLowerCase() !== auth.user.email.trim().toLowerCase()) {
+      return c.json(
+        { error: 'confirmEmail must match your account email' },
+        400,
+      );
+    }
+    return suspendPartnerForAbuse(c, c.req.param('id'), reason);
   }
 );
 
@@ -771,4 +781,3 @@ abuseRoutes.post(
     });
   },
 );
-

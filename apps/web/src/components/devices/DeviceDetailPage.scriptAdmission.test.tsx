@@ -44,6 +44,7 @@ const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 describe('DeviceDetailPage script admission', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.location.hash = '';
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
       id: DEVICE_ID,
       hostname: 'alpha-01',
@@ -68,5 +69,26 @@ describe('DeviceDetailPage script admission', () => {
     await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     expect(vi.mocked(showToast)).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    // #4886 — a rejected admission must not redirect the operator anywhere.
+    expect(window.location.hash).toBe('');
+  });
+
+  // #4886 — after a successful queue, the operator should land where the
+  // result appears (the device's own Scripts tab) instead of staying wherever
+  // they happened to trigger the run from.
+  it('switches to the Scripts tab, highlighting the new execution, once the run is admitted', async () => {
+    vi.mocked(executeScript).mockResolvedValue({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      status: 'queued',
+      targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: 'execution-1' }],
+    } as never);
+
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Choose Cleanup'));
+
+    await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.location.hash).toBe('#scripts/execution-1'));
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 });

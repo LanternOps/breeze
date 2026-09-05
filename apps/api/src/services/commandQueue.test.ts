@@ -20,6 +20,21 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { TrustDeniedError } from './partnerTrust.commands';
+
+const partnerTrustCommandMocks = vi.hoisted(() => ({
+  assertDeviceExecuteAllowed: vi.fn(),
+}));
+
+vi.mock('./partnerTrust.commands', async () => {
+  const actual = await vi.importActual<typeof import('./partnerTrust.commands')>(
+    './partnerTrust.commands',
+  );
+  return {
+    ...actual,
+    assertDeviceExecuteAllowed: partnerTrustCommandMocks.assertDeviceExecuteAllowed,
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -71,10 +86,85 @@ vi.mock('../db/schema', async (importOriginal) => {
 describe('command queue service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockImplementation(
+      async (_deviceId, type) => {
+        if (type === 'script') {
+          throw new TrustDeniedError(
+            'TRUST_PROBATION',
+            'probation_default_deny',
+            'd1',
+            'script',
+          );
+        }
+      },
+    );
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('queueCommand refuses a gated type for a probation partner and inserts nothing', async () => {
+    await expect(queueCommand('d1', 'script', {}, 'u1')).rejects.toBeInstanceOf(
+      TrustDeniedError,
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('queueCommand still queues self_uninstall', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-self-uninstall' }]),
+      }),
+    } as any);
+
+    await expect(
+      queueCommand('d1', 'self_uninstall', { removeConfig: true }, 'u1'),
+    ).resolves.toBeTruthy();
+  });
+
+  it('queueCommandForExecution returns a structured trust error instead of throwing', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'd1', status: 'online' }]),
+        }),
+      }),
+    } as any);
+
+    await expect(queueCommandForExecution('d1', 'script', {})).resolves.toMatchObject({
+      error: 'TRUST_PROBATION',
+      trust: { reason: 'probation_default_deny' },
+    });
+  });
+
+  it('executeCommand returns a failed CommandResult with the trust code', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'd1', status: 'online' }]),
+        }),
+      }),
+    } as any);
+
+    const result = await executeCommand('d1', 'script', {});
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: 'TRUST_PROBATION',
+      trust: { reason: 'probation_default_deny' },
+    });
+    // Regression guard: the legacy `{ success: false }` shape must never
+    // come back — callers (e.g. routes/backup/vss.ts) check
+    // `result.status === 'failed'`, not `result.success`.
+    expect((result as any).success).toBeUndefined();
   });
 
   it('refuses to re-arm a desktop stop row whose payload is not exact', async () => {
@@ -672,6 +762,48 @@ describe('command queue service', () => {
       resourceType: 'device',
       resourceId: 'dev-2',
       orgId: 'org-1',
+      result: 'dispatched',
+    }));
+  });
+
+  // #3525 behavioural pin for AUDITED_COMMANDS membership: stopping someone
+  // else's running script on a customer endpoint must leave a dispatch audit
+  // row, exactly as the run it interrupts does. AUDITED_COMMANDS is
+  // module-private, so a source-text assertion elsewhere would not prove the
+  // audit is actually written — only this does.
+  it('writes an audit log when queueing script_cancel', async () => {
+    const auditValues = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert)
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'cancel-cmd-1' }]),
+        }),
+      } as any)
+      .mockReturnValueOnce({ values: auditValues } as any);
+
+    const schema = await import('../db/schema');
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => ({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(
+            table === schema.devices
+              ? [{ orgId: 'org-9', hostname: 'host-9' }]
+              : [{ id: 'user-9' }],
+          ),
+        }),
+      })),
+    })) as any);
+
+    await queueCommand('dev-9', CommandTypes.SCRIPT_CANCEL, { executionId: 'orig-cmd-1' }, 'user-9');
+
+    // The audit block is fire-and-forget, so it settles after queueCommand.
+    await vi.waitFor(() => expect(auditValues).toHaveBeenCalled());
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'agent.command.script_cancel',
+      actorId: 'user-9',
+      resourceType: 'device',
+      resourceId: 'dev-9',
+      orgId: 'org-9',
       result: 'dispatched',
     }));
   });

@@ -21,8 +21,28 @@
       "lineType": {
         "flat": "Sabit ücret",
         "perDevice": "Cihaz başına",
+        "perDeviceRole": "Cihaz rolüne göre",
+        "perDeviceGroup": "Cihaz grubu başına",
         "perSeat": "Koltuk başına",
         "manual": "Manuel miktar"
+      },
+      "dynamicGroup": "dinamik",
+      "deletedGroup": "{{name}} (silinmiş grup)",
+      "coverage": {
+        "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
+        "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor.",
+        "uncoveredLead": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor:",
+        "roleBucket": "{{count}} {{role}}"
+      },
+      "allowance": {
+        "includedOf": "{{included}} dahilden {{counted}}",
+        "includedOnly": "{{included}} dahil",
+        "overBilled": "{{included}} dahil · {{overage}} fazla (faturalandı)",
+        "overFlagged": "{{included}} dahil · {{overage}} fazla (işaretlendi)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{included}} dahilin {{overage}} üzerinde, faturalandırılmadı",
+        "billed": "{{description}} — {{included}} dahilin {{overage}} üzerinde, aşım tarifesinden faturalandı"
       },
       "transition": {
         "activate": "Etkinleştir",
@@ -31,7 +51,13 @@
         "cancel": "İptal"
       },
       "values": {
-        "auto": "otomatik"
+        "auto": "otomatik",
+        "groupDeleted": "grup silindi",
+        "siteDeleted": "konum silindi",
+        "siteDeletedNamed": "konum silindi: {{name}}"
+      },
+      "lineScope": {
+        "site": "Konum: {{name}}"
       }
     },
     "contractDetail": {
@@ -67,6 +93,15 @@
         "period": "Dönem",
         "generated": "Oluşturuldu",
         "invoice": "Fatura",
+        "outcome": "Sonuç",
+        "outcomeAllBilled": "Tümü faturalandı",
+        "outcomeUncovered": "{{count}} kapsam dışı",
+        "outcomeFlagged": "{{count}} işaretlendi",
+        "outcomeNoDeviceLines": "Cihaz satırı yok",
+        "outcomeNotRecorded": "Kaydedilmedi",
+        "outcomeToggle": "Dönem sonucunu göster",
+        "outcomeDevicesEvaluated": "Değerlendirilen cihazlar: {{count}}",
+        "outcomeBilledOverage": "Faturalanan aşım: {{count}}",
         "empty": "Henüz fatura oluşturulmadı.",
         "viewInvoice": "Faturayı görüntüle"
       },
@@ -96,6 +131,8 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
+        "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },
@@ -143,13 +180,22 @@
         "addLine": "Satır eklenemedi.",
         "removeLine": "Satır kaldırılamadı.",
         "activateContract": "Sözleşme etkinleştirilemedi.",
-        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin."
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin.",
+        "updateLine": "Satır güncellenemedi.",
+        "lineNotFound": "Bu satır artık mevcut değil. Sözleşmeyi yenileyin.",
+        "contractNotEditable": "Satırlar yalnızca taslak veya etkin sözleşmelerde düzenlenebilir.",
+        "siteNotInOrg": "Bu konum farklı bir kuruluşa ait.",
+        "groupNotInOrg": "Bu cihaz grubu farklı bir kuruluşa ait.",
+        "invalidLinePatch": "Bu değişiklikler bu satır türü için geçerli değil.",
+        "priceNotRepresentable": "Bu fiyatın {{currency}} için çok fazla ondalık basamağı var.",
+        "catalogItemNotFound": "Bu katalog öğesi bu sözleşmede kullanılamıyor."
       },
       "toast": {
         "contractCreated": "Sözleşme oluşturuldu",
         "lineAdded": "Satır eklendi",
         "lineRemoved": "Hat kaldırıldı",
-        "contractActivated": "Sözleşme etkinleştirildi"
+        "contractActivated": "Sözleşme etkinleştirildi",
+        "lineUpdated": "Satır güncellendi"
       },
       "schedule": {
         "title": "Program",
@@ -180,7 +226,8 @@
         "unitPrice": "Birim fiyatı",
         "qty": "Adet",
         "tax": "Vergi",
-        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin."
+        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin.",
+        "edit": "Düzenle"
       },
       "addLine": {
         "integrationHint": "Entegrasyondan ekleme — bir satırı önceden doldurur.",
@@ -188,6 +235,20 @@
         "addFromPax8Catalog": "Pax8 kataloğundan ekle",
         "importFromTdSynnex": "TD SYNNEX'ten içe aktar",
         "lineType": "Hat türü",
+        "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
+        "allowanceHint": "Satır, daha az cihaz sayılsa bile her dönem dahil edilen miktarı faturalandırır.",
+        "includedQuantity": "Dahil edilen miktar",
+        "overageMode": "Dahil edilen miktarın üzeri",
+        "overageBill": "Fazlasını faturalandır",
+        "overageFlag": "Fazlasını incelemek üzere işaretle",
+        "overageUnitPrice": "Ek birim başına fiyat",
+        "allowanceRequired": "Dahil edilen bir miktar girin; fazlasını faturalandırıyorsanız bir fiyat da girin.",
+        "deviceRoles": "Cihaz rolleri (rolü bunlardan biri olan cihazlar faturalandırılır)",
+        "deviceRolesRequired": "En az bir rol seçin.",
+        "deviceGroup": "Cihaz grubu (üyeleri faturalandırılır; dinamik gruplar faturalama sırasında değerlendirilir)",
+        "selectGroup": "Bir grup seçin",
+        "deviceGroupRequired": "Bir grup seçin.",
+        "deviceGroupsLoadFailed": "Bu kuruluşun cihaz grupları yüklenemedi.",
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
@@ -207,6 +268,16 @@
         "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
         "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
         "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
+      },
+      "editLine": {
+        "save": "Satırı kaydet",
+        "cancel": "İptal",
+        "typeLocked": "Satır türü değiştirilemez. Satırı kaldırıp yenisini ekleyin.",
+        "priceFromCatalog": "Fiyat katalogdan gelir. Elle ayarlamak için katalog bağlantısını kaldırın.",
+        "refreshPrice": "Fiyatı katalogdan yenile",
+        "restoreCatalogLink": "Katalog bağlantısını geri yükle",
+        "unlinkNeedsPrice": "Katalog bağlantısını kaldırmak için birim fiyat ve vergi ayarını girin.",
+        "noChanges": "Henüz kaydedilecek bir şey yok."
       },
       "estimate": {
         "title": "Tahmini bu dönem",
@@ -239,6 +310,10 @@
       "backToContractsText": "Sözleşmelere geri dön",
       "newContract": "Yeni sözleşme",
       "doneEditing": "Düzenleme tamamlandı"
+    },
+    "list": {
+      "estimateUnavailable": "Tahmin kullanılamıyor: bu sözleşmedeki bir cihaz grubu değerlendirilemedi",
+      "estimateExcluded": "Tahmini kullanılamayan {{count}} sözleşmeyi hariç tutar"
     },
     "contractsList": {
       "title": "Sözleşmeler",
@@ -509,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "iş istasyonları", "server": "sunucular", "printer": "yazıcılar", "router": "yönlendiriciler", "switch": "ağ anahtarları", "firewall": "güvenlik duvarları",
+        "access_point": "erişim noktaları", "phone": "telefonlar", "iot": "IoT cihazları", "camera": "kameralar", "nas": "NAS cihazları"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Cihaz grubuna göre faturala", "typeLabel": "Cihaz grubu",
+        "types": { "per_device": "Cihaz başına", "per_device_role": "Cihaz rolü başına", "per_device_group": "Cihaz grubu başına", "per_seat": "Kullanıcı başına" },
+        "rolesLabel": "Cihaz rolleri", "groupLabel": "Cihaz grubu", "siteLabel": "Konum (isteğe bağlı)", "allSites": "Tüm konumlar",
+        "quantityAuto": "Miktar otomatik olarak sayılır", "autoSummary": "Otomatik miktar · {{count}} {{set}} · tahmini",
+        "driftChip": "sayı değişti: {{stored}} → {{live}}", "refresh": "Sayıları yenile", "estimateError": "Güncel cihaz sayısı denetlenemedi.", "pickerError": "Cihaz grupları veya siteler yüklenemedi. Sayfayı yenileyip tekrar deneyin.",
+        "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin", "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
+        "typeLocked": "Cihaz grubu, satır oluşturulduktan sonra değiştirilemez — satırı kaldırıp yeniden ekleyin.",
+        "includedLabel": "Dahil miktar", "overageModeLabel": "Dahil miktarın üstü", "overageBill": "Her ek birimi faturala", "overageFlag": "İnceleme için raporla", "overagePriceLabel": "Aşım fiyatı",
+        "driftToast": "{{count}} satır artık güncel cihaz sayısıyla eşleşmiyor: {{lines}}",
+        "retargetToast": "{{count}} satır için bu kuruluşa ait cihaz grubu veya konum yeniden seçilmeli"
+      },
       "actions": {
         "addImage": "Resim ekle",
         "addLine": "Satır ekle",
@@ -1135,6 +1228,29 @@
         "untitled": "daha yeni bir sürüm"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Teklif para birimini değiştir",
+        "description": "Bu taslak teklif {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Teklifin satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun teklifin para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Teklif para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Teklif para birimi değiştirilemedi."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Akış fiyatının para birimi bilinmiyor — {{currency}} cinsinden bir fiyat girin",
       "feedPriceIn": "Akış fiyatı {{feedCurrency}} cinsinden — {{currency}} cinsinden bir fiyat girin",
@@ -1166,6 +1282,12 @@
       "warehouses": "Depolar: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Tah.", "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
+        "setDevices": "cihazlar", "setSeats": "kullanıcılar", "setGroup": "“{{name}}” içindeki cihazlar", "atSite": "{{site}} konumundaki {{set}}",
+        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
+        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+      },
       "additionalItems": "Ek öğeler",
       "contract": {
         "download": "Sözleşmeyi indirin",
@@ -1500,6 +1622,7 @@
       "messageLabel": "Mesaj (isteğe bağlı)",
       "messagePlaceholder": "Müşteri için kısa bir not ekleyin…",
       "includePdfLabel": "Fatura PDF’ini ekle",
+      "includeDeviceAppendixLabel": "Faturalanan cihazlar ekini dahil et",
       "signaturePreviewLabel": "İmzanız eklenecek:",
       "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
       "tooManyRecipients": "En fazla {{max}} adres.",
@@ -1555,6 +1678,29 @@
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Para birimini değiştir"
+      },
+      "dialog": {
+        "title": "Fatura para birimini değiştir",
+        "description": "Bu taslak fatura {{currency}} ile fiyatlandırılmış.",
+        "currencyLabel": "Yeni para birimi",
+        "modeLegend": "Faturanın satırlarına ne olacak",
+        "modeClear": "Tüm satırları kaldır",
+        "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
+        "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
+        "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "confirm": "Bunun faturanın para birimini değiştirdiğini anlıyorum.",
+        "submit": "Para birimini değiştir"
+      },
+      "toast": {
+        "changed": "Fatura para birimi {{currency}} olarak değiştirildi."
+      },
+      "errors": {
+        "change": "Fatura para birimi değiştirilemedi."
+      }
+    },
     "deposit": {
       "duePrefix": "Depozito",
       "dueSuffix": "ödenmesi gereken — {{total}} tutarından {{paid}} ödendi.",
@@ -1577,6 +1723,21 @@
       "tax": "Vergi",
       "total": "Toplam",
       "allHidden": "Tüm hatlar yalnızca dahilidir. Bunları görüntülemek için \"Maliyet ve marjı göster\" seçeneğini kullanın."
+    },
+    "devices": {
+      "title": "Faturalanan cihazlar",
+      "toggle": "Cihazlar ({{count}})",
+      "notRecorded": "Bu fatura için cihaz ayrıntısı kaydedilmedi.",
+      "hostname": "Ana bilgisayar adı",
+      "role": "Rol",
+      "countedAs": "Sayım türü",
+      "included": "Dahil",
+      "overage": "Aşım",
+      "removed": "Cihaz kaldırıldı",
+      "showing": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "flaggedHeading": "İşaretlendi, faturalanmadı",
+      "empty": "Bu satır için hiçbir cihaz sayılmadı.",
+      "loadError": "Cihaz listesi yüklenemedi."
     },
     "paymentMethods": {
       "cash": "Nakit",
@@ -1677,7 +1838,9 @@
       "lastSynced": "Son eşitleme: {{when}}",
       "push": "QuickBooks'a gönder",
       "pushed": "Fatura QuickBooks'a gönderildi.",
-      "pushFailed": "Fatura QuickBooks'a gönderilemedi."
+      "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
+      "voidedHint": "Bu fatura iptal edildi — QuickBooks'a gönderilecek bir şey yok.",
+      "remoteDeletedHint": "Bu fatura QuickBooks'ta silindi. Yeniden göndermek bir kopya oluşturur — önce QuickBooks'ta çözün."
     }
   },
   "invoiceDocument": {
@@ -1921,6 +2084,8 @@
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
       "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "deviceAppendix": "Fatura PDF'lerine faturalanan cihazlar ekini dahil et",
+      "deviceAppendixHelp": "Her fatura satırında sayılan tüm cihazları listeleyen bir sayfa ekler. Varsayılan olarak kapalıdır; seçim fatura düzenlendiğinde dondurulur.",
       "documentPageSize": "Sayfa boyutu",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Letter",

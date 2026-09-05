@@ -189,6 +189,125 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='llm_egress_events') THEN
           REVOKE UPDATE, TRUNCATE ON TABLE llm_egress_events FROM breeze_app;
         END IF;
+        -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
+        --
+        -- The original bug: pam_actuation_results shipped a migration REVOKE
+        -- with no matching re-revoke here, so the blanket GRANT in step 4
+        -- silently restored it every boot. Closing that gap is not enough on
+        -- its own: every LEGITIMATE writer of these tables (device permanent-
+        -- delete, device org-move, org merge, org erasure) also has to keep
+        -- working under the now-real privilege wall, or the fix just trades
+        -- one bug for a different one. Below is the audit — table, what
+        -- breeze_app keeps vs loses, and how each writer path copes:
+        --
+        --  pam_actuation_results   UPDATE/DELETE/TRUNCATE all revoked (full
+        --                          append-only). Device delete: DELETE
+        --                          routes through breeze_audit_admin +
+        --                          breeze.allow_audit_retention='1'
+        --                          (DEVICE_CASCADE_AUDIT_ADMIN_TABLES,
+        --                          deviceDeletion.ts). Device org-move:
+        --                          N/A — a device with PAM history cannot
+        --                          move orgs at all (devices_pam_history_
+        --                          move_guard / PamDeviceMoveBlockedError;
+        --                          also excluded from the generic org_id
+        --                          cascade discovery, migrations/2026-09-17-
+        --                          pam-device-move-guard.sql). Org merge:
+        --                          'blocks-merge' (orgMergeRegistry.ts) — a
+        --                          loser org holding any row refuses the
+        --                          merge outright. Org erasure: breeze_
+        --                          audit_admin (AUDIT_ADMIN_REQUIRED_TABLES,
+        --                          tenantCascade.ts). No app path ever needs
+        --                          breeze_app UPDATE/DELETE — full
+        --                          privilege-wall protection.
+        --
+        --  agent_rollback_events   UPDATE/DELETE/TRUNCATE all revoked (full
+        --                          append-only). Device delete: same
+        --                          breeze_audit_admin escalation as above.
+        --                          Device org-move: restamped by the
+        --                          SECURITY DEFINER breeze_cascade_device_
+        --                          org_id() trigger (migrations/2026-05-18-
+        --                          device-child-orgid-cascade.sql), not an
+        --                          app-role UPDATE — DEVICE_ORG_FK_CASCADE_
+        --                          TABLES in routes/devices/core.ts skips
+        --                          the redundant app-level statement. Org
+        --                          merge: 'leave-for-erasure' (orgMerge
+        --                          Registry.ts) — no role can ever UPDATE
+        --                          it, so a repoint was never valid. Org
+        --                          erasure: breeze_audit_admin. Full
+        --                          privilege-wall protection.
+        --
+        --  ml_feedback_events      UPDATE/DELETE revoked (TRUNCATE too, as
+        --                          defense-in-depth — see the audit_logs/
+        --                          agent_health_observations pattern above).
+        --                          No device_id column, so neither device
+        --                          delete nor device org-move ever touch it.
+        --                          Org merge: 'leave-for-erasure'. Org
+        --                          erasure: breeze_audit_admin. Full
+        --                          privilege-wall protection.
+        --
+        --  peripheral_policy_      UPDATE/DELETE/TRUNCATE all revoked (full
+        --  delivery_events         append-only, #4806 fixup). Device
+        --                          org-move: restamped by the SECURITY
+        --                          DEFINER breeze_cascade_device_org_id()
+        --                          trigger (migrations/2026-05-18-device-
+        --                          child-orgid-cascade.sql), not an app-role
+        --                          UPDATE — DEVICE_ORG_FK_CASCADE_TABLES in
+        --                          routes/devices/core.ts skips the
+        --                          redundant app-level statement, same as
+        --                          agent_rollback_events above. Device
+        --                          delete: DELETE routes through breeze_
+        --                          audit_admin (same escalation set as
+        --                          above). Org merge: 'leave-for-erasure'
+        --                          (orgMergeRegistry.ts) — no role can ever
+        --                          UPDATE it, so a repoint was never valid,
+        --                          same reclassification as agent_rollback_
+        --                          events. Org erasure: breeze_audit_admin.
+        --                          Full privilege-wall protection — closes
+        --                          the residual gap tracked as issue #4806.
+        --
+        --  automation_action_      Only TRUNCATE revoked; UPDATE/DELETE stay
+        --  results                 granted. NOT an append-only table by
+        --                          design (no append-only trigger exists for
+        --                          it at all) — TRUNCATE-only was always a
+        --                          defense-in-depth bulk-wipe guard, not part
+        --                          of an append-only contract. No writer path
+        --                          needs TRUNCATE (grep confirms no app code
+        --                          issues one), so nothing to reconcile.
+        --
+        --  device_software_        Only TRUNCATE revoked; UPDATE/DELETE stay
+        --  inventory_state         granted. Same as automation_action_results:
+        --                          genuinely mutable current-device-state
+        --                          (unlike its append-only sibling
+        --                          software_inventory_observations above),
+        --                          no append-only trigger, no writer path
+        --                          needs TRUNCATE.
+        --
+        -- Verified against real Postgres: apps/api/src/__tests__/integration/
+        -- ensureAppRoleAppendOnlyPrivileges.integration.test.ts (privilege
+        -- shape) plus the specific writer-path suites (pamActuationLifecycle,
+        -- quickSupportChain, deviceDeleteDiscoveredAssetLink, agentRunMove
+        -- Semantics, deviceMoveOrgCurrency, orgMergeRegistry, ticketDraftsRls,
+        -- inboundEmailContactRequester).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ml_feedback_events') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ml_feedback_events FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='peripheral_policy_delivery_events') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE peripheral_policy_delivery_events FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='agent_rollback_events') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE agent_rollback_events FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_actuation_results') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE pam_actuation_results FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
+          REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE automation_action_results FROM PUBLIC;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='device_software_inventory_state') THEN
+          REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM PUBLIC;
+        END IF;
       END $$;
     `);
 

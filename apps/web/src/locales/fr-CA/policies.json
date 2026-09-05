@@ -886,6 +886,12 @@
         "rebootPolicy": "Politique de redémarrage",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Source Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gérer Windows Update exclusivement avec Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Désactive le canal Windows Update automatique natif du terminal afin que les mises à jour passent uniquement par les anneaux d’approbation Breeze. Cela évite les redémarrages inattendus et les correctifs hors calendrier. Windows uniquement ; le processus d’analyse, d’approbation et d’installation de Breeze n’est pas affecté. La configuration est restaurée proprement à la désactivation, sans modifier une stratégie de groupe administrateur préexistante.",
@@ -1628,20 +1634,6 @@
       "catalogTab": "Catalogue",
       "summaryCompleted7d": "Terminés (7 j)",
       "summaryFailed7d": "Échoués (7 j)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Rapport de conformité logicielle",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analysez la dérive des versions logicielles entre les appareils gérés.",
-      "bulkUpdate": "Mise à jour en bloc",
-      "versionDriftAnalysis": "Analyse de la dérive de version",
-      "clickARowToSeeOutdatedDevices": "Cliquez sur une ligne pour voir les appareils obsolètes.",
-      "software": "Logiciels",
-      "expectedVersion": "Version attendue",
-      "devicesOnVersion": "Appareils sur la version",
-      "devicesOutdated": "Appareils obsolètes",
-      "details": "Détails",
-      "outdatedDevices": "Appareils obsolètes",
-      "hide": "Masquer"
     },
     "softwareInventory": {
       "allowed": "Autorisé",

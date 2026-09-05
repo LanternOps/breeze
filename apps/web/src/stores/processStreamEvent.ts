@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, ActionPlanStep } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, ActionPlanStep, AiScriptRunContext } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -33,6 +33,15 @@ export interface PendingApproval {
   selfApprovalRequestId?: string;
   /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
   intentExpiresAt?: string;
+  /**
+   * #4888 — the run context a script launch will actually execute in, resolved
+   * server-side. Present only for `run_script` / `execute_script_on_device`.
+   * The card renders it as its own visible row: letting an assistant pick
+   * SYSTEM for a script whose saved default is the logged-in user is a
+   * privilege escalation, and the human approving it has to be told, not left
+   * to expand a JSON blob.
+   */
+  scriptRunContext?: AiScriptRunContext | null;
 }
 
 export interface PendingPlan {
@@ -123,7 +132,32 @@ export function processStreamEvent(
         isError: event.isError,
         createdAt: new Date()
       };
-      set((s) => ({ messages: [...s.messages, resultMsg] }));
+      set((s) => {
+        // The approval this card is waiting on can be decided somewhere else
+        // (mobile push, the Approvals queue). The server then runs the tool and
+        // this result arrives on the still-open stream — so a result for the
+        // awaited tool IS the decision landing, and the card must go with it.
+        // Matched by tool name via the tool_use row: the event carries no
+        // executionId, and the awaited tool is by construction the one whose
+        // result has not yet arrived.
+        const awaited = s.pendingApproval;
+        const toolUse = awaited
+          ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
+          : undefined;
+        // Parallel calls to the same tool: the awaited one is the LATEST
+        // tool_use of that name (approval_required is published from the
+        // pre-tool hook, i.e. right after its tool_use_start), so an earlier
+        // sibling's result must not dismiss it.
+        const latestOfName = toolUse
+          ? [...s.messages].reverse().find((m) => m.role === 'tool_use' && m.toolName === toolUse.toolName)
+          : undefined;
+        const resolvesPending =
+          !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
+        return {
+          messages: [...s.messages, resultMsg],
+          ...(resolvesPending ? { pendingApproval: null } : {}),
+        };
+      });
       return currentAssistantId;
     }
 
@@ -138,6 +172,7 @@ export function processStreamEvent(
           intentBacked: event.intentBacked,
           selfApprovalRequestId: event.selfApprovalRequestId,
           intentExpiresAt: event.intentExpiresAt,
+          scriptRunContext: event.scriptRunContext ?? null,
         }
       }));
       return currentAssistantId;

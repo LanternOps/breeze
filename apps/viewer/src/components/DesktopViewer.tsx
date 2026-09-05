@@ -12,7 +12,7 @@ import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/t
 import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
-import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
+import { mapKey, getModifiers, isModifierOnly, isCapsLock, getCapsLockState } from '../lib/keymap';
 import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
@@ -1659,12 +1659,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
+    const ne = e.nativeEvent;
+    // Every forwarded keyboard event states the Caps Lock state it was typed
+    // under, so the agent sets the remote modifier flags explicitly instead of
+    // inheriting whatever the remote machine had latched (issue #3595).
+    const capsLock = getCapsLockState(ne);
+
     // Modifier keys pressed alone: forward as key_down so Shift+Click,
     // Ctrl+Click, etc. hold the modifier on the remote machine for
     // multi-select. Skip the rest of the handler (no modifiers bundle,
     // no paste shortcut — those are handled when a non-modifier follows).
-    if (isModifierOnly(e.nativeEvent)) {
-      let modKey = mapKey(e.nativeEvent);
+    if (isModifierOnly(ne)) {
+      let modKey = mapKey(ne);
       if (!modKey) return;
       if (remapCmdCtrl) {
         if (modKey === 'ctrl') modKey = 'meta';
@@ -1673,12 +1679,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (e.repeat) return;
       if (pressedKeysRef.current.has(modKey)) return;
       pressedKeysRef.current.add(modKey);
-      sendInputFn({ type: 'key_down', key: modKey });
+      sendInputFn({ type: 'key_down', key: modKey, capsLock });
+      return;
+    }
+
+    // Caps Lock is a toggle, so it is deliberately kept OUT of pressedKeysRef:
+    // it is never "held", and macOS reports it as keydown-on-engage /
+    // keyup-on-disengage rather than a matched pair, so pairing bookkeeping
+    // would strand it in the set and later emit a bogus release. The event is
+    // still forwarded — an agent that predates #3595 keeps doing what it does
+    // today with it, while a current agent reads the capsLock field and skips
+    // injecting the key entirely.
+    if (isCapsLock(ne)) {
+      if (e.repeat) return;
+      sendInputFn({ type: 'key_down', key: 'capslock', capsLock });
       return;
     }
 
     // Ctrl+Shift+V / Cmd+Shift+V → paste as keystrokes
-    const ne = e.nativeEvent;
     if (ne.code === 'KeyV' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       handlePasteAsKeystrokes();
       return;
@@ -1712,7 +1730,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         );
       }
       const dispatchPaste = () => {
-        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers });
+        // capsLock is captured from the original event: this dispatches after
+        // an await, by which point the live modifier state may have moved on.
+        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
       };
       const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
         if (!hash) return Promise.resolve();
@@ -1751,32 +1771,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // If any modifier is held, fall back to the agent's key_press (which applies modifiers).
     // Otherwise, use key_down/key_up for proper "held key" semantics.
     if (modifiers.length > 0) {
-      sendInputFn({ type: 'key_press', key, modifiers });
+      sendInputFn({ type: 'key_press', key, modifiers, capsLock });
       return;
     }
 
     if (e.repeat) return;
     if (pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.add(key);
-    sendInputFn({ type: 'key_down', key });
+    sendInputFn({ type: 'key_down', key, capsLock });
   }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
-    let key = mapKey(e.nativeEvent);
+    const ne = e.nativeEvent;
+    const capsLock = getCapsLockState(ne);
+
+    // Caps Lock never enters pressedKeysRef (see handleKeyDown), so its release
+    // is forwarded unconditionally rather than gated on membership. On macOS
+    // this is the ONLY event fired when Caps Lock is disengaged.
+    if (isCapsLock(ne)) {
+      sendInputFn({ type: 'key_up', key: 'capslock', capsLock });
+      return;
+    }
+
+    let key = mapKey(ne);
     if (!key) return;
 
     // Apply the same ctrl↔meta remap used on key_down so the agent sees
     // the matching release for the key that was pressed.
-    if (isModifierOnly(e.nativeEvent) && remapCmdCtrl) {
+    if (isModifierOnly(ne) && remapCmdCtrl) {
       if (key === 'ctrl') key = 'meta';
       else if (key === 'meta') key = 'ctrl';
     }
 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
-    sendInputFn({ type: 'key_up', key });
+    sendInputFn({ type: 'key_up', key, capsLock });
   }, [sendInputFn, remapCmdCtrl]);
 
   // ── Toolbar: config changes ────────────────────────────────────────

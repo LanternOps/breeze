@@ -45,3 +45,9 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     logoAspect: aspect,
   };
 }
+
+export async function getReportBranding(
+  orgId: string,
+): Promise<ReportBranding> {
+  return loadReportBrandingForOrg(orgId);
+}

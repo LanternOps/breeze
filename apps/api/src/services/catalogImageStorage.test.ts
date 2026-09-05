@@ -10,7 +10,7 @@ const sniffImageMime = vi.fn();
 vi.mock('./avatarStorage', () => ({ sniffImageMime: (...a: unknown[]) => sniffImageMime(...a) }));
 vi.mock('../db', () => ({ db: {} }));
 
-import { fetchImageFromUrl, MAX_CATALOG_IMAGE_SIZE_BYTES } from './catalogImageStorage';
+import { fetchImageFromUrl, MAX_CATALOG_IMAGE_SIZE_BYTES, CATALOG_IMAGE_WEBP_REJECTED_MESSAGE } from './catalogImageStorage';
 
 function fakeRes(opts: { ok?: boolean; status?: number; headers?: Record<string, string>; body?: Uint8Array }) {
   const { ok = true, status = 200, headers = {}, body = new Uint8Array([1, 2, 3]) } = opts;
@@ -59,5 +59,15 @@ describe('fetchImageFromUrl', () => {
     safeFetch.mockResolvedValue(fakeRes({ body: new Uint8Array([0, 0, 0]) }));
     sniffImageMime.mockReturnValue(null);
     await expect(fetchImageFromUrl('https://x.test')).rejects.toThrow(/unsupported/i);
+  });
+
+  // #4521 — catalog item images reach quotePdf.ts (which uses pdfkit, PNG/JPEG
+  // only) via quote line thumbnails, so a WebP sniffed here must be rejected
+  // even though it IS a recognized image format — mirrors the quote-image
+  // upload fix (#3483, PR #4408).
+  it('rejects a sniffed WebP with the clear PDF-specific message, not the generic "unsupported" one', async () => {
+    safeFetch.mockResolvedValue(fakeRes({ body: new Uint8Array([1, 2, 3, 4]) }));
+    sniffImageMime.mockReturnValue('image/webp');
+    await expect(fetchImageFromUrl('https://x.test')).rejects.toThrow(CATALOG_IMAGE_WEBP_REJECTED_MESSAGE);
   });
 });

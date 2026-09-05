@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
@@ -41,6 +42,7 @@
     "auditTrail": "Denetim İzi",
     "eventLogs": "Olay Günlükleri",
     "partner": "Ortak",
+    "billing": "Faturalandırma",
     "organizations": "Organizasyonlar",
     "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
     "aiAgents": "Yapay Zeka Aracıları",
@@ -64,6 +66,7 @@
     "sectionSettings": "Ayarlar",
     "sectionExtensions": "Uzantılar",
     "llmProviderCatalog": "LLM Sağlayıcı Kataloğu",
+    "aiKillSwitch": "Yapay Zeka Acil Durdurma Anahtarı",
     "sectionAi": "Yapay Zeka",
     "sectionFleetManagement": "Filo Yönetimi",
     "sectionBilling": "Faturalama",
@@ -164,6 +167,19 @@
     "none": "Hiçbiri",
     "optional": "İsteğe bağlı",
     "required": "Gerekli"
+  },
+  "runContext": {
+    "label": "Farklı Çalıştır",
+    "scriptDefault": "Komut dosyası varsayılanı",
+    "scriptDefaultNamed": "Komut dosyası varsayılanı ({{context}})",
+    "system": "Sistem",
+    "user": "Oturum açmış kullanıcı",
+    "elevated": "Yükseltilmiş",
+    "unknown": "Kaydedilmedi",
+    "userInSession": "Oturum açmış kullanıcı (oturum {{session}})",
+    "sessionLabel": "Hedef oturum",
+    "sessionAny": "Herhangi bir etkin oturum",
+    "effectiveLabel": "Çalıştırma bağlamı"
   },
   "shared": {
     "accessDenied": {

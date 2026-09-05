@@ -16,7 +16,11 @@ import '../../lib/i18n';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
-type Script = { id: string; name: string };
+// `runAs` (#4888): `GET /scripts` selects whole rows, so the saved run
+// context is already on the wire — surfaced on the type so the run_script
+// action's control can name the default it inherits ("Script default
+// (System)") the way the other launch surfaces do.
+type Script = { id: string; name: string; runAs?: 'system' | 'user' | 'elevated' };
 type NotificationChannel = { id: string; name: string; type: string };
 type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
@@ -31,6 +35,21 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Narrows a stored `run_script` action's run context to the `script_run_as`
+ * enum (#4888).
+ *
+ * `'elevated'` is INCLUDED even though the control cannot hand it out: it is a
+ * legal stored value (`automationRuntime.normalizeAutomationActions` keeps
+ * it), and dropping it here would mean opening an elevated automation for an
+ * unrelated edit and silently downgrading it on save. `RunContextSelect`
+ * renders it as a disabled option so the value is visible and survives the
+ * round trip untouched.
+ */
+function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
+  return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
 }
 
 function normalizeActionForForm(value: unknown): ActionFormValues {
@@ -68,7 +87,12 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
 
   return {
     type: 'run_script',
-    scriptId: asString(action.scriptId) ?? asString(action.script_id)
+    scriptId: asString(action.scriptId) ?? asString(action.script_id),
+    // #4888 — read the stored run-context override back so opening an
+    // automation for edit shows the choice that is actually in effect.
+    // Without this the form would render "Script default" for an action that
+    // overrides it, and the next save would erase the override.
+    runAs: asRunAs(action.runAs)
   };
 }
 
@@ -76,7 +100,15 @@ function buildActionPayload(action: ActionFormValues) {
   if (action.type === 'run_script') {
     return {
       type: action.type,
-      scriptId: action.scriptId
+      scriptId: action.scriptId,
+      // #4888 — this builder reconstructs each action field by field rather
+      // than spreading the form values, so a field added to the form and NOT
+      // added here is silently dropped between the operator clicking Save and
+      // the request going out. That is precisely the bug #4888 was filed for
+      // (the Fix flow's discarded run-as select), so it must not be
+      // reintroduced one layer below the form. `undefined` is omitted by
+      // JSON.stringify, which is what "Script default" has to serialise to.
+      ...(action.runAs ? { runAs: action.runAs } : {})
     };
   }
 

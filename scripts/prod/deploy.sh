@@ -97,6 +97,19 @@ docker compose version >/dev/null 2>&1 || {
   exit 1
 }
 
+# deploy/docker-compose.prod.yml's M365 executor signing-key secrets default
+# their file: source to ../docker/secrets/.empty-jwk (relative to deploy/)
+# when unset — the common case; see #2991. This script always runs from a
+# full checkout (REPO_ROOT above, and `pnpm db:migrate` below both require
+# one), so the tracked file is already present; this is a fail-fast guard,
+# not a repair — a missing file here means the checkout is broken/sparse and
+# should be fixed rather than papered over.
+m365_jwk_placeholder="${REPO_ROOT}/docker/secrets/.empty-jwk"
+if [[ ! -f "${m365_jwk_placeholder}" ]]; then
+  echo "[deploy] Missing ${m365_jwk_placeholder} (tracked in git) — this checkout looks incomplete/sparse. A full 'git clone' is required; see docs/operations/DEPLOY_PRODUCTION.md prerequisites." >&2
+  exit 1
+fi
+
 # shellcheck disable=SC1090
 set -a; source "${ENV_FILE}"; set +a
 

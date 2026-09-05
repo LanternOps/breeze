@@ -106,6 +106,16 @@ Setting these once per customer means invoices carry the right tax and address w
 
 If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.
 
+## Billed devices
+
+Every auto-counted line on a contract-generated invoice can be expanded to show the exact devices it billed, including each device's role and how it was counted: **Included**, **Overage** or **Flagged, not billed**. A device deleted or moved to another organization afterwards still appears on the past invoice by hostname and is marked **Device removed**. Reissuing an invoice copies this recorded evidence to the replacement instead of counting the fleet again.
+
+The optional **Billed devices** appendix on the invoice PDF is **off by default**. Turn it on for every invoice under **Billing settings**, or choose it for one invoice from the send dialog while that invoice is still a draft. Flagged devices are never printed because they were not charged. The appendix prints at most 2,000 device rows and notes when additional billed devices are omitted.
+
+The choice is **frozen when the invoice is issued**. Changing the partner default later does not alter an already-issued invoice's PDF, and the per-invoice choice cannot be changed after issue.
+
+Invoices generated before this feature was available have no device detail and say so. Editing a draft line's quantity by hand does **not** rewrite its device evidence because the evidence records what the generation run counted. Deleting a draft line deletes its evidence with it.
+
 ## PDF and Accounting View
 
 Every issued invoice can be downloaded as a clean, single-page **PDF** to send or archive. The detail view also offers an accounting-oriented breakdown of subtotal, tax, total, payments, and balance.

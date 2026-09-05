@@ -17,6 +17,28 @@ import {
 } from '../routes/devices/core';
 
 /**
+ * Device-cascade tables that are append-only evidence with DELETE fully
+ * revoked from `breeze_app` (#4371 — see `ensureAppRole.ts`'s per-table
+ * writer-path matrix). Permanent device deletion is an audited retention
+ * boundary, so — matching the existing `breeze_audit_admin` pattern this
+ * set generalizes from `peripheral_policy_delivery_events` — arm both the
+ * role and the trigger's retention escape hatch (`breeze.allow_audit_retention`)
+ * only for these statements, immediately restoring the caller's role
+ * afterward, rather than weakening any table's revoke.
+ *
+ * `agent_rollback_events` and `pam_actuation_results` joined this set in
+ * the #4371 fixup: both migrations revoke DELETE from `breeze_app`
+ * entirely (only `breeze_audit_admin` has it), which the blanket per-boot
+ * GRANT this issue fixes had been silently masking — this loop's plain
+ * `DELETE FROM <table>` for them was never actually valid.
+ */
+const DEVICE_CASCADE_AUDIT_ADMIN_TABLES = new Set([
+  'peripheral_policy_delivery_events',
+  'agent_rollback_events',
+  'pam_actuation_results',
+]);
+
+/**
  * Bound on how long the parent-row lock below may wait.
  *
  * Without it, converting a deadlock into a plain lock wait trades a fast 40P01
@@ -240,14 +262,14 @@ export async function deleteDeviceCascade(
   }
 
   for (const table of getDeviceCascadeDeleteTables()) {
-    if (table === 'peripheral_policy_delivery_events') {
-      // Delivery events are append-only and breeze_app has no DELETE grant.
-      // Permanent device deletion is an audited retention boundary, so arm
-      // both layers only for this one statement and immediately restore the
-      // caller's role before continuing through ordinary child tables.
+    if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {
+      // Append-only evidence: breeze_app has no DELETE grant (see
+      // DEVICE_CASCADE_AUDIT_ADMIN_TABLES above). Arm both layers only for
+      // this one statement and immediately restore the caller's role before
+      // continuing through ordinary child tables.
       await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      await tx.execute(sql`DELETE FROM peripheral_policy_delivery_events WHERE device_id = ${deviceId}`);
+      await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
       await tx.execute(sql`RESET ROLE`);
       continue;
     }

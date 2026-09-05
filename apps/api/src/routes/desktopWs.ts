@@ -58,6 +58,13 @@ import {
   requireRemoteWsUpgrade,
   type RemoteWsUpgradeContext,
 } from '../services/remoteWsUpgrade';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import {
+  evaluateCapability,
+  partnerIdForDevice,
+  trustDenyBody,
+  unresolvedPartnerDecision,
+} from '../services/partnerTrust';
 
 // Zod validation for desktop user messages.
 // Exported for desktopWs_inputSchema.test.ts, which asserts this enum covers
@@ -87,6 +94,13 @@ export const desktopInputEvent = z.object({
   deltaX: z.number().optional(),
   deltaY: z.number().optional(),
   code: z.string().max(50).optional(),
+  // Viewer's Caps Lock state at the moment the event was produced (issue
+  // #3595). Zod strips undeclared keys, so omitting this would silently drop
+  // the field on the WebSocket fallback transport and leave those sessions
+  // with the desynced-AlphaShift bug that WebRTC sessions no longer have.
+  // Optional, never defaulted: an older Viewer sends nothing and the agent
+  // keeps its previous behaviour.
+  capsLock: z.boolean().optional(),
 });
 
 const desktopMessageSchema = z.discriminatedUnion('type', [
@@ -1339,6 +1353,26 @@ export function createDesktopWsRoutes(
 
       if (!['pending', 'connecting', 'active'].includes(session.status)) {
         return c.json({ error: 'Session is not available for connection' }, 400);
+      }
+
+      if (partnerTrustMode() !== 'off') {
+        const partnerId = await partnerIdForDevice(session.deviceId);
+        const decision = partnerId
+          ? await evaluateCapability('remote_control', {
+            partnerId,
+            deviceId: session.deviceId,
+            userId: codeRecord.userId,
+            detail: { stage: 'ticket', kind: 'desktop' },
+          })
+          : await unresolvedPartnerDecision('remote_control');
+        if (!decision.allow) {
+          return c.json(trustDenyBody({
+            allow: false,
+            code: decision.code,
+            capability: 'remote_control',
+            reason: decision.reason,
+          }, false), 403);
+        }
       }
 
       const accessToken = await createViewerAccessToken({

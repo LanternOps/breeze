@@ -6,6 +6,7 @@ const {
   requireScopeMock,
   requirePermissionMock,
   requireMfaMock,
+  assertDeviceExecuteAllowedMock,
 } = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -23,6 +24,7 @@ const {
     return next();
   }),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
+  assertDeviceExecuteAllowedMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -50,6 +52,11 @@ vi.mock('./helpers', async (importOriginal) => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../../services/partnerTrust.commands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/partnerTrust.commands')>()),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
 }));
 
 import { db } from '../../db';
@@ -194,6 +201,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
     // Default: enable the PAM actuator so existing tests continue to pass.
     savedPamEnv = process.env.PAM_ACTUATOR_ENABLED;
     process.env.PAM_ACTUATOR_ENABLED = 'true';
+    assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
     setAuth();
     app = new Hono();
     app.route('/devices', actuateElevationRoutes);
@@ -481,6 +489,38 @@ describe('POST /devices/:id/actuate-elevation', () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(SAMPLE_DEVICE as never);
     });
 
+    it('returns a trust probation denial without inserting a device command', async () => {
+      const { TrustDeniedError } = await import('../../services/partnerTrust.commands');
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_PROBATION',
+          'probation_default_deny',
+          DEVICE_ID,
+          'actuate_elevation',
+        ),
+      );
+      const { commandValues } = rigTransaction({ elevationRow: SAMPLE_ELEVATION });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_PROBATION',
+        capability: 'device_execute',
+        reason: 'probation_default_deny',
+      });
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'actuate_elevation',
+        USER_ID,
+      );
+      expect(commandValues).not.toHaveBeenCalled();
+    });
+
     it('queues actuate_elevation with go-signal payload only', async () => {
       const { commandValues } = rigTransaction({
         elevationRow: SAMPLE_ELEVATION,
@@ -524,6 +564,11 @@ describe('POST /devices/:id/actuate-elevation', () => {
             timeoutMs: 5000,
           }),
         }),
+      );
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'actuate_elevation',
+        USER_ID,
       );
       const queued = commandValues.mock.calls[0]![0] as any;
       expect(queued.payload).not.toHaveProperty('username');

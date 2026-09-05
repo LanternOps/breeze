@@ -121,9 +121,37 @@ vi.mock('../../services/auditService', () => ({
   createAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #3257 W04: every write now validates against the bounded, SYSTEM-context
+// definition lookup BEFORE merging. Mocked at the module boundary rather than
+// standing up the two-select db.select chain it drives internally (see
+// services/customFields/queries.test.ts for that).
+vi.mock('../../services/customFields/queries', () => ({
+  loadVisibleCustomFieldDefinitions: vi.fn(),
+}));
+
 import { customFieldValuesRoutes } from './customFieldValues';
 import { db } from '../../db';
 import { createAuditLog } from '../../services/auditService';
+import { loadVisibleCustomFieldDefinitions } from '../../services/customFields/queries';
+import type { VisibleCustomFieldDefinition } from '../../services/customFields/queries';
+
+const ORG_A_ID = ORG_A;
+
+function mockVisibleDefinitions(defs: Array<Partial<VisibleCustomFieldDefinition> & { fieldKey: string }>) {
+  const full: VisibleCustomFieldDefinition[] = defs.map((d) => ({
+    id: d.id ?? `def-${d.fieldKey}`,
+    fieldKey: d.fieldKey,
+    name: d.name ?? d.fieldKey,
+    type: d.type ?? 'text',
+    options: d.options ?? null,
+    deviceTypes: d.deviceTypes ?? null,
+    required: d.required ?? false,
+    scriptWrite: d.scriptWrite ?? false,
+    orgId: d.orgId ?? ORG_A_ID,
+    partnerId: d.partnerId ?? null,
+  }));
+  vi.mocked(loadVisibleCustomFieldDefinitions).mockResolvedValue(full);
+}
 
 function makeDevice(overrides: Record<string, unknown> = {}) {
   return {
@@ -159,6 +187,11 @@ describe('device custom-field value routes (#2066)', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/devices', customFieldValuesRoutes);
+    // Default: the free-form field keys used by the pre-existing tests below
+    // (predating per-value validation) resolve to a permissive text
+    // definition, so those tests keep asserting the merge/audit/isolation
+    // behaviour they were written for rather than becoming validation tests.
+    mockVisibleDefinitions([{ fieldKey: 'bitlocker_recovery_key' }, { fieldKey: 'note' }]);
   });
 
   describe('API-key write path', () => {
@@ -411,6 +444,172 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('value validation against the definition (#3257 W04)', () => {
+    it('rejects a value whose type does not match its definition', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: 'abc' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({
+        code: 'invalid-custom-field-value',
+        fields: [{ fieldKey: 'rack_units', reason: 'invalid_type' }],
+      });
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects a key with no visible definition', async () => {
+      mockVisibleDefinitions([]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ nope: 'x' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'nope', reason: 'unknown_field' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects a dropdown value outside options.choices', async () => {
+      mockVisibleDefinitions([
+        { fieldKey: 'tier', type: 'dropdown', options: { choices: [{ label: 'Gold', value: 'gold' }] } },
+      ]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ tier: 'bronze' }),
+      });
+
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'tier', reason: 'not_a_choice' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects an out-of-range number', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number', options: { min: 0, max: 8 } }]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: 99 }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'out_of_range' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('is all-or-nothing on a MIXED valid+invalid payload: one bad key rejects the whole PATCH', async () => {
+      // The single-key tests above can't distinguish "atomic across the whole
+      // map" from "the one field it saw happened to fail" — this is the case
+      // that actually exercises the all-or-nothing contract.
+      mockVisibleDefinitions([
+        { fieldKey: 'rack_units', type: 'number' },
+        { fieldKey: 'notes', type: 'text' },
+      ]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: 'abc', notes: 'a perfectly valid note' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'invalid_type' }]);
+      // The valid `notes` key must not be written even though it validated fine.
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects a value for a definition scoped to a device type the device is not', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rustdesk_id', type: 'text', deviceTypes: ['windows'] }]);
+      rigDeviceLookup(makeDevice({ osType: 'macos' }));
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rustdesk_id: 'abc123' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rustdesk_id', reason: 'not_applicable_to_device' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty string as a clear for a dropdown field, not a rejection', async () => {
+      // Regression: the device-edit UI's <select> reports a clear as ''.
+      mockVisibleDefinitions([{ fieldKey: 'tier', type: 'dropdown', options: { choices: ['gold'] } }]);
+      rigDeviceLookup(makeDevice());
+      rigUpdate(makeDevice({ customFields: { existing_field: 'keep-me', tier: null } }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ tier: '' }),
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('stores the COERCED value, not the raw string', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
+      rigDeviceLookup(makeDevice());
+      let written: { customFields?: Record<string, unknown> } | undefined;
+      vi.mocked(db.update).mockReturnValue({
+        set: (v: { customFields: Record<string, unknown> }) => {
+          written = v;
+          return { where: () => ({ returning: async () => [{ customFields: v.customFields }] }) };
+        },
+      } as never);
+
+      await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: '4' }),
+      });
+
+      expect(written?.customFields?.rack_units).toBe(4);
+    });
+
+    it('rejects an API-key write that fails validation, same as a session write', async () => {
+      // The API-key branch is the trivially scriptable one; validating only
+      // the JWT branch would leave the interesting path open.
+      mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'brz_test',
+          'x-test-org': ORG_A,
+          'x-test-scopes': 'devices:write',
+        },
+        body: JSON.stringify({ rack_units: 'abc' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateSpy.set).not.toHaveBeenCalled();
     });
   });
 });

@@ -149,4 +149,86 @@ describe('breezeBillingClient', () => {
       });
     });
   });
+
+  describe('promotion facts', () => {
+    it('GETs and maps a settled card charge', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          chargeId: 'ch_1',
+          settledAt: '2026-09-01T00:00:00.000Z',
+          paymentMethodType: 'card',
+          threeDsAuthenticated: true,
+          cardholderName: 'Ada Lovelace',
+          disputed: false,
+          refunded: false,
+        }),
+      });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.getSettledCardCharge('p/1')).resolves.toMatchObject({
+        chargeId: 'ch_1', settledAt: new Date('2026-09-01T00:00:00.000Z'),
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://billing.local/internal/partners/p%2F1/settled-card-charge',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
+    it('returns null and warns once on a 404', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.getSettledCardCharge('p1')).resolves.toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('returns null and warns once on a network error', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.getSettledCardCharge('p1')).resolves.toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('returns true for a fraudulent-refund customer match', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ match: true }),
+      });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.hasFraudulentRefundMatch('p/1')).resolves.toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://billing.local/internal/partners/p%2F1/fraudulent-refund-match',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
+    it('returns false and warns once when fraudulent-refund-match is missing', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.hasFraudulentRefundMatch('p1')).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('returns false and warns once when fraudulent-refund-match has a network failure', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.hasFraudulentRefundMatch('p1')).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+  });
 });

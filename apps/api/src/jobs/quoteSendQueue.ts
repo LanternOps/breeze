@@ -34,7 +34,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { db, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
-import { sendQuote, type SendQuoteEmailOptions } from '../services/quoteLifecycle';
+import { sendQuote, type DeferredQuoteEmail, type SendQuoteEmailOptions } from '../services/quoteLifecycle';
 import { requestLikeFromSnapshot } from '../services/auditEvents';
 import { writeAuditEvent } from '../services/auditEvents';
 import { supersededAuditEvent } from '../services/quoteSupersedeAudit';
@@ -171,8 +171,13 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     parentQuoteId: string;
     previousStatus: string;
     revisionNumber: number;
-    emailed: boolean;
   } | undefined;
+  // #3905 — the PDF render + mail round-trip is deferred out of the send
+  // transaction below and run once it has COMMITTED. Concurrency is 3, so
+  // before the split up to three of this worker's transactions could sit
+  // idle-in-transaction on email I/O at once, each holding its quote's row
+  // lock (and a revision's parent's).
+  let deliverEmail: DeferredQuoteEmail | undefined;
   const failed = await withSystemDbAccessContext(async () => {
     // Atomic claim: fire only if this job is still the row's registered
     // schedule, and take that registration out from under any concurrent
@@ -187,10 +192,10 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     if (claimed.length === 0) return false;
     // The real send: same pipeline, same actor-scoped app-layer checks. Its
     // draft→sent claim also clears the schedule columns atomically with the
-    // flip. A failed email outcome is persisted afterward so the UI can
-    // surface an honest warning when the send committed but no email went
+    // flip. The email itself comes back as a deferred, run after this
+    // transaction commits (#3905); it persists its own failure marker so the UI
+    // can surface an honest warning when the send committed but no email went
     // out — the delayed path has no request to return `emailed:false` to.
-    // (Success needs no write: the flip already cleared the marker.)
     const result = await sendQuote(quoteId, actor, emailOpts);
     if (result.superseded) {
       supersedeAudit = {
@@ -198,19 +203,26 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
         parentQuoteId: result.superseded.parentQuoteId,
         previousStatus: result.superseded.previousStatus,
         revisionNumber: result.quote.revisionNumber,
-        emailed: result.emailed,
       };
     }
-    if (!result.emailed) {
-      await db.update(quotes)
-        .set({ sendEmailReason: result.emailReason ?? 'send_failed' })
-        .where(eq(quotes.id, quoteId));
-    }
+    deliverEmail = result.deliverEmail;
     return false;
   }).catch((err) => {
     sendError = err;
     return true;
   });
+  // Post-commit delivery. The failure marker this used to write in-transaction
+  // is now persisted by the deferred itself (persistQuoteSendOutcome), in its
+  // own short context — which is what this file's own header comment already
+  // demanded of the rollback marker below: an in-transaction stamp is undone by
+  // the very rollback that made it necessary. The deferred never rejects.
+  //
+  // Gated on `!failed`: `deliverEmail` is assigned inside the transaction, so a
+  // failure raised AFTER sendQuote returned (including at COMMIT) leaves it set
+  // for a send that rolled back. Mailing there would put a proposal in the
+  // customer's inbox for a quote that is still a draft.
+  const emailed = !failed && deliverEmail ? (await deliverEmail()).emailed : false;
+
   // Emit only after the transaction commits, so a rolled-back send can never
   // leave a success audit behind. Audit persistence has its own internal retry queue.
   if (!failed && supersedeAudit) {
@@ -223,7 +235,7 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
         parentQuoteId: supersedeAudit.parentQuoteId,
         previousStatus: supersedeAudit.previousStatus,
         revisionNumber: supersedeAudit.revisionNumber,
-        emailed: supersedeAudit.emailed,
+        emailed,
       }),
       actorId: actor.userId,
     });

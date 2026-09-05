@@ -1,0 +1,94 @@
+---
+title: AI Impact
+description: Report what your AI agents handled, what the model time cost, and an estimate of the human time it stood in for.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **AI Impact** page answers the question a partner gets asked at every renewal: what did the AI actually do, and was it worth what it cost? It counts outcomes your [AI agents](/features/ai-agents/) produced, shows the actual model spend behind them, and prices the outcomes into an *estimate* of the human time they stood in for.
+
+Open **AI → AI Impact** in the sidebar. It needs the `ai_agents:read` permission — the same one that lets you see agents and their runs.
+
+## Choosing a window
+
+Pick **Last 7 days**, **Last 30 days** (the default), or **Last 90 days**. The window and the organization filter both live in the page's URL, so a view you are looking at is a view you can send someone.
+
+With a single organization selected in the organization switcher you get that organization's figures. With several, you get the total across the organizations you can see, plus a **By organization** table ranked by estimated time saved.
+
+## What each counter means
+
+| Counter | What it counts |
+|---|---|
+| **Alerts judged** | Every alert verdict an agent recorded that day. |
+| **Flagged as noise** | The subset of those verdicts judged self-healed, a recurring pattern, or a duplicate of an already-grouped condition. |
+| **Suppressions applied** | Alert suppressions an agent proposed that were approved and actually executed. |
+| **Tickets triaged** | Ticket-triggered runs that finished with a triage proposal — either completed, or stopped to wait on an approval. |
+| **Drafts sent** | AI-drafted replies and resolution notes that a technician actually sent. A draft that was discarded, superseded or left sitting counts for nothing. |
+| **Fixes proposed** | Remediation actions an agent put forward, whether they went to the Approvals inbox or were only surfaced on the run. |
+| **Fixes executed** | Remediation actions that actually ran and succeeded — approved-and-executed ones, plus Act mode's own executions where the follow-up verification did not fail. |
+| **Fix watches held** | Follow-up checks after a remediation run that confirmed the fix held. |
+| **Fix watches recurred** | Follow-up checks where the condition came back. |
+| **Weekly reports delivered** | Weekly-report schedule runs that produced a report. A run that found no schedule, or failed to write the report, earns nothing. |
+| **LLM spend** | Actual model spend for every agent run queued that day, whatever its kind or outcome. |
+
+<Aside>
+  A fix watch is **one remediation run**, not one action. A single run that restarted three services and then held is one held watch, not three.
+</Aside>
+
+The page shows the headline tiles, an **Outcomes per day** chart, and the by-organization table. The [PDF export](#exporting-a-pdf) carries all ten counters plus the spend, whether or not each has its own tile.
+
+## Estimated time saved
+
+**Estimated time saved is an estimate, and Breeze never presents it as anything else.** It is not measured. Breeze credits each outcome with a fixed allowance of human time and adds them up. The tile is labelled *Estimated time saved*, its tooltip lists the allowance behind every line, and it sits beside the LLM spend tile — which is the actual figure, not an estimate — on purpose.
+
+Six of the counters are priced. The rest are quality and funnel signals and contribute nothing to the estimate.
+
+| Priced outcome | Default allowance |
+|---|---|
+| Alert judged | 90 seconds |
+| Flagged as noise | 240 seconds |
+| Ticket triaged | 360 seconds |
+| Draft sent | 300 seconds |
+| Fix executed | 900 seconds |
+| Weekly report delivered | 1800 seconds |
+
+### Changing the weights
+
+Click **Edit weights** to set your own allowances. The drawer says what they do: *"These weights only change the estimate — they never change what your AI agents do."* Each weight is a number of seconds, capped at 86,400 (one day). **Reset to defaults** clears your overrides.
+
+Weights belong to the partner, not to an individual agent or organization — one MSP, one estimate model. Editing them requires the `ai_agents:write` permission **and** partner-wide policy authority, so a partner administrator with access to all organizations can change them; an organization-scoped user or a partner user limited to selected organizations cannot, and does not see the button.
+
+Changing a weight re-prices **all** history the next time the page loads. Figures you exported before the change will not match figures you export after it.
+
+## Positive feedback rate
+
+The **Positive feedback rate** is the share of thumbs-up among the alert verdicts that were rated in the window, with the raw counts beside it ("*n* helpful, *n* not helpful"). Only current verdicts count — a verdict that has since been superseded drops out. If nobody rated anything in the window, no rate is shown.
+
+<Aside type="caution">
+  This is a *feedback* rate, not accuracy and not precision. A thumbs-up records that a technician found the verdict useful; it is not evidence that the verdict was correct.
+</Aside>
+
+## Promotion-eligible operations
+
+When an agent has operations with enough clean evidence to be pre-authorized, a **Promotion-eligible operations** tile appears. It is a pointer, not a list — click it to open **Settings → AI Agents**, where the Graduation panel shows the evidence and the Promote action. See [Graduation](/features/ai-agents/#graduation-feedback-loop).
+
+## How current the figures are
+
+Breeze rebuilds the report nightly rather than computing it on every page load, so the page reports what it has and tells you how old that is.
+
+- Every day is a **complete UTC day**. The line under the header reads *"Data through &lt;date&gt; (UTC) · rebuilt &lt;time&gt;"*.
+- **Today is never included.** The most recent day you can see is yesterday, in UTC. That is deliberate — a partial day would make every trend line dip at the right-hand edge.
+- The nightly pass rebuilds the **last 7 complete days** for each organization, which is what picks up late-arriving facts. The first time it runs for an organization it rebuilds the full **90 days**, so the 30- and 90-day windows are complete from the start rather than filling in over three months.
+- **Refresh** rebuilds the last 90 complete days on demand. The button shows **Rebuilding…** while it waits and tells you when the new figures are in. A rebuild covering more than 200 organizations is refused — narrow to a single organization in the switcher and try again. Pressing it twice is harmless.
+
+<Aside>
+  Rebuilds are queued as background work. If a rebuild is still running after a couple of minutes the page says so and asks you to reload later rather than spinning indefinitely.
+</Aside>
+
+## Exporting a PDF
+
+**Export PDF** produces a report of the current window containing all ten counters, the estimated time saved, the actual LLM spend, the window and its through-date, when the figures were last rebuilt, and the six weights the estimate was priced with. Dates in the export are UTC. Recording the weights alongside the numbers is what makes an exported report reproducible after somebody re-tunes the estimate model.
+
+## If everything reads zero
+
+The nightly rollup only runs while AI agents are enabled for the deployment (`BREEZE_AI_AGENTS_ENABLED`). With agents off, no outcomes are produced and none are counted, so the page truthfully reports zero rather than hiding. The page itself stays reachable either way. See [Enabling agents](/features/ai-agents/#enabling-agents).

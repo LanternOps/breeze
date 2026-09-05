@@ -4,17 +4,36 @@ import type { FilterCondition, FilterConditionGroup } from '@breeze/shared/types
 
 // Capture SQL run inside the filter executors' bounded transaction. Hoisted so
 // the vi.mock factory and the tests share the same array.
-const dbMock = vi.hoisted(() => ({ executed: [] as unknown[] }));
+const dbMock = vi.hoisted(() => ({
+  executed: [] as unknown[],
+  events: [] as Array<'execute' | 'query'>,
+  queryError: undefined as Error | undefined,
+}));
 vi.mock('../db', () => {
   // A chainable, awaitable stub for the drizzle query builder. Every builder
   // step returns the same object; awaiting it resolves to an empty row set.
   const chain: Record<string, unknown> = {};
   for (const m of ['from', 'where', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
-  (chain as { then: unknown }).then = (resolve: (rows: unknown[]) => unknown) => resolve([]);
-  const tx = {
-    execute: async (q: unknown) => { dbMock.executed.push(q); return []; },
-    select: () => chain,
+  (chain as { then: unknown }).then = (
+    resolve: (rows: unknown[]) => unknown,
+    reject: (error: Error) => unknown,
+  ) => {
+    const error = dbMock.queryError;
+    dbMock.queryError = undefined;
+    return error ? reject(error) : resolve([]);
   };
+  const tx: Record<string, unknown> = {
+    execute: async (q: unknown) => {
+      dbMock.executed.push(q);
+      dbMock.events.push('execute');
+      return [{ value: '2s' }];
+    },
+    select: () => {
+      dbMock.events.push('query');
+      return chain;
+    },
+  };
+  tx.transaction = async (cb: (t: typeof tx) => unknown) => cb(tx);
   return { db: { transaction: async (cb: (t: typeof tx) => unknown) => cb(tx) } };
 });
 
@@ -316,30 +335,54 @@ describe('filterEngine matches validation recurses into nested groups (#1044)', 
 
 describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => {
   const dialect = new PgDialect();
-  const renderedSql = () => dbMock.executed.map((q) => dialect.sqlToQuery(q as never).sql);
-  const setsStatementTimeout = () =>
-    renderedSql().some((s) => /set_config\(/i.test(s) && /statement_timeout/i.test(s));
+  const renderedExecutions = () => dbMock.executed.map((q) => dialect.sqlToQuery(q as never));
 
-  beforeEach(() => { dbMock.executed.length = 0; });
+  beforeEach(() => {
+    dbMock.executed.length = 0;
+    dbMock.events.length = 0;
+    dbMock.queryError = undefined;
+  });
 
   const matchesFilter: FilterConditionGroup = {
     operator: 'AND',
     conditions: [{ field: 'hostname', operator: 'matches', value: '(a+)+$' }],
   };
 
+  const expectTimeoutWrappedQuery = () => {
+    const executions = renderedExecutions();
+    expect(executions[0]?.sql).toMatch(/current_setting\('statement_timeout'/i);
+    expect(executions[1]?.sql).toMatch(/set_config\('statement_timeout'/i);
+    expect(executions[1]?.params).toEqual(['500ms']);
+
+    const firstQueryIndex = dbMock.events.indexOf('query');
+    const restoreIndex = dbMock.events.lastIndexOf('execute');
+    expect(firstQueryIndex).toBeGreaterThan(1);
+    expect(restoreIndex).toBeGreaterThan(firstQueryIndex);
+    expect(executions.at(-1)?.sql).toMatch(/set_config\('statement_timeout'/i);
+    expect(executions.at(-1)?.params).toEqual(['2s']);
+  };
+
   it('evaluateFilterWithPreview sets a statement_timeout before querying', async () => {
     await evaluateFilterWithPreview(matchesFilter, { orgId: 'org-1', previewLimit: 5 });
-    expect(setsStatementTimeout()).toBe(true);
+    expectTimeoutWrappedQuery();
   });
 
   it('evaluateFilter sets a statement_timeout before querying', async () => {
     await evaluateFilter(matchesFilter, { orgId: 'org-1' });
-    expect(setsStatementTimeout()).toBe(true);
+    expectTimeoutWrappedQuery();
   });
 
   it('deviceMatchesFilter sets a statement_timeout before querying', async () => {
     await deviceMatchesFilter('device-1', matchesFilter);
-    expect(setsStatementTimeout()).toBe(true);
+    expectTimeoutWrappedQuery();
+  });
+
+  it('restores the captured statement_timeout after a query error', async () => {
+    dbMock.queryError = new Error('query failed');
+
+    await expect(evaluateFilter(matchesFilter, { orgId: 'org-1' })).rejects.toThrow('query failed');
+
+    expectTimeoutWrappedQuery();
   });
 });
 

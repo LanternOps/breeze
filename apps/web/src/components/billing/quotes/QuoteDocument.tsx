@@ -130,6 +130,21 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
   const { t } = useTranslation('billing');
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
+  const deviceSetText = (l: QuoteLine): string[] => {
+    if (!l.contractLineType) return [];
+    let set = t('quotes.document.deviceSet.setDevices');
+    if (l.contractLineType === 'per_device_role') set = (l.deviceRoles ?? []).map((role) => t(/* i18n-dynamic */ `quotes.deviceSet.roleNoun.${role}`)).join(', ') || set;
+    else if (l.contractLineType === 'per_device_group') set = t('quotes.document.deviceSet.setGroup', { name: l.deviceGroupName ?? '' });
+    else if (l.contractLineType === 'per_seat') set = t('quotes.document.deviceSet.setSeats');
+    if (l.siteName) set = t('quotes.document.deviceSet.atSite', { set, site: l.siteName });
+    const result = [t('quotes.document.deviceSet.estimate', { set })];
+    if (l.includedQuantity != null && l.overageMode === 'bill' && l.overageUnitPrice != null) {
+      result.push(t('quotes.document.deviceSet.allowanceBill', { included: Number(l.includedQuantity), price: formatMoney(l.overageUnitPrice, currency) }));
+    } else if (l.includedQuantity != null && l.overageMode === 'flag') {
+      result.push(t('quotes.document.deviceSet.allowanceFlag', { included: Number(l.includedQuantity) }));
+    }
+    return result;
+  };
   // Opt-in per-table subtotal, summed from THIS table's rows and split by
   // recurrence (a table can mix one-time / monthly / annual). Only non-zero
   // buckets are shown, joined with " + " — matching the document footer style.
@@ -142,9 +157,9 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
       const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
       sums[key] += Number(l.lineTotal);
     }
-    if (sums.one_time > 0) subtotalParts.push(formatMoney(sums.one_time, currency));
-    if (sums.monthly > 0) subtotalParts.push(`${formatMoney(sums.monthly, currency)}${t('billingUi.units.perMonth')}`);
-    if (sums.annual > 0) subtotalParts.push(`${formatMoney(sums.annual, currency)}${t('billingUi.units.perYear')}`);
+    if (sorted.some((l) => l.recurrence === 'one_time')) subtotalParts.push(formatMoney(sums.one_time, currency));
+    if (sorted.some((l) => l.recurrence === 'monthly')) subtotalParts.push(`${formatMoney(sums.monthly, currency)}${t('billingUi.units.perMonth')}`);
+    if (sorted.some((l) => l.recurrence === 'annual')) subtotalParts.push(`${formatMoney(sums.annual, currency)}${t('billingUi.units.perYear')}`);
   }
   return (
     <div className="overflow-hidden rounded-lg border bg-card">
@@ -167,6 +182,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
               const suffix = l.recurrence === 'monthly' ? t('billingUi.units.perMonth') : l.recurrence === 'annual' ? t('billingUi.units.perYear') : '';
               const tag = l.recurrence === 'monthly' ? t('quotes.document.recurrence.monthly') : l.recurrence === 'annual' ? t('quotes.document.recurrence.annual') : '';
               const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
+              const descriptor = deviceSetText(l);
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
                   <td className="w-full px-4 py-3 text-foreground sm:px-5">
@@ -181,8 +197,18 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
                             {tag}
                           </span>
                         )}
+                        {l.contractLineType && (
+                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70">
+                            {t('quotes.document.deviceSet.badge')}
+                          </span>
+                        )}
                         {lineBlurb(l) && (
                           <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
+                        )}
+                        {descriptor.length > 0 && (
+                          <div className="mt-0.5 space-y-0.5 text-xs text-muted-foreground" data-testid={`quote-line-device-set-${l.id}`}>
+                            {descriptor.map((text, i) => <p key={i}>{text}</p>)}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -395,8 +421,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
   const looseLines = useMemo(() => linesForBlock(null), [linesForBlock]);
   const isEmpty = sortedBlocks.length === 0 && looseLines.length === 0;
 
-  const hasRecurring =
-    Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
+  const hasRecurring = lines.some((l) => l.recurrence !== 'one_time');
   const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
   // Only surface the per-line Tax column when this quote actually carries tax —
   // otherwise it's a column of dashes. Mirrors the header Tax row's visibility.
@@ -525,14 +550,18 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
               {categoryBreakdown.length > 1 && (
                 <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-document-category-breakdown">
                   {categoryBreakdown.map((b) => (
-                    <div key={b.category} className="flex justify-between">
+                    <div key={b.category} className="flex justify-between" data-testid={`quote-document-category-${b.category}`}>
                       <span className="capitalize">{b.category}</span>
                       <span className="tabular-nums">
-                        {[
-                          Number(b.oneTimeTotal) > 0 ? formatMoney(b.oneTimeTotal, currency) : null,
-                          Number(b.monthlyTotal) > 0 ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
-                          Number(b.annualTotal) > 0 ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
-                        ].filter(Boolean).join(' + ')}
+                        {(() => {
+                          const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category);
+                          const cadenceLines = categoryLines;
+                          return [
+                            cadenceLines.some((l) => l.recurrence === 'one_time') ? formatMoney(b.oneTimeTotal, currency) : null,
+                            cadenceLines.some((l) => l.recurrence === 'monthly') ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
+                            cadenceLines.some((l) => l.recurrence === 'annual') ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
+                          ].filter(Boolean).join(' + ');
+                        })()}
                       </span>
                     </div>
                   ))}
@@ -588,13 +617,13 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                     <span className="text-muted-foreground">{t('quotes.document.totals.firstPeriodTotal')}</span>
                     <span className="tabular-nums text-foreground">{formatMoney(quote.total, currency)}</span>
                   </div>
-                  {Number(quote.monthlyRecurringTotal) > 0 && (
+                  {lines.some((l) => l.recurrence === 'monthly') && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">{t('quotes.document.totals.monthlyRecurring')}</span>
                       <span className="tabular-nums text-foreground">{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
                     </div>
                   )}
-                  {Number(quote.annualRecurringTotal) > 0 && (
+                  {lines.some((l) => l.recurrence === 'annual') && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">{t('quotes.document.totals.annualRecurring')}</span>
                       <span className="tabular-nums text-foreground">{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>

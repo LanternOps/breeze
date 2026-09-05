@@ -1144,4 +1144,49 @@ describe('POST /fleet/findings/:id/remediate', () => {
       expect.objectContaining({ actionKind: 'script', scriptId, parameters: { foo: 'bar' } })
     );
   });
+
+  // #4888 — run context for a fleet-wide remediation run. Script branch only:
+  // a `command` run has no script row whose default there would be anything
+  // to override.
+  it('accepts runAs: "user" on the script branch and forwards it to createRemediationRun', async () => {
+    createRemediationRunMock.mockResolvedValue({ runId: 'run-1', targetCount: 1, skipped: [], orgId: ORG_1 });
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      runAs: 'user',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(202);
+    expect(createRemediationRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      FINDING_1,
+      expect.objectContaining({ actionKind: 'script', scriptId: SCRIPT_1, runAs: 'user' })
+    );
+  });
+
+  it('rejects runAs: "elevated" on the script branch (400) — elevation is not a launch-time choice', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      runAs: 'elevated',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects runAs on the command branch (400) — the branch is .strict() with no such field', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      runAs: 'user',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
 });

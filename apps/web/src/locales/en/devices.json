@@ -298,6 +298,26 @@
     "resolve": "Resolve",
     "promote": "Promote"
   },
+  "deviceBillingCard": {
+    "title": "Billing",
+    "uncovered": "No active contract line bills this device.",
+    "viewContracts": "View contracts",
+    "notBillable": {
+      "decommissioned": "Not billed — this device is decommissioned",
+      "ephemeral": "Not billed — this device is an ephemeral support-session device",
+      "not_billable": "Not billed — this device is not currently billable"
+    },
+    "error": {
+      "generic": "Couldn't load billing coverage.",
+      "groupEvaluation": "A device group on an active contract couldn't be evaluated ({{group}}). Coverage is unknown."
+    },
+    "matchedBy": {
+      "org": "Org-wide",
+      "site": "This site",
+      "role": "Role: {{role}}",
+      "group": "Group: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Boot metrics collection triggered. Data will appear after next boot or collection cycle.",
     "failedToTriggerCollection": "Failed to trigger collection",
@@ -569,6 +589,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
+    "restartScheduled": "Restart scheduled",
+    "restartInProgress": "Restarting",
+    "restartScheduledFor": "Restart scheduled for {{time}}",
+    "restartInProgressAt": "Restart started at {{time}}",
+    "restartDeadline": "Must restart by {{time}}",
+    "restartPostponed": "Postponed {{used}} of {{max}}",
+    "restartPostponedTooltip": "How many times the person using this device has postponed the restart, out of the budget the policy allows.",
+    "restartCannotBePostponed": "Cannot be postponed",
+    "restartSourcePatchJob": "Requested by a patch installation",
+    "restartSourceMaintenanceWindow": "Requested by a maintenance window",
+    "restartSourceManual": "Requested by a technician",
+    "restartSourceUnknown": "Scheduled restart",
     "agentV": "Agent v",
     "uptime": "Uptime",
     "lastSeen": "Last Seen",
@@ -632,6 +664,7 @@
     "retry": "Retry",
     "activities": "Activities",
     "total": "total)",
+    "totalAtLeast": "{{count}}+",
     "searchActivities": "Search activities...",
     "all": "All",
     "success": "Success",
@@ -651,7 +684,8 @@
     "details": "Details",
     "showing": "Showing",
     "text": "–",
-    "of": "of"
+    "of": "of",
+    "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Failed to fetch filesystem status",
@@ -734,6 +768,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Failed to save device group",
     "failedToDeleteGroup": "Failed to delete group",
+    "billedByContracts": "This group is billed by {{count}} contract(s): {{names}}. Remove those contract lines first.",
+    "billedByContractsCount": "This group is billed by {{count}} contract(s). Remove those contract lines first.",
+    "quotedByQuotes": "This group is priced by {{count}} open quote(s): {{names}}. Remove those quote lines first.",
+    "quotedByQuotesCount": "This group is priced by {{count}} open quote(s). Remove those quote lines first.",
     "failedToRunScriptOnGroups": "Failed to run script on groups",
     "failedToApplyPolicyToGroups": "Failed to apply policy to groups",
     "failedToMoveDevice": "Failed to move device",
@@ -1059,6 +1097,7 @@
     "of": "of",
     "devices": "devices",
     "advancedFilterActive": "Advanced filter active",
+    "advancedFilterFailed": "Filter failed to load — showing no devices",
     "filterByDeviceClass": "Filter by device class",
     "filterByVpn": "Filter by VPN",
     "allVpn": "All VPN",
@@ -1227,6 +1266,8 @@
       "installOsPatches": "Install pending OS patches ({{count}})",
       "installThirdPartyPatches": "Install 3rd-party patches ({{count}})",
       "lastScan": "Last scan: {{label}}",
+      "managePatches": "Manage Patches",
+      "managedByPolicy": "Managed by policy:",
       "pendingApprovalCount": "({{count}} pending approval)",
       "polling": "Polling...",
       "refreshPatchData": "Refresh patch data",
@@ -1474,12 +1515,14 @@
       "completedAt": "Completed At",
       "duration": "Duration",
       "exitCode": "Exit Code",
+      "runAs": "Run context",
       "startedAt": "Started At"
     },
     "noOutput": "No output",
     "output": "Output",
     "refreshing": "Refreshing...",
     "running": "Running...",
+    "runAgain": "Run again",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Cancelled",
@@ -1763,6 +1806,7 @@
     "title": "Devices",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
+      "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",

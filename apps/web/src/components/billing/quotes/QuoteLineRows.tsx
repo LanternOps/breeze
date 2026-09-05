@@ -24,6 +24,7 @@ import {
   lineBlurb,
 } from './quoteTypes';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, seamless, unsavedHintId, UnsavedFieldHint } from './quoteEditorShared';
+import { BILLABLE_DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
 
 /** A line's reveal-on-demand target for the rail's actionable "missing cost"
  *  notice (MarginPanel → QuoteEditor → here): `nonce` bumps on every click so
@@ -257,6 +258,153 @@ function ClampedBlurb({ lineId, text }: { lineId: string; text: string }) {
   );
 }
 
+type LiveDeviceSetCount = { lineId: string; counted: number; billed: number; error?: string };
+
+function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
+  line: QuoteLine;
+  quoteId: string;
+  editable: boolean;
+  onEdit?: (body: LineUpdate, field?: string) => Promise<boolean>;
+}) {
+  const { t } = useTranslation('billing');
+  const [live, setLive] = useState<LiveDeviceSetCount | null>(null);
+  const [estimateFailed, setEstimateFailed] = useState(false);
+  const [groups, setGroups] = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [pickerLoadFailed, setPickerLoadFailed] = useState(false);
+  const [allowanceOn, setAllowanceOn] = useState(line.includedQuantity != null);
+  const [included, setIncluded] = useState(line.includedQuantity == null ? '' : String(Number(line.includedQuantity)));
+  const [mode, setMode] = useState<'bill' | 'flag'>(line.overageMode ?? 'bill');
+  const [overagePrice, setOveragePrice] = useState(line.overageUnitPrice ?? '');
+  useEffect(() => {
+    setAllowanceOn(line.includedQuantity != null);
+    setIncluded(line.includedQuantity == null ? '' : String(Number(line.includedQuantity)));
+    setMode(line.overageMode ?? 'bill');
+    setOveragePrice(line.overageUnitPrice ?? '');
+  }, [line.includedQuantity, line.overageMode, line.overageUnitPrice]);
+  const load = useCallback(async () => {
+    setEstimateFailed(false);
+    try {
+      const res = await fetchWithAuth(`/quotes/${quoteId}/device-set-estimate`);
+      if (!res.ok) {
+        setLive(null);
+        setEstimateFailed(true);
+        return;
+      }
+      const body = await res.json();
+      const rows = (body.data ?? []) as LiveDeviceSetCount[];
+      setLive(rows.find((row) => row.lineId === line.id) ?? null);
+    } catch {
+      setLive(null);
+      setEstimateFailed(true);
+    }
+  }, [quoteId, line.id]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!editable) return;
+    let alive = true;
+    setPickerLoadFailed(false);
+    void Promise.all([
+      Promise.resolve(fetchWithAuth(`/device-groups?orgId=${line.orgId}&limit=200`)).then(async (r) => {
+        if (!r?.ok) throw new Error('device-group picker load failed');
+        return (await r.json()).data ?? [];
+      }),
+      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${line.orgId}`)).then(async (r) => {
+        if (!r?.ok) throw new Error('site picker load failed');
+        return (await r.json()).data ?? [];
+      }),
+    ]).then(([nextGroups, nextSites]) => {
+      if (alive) { setGroups(nextGroups); setSites(nextSites); }
+    }).catch(() => {
+      if (alive) setPickerLoadFailed(true);
+    });
+    return () => { alive = false; };
+  }, [editable, line.orgId]);
+  const stored = Number(line.quantity);
+  const drifted = live && !live.error && live.billed !== stored;
+  let noun = t('quotes.document.deviceSet.setDevices');
+  if (line.contractLineType === 'per_device_role') {
+    noun = (line.deviceRoles ?? []).map((role) => t(/* i18n-dynamic */ `quotes.deviceSet.roleNoun.${role}`)).join(', ') || noun;
+  } else if (line.contractLineType === 'per_device_group' && line.deviceGroupName) {
+    noun = t('quotes.document.deviceSet.setGroup', { name: line.deviceGroupName });
+  } else if (line.contractLineType === 'per_seat') {
+    noun = t('quotes.document.deviceSet.setSeats');
+  }
+  const refreshCounts = async () => {
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quoteId}/lines/refresh-device-counts`, { method: 'POST' }),
+        errorFallback: t('quotes.editor.errors.updateLine'),
+        successMessage: t('quotes.editor.deviceSet.refresh'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      window.dispatchEvent(new CustomEvent('breeze:quote-device-counts-refreshed', { detail: quoteId }));
+      await load();
+    } catch { /* runAction surfaced it */ }
+  };
+  if (!line.contractLineType) return null;
+  return (
+    <div className="mt-1 space-y-1 text-xs text-muted-foreground" data-testid={`quote-line-device-set-summary-${line.id}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span>{t('quotes.editor.deviceSet.autoSummary', { count: formatQuantity(line.quantity), set: noun })}</span>
+        {drifted && <span className="rounded-full bg-warning/15 px-2 py-0.5 text-warning-foreground" data-testid={`quote-line-device-set-drift-${line.id}`}>{t('quotes.editor.deviceSet.driftChip', { stored: formatQuantity(line.quantity), live: live.billed })}</span>}
+        {(drifted || estimateFailed) && editable && <button type="button" onClick={() => void refreshCounts()} className="font-medium text-primary hover:underline" data-testid={`quote-line-device-set-refresh-${line.id}`}>{t('quotes.editor.deviceSet.refresh')}</button>}
+      </div>
+      {estimateFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-estimate-error-${line.id}`}>{t('quotes.editor.deviceSet.estimateError')}</p>}
+      {pickerLoadFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-picker-error-${line.id}`}>{t('quotes.editor.deviceSet.pickerError')}</p>}
+      {line.descriptorUnresolved && line.contractLineType === 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.groupDeleted', { name: line.deviceGroupName ?? '' })}</p>}
+      {line.descriptorUnresolved && line.contractLineType !== 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.siteDeleted', { name: line.siteName ?? '' })}</p>}
+      <p>{t('quotes.editor.deviceSet.typeLocked')}</p>
+      {editable && line.contractLineType === 'per_device_group' && (
+        <label className="block">{t('quotes.editor.deviceSet.groupLabel')}
+          <select value={line.deviceGroupId ?? ''} onChange={(e) => { if (e.target.value) void onEdit?.({ deviceGroupId: e.target.value }, 'deviceGroup'); }} className="ml-2 h-7 rounded border bg-background px-2 text-foreground" data-testid={`quote-line-device-set-group-${line.id}`}>
+            <option value="" />{groups.map((g) => <option key={g.id} value={g.id}>{g.name} · {g.type === 'dynamic' ? 'Dynamic' : 'Static'}</option>)}
+          </select>
+        </label>
+      )}
+      {editable && line.contractLineType === 'per_device_role' && (
+        <fieldset><legend>{t('quotes.editor.deviceSet.rolesLabel')}</legend><div className="mt-1 flex flex-wrap gap-2">
+          {BILLABLE_DEVICE_ROLES.map((role) => {
+            const selected = (line.deviceRoles ?? []).includes(role);
+            return <label key={role} className="flex items-center gap-1"><input type="checkbox" checked={selected} onChange={() => {
+              const next = selected ? (line.deviceRoles ?? []).filter((r) => r !== role) : [...(line.deviceRoles ?? []), role];
+              if (next.length > 0) void onEdit?.({ deviceRoles: next }, 'deviceRoles');
+            }} />{getDeviceRoleLabel(role)}</label>;
+          })}
+        </div></fieldset>
+      )}
+      {editable && (line.contractLineType === 'per_device' || line.contractLineType === 'per_device_role') && (
+        <label className="block">{t('quotes.editor.deviceSet.siteLabel')}
+          <select value={line.siteId ?? ''} onChange={(e) => void onEdit?.({ siteId: e.target.value || null }, 'site')} className="ml-2 h-7 rounded border bg-background px-2 text-foreground" data-testid={`quote-line-device-set-site-${line.id}`}>
+            <option value="">{t('quotes.editor.deviceSet.allSites')}</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </label>
+      )}
+      {editable && (
+        <fieldset className="space-y-1 rounded border border-border/60 p-2" data-testid={`quote-line-device-set-allowance-${line.id}`}>
+          <legend className="sr-only">{t('quotes.editor.deviceSet.includedLabel')}</legend>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={allowanceOn} onChange={(e) => {
+            const next = e.target.checked; setAllowanceOn(next);
+            if (!next) void onEdit?.({ includedQuantity: null, overageMode: null, overageUnitPrice: null }, 'allowance');
+          }} />{t('quotes.editor.deviceSet.includedLabel')}</label>
+          {allowanceOn && <div className="flex flex-wrap items-end gap-2">
+            <label>{t('quotes.editor.deviceSet.includedLabel')}<input type="number" min="1" step="1" value={included} onChange={(e) => setIncluded(e.target.value)} className="ml-1 h-7 w-20 rounded border bg-background px-1 text-foreground" /></label>
+            <fieldset className="space-y-1">
+              <legend>{t('quotes.editor.deviceSet.overageModeLabel')}</legend>
+              <div className="flex flex-wrap gap-3 text-foreground">
+                <label className="inline-flex items-center gap-1"><input type="radio" name={`quote-line-overage-mode-${line.id}`} checked={mode === 'bill'} onChange={() => setMode('bill')} />{t('quotes.editor.deviceSet.overageBill')}</label>
+                <label className="inline-flex items-center gap-1"><input type="radio" name={`quote-line-overage-mode-${line.id}`} checked={mode === 'flag'} onChange={() => setMode('flag')} />{t('quotes.editor.deviceSet.overageFlag')}</label>
+              </div>
+            </fieldset>
+            {mode === 'bill' && <label>{t('quotes.editor.deviceSet.overagePriceLabel')}<input type="number" min="0" step="0.01" value={overagePrice} onChange={(e) => setOveragePrice(e.target.value)} className="ml-1 h-7 w-24 rounded border bg-background px-1 text-foreground" /></label>}
+            <button type="button" disabled={!/^[1-9]\d*$/.test(included) || (mode === 'bill' && !/^\d+(\.\d{1,2})?$/.test(overagePrice))} onClick={() => void onEdit?.({ includedQuantity: Number(included), overageMode: mode, overageUnitPrice: mode === 'bill' ? Number(overagePrice) : null }, 'allowance')} className="h-7 rounded border px-2 font-medium disabled:opacity-50">{t('common:actions.save')}</button>
+          </div>}
+        </fieldset>
+      )}
+    </div>
+  );
+}
+
 // The ghost row: an always-ready entry row at the foot of every pricing table.
 // Type a name, Tab through qty/price/cadence, press Enter — the line commits
 // and focus returns to the name for the next one. This is the fast lane for the
@@ -467,6 +615,7 @@ export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, 
             <div>
               <div className="font-medium" title={lineTitle(l) || undefined}>{lineTitle(l)}</div>
               {blurb && <ClampedBlurb lineId={l.id} text={blurb} />}
+              <DeviceSetEditorSummary line={l} quoteId={quoteId} editable={false} />
             </div>
           </div>
         </td>
@@ -1017,10 +1166,14 @@ export function EditableLineRow({
   return (
     <>
     <tr ref={rowRef} className={`group/row border-t align-top [&>td]:pt-4 ${dragging ? 'opacity-40' : ''}`} data-testid={`quote-line-${line.id}`}>
-      {/* Column min-width (min-w-[12rem]) is declared on the cell so table
+      {/* Column min-width (min-w-[8rem]) is declared on the cell so table
           auto-layout reserves the name column instead of squeezing it below the
-          input's width (which used to overflow into the qty cell). */}
-      <td className="min-w-[12rem] px-1.5 py-2">
+          input's width (which used to overflow into the qty cell). Item is the
+          lowest-priority column (#4668) — this floor must match the header
+          th's in QuoteBlockCard.tsx, and stay well under the space available
+          at 1280px with the left nav sidebar open, so Qty/Price/Total never
+          get pushed into horizontal scroll to make room for it. */}
+      <td className="min-w-[8rem] px-1.5 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {/* Bulk-select checkbox — leading, in the same quiet reveal grammar as
               the gutter grip: hidden at rest, shown on row hover/focus-within,
@@ -1061,11 +1214,12 @@ export function EditableLineRow({
               className={`h-9 w-full rounded-md border bg-transparent px-2 py-1 text-sm font-medium transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(nameDirty, saved))}`}
             />
             <UnsavedFieldHint id={unsavedHintId(line.id, 'name')} show={nameDirty} />
+            <DeviceSetEditorSummary line={line} quoteId={quoteId} editable onEdit={edit} />
           </div>
         </div>
       </td>
       <td className="px-1.5 py-2 text-right">
-        <input
+        {!line.contractLineType && <input
           type="number" min="1" step="1"
           value={qty}
           aria-label={t('quotes.editor.line.quantityForAria', { item: rowLabelItem })}
@@ -1076,8 +1230,8 @@ export function EditableLineRow({
           aria-describedby={describedByIds(fieldErrors.qty && `quote-line-qty-error-${line.id}`, qtyDirty && unsavedHintId(line.id, 'qty'))}
           data-testid={`quote-line-qty-${line.id}`}
           className={`h-9 w-14 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(qtyDirty, saved), !!fieldErrors.qty)}`}
-        />
-        <UnsavedFieldHint id={unsavedHintId(line.id, 'qty')} show={qtyDirty} />
+        />}
+        {!line.contractLineType && <UnsavedFieldHint id={unsavedHintId(line.id, 'qty')} show={qtyDirty} />}
       </td>
       <td className="px-1.5 py-2 text-right">
         <input
@@ -1103,10 +1257,11 @@ export function EditableLineRow({
           aria-label={t('quotes.editor.line.billingFrequencyAria')}
           onChange={(e) => {
             const next = e.target.value as QuoteLineRecurrence;
+            if (line.contractLineType && next === 'one_time') return;
             setRec(next); // optimistic — revert if the save fails
             void edit({ recurrence: next }, 'rec').then((ok) => { if (!ok) setRec(line.recurrence); });
           }}
-          disabled={fieldBusy('rec')}
+          disabled={fieldBusy('rec') || Boolean(line.contractLineType)}
           data-testid={`quote-line-recurrence-${line.id}`}
           className="ml-auto mt-1 block h-7 w-24 rounded-md border border-transparent bg-transparent py-0 pl-2 pr-6 text-xs text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60"
         >

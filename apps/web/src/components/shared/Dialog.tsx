@@ -8,9 +8,9 @@ import {
   type MouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { acquireScrollLock } from './scrollLock';
 
 // Reference counter for stacked dialogs — only restore scroll when all dialogs close
-let scrollLockCount = 0;
 
 type DialogMaxWidth = 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl';
 
@@ -188,16 +188,8 @@ export function Dialog({
 
   useEffect(() => {
     if (!open) return;
-    scrollLockCount++;
-    if (scrollLockCount === 1) {
-      document.body.style.overflow = 'hidden';
-    }
-    return () => {
-      scrollLockCount--;
-      if (scrollLockCount === 0) {
-        document.body.style.overflow = '';
-      }
-    };
+    const release = acquireScrollLock();
+    return release;
   }, [open]);
 
   // #3705: arm the guard as the portal is torn out — but ONLY when a completed

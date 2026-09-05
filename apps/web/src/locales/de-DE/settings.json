@@ -1,4 +1,86 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Wird live aktualisiert"
+    },
+    "list": {
+      "clearFilters": "Filter zurücksetzen",
+      "emptyDescription": "Läufe, die durch Warnungen, Zeitpläne, Tickets und manuelle Aktionen ausgelöst werden, werden hier angezeigt, sobald ein Agent sie ausführt.",
+      "emptyFilteredDescription": "Keine Läufe entsprechen diesen Filtern. Versuchen Sie einen anderen Agenten oder Status.",
+      "emptyConfigureLink": "KI-Agenten konfigurieren",
+      "columns": {
+        "started": "Gestartet",
+        "duration": "Dauer"
+      },
+      "showCost": "Kosten anzeigen",
+      "hideCost": "Kosten ausblenden"
+    },
+    "detail": {
+      "notFoundDescription": "Dieser Lauf wurde möglicherweise gelöscht, oder der Link ist veraltet.",
+      "pageTitle": "{{agent}} · {{started}} · Lauf | Breeze RMM",
+      "header": {
+        "title": "Lauf von {{agent}}",
+        "startedLabel": "Gestartet",
+        "machineVerdict": "Maschinelles Ergebnis: {{verdict}}"
+      },
+      "summary": {
+        "title": "Was der Agent gefunden hat"
+      },
+      "findings": {
+        "badge_one": "{{count}} Befund zu prüfen",
+        "badge_other": "{{count}} Befunde zu prüfen"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Laufwerk",
+          "serviceName": "Dienstname",
+          "configName": "Sicherungsauftrag",
+          "usedPercent": "Belegt (%)",
+          "percentUsed": "Belegt (%)",
+          "freeGb": "Frei (GB)",
+          "totalGb": "Kapazität (GB)",
+          "lastSeenAt": "Zuletzt gesehen",
+          "lastSeenDays": "Tage seit letztem Kontakt",
+          "checkedAt": "Geprüft",
+          "cveIds": "CVE-IDs",
+          "cveCount": "CVE-Anzahl",
+          "cveId": "CVE",
+          "cvssScore": "CVSS-Bewertung",
+          "osType": "Betriebssystemtyp",
+          "openCriticalCount": "Offene kritische CVEs"
+        }
+      },
+      "sweep": {
+        "caption": "Eine Zeile pro Problem, das dieser Durchlauf gefunden hat, mit der jeweils vorgeschlagenen Aktion.",
+        "reviewPermissions": "Agentberechtigungen prüfen",
+        "checksLabel": "Prüfungen:"
+      },
+      "trace": {
+        "description": "Jeder Tool-Aufruf, den der Agent vorgeschlagen, ausgeführt oder abgelehnt bekommen hat, in zeitlicher Reihenfolge.",
+        "emptyDescription": "Tool-Aufrufe, die der Agent vorschlägt oder ausführt, werden hier aufgelistet."
+      },
+      "ledger": {
+        "description": "Nur die tatsächlich ausgeführten Aufrufe, mit Laufzeit und etwaigem Fehler.",
+        "emptyDescription": "Tools, die der Agent tatsächlich aufgerufen hat, werden hier aufgelistet.",
+        "collapsedSummary": "Tool-Ausführungen ({{count}}) — wie oben im Trace",
+        "statuses": {
+          "pending": "Ausstehend",
+          "approved": "Genehmigt",
+          "executing": "Wird ausgeführt",
+          "completed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "rejected": "Abgelehnt"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Genehmigungen, die dieser Lauf angefordert hat, werden hier aufgelistet."
+      },
+      "triage": {
+        "categoryLabel": "Kategorie",
+        "categoryUnresolved": "Vorgeschlagen — Name in dieser Ansicht nicht verfügbar"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
     "description": "Partnerweite Maschinenidentitäten und ihre Zugriffsschlüssel verwalten.",
@@ -18,6 +100,7 @@
     "principalDescription": "Beschreibung",
     "scopes": "Berechtigungsbereiche",
     "sourceCidrs": "Quell-IPs oder CIDRs (eine pro Zeile)",
+    "writeScopeRestrictionsRequired": "Der Bereich enrollment-keys:write erfordert ein Ablaufdatum und mindestens eine Quell-IP oder CIDR.",
     "expiresAt": "Läuft ab am",
     "save": "Speichern",
     "cancel": "Abbrechen",
@@ -748,6 +831,28 @@
       "unavailable": "Keine Richtlinie verfügbar."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Audit-Protokoll-Aufbewahrung",
+    "description": "Legt fest, wie lange der Audit-Verlauf dieser Organisation aufbewahrt wird, bevor ältere Einträge gelöscht werden.",
+    "loading": "Aufbewahrungsrichtlinie wird geladen...",
+    "errors": {
+      "load": "Die Audit-Aufbewahrungsrichtlinie konnte nicht geladen werden.",
+      "save": "Die Audit-Aufbewahrungsrichtlinie konnte nicht gespeichert werden."
+    },
+    "toasts": {
+      "saved": "Audit-Aufbewahrungsrichtlinie gespeichert."
+    },
+    "unconfiguredWarning": "Für diese Organisation ist noch keine Aufbewahrungsrichtlinie konfiguriert — Audit-Protokolle werden erst bereinigt, nachdem Sie eine gespeichert haben.",
+    "retentionDays": "Aufbewahrungsdauer (Tage)",
+    "readOnly": "Sie haben keine Berechtigung, diese Einstellung zu ändern.",
+    "lastCleanup": "Letzte Bereinigung um {{date}}",
+    "actions": {
+      "save": "Speichern"
+    },
+    "issues": {
+      "range": "Geben Sie eine ganze Zahl zwischen 1 und 3650 Tagen ein."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Passen Sie das Portalerlebnis für {{organization}} an.",
@@ -1009,6 +1114,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Sichtbarkeit",
+      "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
+      "enableAll": "Alle Sichtbarkeiten aktivieren",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Übersicht",
+          "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."
+        },
+        "enableSecurity": {
+          "label": "Sicherheit",
+          "description": "Zeigt Sicherheitsstatus, Schutz, Bedrohungen und Schwachstellen an."
+        },
+        "enableBackups": {
+          "label": "Sicherungen",
+          "description": "Zeigt Backup-Abdeckung, Überprüfung, Wiederherstellungstests und Bereitschaft an."
+        },
+        "enableReports": {
+          "label": "Berichte",
+          "description": "Ermöglicht Kunden, freigegebene Berichte zu erstellen und herunterzuladen."
+        },
+        "enableSupportUsage": {
+          "label": "Support-Nutzung",
+          "description": "Zeigt die abrechenbare Supportzeit des Monats bis heute an."
+        }
+      }
+    },
     "support": {
       "title": "Support-Kontakt",
       "description": "Wird den Kunden im Portal angezeigt.",
@@ -1053,6 +1185,7 @@
     },
     "toasts": {
       "inviteSent": "Einladung gesendet",
+      "inviteSentAmbiguousContact": "Einladung gesendet, aber es konnte kein Kontakt verknüpft werden – mehrere Kontakte teilen sich diese E-Mail-Adresse. Dieser Benutzer sieht keine per E-Mail eingereichten Tickets, bis ein Kontakt verknüpft ist.",
       "pendingInvited": "Eingeladene {{count}} ausstehende(r) Benutzer",
       "inviteResent": "Einladung erneut gesendet",
       "reactivated": "Benutzer reaktiviert",
@@ -1352,7 +1485,7 @@
       "deleteOverride": "Ausnahme entfernen",
       "confirmDelete": "Löschen bestätigen",
       "cron": "Cron-Ausdruck",
-      "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr.",
+      "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr. Das Minutenfeld muss eine literale Zahl oder eine durch Kommas getrennte Liste sein (kein *, / oder -Bereich) — Zeitpläne laufen höchstens stündlich.",
       "cronInvalid": "Geben Sie vor dem Speichern einen gültigen Cron-Ausdruck mit fünf Feldern ein.",
       "timezone": "Zeitzone",
       "kinds": {
@@ -1372,6 +1505,10 @@
       "tightenOnly": "Eine Ausnahme kann die Basis nur einschränken: Sie kann den Sweep deaktivieren oder Prüfungen entfernen, aber nie hinzufügen.",
       "noKinds": "Keine Prüfungen",
       "lastRun": "Letzter Lauf {{at}} · {{admitted}} von {{total}} Organisationen geprüft, {{skipped}} übersprungen.",
+      "nextRun": "Nächster Lauf {{at}} ({{timezone}})",
+      "nextRunInvalid": "Ungültiger Zeitplan",
+      "nextRunNone": "Im nächsten Jahr fällt kein Lauf an.",
+      "useMyTimezone": "Meine Zeitzone verwenden",
       "kindLabels": {
         "disk_pressure": "Speicherplatzdruck",
         "stale_agents": "Veraltete Agenten",
@@ -1404,10 +1541,67 @@
     "title": "KI-Agenten",
     "description": "Benannte KI-Mitarbeiter mit einer Richtlinie. Partner legen die Grundlinie fest; Organisationen können sie nur verschärfen.",
     "empty": "Noch keine Agenten vorhanden.",
+    "kindHints": {
+      "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
+      "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
+      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor."
+    },
+    "emptyState": {
+      "title": "Noch keine Agenten",
+      "description": "Ein Agent ist eine gespeicherte Richtlinie, kein laufender Prozess: Er beobachtet die von Ihnen gewählten Warnungen, Patches oder Tickets, untersucht sie mit den von Ihnen erlaubten Werkzeugen und schlägt danach eine Lösung vor oder führt sie aus. Beginnen Sie im Schattenmodus, in dem der Agent vorschlägt und ein Mensch genehmigt, damit nichts ein Gerät erreicht, bevor Sie es sagen.",
+      "action": "Ersten Agenten erstellen"
+    },
+    "modeChoice": {
+      "legend": "Was dieser Agent tun darf",
+      "off": "Aus",
+      "offConsequence": "Es läuft nichts.",
+      "shadow": "Schatten",
+      "shadowConsequence": "Beobachtet und schlägt vor; ein Mensch genehmigt alles.",
+      "act": "Aktion",
+      "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
+      "actUnavailable": "Für diesen Agenten noch nicht verfügbar."
+    },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
     "stateEnabled": "Aktiviert",
     "stateDisabled": "Deaktiviert",
+    "runningBadge": {
+      "running": "Läuft",
+      "notRunning": "Läuft nicht"
+    },
+    "reenableNote": "Wiederhergestellt, aber ausgeschaltet. Prüfen Sie zuerst die Richtlinie, bevor Sie ihn einschalten.",
+    "chipLabels": {
+      "kind": "Art",
+      "ownership": "Zugehörigkeit",
+      "mode": "Modus",
+      "running": "Status",
+      "lastRunStatus": "Ergebnis des letzten Laufs"
+    },
+    "lastRun": {
+      "never": "Nie ausgeführt",
+      "at": "Letzte Ausführung {{at}}"
+    },
+    "disableDialog": {
+      "title": "{{name}} deaktivieren?",
+      "message": "Künftige Ausführungen werden gestoppt, angehängte Zeitpläne lösen nicht mehr aus, und Organisations-Überschreibungen dieses Agenten gelten nicht mehr. Eine bereits laufende Ausführung läuft bis zu ihrem Zeitlimit weiter.",
+      "retained": "Ausführungsverlauf und Nachweise bleiben erhalten. Sie können den Agenten später in der Liste der deaktivierten Agenten wieder aktivieren; er kommt ausgeschaltet zurück."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Speichern oder verwerfen Sie den bearbeiteten Zeitplan, bevor Sie diesen Editor schließen.",
+      "discardTitle": "Nicht gespeicherten Zeitplan verwerfen?",
+      "discardMessage": "Der bearbeitete Zeitplan wurde nicht gespeichert. Beim Schließen des Editors gehen diese Änderungen verloren. Der Agent selbst bleibt unverändert.",
+      "discardConfirm": "Zeitplan verwerfen"
+    },
+    "disabledSection": {
+      "title": "Deaktiviert",
+      "hint": "Wegen ihres Ausführungsverlaufs aufbewahrt. Ein wieder aktivierter Agent kommt ausgeschaltet zurück, sodass Sie seine Richtlinie prüfen können, bevor er erneut läuft.",
+      "disabledAt": "Deaktiviert am {{at}}"
+    },
+    "allDisabled": {
+      "title": "Alle Agenten sind deaktiviert",
+      "description": "Es läuft gerade nichts.",
+      "reenableCta": "Einen Agenten wieder aktivieren"
+    },
     "errors": {
       "load": "Agenten konnten nicht geladen werden.",
       "kindExists": "Für diesen Eigentümer existiert bereits ein Agent dieser Art. Bearbeiten Sie den vorhandenen oder deaktivieren Sie ihn zuerst.",
@@ -1416,7 +1610,8 @@
       "actMissingRecipient": "Fügen Sie mindestens einen Benachrichtigungsempfänger hinzu, bevor Sie den Handlungsmodus aktivieren.",
       "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren.",
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Dieser Agent ist bereits aktiv."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1424,19 +1619,24 @@
       "save": "Speichern",
       "cancel": "Abbrechen",
       "disable": "Deaktivieren",
-      "confirmDisable": "Deaktivierung bestätigen"
+      "confirmDisable": "Deaktivierung bestätigen",
+      "reenable": "Wieder aktivieren",
+      "runs": "Ausführungen"
     },
     "toasts": {
       "saved": "Agent gespeichert",
       "saveFailed": "Der Agent konnte nicht gespeichert werden.",
       "disabled": "Agent deaktiviert",
-      "disableFailed": "Der Agent konnte nicht deaktiviert werden."
+      "disableFailed": "Der Agent konnte nicht deaktiviert werden.",
+      "reenabled": "Agent wieder aktiviert",
+      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden."
     },
     "issues": {
       "name": "Geben Sie dem Agenten einen Namen.",
       "severities": "Wählen Sie mindestens einen Schweregrad aus.",
       "org": "Wählen Sie eine Organisation aus, bevor Sie einen organisationseigenen Agenten anlegen.",
-      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten."
+      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten.",
+      "unsavedSchedule": "Sie haben einen nicht gespeicherten Zeitplan. Speichern oder verwerfen Sie ihn, bevor Sie den Agenten speichern."
     },
     "editor": {
       "newTitle": "Neuer Agent",
@@ -1449,8 +1649,11 @@
     "sections": {
       "scope": "Wann er ausgeführt wird",
       "permissions": "Berechtigungen",
+      "permissionsDescription": "Worauf dieser Agent zugreifen darf. Die Werkzeugliste erweitert seine Möglichkeiten; geschützte Ressourcen schränken sie ein und haben immer Vorrang.",
       "policyDecide": "Unbeaufsichtigte Richtlinienautorisierung",
       "limits": "Grenzwerte",
+      "limitsBudget": "Budget und Reichweite",
+      "limitsTiming": "Zeitverhalten",
       "notifications": "Benachrichtigungen",
       "instructions": "Anweisungen"
     },
@@ -1500,15 +1703,54 @@
       "maxFleetPercentPerDay": "Max. Flottenanteil pro Tag (%)",
       "cooldownSeconds": "Abkühlzeit pro Gerät (Sekunden)",
       "recipientRolesHint": "Rollen, die benachrichtigt werden, wenn dieser Agent etwas vorschlägt.",
+      "recipientRolesPartner": "Partner-Rollen",
+      "recipientRolesOrganization": "Organisationsrollen",
       "recipientRolesEmpty": "Keine Rollen verfügbar.",
       "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
       "charactersLeft": "Noch {{count}} Zeichen",
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
+      "supervisedActionKeysCeilingSummary_one": "Obergrenze für Organisationen — {{count}} Schlüssel",
+      "supervisedActionKeysCeilingSummary_other": "Obergrenze für Organisationen — {{count}} Schlüssel",
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
-      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene"
+      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
+      "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
+      "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
+      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
+      "toolSuggestLabel": "Bekanntes Werkzeug hinzufügen",
+      "toolSuggestHint": "Die Vorschläge stammen aus dem Register richtlinienentscheidbarer Aktionen und sind nicht die vollständige Werkzeugliste. Alles andere, was dieser Agent nutzen darf, kann oben weiterhin eingetippt werden.",
+      "toolSuggestAdd": "Hinzufügen"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Dienste",
+        "manage_startup_items": "Autostartelemente",
+        "manage_scheduled_tasks": "Geplante Aufgaben",
+        "security_scan": "Sicherheitsscan"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Einen Dienst starten",
+          "stop": "Einen Dienst stoppen",
+          "restart": "Einen Dienst neu starten"
+        },
+        "manage_startup_items": {
+          "disable": "Ein Autostartelement deaktivieren",
+          "enable": "Ein Autostartelement aktivieren"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Eine geplante Aufgabe ausführen",
+          "disable": "Eine geplante Aufgabe deaktivieren",
+          "enable": "Eine geplante Aufgabe aktivieren"
+        },
+        "security_scan": {
+          "quarantine": "Eine Bedrohung isolieren",
+          "remove": "Eine Bedrohung entfernen",
+          "restore": "Eine Bedrohung wiederherstellen"
+        }
+      }
     },
     "loading": "Agenten werden geladen …",
     "runs": {
@@ -1525,8 +1767,6 @@
         "status": "Status",
         "trigger": "Auslöser",
         "verdict": "Ergebnis",
-        "queued": "Eingereiht",
-        "finished": "Beendet",
         "cost": "Kosten"
       },
       "statuses": {
@@ -1714,6 +1954,29 @@
         "draftKinds": {
           "reply": "Antwortentwurf",
           "resolutionNote": "Entwurf der Lösungsnotiz"
+        },
+        "skippedTitle": "Nicht übernommen",
+        "skipped": {
+          "item": {
+            "fields": "Feldaktualisierungen",
+            "link": "Geräteverknüpfung",
+            "note": "Private Notiz",
+            "draftReply": "Antwortentwurf",
+            "draftResolution": "Entwurf der Lösungsnotiz"
+          },
+          "reason": {
+            "noFieldsProposed": "Es wurden keine Felder vorgeschlagen.",
+            "belowConfidenceFloor": "Die Konfidenz lag unter dem Schwellenwert für eine automatische Übernahme.",
+            "humanSet": "Dieses Feld wurde bereits von einer Person gesetzt.",
+            "noDeviceProposed": "Es wurde kein Gerät vorgeschlagen.",
+            "deviceAlreadyLinked": "Dem Ticket ist bereits ein Gerät zugeordnet.",
+            "noDraftReply": "Es wurde keine Antwort vorgeschlagen.",
+            "noDraftResolution": "Es wurde keine Lösungsnotiz vorgeschlagen.",
+            "resolutionNoteExists": "Das Ticket hat bereits eine Lösungsnotiz.",
+            "maxActionsPerRun": "Das Aktionslimit des Laufs wurde zuerst erreicht.",
+            "intentError": "Das Erstellen der Änderung ist fehlgeschlagen.",
+            "ticketNotFound": "Das Ticket konnte nicht gefunden werden."
+          }
         }
       }
     },
@@ -1730,6 +1993,7 @@
       "refresh": "Aktualisieren",
       "refreshing": "Wird neu aufgebaut…",
       "retry": "Erneut versuchen",
+      "moreActions": "Weitere Aktionen",
       "errors": {
         "load": "Der Wirkungsbericht konnte nicht geladen werden.",
         "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden.",
@@ -1742,6 +2006,15 @@
         "rebuildComplete": "Der Wirkungsbericht wurde neu aufgebaut.",
         "rebuildStillRunning": "Der Neuaufbau läuft noch. Laden Sie diese Seite in einigen Minuten neu, um die neuen Zahlen zu sehen."
       },
+      "emptyState": {
+        "title": "Noch keine KI-Ergebnisse in diesem Zeitraum",
+        "description": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Erweitern Sie oben den Berichtszeitraum, oder richten Sie einen Agenten ein, um loszulegen.",
+        "action": "Agenten einrichten"
+      },
+      "tileGroups": {
+        "judged": "Bewertet",
+        "executed": "Ausgeführt"
+      },
       "tiles": {
         "alertsJudged": "Bewertete Warnmeldungen",
         "noiseFlagged": "Als Rauschen markiert",
@@ -1749,9 +2022,12 @@
         "draftsSent": "Gesendete Entwürfe",
         "fixesExecuted": "Ausgeführte Behebungen",
         "promoteEligible": "Für Freigabe geeignete Vorgänge",
-        "promoteEligibleHint": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
+        "promoteEligibleCaption": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
         "estTimeSaved": "Geschätzte Zeitersparnis",
-        "estTimeSavedValue": "{{hours}} Std.",
+        "estTimeSavedValue_one": "{{hours}} Std.",
+        "estTimeSavedValue_other": "{{hours}} Std.",
+        "estTimeSavedCaption": "Basierend auf festen Zeitwerten pro Ergebnis — zum Anpassen Gewichtungen bearbeiten.",
+        "howEstimatedToggle": "Wie wird das geschätzt?",
         "llmSpend": "LLM-Ausgaben"
       },
       "weightsTooltipTitle": "Nur eine Schätzung — jedem Ergebnis wird ein fester Zeitwert gutgeschrieben:",
@@ -1784,20 +2060,30 @@
           "llmSpend": "LLM-Ausgaben"
         }
       },
+      "freshnessLabel": "Aktualität der Daten",
       "freshness": "Daten bis {{through}} (UTC) · neu aufgebaut {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Daten bis {{through}} (UTC) · nie neu aufgebaut",
+      "freshnessNeverRebuilt": "Noch nicht erstellt — der erste Neuaufbau läuft heute Nacht",
       "positiveFeedbackRate": "Quote positiver Rückmeldungen",
       "positiveFeedbackDetail": "{{up}} hilfreich, {{down}} nicht hilfreich",
       "editWeights": "Gewichtungen bearbeiten",
       "exportPdf": "Als PDF exportieren",
       "weightsDrawer": {
         "title": "Gewichtungen für Zeitersparnis bearbeiten",
-        "description": "Legen Sie fest, wie viele Sekunden menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "description": "Legen Sie fest, wie viele Minuten menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "unitSuffix": "Min.",
+        "rangeHint": "Geben Sie einen Wert zwischen {{min}} und {{max}} Minuten ein.",
+        "defaultValue": "Standard {{minutes}} Min.",
+        "preview": "Geschätzte Zeitersparnis in diesem Zeitraum: {{from}} → {{to}}",
+        "noOutcomesPreview": "Keine Ergebnisse in diesem Zeitraum zur Vorschau",
         "save": "Speichern",
         "saving": "Wird gespeichert…",
         "reset": "Auf Standardwerte zurücksetzen",
         "resetting": "Wird zurückgesetzt…",
         "customized": "Angepasst",
+        "resetConfirm": {
+          "title": "Gewichtungen auf Standardwerte zurücksetzen?",
+          "message": "Alle sechs Gewichtungen werden auf ihre Standardwerte zurückgesetzt, und die geschätzte Zeitersparnis auf dieser Seite ändert sich entsprechend."
+        },
         "errors": {
           "save": "Die Gewichtungen konnten nicht gespeichert werden.",
           "reset": "Die Gewichtungen konnten nicht zurückgesetzt werden."
@@ -1825,7 +2111,7 @@
           "through": "Daten bis (UTC)",
           "rebuiltAt": "Zuletzt neu erstellt"
         },
-        "weightRowLabel": "{{label}} (angerechnete Sekunden)",
+        "weightRowLabel": "{{label}} (angerechnete Minuten)",
         "neverRebuilt": "Nie neu erstellt"
       }
     },
@@ -1835,6 +2121,8 @@
       "loading": "Nachweise werden geladen…",
       "error": "Die Nachweise konnten nicht geladen werden.",
       "retry": "Erneut versuchen",
+      "noBaselineTitle": "Noch kein Basis-Agent",
+      "noBaseline": "Die Nachverfolgung der Freigabestufen beginnt erst, sobald ein partnerweiter Basis-Agent dieser Art existiert. Erstellen Sie einen mit dem Geltungsbereich „Alle Organisationen“, um die Nachweise für diese Organisation zu erfassen.",
       "orgRequired": "Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Nachweise zu sehen.",
       "empty": "Für diesen Agenten wurden noch keine Nachweise erfasst.",
       "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
@@ -1843,6 +2131,22 @@
       "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
       "promote": "Hochstufen",
+      "revoke": "Widerrufen",
+      "emptyTitle": "Noch keine Nachweise",
+      "demotedAt": "Widerrufen am {{at}}",
+      "demotedReason": "Grund: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "ein Versuch ist fehlgeschlagen",
+        "recurrence": "die behobene Warnung ist wieder aufgetreten",
+        "operator": "eine Bedienperson hat den Vorgang widerrufen"
+      },
+      "revokeConfirm": {
+        "title": "Vorabgenehmigung widerrufen",
+        "message": "{{opKey}} kehrt für den Agenten dieser Organisation in die Genehmigungswarteschlange zurück. Ein bereits laufender Durchlauf bleibt unberührt; jeder spätere braucht wieder eine menschliche Entscheidung.",
+        "action": "Widerrufen",
+        "reasonLabel": "Grund (optional)",
+        "reasonHint": "Wird im Prüfprotokoll dieses Widerrufs festgehalten. Bis zu 500 Zeichen."
+      },
       "verifiedOfThreshold": "{{verified}} von {{threshold}}",
       "columns": {
         "opKey": "Vorgang",
@@ -1873,11 +2177,17 @@
         "action": "Genehmigung anfordern"
       },
       "toasts": {
-        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe."
+        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe.",
+        "revoked": "Vorabgenehmigung widerrufen. Dieser Vorgang braucht ab dem nächsten Lauf wieder eine menschliche Entscheidung."
       },
       "errors": {
         "promote": "Der Antrag auf Vorabgenehmigung konnte nicht gestellt werden.",
-        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden."
+        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden.",
+        "revoke": "Die Vorabgenehmigung konnte nicht widerrufen werden.",
+        "noPromotedGrant": "Dieser Vorgang ist für diese Organisation nicht vorab genehmigt, es gibt also nichts zu widerrufen.",
+        "alreadyDemoted": "Dieser Vorgang ist bereits wieder in der Genehmigungswarteschlange.",
+        "alreadyRevoked": "Dieser Vorgang war bereits vom Agenten entfernt, es hat sich nichts geändert.",
+        "ambiguousOpKey": "Mehr als ein Agent hält diesen Vorgang für diese Organisation. Öffnen Sie den gewünschten Agenten und widerrufen Sie ihn dort."
       },
       "reliability": {
         "caption": "Vorgänge im Act-Modus, nur zur Ansicht: Sie sind keine Richtlinienschlüssel und können daher nie vorab genehmigt werden."
@@ -2112,7 +2422,7 @@
     "remove": "Entfernen",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Import aus URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG oder WebP bis zu 5 MB.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG oder JPEG, bis zu 5 MB.",
     "saveTheItemFirstThenAddAProductImage": "Speichern Sie zunächst den Artikel und fügen Sie dann ein Produktbild hinzu.",
     "thisItemIsABundle": "Bei diesem Artikel handelt es sich um ein Bundle",
     "groupsOtherCatalogItemsSoldTogether": "Gruppiert andere zusammen verkaufte Katalogartikel.",
@@ -3110,6 +3420,8 @@
     "archived": {
       "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
       "bannerWithDate": "Diese Organisation ist archiviert – die Löschung ist für {{date}} geplant. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "drainBanner": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und sie bleibt schreibgeschützt, bis der Vorgang abgeschlossen ist.",
+      "drainBannerWithDate": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und die Löschung ist für {{date}} geplant.",
       "restoreLink": "Diese Organisation wiederherstellen",
       "saveBlocked": "Diese Organisation ist archiviert und kann nicht bearbeitet werden. Stellen Sie sie zuerst wieder her."
     },
@@ -3145,6 +3457,8 @@
       "remoteAccessDescription": "VNC, Proxy, Tunnel",
       "eventLogs": "Ereignisprotokolle",
       "eventLogsDescription": "Weitergabe und Aufbewahrung",
+      "auditRetention": "Audit-Aufbewahrung",
+      "auditRetentionDescription": "Wie lange Audit-Protokolle aufbewahrt werden",
       "communications": "Kommunikation",
       "notifications": "Benachrichtigungen",
       "notificationsDescription": "E-Mail, Slack, Webhooks",
@@ -3647,12 +3961,14 @@
       "empty": "Keine archivierten Organisationen.",
       "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
       "badge": "Archiviert",
+      "archivingBadge": "Wird archiviert…",
       "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
       "purgeToday": "Wird heute endgültig gelöscht",
       "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
       "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
       "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
       "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
+      "drainNotice": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und sie bleibt schreibgeschützt, bis der Vorgang abgeschlossen ist. Stellen Sie sie wieder her, um dies abzubrechen und sie zurückzuholen.",
       "errors": {
         "fetch": "Archivierte Organisationen konnten nicht geladen werden"
       }
@@ -3804,6 +4120,12 @@
     "description": "Definieren Sie benutzerdefinierte Attribute, um zusätzliche Informationen zu Geräten zu verfolgen.",
     "searchPlaceholder": "Felder suchen...",
     "allTypes": "Alle Typen",
+    "allOrganizations": "Alle Organisationen",
+    "ownerScope": {
+      "legend": "Gilt für",
+      "allOrganizations": "Alle Organisationen (partnerweit)",
+      "thisOrganizationOnly": "Nur diese Organisation"
+    },
     "actions": {
       "add": "Benutzerdefiniertes Feld hinzufügen",
       "addFirst": "Fügen Sie Ihr erstes benutzerdefiniertes Feld hinzu",
@@ -3828,7 +4150,8 @@
     },
     "columns": {
       "key": "Schlüssel",
-      "deviceTypes": "Gerätetypen"
+      "deviceTypes": "Gerätetypen",
+      "scriptWrite": "Skript-Schreibzugriff"
     },
     "fieldTypes": {
       "text": {
@@ -3869,6 +4192,8 @@
       "fieldKey": "Feldschlüssel",
       "fieldKeyPlaceholder": "z. B. asset_tag",
       "fieldKeyHelp": "Wird in Filtern und API verwendet. Kann nach der Erstellung nicht mehr geändert werden.",
+      "fieldKeyScriptHelp": "Dieser Schlüssel wird von Skripten zum Lesen und Schreiben des Felds verwendet. Lesen: Binden Sie die Quelle eines Skriptparameters mit diesem Schlüssel an „Aus einem benutzerdefinierten Gerätefeld“. Schreiben: Lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen, um einen neuen Wert zu speichern.",
+      "fieldKeyScriptHelpAriaLabel": "Über die Verwendung dieses Felds in Skripten",
       "fieldType": "Feldtyp",
       "dropdownChoices": "Dropdown-Auswahl",
       "choiceLabel": "Etikett",
@@ -3880,7 +4205,9 @@
       "patternPlaceholder": "z. B. ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Gerätetypen (optional)",
       "deviceTypesHelp": "Leer lassen, um es auf allen Gerätetypen anzuzeigen",
-      "requiredField": "Erforderliches Feld"
+      "requiredField": "Erforderliches Feld",
+      "scriptWrite": "Skripten erlauben, dieses Feld zu beschreiben",
+      "scriptWriteHelp": "Skripte, die auf einem Gerät ausgeführt werden, können dieses Feld setzen, indem sie ::breeze:custom-fields:: {\"key\": \"value\"} ausgeben. Der Wert erscheint auch in der gespeicherten Ausgabe des Skripts – schreiben Sie damit niemals ein Geheimnis."
     },
     "delete": {
       "title": "Benutzerdefiniertes Feld löschen",

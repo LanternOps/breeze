@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Sparkles } from 'lucide-react';
@@ -217,7 +217,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // that helper's identity stays stable across ai-drafts refetches — see the
   // comment above openResolveForm for why that stability matters.
   const aiDraftsRef = useRef<TicketAiDraft[]>([]);
-  useEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
+  // Synced in a LAYOUT effect, not a passive one. openResolveForm reads this
+  // ref from a discrete event handler, and a passive effect is flushed in a
+  // later macrotask than the commit that painted the draft — so a status
+  // change fired in between (RTL's post-waitFor drain vs React's scheduler
+  // under CI load, or a fast user) saw the pre-fetch [] and opened the resolve
+  // form with an empty note. A layout effect runs inside the same commit, so
+  // there is no window in which the DOM shows the draft but the ref lacks it.
+  useLayoutEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
   // The resolution_note draft (if any) prefilled into the currently-open
   // resolve form; sent back as `aiDraftId` so the server consumes it in the
   // same transaction as the resolve CAS.
@@ -686,7 +693,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // only; the API 409s a resolution_note draft here (it's consumed only via
   // the resolve flow's aiDraftId, below).
   const sendAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    if (sendingDraftId || discardingDraftId) return;
+    // Scoped to this draft's own id — each draft card is an independent
+    // operation (#4469). Guarding on "any in-flight action" blocked acting on
+    // one card while the other was mid-request, even though the button
+    // itself wasn't visually disabled.
+    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
     const content = (draftContent[draft.id] ?? draft.content).trim();
     if (!content) return;
     setSendingDraftId(draft.id);
@@ -718,7 +729,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
 
   // Discards a draft (either kind) without acting on it.
   const discardAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    if (sendingDraftId || discardingDraftId) return;
+    // Scoped to this draft's own id — see sendAiDraft above (#4469).
+    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
     setDiscardingDraftId(draft.id);
     try {
       await runAction({
@@ -868,18 +880,31 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, [ticket]);
 
   const saveRequester = useCallback(() => {
+    if (!ticket) return;
+    let patch: Record<string, unknown>;
     if (reqSel && reqSel !== MANUAL_REQUESTER) {
       // Picked a portal user — send its name/email too so the local optimistic
       // patch shows the new requester immediately (the API backfills the same).
       const opt = requesters.find((r) => r.id === reqSel);
-      handleFieldSave({ submittedBy: reqSel, submitterName: opt?.name ?? null, submitterEmail: opt?.email ?? null });
+      patch = { submittedBy: reqSel, submitterName: opt?.name ?? null, submitterEmail: opt?.email ?? null };
     } else if (reqSel === MANUAL_REQUESTER) {
-      handleFieldSave({ submittedBy: null, submitterName: reqName.trim() || null, submitterEmail: reqEmail.trim() || null });
+      patch = { submittedBy: null, submitterName: reqName.trim() || null, submitterEmail: reqEmail.trim() || null };
     } else {
-      handleFieldSave({ submittedBy: null, submitterName: null, submitterEmail: null });
+      patch = { submittedBy: null, submitterName: null, submitterEmail: null };
     }
+    // Dirty check (#3258 W03). An emailed ticket has no portal login, so the
+    // editor opens on "someone else" with the snapshot pre-filled — opening it
+    // and saving without touching anything sent a full requester PATCH. That
+    // is not a cosmetic no-op: the API treats a requester edit as a statement
+    // about WHO the requester is, and the customer's own ticket disappeared
+    // from their portal. Send nothing when nothing changed.
+    const unchanged =
+      patch.submittedBy === (ticket.submittedBy ?? null) &&
+      patch.submitterName === (ticket.submitterName ?? null) &&
+      patch.submitterEmail === (ticket.submitterEmail ?? null);
+    if (!unchanged) handleFieldSave(patch);
     setEditingRequester(false);
-  }, [reqSel, reqName, reqEmail, requesters, handleFieldSave]);
+  }, [ticket, reqSel, reqName, reqEmail, requesters, handleFieldSave]);
 
   const handleEditComment = useCallback((commentId: string, content: string) => {
     void runAction({

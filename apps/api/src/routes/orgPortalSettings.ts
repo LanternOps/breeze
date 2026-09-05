@@ -7,6 +7,11 @@ import { requireMfa, requirePermission, requireScope, type AuthContext } from '.
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { updatePortalSettingsSchema } from '@breeze/shared';
+import {
+  PORTAL_VISIBILITY_FLAG_KEYS,
+  onPortalFlagsChanged,
+  type PortalVisibilityFlags
+} from '../services/portal/portalFlags';
 
 // Admin read/write for the org's customer-portal settings (portal_branding).
 // Registered onto orgRoutes so it inherits orgRoutes' authMiddleware
@@ -20,6 +25,11 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableAssetCheckout: false, // parked — see schema/portal.ts
   enableSelfService: true,
   enablePasswordReset: true,
+  enableDashboard: false,
+  enableSecurity: false,
+  enableBackups: false,
+  enableReports: false,
+  enableSupportUsage: false,
   supportEmail: null,
   supportPhone: null,
   welcomeMessage: null,
@@ -31,6 +41,11 @@ type PortalSettingsRow = {
   enableAssetCheckout: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
+  enableDashboard: boolean;
+  enableSecurity: boolean;
+  enableBackups: boolean;
+  enableReports: boolean;
+  enableSupportUsage: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -49,6 +64,11 @@ const portalSettingsColumns = () => ({
   enableAssetCheckout: portalBranding.enableAssetCheckout,
   enableSelfService: portalBranding.enableSelfService,
   enablePasswordReset: portalBranding.enablePasswordReset,
+  enableDashboard: portalBranding.enableDashboard,
+  enableSecurity: portalBranding.enableSecurity,
+  enableBackups: portalBranding.enableBackups,
+  enableReports: portalBranding.enableReports,
+  enableSupportUsage: portalBranding.enableSupportUsage,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
@@ -63,6 +83,11 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableAssetCheckout: row.enableAssetCheckout,
     enableSelfService: row.enableSelfService,
     enablePasswordReset: row.enablePasswordReset,
+    enableDashboard: row.enableDashboard,
+    enableSecurity: row.enableSecurity,
+    enableBackups: row.enableBackups,
+    enableReports: row.enableReports,
+    enableSupportUsage: row.enableSupportUsage,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
@@ -134,6 +159,10 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
         })
         .returning(portalSettingsColumns());
 
+      if (!row) {
+        return c.json({ error: 'Failed to persist portal settings' }, 500);
+      }
+
       writeRouteAudit(c, {
         orgId: org.id,
         action: 'organization.portal_settings.update',
@@ -141,6 +170,28 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
         resourceId: org.id,
         details: { changedFields: Object.keys(body) }
       });
+
+      const auth = c.get('auth') as AuthContext;
+      const requested = Object.fromEntries(
+        PORTAL_VISIBILITY_FLAG_KEYS
+          .filter((key) => (body as Record<string, unknown>)[key] !== undefined)
+          .map((key) => [key, (body as Record<string, unknown>)[key]])
+      ) as Partial<PortalVisibilityFlags>;
+
+      if (Object.keys(requested).length > 0) {
+        await onPortalFlagsChanged({
+          orgId: org.id,
+          createdBy: auth.user.id,
+          requested,
+          current: {
+            enableDashboard: row.enableDashboard,
+            enableSecurity: row.enableSecurity,
+            enableBackups: row.enableBackups,
+            enableReports: row.enableReports,
+            enableSupportUsage: row.enableSupportUsage
+          }
+        });
+      }
 
       return c.json({ data: toResponse(org.id, row) });
     }

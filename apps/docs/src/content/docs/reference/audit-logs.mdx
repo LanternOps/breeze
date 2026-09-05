@@ -145,8 +145,28 @@ Audit log retention is configured per organization in the `audit_retention_polic
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `retentionDays` | Integer | `365` | Number of days to retain audit logs |
-| `archiveToS3` | Boolean | `false` | Whether to archive logs to S3 before deletion |
+| `archiveToS3` | Boolean | `false` | Whether to archive logs to S3 before deletion (not yet implemented — the column is reserved) |
 | `lastCleanupAt` | Timestamp | null | When the last cleanup ran |
+
+**A fresh organization has no row in this table**, and the daily retention worker skips any organization without one — so audit logs accumulate indefinitely until a policy is set. Configure one from **Settings > Security & Access > Audit Retention** (requires the `audit:manage` permission, held by Org Admin by default), or directly via the API:
+
+```
+GET /orgs/organizations/{id}/audit-retention
+PUT /orgs/organizations/{id}/audit-retention
+Body: { "retentionDays": 365 }
+```
+
+The `GET` response includes `configured: false` when no row exists yet, so an integration can distinguish "365 days, actively enforced" from "365 shown as a suggested default, not actually pruning anything."
+
+For a self-hosted install running a version without this settings page, set it directly:
+
+```sql
+INSERT INTO audit_retention_policies (org_id, retention_days)
+VALUES ('<org-id>', 365)
+ON CONFLICT (org_id) DO NOTHING;
+```
+
+`org_id` is unique, so this is safe to re-run — it will not overwrite a policy that already exists. To change an existing value instead, use `UPDATE audit_retention_policies SET retention_days = <days> WHERE org_id = '<org-id>';`.
 
 ---
 

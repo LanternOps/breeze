@@ -6,6 +6,9 @@ import { recordAbuseSweepRun } from '../services/abuseMetrics';
 import { abuseSignalsEnabled, abuseSignalsExplicitlyDisabled } from '../config/env';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { processPartnerTrustJob, schedulePartnerTrustJobs } from './partnerTrustJobs';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import { shutdownIpClassifyQueue } from '../services/ipClassify';
 
 const ABUSE_QUEUE = 'abuse-signals';
 const SWEEP_JOB = 'abuse-sweep';
@@ -72,6 +75,8 @@ export function createAbuseSignalsWorker(): Worker<AbuseJobData> {
           await runAbuseDigest();
           return {};
         }
+        const partnerTrustResult = await processPartnerTrustJob(job);
+        if (partnerTrustResult !== undefined) return partnerTrustResult;
         console.warn(`[AbuseSignals] Unknown job name: ${job.name}`);
         return {};
       } catch (error) {
@@ -142,8 +147,10 @@ async function teardownAbuseRepeatables(): Promise<void> {
 }
 
 export async function initializeAbuseSignalsWorker(): Promise<void> {
+  const abuseEnabled = abuseSignalsEnabled();
+  const trustEnabled = partnerTrustMode() !== 'off';
   // Signup-abuse detection is hosted-only by default — see abuseSignalsEnabled().
-  if (!abuseSignalsEnabled()) {
+  if (!abuseEnabled && !trustEnabled) {
     // Repeat keys are SHARED Redis state, so removing them on the merely-
     // default-off path is a multi-replica hazard: one replica booting with an
     // unmapped IS_HOSTED (a real, documented failure — issue #570) would delete
@@ -169,8 +176,15 @@ export async function initializeAbuseSignalsWorker(): Promise<void> {
   }
   abuseWorker = createAbuseSignalsWorker();
   attachWorkerObservability(abuseWorker, 'abuseSignalsWorker');
-  await scheduleAbuseSignalsJobs();
-  console.log('[AbuseSignals] Sweep worker initialized');
+  if (abuseEnabled) {
+    await scheduleAbuseSignalsJobs();
+  } else if (abuseSignalsExplicitlyDisabled()) {
+    // Keep the shared queue open for partner-trust jobs, but ensure an
+    // explicit abuse-signals opt-out cannot leave its repeat jobs live.
+    await removeAbuseRepeatables(getAbuseSignalsQueue());
+  }
+  await schedulePartnerTrustJobs(getAbuseSignalsQueue());
+  console.log('[AbuseSignals] Abuse/partner-trust worker initialized');
 }
 
 export async function shutdownAbuseSignalsWorker(): Promise<void> {
@@ -182,4 +196,5 @@ export async function shutdownAbuseSignalsWorker(): Promise<void> {
     await abuseQueue.close();
     abuseQueue = null;
   }
+  await shutdownIpClassifyQueue();
 }

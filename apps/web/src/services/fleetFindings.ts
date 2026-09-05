@@ -126,7 +126,14 @@ interface RemediateRequestBase {
  *  `scriptId` and `commandType` is a 400 — this type makes that unbuildable
  *  rather than a runtime surprise. */
 export type RemediateRequest =
-  | (RemediateRequestBase & { actionKind: 'script'; scriptId: string })
+  | (RemediateRequestBase & {
+      actionKind: 'script';
+      scriptId: string;
+      /** Operator's launch-time override (#4888). Omitted = the script's own
+       *  saved default. `'elevated'` is save-time only and not a valid choice
+       *  here — the API 400s on it (see fleetFindings.ts's `.strict()` schema). */
+      runAs?: 'system' | 'user';
+    })
   | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
 export interface RemediationSkippedTarget {

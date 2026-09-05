@@ -241,23 +241,28 @@ describe('dynamic device group membership materialization', () => {
     expect(String((forged as { cause?: { message?: string } }).cause?.message))
       .toMatch(/row-level security/i);
 
-    // KNOWN GAP, asserted deliberately so it cannot change unnoticed: the
+    // GAP NOW CLOSED (#3182). This used to be asserted as a KNOWN GAP: the
     // `device_group_memberships` policies key on `org_id` ALONE
-    // (`breeze_has_org_access(org_id)`), and there is no composite FK tying
-    // (group_id, org_id) back to device_groups. So a foreign tenant that
-    // somehow learned the group's UUID can insert a row naming that group as
-    // long as it stamps its OWN org_id. What matters for tenant isolation is
-    // that such a row is quarantined: org A can never read it, so it can never
-    // surface as a member of org A's group. Closing the gap properly needs a
-    // composite FK + backfill and is tracked separately from this fix.
-    await withDbAccessContext(foreignContext, async () =>
+    // (`breeze_has_org_access(org_id)`), so a foreign tenant that somehow
+    // learned the group's UUID could insert a row naming that group as long as
+    // it stamped its OWN org_id — quarantined (org A could never read it), but
+    // structurally legal, and a cross-org device move produced exactly that
+    // shape through ordinary supported use. `device_group_memberships_group_org_fk`
+    // ((group_id, org_id) -> device_groups(id, org_id)) now rejects it outright,
+    // so the row never lands at all rather than landing unreadable.
+    const foreignStamped = await withDbAccessContext(foreignContext, async () =>
       db.insert(deviceGroupMemberships).values({
         groupId,
         deviceId: foreignDevice,
         orgId: foreign.orgId,
         addedBy: 'manual',
       }),
-    );
+    ).then(() => null, (err: Error) => err);
+    expect(
+      foreignStamped,
+      'a membership naming another org\'s group must be rejected by the composite FK, not merely quarantined (#3182)',
+    ).toBeInstanceOf(Error);
+    expect(JSON.stringify(foreignStamped)).toContain('device_group_memberships_group_org_fk');
 
     const visibleToOwner = await withDbAccessContext(
       {
@@ -274,7 +279,10 @@ describe('dynamic device group membership materialization', () => {
           .from(deviceGroupMemberships)
           .where(eq(deviceGroupMemberships.groupId, groupId)),
     );
-    expect(visibleToOwner.map((r) => r.deviceId)).not.toContain(foreignDevice);
+    expect(
+      visibleToOwner.map((r) => r.deviceId),
+      'the owner org still never sees the foreign device — now because the row was refused, not merely hidden',
+    ).not.toContain(foreignDevice);
 
     // And the group's own materialization never produced the foreign device.
     const rows = await membershipRows(groupId);

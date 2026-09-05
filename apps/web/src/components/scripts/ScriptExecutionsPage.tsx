@@ -35,6 +35,14 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   const [error, setError] = useState<string>();
   const [selectedExecution, setSelectedExecution] = useState<ScriptExecution | null>(null);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
+  // #4885 "Run again" — carries the clicked execution's device + parameters
+  // into the next open of the execute modal. Cleared on close so a later
+  // "Run Script" from the toolbar (not tied to any past execution) opens
+  // blank again.
+  const [runAgainSeed, setRunAgainSeed] = useState<{
+    deviceIds: string[];
+    parameters: Record<string, string | number | boolean>;
+  } | null>(null);
 
   const fetchScript = useCallback(async () => {
     try {
@@ -115,6 +123,23 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const handleCloseDetails = () => {
     setSelectedExecution(null);
+  };
+
+  // #4885 — re-open the execute flow pre-filled with this execution's device
+  // and the runtime parameters it was submitted with, instead of the operator
+  // re-picking both from scratch.
+  const handleRunAgain = (execution: ScriptExecution) => {
+    setSelectedExecution(null);
+    setRunAgainSeed({
+      deviceIds: [execution.deviceId],
+      parameters: execution.parameters ?? {}
+    });
+    setShowExecuteModal(true);
+  };
+
+  const handleCloseExecuteModal = () => {
+    setShowExecuteModal(false);
+    setRunAgainSeed(null);
   };
 
   const handleExecute = async (
@@ -206,7 +231,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         {script && (
           <button
             type="button"
-            onClick={() => setShowExecuteModal(true)}
+            onClick={() => { setRunAgainSeed(null); setShowExecuteModal(true); }}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Play className="h-4 w-4" />
@@ -259,6 +284,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           execution={selectedExecution}
           isOpen={true}
           onClose={handleCloseDetails}
+          onRunAgain={handleRunAgain}
         />
       )}
 
@@ -268,8 +294,10 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           script={script}
           sites={sites}
           isOpen={true}
-          onClose={() => setShowExecuteModal(false)}
+          onClose={handleCloseExecuteModal}
           onExecute={handleExecute}
+          initialDeviceIds={runAgainSeed?.deviceIds}
+          initialParameters={runAgainSeed?.parameters}
         />
       )}
     </div>

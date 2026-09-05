@@ -1,4 +1,4 @@
-import '@/lib/i18n';
+import { i18n } from '@/lib/i18n';
 
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -146,6 +146,141 @@ beforeEach(() => {
  * update schema accepted.
  */
 describe('DeviceGroupsPage static groups', () => {
+  describe('delete failures', () => {
+    const GROUP = { id: 'group-1', name: 'Existing', type: 'static', deviceIds: [], deviceCount: 0 };
+
+    it('shows the billing contracts from a 409 body in the delete modal', async () => {
+      const user = userEvent.setup();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          code: 'GROUP_IN_USE_BY_CONTRACTS',
+          contractCount: 2,
+          contracts: [
+            { id: 'c1', name: 'Acme MSA', status: 'active' },
+            { id: 'c2', name: 'Beta', status: 'draft' },
+          ],
+        }),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+
+      const expected = i18n.t('devices:deviceGroupsPage.billedByContracts', {
+        count: 2,
+        names: 'Acme MSA, Beta',
+      });
+      expect(await screen.findByText(expected)).toHaveRole('alert');
+    });
+
+    it('shows the quote numbers from a 409 body in the delete modal', async () => {
+      const user = userEvent.setup();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          code: 'GROUP_IN_USE_BY_QUOTES',
+          quoteCount: 2,
+          quotes: [
+            { id: 'q1', quoteNumber: 'Q-41', status: 'draft' },
+            { id: 'q2', quoteNumber: 'Q-42', status: 'sent' },
+          ],
+        }),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+
+      const expected = i18n.t('devices:deviceGroupsPage.quotedByQuotes', {
+        count: 2,
+        names: 'Q-41, Q-42',
+      });
+      expect(await screen.findByText(expected)).toHaveRole('alert');
+    });
+
+    it('shows the quote count-only variant when the body has no quotes array', async () => {
+      const user = userEvent.setup();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 409,
+        json: async () => ({ code: 'GROUP_IN_USE_BY_QUOTES', quoteCount: 1 }),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+
+      expect(await screen.findByText(i18n.t('devices:deviceGroupsPage.quotedByQuotesCount', { count: 1 })))
+        .toHaveRole('alert');
+    });
+
+    it('shows separate contract and quote sentences when both block deletion', async () => {
+      const user = userEvent.setup();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          code: 'GROUP_IN_USE_BY_CONTRACTS',
+          contractCount: 1,
+          contracts: [{ id: 'c1', name: 'Acme MSA', status: 'active' }],
+          quoteCount: 1,
+          quotes: [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }],
+        }),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+
+      const contractsMessage = i18n.t('devices:deviceGroupsPage.billedByContracts', {
+        count: 1,
+        names: 'Acme MSA',
+      });
+      const quotesMessage = i18n.t('devices:deviceGroupsPage.quotedByQuotes', {
+        count: 1,
+        names: 'Q-42',
+      });
+      expect(await screen.findByText(`${contractsMessage} ${quotesMessage}`)).toHaveRole('alert');
+    });
+
+    it('shows the count-only variant when the body has no contracts array, and the generic message for other failures', async () => {
+      const user = userEvent.setup();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 409,
+        json: async () => ({ code: 'GROUP_IN_USE_BY_CONTRACTS', contractCount: 1 }),
+      } as unknown as Response);
+
+      const { unmount } = render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+      expect(await screen.findByText(i18n.t('devices:deviceGroupsPage.billedByContractsCount', { count: 1 })))
+        .toHaveRole('alert');
+
+      unmount();
+      vi.clearAllMocks();
+      serveGroups([GROUP], {
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Existing');
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+      await user.click(screen.getByRole('button', { name: 'Delete group' }));
+      expect(await screen.findByText(i18n.t('devices:deviceGroupsPage.failedToDeleteGroup'))).toHaveRole('alert');
+    });
+  });
+
   it('omits filterConditions and sends the selected devices when creating a static group', async () => {
     const user = userEvent.setup();
     serveGroups([{ id: 'group-1', name: 'Existing', type: 'static', deviceIds: [], deviceCount: 0 }]);

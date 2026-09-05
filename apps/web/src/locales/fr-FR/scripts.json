@@ -149,6 +149,7 @@
       "webhookSecret": "Secret du webhook (facultatif)",
       "mode": "Mode",
       "script": "Script",
+      "runAs": "Exécuter en tant que",
       "notificationChannel": "Canal de notification",
       "severity": "Gravité",
       "message": "Message",
@@ -281,7 +282,8 @@
       "partial": "Partiel",
       "running": "En cours",
       "pending": "En attente",
-      "skipped": "Ignoré"
+      "skipped": "Ignoré",
+      "cancelled": "Annulée"
     },
     "empty": "Aucun historique d’exécution disponible.",
     "triggeredBy": {
@@ -618,8 +620,33 @@
       "stdout": "Sortie standard (stdout)",
       "stderr": "Erreur standard (stderr)"
     },
+    "customFields": {
+      "title": "Écritures de champs personnalisés",
+      "applied": "Appliquées",
+      "rejected": "Rejetées",
+      "none": "Aucune",
+      "reasons": {
+        "unknown_field": "Aucune définition de champ correspondante",
+        "not_script_writable": "Le champ n'est pas modifiable par script",
+        "not_applicable_to_device": "Le champ ne s'applique pas à ce type d'appareil",
+        "device_not_found": "Appareil introuvable",
+        "invalid_type": "La valeur est du mauvais type",
+        "out_of_range": "La valeur est hors plage",
+        "not_a_choice": "La valeur ne fait pas partie des choix autorisés du champ",
+        "too_long": "La valeur est trop longue",
+        "invalid_date": "La valeur n'est pas une date valide",
+        "marker_unparseable": "Le marqueur n'a pas pu être analysé comme JSON",
+        "too_many_lines": "Trop de lignes de marqueur dans cette exécution",
+        "too_many_keys": "Trop de clés dans le marqueur",
+        "marker_too_large": "Le marqueur a dépassé la limite de taille",
+        "forbidden_key": "La clé n'est pas autorisée",
+        "envelope_unparseable": "Le résultat structuré n'a pas pu être analysé",
+        "envelope_unsupported_version": "Le résultat structuré utilise une version non prise en charge"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Copier dans le presse-papiers"
+      "copyToClipboard": "Copier dans le presse-papiers",
+      "runAgain": "Exécuter à nouveau"
     },
     "title": "Détails d’exécution",
     "statusDescription": {
@@ -627,20 +654,31 @@
       "completed": "Script terminé avec succès",
       "failed": "Échec de l’exécution du script",
       "timeout": "Délai d’exécution du script dépassé",
-      "pending": "Le script attend son exécution"
+      "pending": "Le script attend son exécution",
+      "queued": "Le script est en file d'attente pour être envoyé à l'appareil",
+      "cancelling": "Arrêt demandé — en attente de confirmation de l'appareil.",
+      "cancelled": "Le script a été arrêté sur l'appareil"
     },
     "fields": {
       "startedAt": "Démarré le",
       "duration": "Durée",
       "exitCode": "Code de sortie",
-      "completedAt": "Terminé le"
+      "completedAt": "Terminé le",
+      "runAs": "Contexte d’exécution"
     },
     "status": {
       "running": "En cours…",
       "pending": "En attente",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
     }
   },
   "executionHistory": {
@@ -661,7 +699,14 @@
       "running": "En cours…",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -762,7 +807,8 @@
     "errors": {
       "fetch": "Impossible de récupérer le script",
       "generic": "Une erreur est survenue",
-      "save": "Impossible d’enregistrer le script"
+      "save": "Impossible d’enregistrer le script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "created": "Script créé",
@@ -772,6 +818,7 @@
     "actions": {
       "backToScripts": "Retour aux scripts",
       "executionHistory": "Historique d’exécution",
+      "duplicate": "Dupliquer",
       "create": "Créer le script",
       "saveChanges": "Enregistrer les modifications"
     },
@@ -1035,6 +1082,8 @@
       "variablePlaceholder": "p. ex. vendor_token",
       "fieldLabel": "Clé du champ personnalisé",
       "fieldPlaceholder": "p. ex. asset_tag",
+      "fieldHelp": "Saisissez la Clé du champ affichée dans Paramètres → Champs personnalisés (sensible à la casse). Lecture : une fois liée, la valeur résolue est transmise au script comme un paramètre normal — aucune invite n’est affichée. Écriture : pour enregistrer une nouvelle valeur, faites appeler par le script l’API des champs personnalisés de l’appareil avec une requête PATCH et une clé API.",
+      "fieldHelpAriaLabel": "À propos de la liaison du champ personnalisé de l’appareil",
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
       "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",
@@ -1080,6 +1129,7 @@
     "actions": {
       "runTitle": "Exécuter le script",
       "editTitle": "Modifier le script",
+      "duplicateTitle": "Dupliquer le script",
       "deleteTitle": "Supprimer le script"
     },
     "pagination": {
@@ -1200,7 +1250,8 @@
       "delete": "Impossible de supprimer un script",
       "deleteTryAgain": "Impossible de supprimer le script. Veuillez réessayer.",
       "alreadyInLibrary": "\"{{name}}\" est déjà dans votre bibliothèque",
-      "import": "Impossible d’importer un script"
+      "import": "Impossible d’importer un script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "deleting": "Suppression de \"{{name}}\"...",
@@ -1287,6 +1338,8 @@
     "offlineWarning": "L'appareil sélectionné est hors ligne — l'exécution attendra sa reconnexion.",
     "exitCode": "sortie {{code}}",
     "viewHistory": "Voir l'historique",
+    "runAgain": "Exécuter à nouveau",
+    "viewOnDevice": "Voir sur l'appareil",
     "status": {
       "pending": "En attente",
       "running": "En cours",
@@ -1294,7 +1347,8 @@
       "failed": "Échouée",
       "timeout": "Délai expiré",
       "queued": "En file",
-      "cancelled": "Annulée"
+      "cancelled": "Annulée",
+      "cancelling": "Arrêt en cours…"
     },
     "errors": {
       "execute": "Impossible de démarrer l'exécution de test",

@@ -26,7 +26,7 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`microsoft`** | Windows Update patches sourced from Microsoft, including cumulative updates, security fixes, and optional feature updates |
 | **`apple`** | macOS and iOS system updates distributed through Apple Software Update |
 | **`linux`** | Distribution packages managed via the native package manager (apt, yum, dnf, zypper, etc.) |
-| **`third_party`** | Updates for non-OS applications (browsers, runtimes, productivity tools) detected via winget on Windows devices. Enriched with vendor metadata and CVE data through the [Third-Party Package Catalog](#third-party-application-patching) |
+| **`third_party`** | Updates for non-OS applications (browsers, runtimes, productivity tools) detected via winget and Chocolatey on Windows devices, and Homebrew on macOS devices. Enriched with vendor metadata and CVE data through the [Third-Party Package Catalog](#third-party-application-patching) |
 | **`custom`** | Internally published updates distributed through Breeze's custom patch channel |
 
 ### Severity Levels
@@ -62,9 +62,11 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 
 ## Third-Party Application Patching
 
-Beyond operating-system updates, Breeze patches third-party applications detected via **winget** on Windows devices — browsers, runtimes, and productivity tools such as Chrome, Firefox, Edge, Zoom, Teams, Git, Node.js, Python, and Visual Studio Code. These patches flow through the same approval, deployment, and rollback workflow as OS patches.
+Beyond operating-system updates, Breeze patches third-party applications — browsers, runtimes, and productivity tools such as Chrome, Firefox, Edge, Zoom, Teams, Git, Node.js, Python, and Visual Studio Code. Detection uses **winget** and **Chocolatey** on Windows devices and **Homebrew** on macOS devices. These patches flow through the same approval, deployment, and rollback workflow as OS patches. On macOS, the Homebrew engine upgrades formulae and casks and runs `brew cleanup --prune=all` after a batch of upgrades to prune outdated kegs and cached downloads instead of leaving that to Homebrew's own periodic cleanup.
 
-### How Windows Third-Party Patching Runs
+### How Windows Third-Party Patching Runs (winget)
+
+The detail below documents the winget execution path specifically. Chocolatey (Windows) and Homebrew (macOS) are separate providers under the same `third_party` source; both are agent-driven, but their exact scope and privilege model are provider-specific and not detailed on this page.
 
 The Breeze agent runs winget directly, in the agent's own **SYSTEM** process, against **machine scope** — there is no dependency on a user being logged in, and no separate helper process in the loop. Scanning, installing, and uninstalling third-party patches all happen the same way regardless of whether anyone is signed in to the device, consistent with how OS patches are already applied.
 
@@ -393,11 +395,42 @@ Content-Type: application/json
 | `scheduleDayOfMonth` | integer | For monthly schedules: day 1–28 |
 | `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, `always`, or `maintenance_window` |
 | `rebootDelayMinutes` | integer | How long the logged-in user is warned before a post-patch reboot fires (1–1440 minutes). Default: `15` |
+| `rebootAllowDeferral` | boolean | Let the signed-in user postpone a Breeze-scheduled restart. **Default: `false`** — with it off, the reboot behaves exactly as it always has (warn, then restart). There is no switch to suppress the warning itself; at least one warning always fires. Supported on Windows, macOS and Linux; on Linux the dialog is drawn by the agent itself and needs `zenity` installed plus a signed-in graphical session (see [What the end user sees](#what-the-end-user-sees)) |
+| `rebootMaxDeferrals` | integer | How many times one user may postpone a single restart before it proceeds (0–10). Must be at least `1` when `rebootAllowDeferral` is on. Default: `3` |
+| `rebootDeferralMinutes` | integer | How far each postponement pushes the restart out (5–1440 minutes). Default: `60`. `rebootDelayMinutes + rebootMaxDeferrals × rebootDeferralMinutes` may not exceed `10080` (7 days) — that sum is the hard deadline the restart is measured against, and the agent refuses a restart scheduled further out than that |
 | `exclusiveWindowsUpdate` | boolean | **Manage Windows Update exclusively through Breeze.** When enabled, Breeze disables the device's native Windows Update automatic-install channel, so updates on that device only arrive through Breeze's approval rings and schedule — no unexpected OS-initiated installs or reboots outside your policy. Turning it back off restores Windows' native update behavior. **Windows-only** — has no effect on macOS or Linux devices. Default: `false` |
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
 When a device is assigned to an [update ring](#patch-scheduling-via-configuration-policies), the ring's approval rules take precedence over the policy-level auto-approve settings — the ring decides which severities and categories are approved (and after what deferral) for the devices it covers.
+
+#### End-user restart prompts
+
+When `rebootAllowDeferral` is on and a restart is scheduled while someone is signed in at a desktop, the early warnings appear as a native modal dialog instead of a passive toast: a system message box on Windows, a standard dialog on macOS, and a `zenity` dialog on Linux. The dialog offers two buttons, **Restart now** and **Postpone N minutes/hours** (the postpone label reflects `rebootDeferralMinutes`), and states how many postponements remain, e.g. "You can postpone this restart 2 more times."
+
+- **Postpone** pushes the restart out by the configured window (`rebootDeferralMinutes`), measured from the restart's currently scheduled time — not from the moment the user clicks — and is only available while postponements remain in the budget (`rebootMaxDeferrals`). Using up the full postponement budget lands the restart exactly on the deadline; it can never be pushed past it.
+- **Restart now** doesn't restart the machine instantly — it collapses the countdown to the shortest schedule Breeze allows, still showing the final "save your work" notice and still giving the OS a grace period before the session ends.
+- Doing nothing — closing the dialog or letting its countdown run out — changes nothing. The restart proceeds exactly as scheduled; silence never postpones and never accelerates it.
+
+The deadline is an absolute cutoff, not a second budget: once it passes, the restart proceeds regardless of how much postponement budget is left. Once the postponement budget is spent, or the deadline no longer leaves room to defer, no further dialog is shown: the remaining warnings go back to being plain notifications, and they say "This restart can no longer be postponed." The final warning, fired as the OS-owned countdown begins, never offers a postponement either — by that point the countdown belongs to the operating system, not Breeze.
+
+If nobody is signed in or the desktop prompt can't be delivered — a server sitting at the logon screen, a headless machine — there's no dialog. The restart proceeds on schedule and the existing warnings are unaffected; this is expected behavior, not a failure, and there's no setting to change it.
+
+##### On Linux
+
+Breeze ships no desktop helper for Linux, so the agent draws the restart dialog itself. It asks `systemd-logind` which graphical sessions are signed in and runs `zenity` **as that user**, inside that user's session — never as root. What that means in practice:
+
+- **`zenity` must be installed.** It ships with most GNOME and XFCE desktops; on a minimal install you may need `apt install zenity` / `dnf install zenity`. Without it the user still gets a desktop notification through `notify-send` — they are warned, they just can't postpone from it.
+- **Only local graphical sessions get the dialog.** X11 and Wayland sessions belonging to a signed-in user qualify. SSH and other remote sessions, text consoles, the display manager's own greeter, and sessions being torn down are all skipped — there is no local screen to draw on.
+- **Multiple signed-in users each get the dialog**, and the first answer decides for the machine; the other dialogs close by themselves.
+- **A headless Linux box behaves exactly as before.** No dialog, no error: the `shutdown -r +N` wall message that terminal sessions already receive remains the warning, and the restart happens on schedule.
+- **If the dialog can't reach the screen** — a stale X cookie, a compositor restarting — Breeze falls back to a desktop notification rather than assuming the user saw something. The worst case is a duplicate warning, never a silent restart.
+
+Note that this covers restarts that Breeze **schedules** — post-patch restarts. A restart triggered by a maintenance window's [Reboot if a reboot is pending](/features/maintenance-windows/#rebooting-devices-with-a-pending-reboot) setting is issued directly on Linux and is **not** postponable; it warns through `wall` only.
+
+**What a technician sees.** The device page shows a **Restart scheduled** badge (or **Restarting**, once the scheduled time has passed) whenever a restart is booked; hovering it shows what requested the restart — a patch installation, a maintenance window, or a technician — along with the scheduled time and deadline. When the resolved deferral budget for that restart is greater than zero, a second badge shows **Postponed N of M**, present from the moment the restart is scheduled (starting at `Postponed 0 of M`) rather than only after the first postponement; a restart with deferral off instead shows a **Cannot be postponed** badge. Neither deferral badge appears for a device running an agent built before this reporting existed, since that agent never sends a deferral budget at all.
+
+The settings that control all of this — `rebootAllowDeferral`, `rebootMaxDeferrals`, `rebootDeferralMinutes` — live on the Patch feature of a [Configuration Policy](#patch-scheduling-via-configuration-policies) (see [Patch settings fields](#patch-settings-fields) above) and default to **off**.
 
 #### Patch Sources
 

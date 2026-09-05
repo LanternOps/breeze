@@ -5,17 +5,60 @@ import { type TicketSummary } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, BTN_PRIMARY, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
-import { isTicketOpen, ticketStatusLabel, ticketStatusTone } from './ticketMarks';
+import {
+  isTicketOpen,
+  ticketSlaLabel,
+  ticketSlaTextClass,
+  ticketStatusLabel,
+  ticketStatusTone,
+} from './ticketMarks';
 
 interface TicketListProps {
   tickets: TicketSummary[];
   error?: string | null;
+  enableSupportUsage?: boolean;
 }
 
+/**
+ * The SLA state on a row that already carries a StatusMark. Quiet 12px text,
+ * never a second dot — the one-mark-per-row diet — and tinted only when the
+ * target is actually breached. Shared with TicketDetails so the ticket's SLA
+ * reads the same in the list and on its own page.
+ */
+export function TicketSlaBadge({
+  sla,
+  testId,
+  className,
+}: {
+  sla: TicketSummary['sla'];
+  testId: string;
+  className?: string;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      className={cn('text-xs font-medium', ticketSlaTextClass(sla.status), className)}
+    >
+      {ticketSlaLabel(sla.status)}
+    </span>
+  );
+}
 
-export function TicketList({ tickets, error }: TicketListProps) {
+const LEDE = "Tell us what you need — we'll take it from there.";
+
+export function TicketList({ tickets, error, enableSupportUsage = false }: TicketListProps) {
   if (error) {
-    return <ErrorNotice>{error}</ErrorNotice>;
+    // The page keeps its title even when the list does not load, and the notice
+    // names the recovery instead of leaking the transport error ("Internal
+    // Server Error") the customer cannot act on.
+    return (
+      <div data-testid="portal-tickets-error">
+        <PageHeader title="Support" lede={LEDE} />
+        <ErrorNotice>
+          We couldn&apos;t load your requests just now. Your IT team can help.
+        </ErrorNotice>
+      </div>
+    );
   }
 
   const openCount = tickets.filter((t) => isTicketOpen(t.status)).length;
@@ -24,7 +67,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
     <div>
       {/* No page-level "New ticket" here: the header quick action is on every
           page, and two identical primary buttons on one screen read as noise. */}
-      <PageHeader title="Support" lede="Tell us what you need — we'll take it from there." />
+      <PageHeader title="Support" lede={LEDE} />
 
       {tickets.length === 0 ? (
         <EmptyState icon={<Ticket className="h-10 w-10" strokeWidth={1.5} />} title="No tickets">
@@ -76,6 +119,15 @@ export function TicketList({ tickets, error }: TicketListProps) {
                       <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
+                      {/* Secondary line inside the SAME cell: the row still
+                          reads as one mark with a quiet note under it. */}
+                      {enableSupportUsage && ticket.sla && (
+                        <TicketSlaBadge
+                          sla={ticket.sla}
+                          testId={`portal-ticket-sla-${ticket.id}`}
+                          className="mt-1 block"
+                        />
+                      )}
                     </td>
                     <td className={cn(CELL, 'order-3')}>
                       {/* Priority is context, not state: plain text so the row

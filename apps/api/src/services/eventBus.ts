@@ -174,6 +174,14 @@ export type EventType =
   | 'ai.agent.run.completed'
   | 'ai.agent.run.failed'
   | 'ai.agent.run.skipped'
+  // #4205 — follow-up to #3828/PR #4168: the per-org circuit breaker
+  // (`agentCircuit.ts`'s `recordRunTerminal`) previously only fired a
+  // notification + audit row when it opened. Published from the SAME
+  // best-effort, outside-the-transaction fan-out as those two, right after
+  // the CAS-guarded open-transition UPDATE commits — so it shares their
+  // "opens exactly once per episode" guarantee. Payload:
+  // { agentId, orgId, triggeringRunId, consecutiveFailures, threshold }.
+  | 'ai.agent.circuit.opened'
   // #4388 — an org crossed an AI budget rung; org-level, no device/site.
   | 'ai.budget.threshold_crossed'
   // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
@@ -656,6 +664,8 @@ export const EVENT_TYPES = {
   AI_AGENT_RUN_COMPLETED: 'ai.agent.run.completed' as const,
   AI_AGENT_RUN_FAILED: 'ai.agent.run.failed' as const,
   AI_AGENT_RUN_SKIPPED: 'ai.agent.run.skipped' as const,
+  // #4205
+  AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' as const,
   // #4388
   AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' as const,
   // Wave 2 (#3823). Addressed to one user via publishUserEvent — never

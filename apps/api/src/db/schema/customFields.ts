@@ -20,6 +20,9 @@ export const customFieldDefinitions = pgTable('custom_field_definitions', {
   required: boolean('required').notNull().default(false),
   defaultValue: jsonb('default_value'),
   deviceTypes: text('device_types').array(),
+  // #2698: per-field opt-in for script write-back. Default false so no
+  // existing field silently becomes writable by any script that runs.
+  scriptWrite: boolean('script_write').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

@@ -1,0 +1,466 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { audit, publish, state, tryAutoPromote, dbUpdateChain } = vi.hoisted(() => {
+  const chain = {
+    set: vi.fn(() => chain),
+    where: vi.fn(() => chain),
+    returning: vi.fn(async () => [{ id: 'p1' }]),
+  };
+  return {
+    audit: vi.fn(async () => {}),
+    publish: vi.fn(async () => 1),
+    state: {
+      trustState: 'probation' as 'probation' | 'trusted' | 'restricted',
+      probationEnrollments: 0,
+      trustReviewRequestedAt: null as Date | null,
+    },
+    tryAutoPromote: vi.fn(async () => false),
+    dbUpdateChain: chain,
+  };
+});
+
+vi.mock('./auditService', () => ({ createAuditLog: audit }));
+vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ publish })) }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: vi.fn(() => 'enforce') }));
+vi.mock('../db', () => ({
+  // `update` backs the real-implementation writeTrust test below; every
+  // other test in this file goes through the mocked partnerTrust.repo and
+  // never touches it.
+  db: { update: vi.fn(() => dbUpdateChain) },
+  withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+}));
+vi.mock('./partnerTrust.repo', () => ({
+  readTrust: vi.fn(async () => state),
+  writeTrust: vi.fn(async () => 1),
+  partnerForDevice: vi.fn(async () => 'p1'),
+}));
+vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
+
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import {
+  evaluateCapability,
+  GATED_COMMAND_TYPES,
+  isLifecycleCommand,
+  LIFECYCLE_COMMAND_TYPES,
+  setTrustState,
+  unresolvedPartnerDecision,
+} from './partnerTrust';
+import { readTrust, writeTrust } from './partnerTrust.repo';
+
+function sourceFilesUnder(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(path);
+    return entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')
+      ? [path]
+      : [];
+  });
+}
+
+function addMatches(source: string, pattern: RegExp, commandTypes: Set<string>): void {
+  for (const match of source.matchAll(pattern)) {
+    const commandType = match[1];
+    if (commandType) commandTypes.add(commandType);
+  }
+}
+
+function dispatchedCommandTypeLiterals(): string[] {
+  const srcDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const commandTypes = new Set<string>();
+
+  for (const file of sourceFilesUnder(srcDirectory)) {
+    const source = readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+
+    // Direct command queue/execution calls whose command type is a string literal.
+    addMatches(
+      source,
+      /\b(?:queueCommand|queueCommandForExecution|executeCommand)\s*\(\s*[^,]+,\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+    // Direct agent sends with an inline command frame.
+    addMatches(
+      source,
+      /\bsendCommandToAgent\s*\(\s*[^,]+,\s*\{[\s\S]{0,2000}?\btype\s*:\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+    // Direct deviceCommands inserts whose type is a string literal.
+    addMatches(
+      source,
+      /\binsert\s*\(\s*deviceCommands\s*\)[\s\S]{0,2000}?\btype\s*:\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+
+    if (file.endsWith(`${join('services', 'commandQueue.ts')}`)) {
+      const constants = source.match(/export const CommandTypes\s*=\s*\{([\s\S]*?)\}\s*as const/);
+      expect(constants, 'CommandTypes constants object must remain discoverable').not.toBeNull();
+      addMatches(constants?.[1] ?? '', /:\s*['"]([a-z][a-z0-9_]*)['"]/g, commandTypes);
+    }
+  }
+
+  return [...commandTypes].sort();
+}
+
+function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedConstants: string[]; files: string[] } {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const heartbeatDirectory = join(repoRoot, 'agent', 'internal', 'heartbeat');
+  const toolsTypesFile = join(repoRoot, 'agent', 'internal', 'remote', 'tools', 'types.go');
+  const handlerFiles = readdirSync(heartbeatDirectory)
+    .filter((name) => /^handlers(?:_.*)?\.go$/.test(name) && !name.endsWith('_test.go'))
+    .map((name) => join(heartbeatDirectory, name));
+  const constantValues = new Map<string, string>();
+
+  for (const file of [toolsTypesFile, ...handlerFiles]) {
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/\b(Cmd[A-Za-z0-9_]+)\s*=\s*"([a-z][a-z0-9_]*)"/g)) {
+      if (match[1] && match[2]) constantValues.set(match[1], match[2]);
+    }
+  }
+
+  const referencedConstants = new Set<string>();
+  const commandTypes = new Set<string>();
+  for (const file of handlerFiles) {
+    const source = readFileSync(file, 'utf8');
+    // handlers.go contains the primary dispatcher map; handlers_*.go extend it in init().
+    const registryMap = source.match(
+      /var handlerRegistry\s*=\s*map\[string\]CommandHandler\s*\{([\s\S]*?)^\}/m,
+    )?.[1] ?? '';
+    addMatches(registryMap, /^\s*"([a-z][a-z0-9_]*)"\s*:/gm, commandTypes);
+    addMatches(source, /handlerRegistry\[\s*"([a-z][a-z0-9_]*)"\s*\]/g, commandTypes);
+    for (const registrySource of [registryMap, source]) {
+      const pattern = registrySource === registryMap
+        ? /^\s*(?:tools\.)?(Cmd[A-Za-z0-9_]+)\s*:/gm
+        : /handlerRegistry\[\s*(?:tools\.)?(Cmd[A-Za-z0-9_]+)\s*\]/g;
+      for (const match of registrySource.matchAll(pattern)) {
+        if (match[1]) referencedConstants.add(match[1]);
+      }
+    }
+  }
+
+  const unresolvedConstants = [...referencedConstants]
+    .filter((name) => !constantValues.has(name))
+    .sort();
+  for (const name of referencedConstants) {
+    const commandType = constantValues.get(name);
+    if (commandType) commandTypes.add(commandType);
+  }
+
+  return {
+    commandTypes: [...commandTypes].sort(),
+    unresolvedConstants,
+    files: [toolsTypesFile, ...handlerFiles],
+  };
+}
+
+beforeEach(() => {
+  audit.mockClear();
+  publish.mockClear();
+  tryAutoPromote.mockClear();
+  vi.mocked(writeTrust).mockClear();
+  vi.mocked(writeTrust).mockResolvedValue(1);
+  dbUpdateChain.set.mockClear();
+  dbUpdateChain.where.mockClear();
+  dbUpdateChain.returning.mockClear();
+  dbUpdateChain.returning.mockResolvedValue([{ id: 'p1' }]);
+  state.trustState = 'probation';
+  state.probationEnrollments = 0;
+  vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+});
+
+describe('setTrustState', () => {
+  it('publishes the new trust state after persisting it', async () => {
+    const result = await setTrustState('p1', 'trusted', 'review approved', 'user-1');
+
+    expect(result).toBe(true);
+    expect(writeTrust).toHaveBeenCalledWith('p1', 'trusted', 'review approved', 'user-1');
+    expect(publish).toHaveBeenCalledWith(
+      'partner-trust:changed',
+      JSON.stringify({ partnerId: 'p1', trustState: 'trusted' }),
+    );
+    expect(vi.mocked(writeTrust).mock.invocationCallOrder[0])
+      .toBeLessThan(publish.mock.invocationCallOrder[0]!);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.promoted' }));
+  });
+
+  it('passes expectedFrom through to writeTrust when supplied', async () => {
+    await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(writeTrust).toHaveBeenCalledWith('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+  });
+
+  it('returns false and skips the audit row and Redis publish when the CAS affects no rows', async () => {
+    vi.mocked(writeTrust).mockResolvedValueOnce(0);
+
+    const result = await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(result).toBe(false);
+    expect(publish).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('partnerTrust.repo writeTrust (real implementation)', () => {
+  it('affects zero rows when expectedFrom no longer matches the stored trust_state', async () => {
+    const { writeTrust: realWriteTrust } = await vi.importActual<typeof import('./partnerTrust.repo')>('./partnerTrust.repo');
+    dbUpdateChain.returning.mockResolvedValueOnce([]);
+
+    const affected = await realWriteTrust('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+
+    expect(affected).toBe(0);
+    expect(dbUpdateChain.where).toHaveBeenCalled();
+  });
+
+  it('affects one row when the CAS condition matches', async () => {
+    const { writeTrust: realWriteTrust } = await vi.importActual<typeof import('./partnerTrust.repo')>('./partnerTrust.repo');
+    dbUpdateChain.returning.mockResolvedValueOnce([{ id: 'p1' }]);
+
+    const affected = await realWriteTrust('p1', 'trusted', 'auto:settled_card_24h', null, 'probation');
+
+    expect(affected).toBe(1);
+  });
+});
+
+describe('evaluateCapability', () => {
+  it.each(['remote_control', 'device_execute', 'installer_distribute'] as const)(
+    'denies %s in probation',
+    async (cap) => {
+      const d = await evaluateCapability(cap, { partnerId: 'p1' });
+      expect(d).toMatchObject({ allow: false, code: 'TRUST_PROBATION', capability: cap });
+      expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'partner.trust.capability_denied',
+      }));
+    },
+  );
+
+  it('starts a lazy promotion attempt after auditing a probation denial', async () => {
+    await evaluateCapability('remote_control', { partnerId: 'p1' });
+
+    expect(tryAutoPromote).toHaveBeenCalledWith('p1');
+    expect(audit.mock.invocationCallOrder[0]).toBeLessThan(tryAutoPromote.mock.invocationCallOrder[0]!);
+  });
+
+  it('denies with TRUST_RESTRICTED when restricted', async () => {
+    state.trustState = 'restricted';
+    expect(await evaluateCapability('remote_control', { partnerId: 'p1' }))
+      .toMatchObject({ allow: false, code: 'TRUST_RESTRICTED' });
+    expect(tryAutoPromote).not.toHaveBeenCalled();
+  });
+
+  it('denies an unresolved partner in enforce mode and audits the denial', async () => {
+    vi.mocked(readTrust).mockResolvedValueOnce(null);
+
+    expect(await evaluateCapability('remote_control', { partnerId: 'missing-partner' })).toEqual({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'missing-partner',
+      result: 'denied',
+      details: expect.objectContaining({
+        code: 'TRUST_RESTRICTED',
+        reason: 'partner_unresolved',
+      }),
+    }));
+  });
+
+  it('allows everything when trusted and writes no audit row', async () => {
+    state.trustState = 'trusted';
+    expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it('allows enroll under the cap and denies at the cap', async () => {
+    state.probationEnrollments = 4;
+    expect(await evaluateCapability('agent_enroll', { partnerId: 'p1' })).toEqual({ allow: true });
+    state.probationEnrollments = 5;
+    expect(await evaluateCapability('agent_enroll', { partnerId: 'p1' }))
+      .toMatchObject({ allow: false, reason: 'probation_enrollment_cap' });
+  });
+
+  it('uses the row-locked enrollment count from detail when supplied', async () => {
+    state.probationEnrollments = 4;
+    expect(await evaluateCapability('agent_enroll', {
+      partnerId: 'p1',
+      detail: { probationEnrollments: 5 },
+    })).toMatchObject({ allow: false, reason: 'probation_enrollment_cap' });
+  });
+
+  it('writes only fixed, typed detail fields to denial audits', async () => {
+    await evaluateCapability('remote_control', {
+      partnerId: 'p1',
+      deviceId: 'device-1',
+      commandType: 'script',
+      detail: {
+        mode: 'forged',
+        capability: 'forged',
+        probationEnrollments: 5,
+        stage: 'dispatch',
+        via: 'api',
+        route: 'GET /enrollment-keys/:id/installer/:platform',
+        untrustedExtra: 'must-not-leak',
+      },
+    });
+
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      details: {
+        mode: 'enforce',
+        capability: 'remote_control',
+        code: 'TRUST_PROBATION',
+        reason: 'probation_default_deny',
+        deviceId: 'device-1',
+        commandType: 'script',
+        probationEnrollments: 5,
+        stage: 'dispatch',
+        via: 'api',
+        route: 'GET /enrollment-keys/:id/installer/:platform',
+      },
+    }));
+  });
+
+  it('lets lifecycle commands through device_execute even in probation', async () => {
+    expect(await evaluateCapability('device_execute', {
+      partnerId: 'p1',
+      commandType: 'self_uninstall',
+    })).toEqual({ allow: true });
+  });
+
+  it('shadow mode allows but records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    const d = await evaluateCapability('remote_control', { partnerId: 'p1' });
+    expect(d).toMatchObject({ allow: true, shadowDenied: { code: 'TRUST_PROBATION' } });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.capability_denied',
+      details: expect.objectContaining({ mode: 'shadow' }),
+    }));
+  });
+
+  it('shadow mode allows an unresolved partner and records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    vi.mocked(readTrust).mockResolvedValueOnce(null);
+
+    expect(await evaluateCapability('remote_control', { partnerId: 'missing-partner' })).toEqual({
+      allow: true,
+      shadowDenied: { code: 'TRUST_RESTRICTED', reason: 'partner_unresolved' },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({
+        mode: 'shadow',
+        reason: 'partner_unresolved',
+      }),
+    }));
+  });
+
+  it('off mode allows and touches nothing', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('unresolvedPartnerDecision', () => {
+  it('denies with TRUST_RESTRICTED under enforce and audits with no resourceId', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+
+    expect(await unresolvedPartnerDecision('remote_control')).toEqual({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.capability_denied',
+      resourceType: 'partner',
+      result: 'denied',
+      details: expect.objectContaining({
+        mode: 'enforce',
+        capability: 'remote_control',
+        code: 'TRUST_RESTRICTED',
+        reason: 'partner_unresolved',
+      }),
+    }));
+    const [firstCallArgs] = audit.mock.calls as unknown[][];
+    expect(firstCallArgs?.[0]).not.toHaveProperty('resourceId');
+  });
+
+  it('allows under shadow but records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+
+    expect(await unresolvedPartnerDecision('agent_enroll')).toEqual({
+      allow: true,
+      shadowDenied: { code: 'TRUST_RESTRICTED', reason: 'partner_unresolved' },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({ mode: 'shadow', capability: 'agent_enroll' }),
+    }));
+  });
+
+  it('allows and audits nothing when trust mode is off', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+
+    expect(await unresolvedPartnerDecision('device_execute')).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('command allowlist', () => {
+  const apiCommandTypes = dispatchedCommandTypeLiterals();
+  const agentDispatcher = agentDispatcherCommandTypes();
+  const realCommandTypes = [...new Set([...apiCommandTypes, ...agentDispatcher.commandTypes])].sort();
+
+  it('classifies every known command type exactly once', () => {
+    expect(
+      agentDispatcher.commandTypes.length,
+      `expected command types parsed from Go dispatcher files: ${agentDispatcher.files.join(', ')}`,
+    ).toBeGreaterThan(0);
+    expect(
+      agentDispatcher.unresolvedConstants,
+      'every Go dispatcher Cmd constant must resolve to a string value',
+    ).toEqual([]);
+    const lifecycle = new Set<string>(LIFECYCLE_COMMAND_TYPES);
+    const gated = new Set<string>(GATED_COMMAND_TYPES);
+    expect(LIFECYCLE_COMMAND_TYPES.filter((type) => gated.has(type))).toEqual([]);
+    for (const type of realCommandTypes) {
+      expect(
+        Number(lifecycle.has(type)) + Number(gated.has(type)),
+        `expected ${type} in exactly one command classification`,
+      ).toBe(1);
+      expect(isLifecycleCommand(type)).toBe(lifecycle.has(type));
+    }
+  });
+
+  it('keeps operator-directed commands gated and narrow lifecycle commands allowed', () => {
+    for (const type of [
+      'script',
+      'network_ping',
+      'network_tcp_check',
+      'network_http_check',
+      'network_dns_check',
+      'pam_apply_v2',
+      'apply_browser_policy',
+      'dev_update',
+      'snmp_poll',
+      'peripheral_policy_sync',
+      'peripheral_policy_sync_v2',
+      'filesystem_analysis',
+    ]) expect(isLifecycleCommand(type)).toBe(false);
+    for (const type of [
+      'self_uninstall',
+      'terminal_stop',
+      'wake_on_lan',
+      'pam_cleanup_v2',
+    ]) expect(isLifecycleCommand(type)).toBe(true);
+  });
+
+  it('an unknown command type is gated (fail closed)', () => {
+    expect(isLifecycleCommand('brand_new_command')).toBe(false);
+  });
+});

@@ -273,6 +273,99 @@ describe('PatchTab', () => {
     expect(input).toHaveValue(45);
   });
 
+  // #3207: end-user reboot deferral. Off by default — the budget fields only
+  // exist once an admin opts in, so the tab cannot imply a Postpone button that
+  // no device will ever show.
+  it('offers the deferral toggle, off, and hides the budget fields until it is on', async () => {
+    render(<PatchTab {...baseProps} />);
+    const toggle = await screen.findByTestId('patch-reboot-allow-deferral-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByTestId('patch-reboot-max-deferrals')).toBeNull();
+    expect(screen.queryByTestId('patch-reboot-deferral-minutes')).toBeNull();
+  });
+
+  it('shows max deferrals and the deferral window once enabled', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], rebootAllowDeferral: true },
+        }}
+      />
+    );
+    expect(await screen.findByTestId('patch-reboot-max-deferrals')).toHaveValue(3);
+    expect(screen.getByTestId('patch-reboot-deferral-minutes')).toHaveValue(60);
+  });
+
+  it('hides the whole deferral block when the reboot policy is never', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], rebootPolicy: 'never', rebootAllowDeferral: true },
+        }}
+      />
+    );
+    await screen.findByText('Reboot Policy');
+    expect(screen.queryByTestId('patch-reboot-allow-deferral-toggle')).toBeNull();
+    expect(screen.queryByTestId('patch-reboot-max-deferrals')).toBeNull();
+  });
+
+  it('hydrates the budget fields from stored values', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: {
+            sources: ['os'],
+            rebootAllowDeferral: true,
+            rebootMaxDeferrals: 2,
+            rebootDeferralMinutes: 30,
+          },
+        }}
+      />
+    );
+    expect(await screen.findByTestId('patch-reboot-max-deferrals')).toHaveValue(2);
+    expect(screen.getByTestId('patch-reboot-deferral-minutes')).toHaveValue(30);
+  });
+
+  it('persists the deferral settings in the save payload', async () => {
+    render(<PatchTab {...baseProps} />);
+    fireEvent.click(await screen.findByTestId('patch-reboot-allow-deferral-toggle'));
+    fireEvent.change(await screen.findByTestId('patch-reboot-max-deferrals'), {
+      target: { value: '5' },
+    });
+    fireEvent.change(screen.getByTestId('patch-reboot-deferral-minutes'), {
+      target: { value: '45' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.rebootAllowDeferral).toBe(true);
+    expect(payload.inlineSettings.rebootMaxDeferrals).toBe(5);
+    expect(payload.inlineSettings.rebootDeferralMinutes).toBe(45);
+  });
+
+  it('sends deferral off by default so an untouched policy keeps today’s behaviour', async () => {
+    render(<PatchTab {...baseProps} />);
+    await screen.findByTestId('patch-reboot-delay-minutes');
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.rebootAllowDeferral).toBe(false);
+  });
+
   describe('inline ring editor', () => {
     it('creates a ring inline, refetches, and auto-selects it', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {

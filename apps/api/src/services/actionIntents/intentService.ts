@@ -1,3 +1,4 @@
+import { buildActionLabel } from './actionLabel';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
@@ -122,7 +123,16 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
+  /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
   reason?: string;
+  /**
+   * Human headline for the approver — "Restart service "Spooler" on KIT".
+   * Distinct from `reason`: callers that pass a justification as `reason`
+   * (agent runs, ticket triage) must not have it surface as the action.
+   * Optional; falls back to the guardrail description, then a label built
+   * from the tool name + recognisable arguments (see actionLabel.ts).
+   */
+  actionLabel?: string;
   /**
    * 'ai_agent' (wave 3b) is valid ONLY for an ai_agent principal — and
    * required for one: createActionIntent enforces the pairing in both
@@ -463,6 +473,8 @@ interface HumanFanoutArgs {
   argumentDigest: string;
   requestingClientLabel: string;
   targetSummary: string;
+  /** Human headline for the approval row, push, and bell — never the raw signature. */
+  actionLabel: string;
   riskTier: 'medium' | 'high' | 'critical';
   impactSummary: string;
   expiresAt: Date;
@@ -499,6 +511,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     argumentDigest,
     requestingClientLabel,
     targetSummary,
+    actionLabel,
     riskTier,
     impactSummary,
     expiresAt,
@@ -517,7 +530,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
   const approvalRowFor = (userId: string) => ({
     userId,
     requestingClientLabel,
-    actionLabel: targetSummary,
+    actionLabel,
     actionToolName: toolName,
     actionArguments,
     riskTier,
@@ -623,6 +636,7 @@ interface NotifyFannedOutApproversArgs {
   fanOutUserIds: string[];
   requestingClientLabel: string;
   targetSummary: string;
+  actionLabel: string;
   /** Passed to `withDbAccessContext` for the push-token read only — the
    *  in-app notification always runs system-scoped (see the call below).
    *  `userId` on it may be null (agent-originated fan-out has no requester);
@@ -640,7 +654,7 @@ interface NotifyFannedOutApproversArgs {
  * have, instead of a second, drifting copy of this loop.
  */
 async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Promise<void> {
-  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, targetSummary, dbContext } = args;
+  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, actionLabel, dbContext } = args;
   for (let i = 0; i < approvalRequestIds.length; i++) {
     const approvalId = approvalRequestIds[i];
     const userId = fanOutUserIds[i];
@@ -661,7 +675,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
           type: 'approval',
           priority: 'high',
           title: 'Approval requested',
-          message: `${requestingClientLabel}: ${targetSummary}`,
+          message: `${requestingClientLabel}: ${actionLabel}`,
           link: '/approvals',
           metadata: { approvalId, intentId },
           // Survives outbox/BullMQ redelivery: one approver, one intent, one
@@ -686,7 +700,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
       const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
       await dispatchApprovalPushToTokens(tokens, {
         approvalId,
-        actionLabel: targetSummary,
+        actionLabel,
         requestingClientLabel,
       });
     } catch (err) {
@@ -1056,6 +1070,12 @@ export async function createActionIntent(
     );
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
+  // What the approver READS. `targetSummary` stays the audit signature.
+  const actionLabel = buildActionLabel({
+    toolName: input.toolName,
+    input: input.input,
+    reason: input.actionLabel ?? guardrail.description ?? null,
+  });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
@@ -1428,6 +1448,7 @@ export async function createActionIntent(
             argumentDigest,
             requestingClientLabel,
             targetSummary,
+            actionLabel,
             riskTier,
             impactSummary,
             expiresAt,
@@ -1543,6 +1564,7 @@ export async function createActionIntent(
       fanOutUserIds: creation.fanOutUserIds,
       requestingClientLabel,
       targetSummary,
+      actionLabel,
       dbContext,
     });
   }
@@ -1733,6 +1755,12 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       argumentDigest: updated.argumentDigest,
       requestingClientLabel: updated.requestingClientLabel ?? 'AI Agent',
       targetSummary: updated.targetSummary,
+      // The guardrail description is not persisted on the intent, so the
+      // deferred path rebuilds a label from the tool + arguments.
+      actionLabel: buildActionLabel({
+        toolName: updated.actionName,
+        input: updated.arguments as Record<string, unknown>,
+      }),
       riskTier: riskTierLabel(updated.riskTier),
       impactSummary: updated.impactSummary,
       // The SAME deadline creation stamped — not a freshly recomputed one; a
@@ -1785,6 +1813,10 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     fanOutUserIds: fanoutResult.fanOutUserIds,
     requestingClientLabel: intent.requestingClientLabel ?? 'AI Agent',
     targetSummary: intent.targetSummary,
+    actionLabel: buildActionLabel({
+      toolName: intent.actionName,
+      input: intent.arguments as Record<string, unknown>,
+    }),
     dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
   });
 }
@@ -1847,7 +1879,49 @@ export async function cancelActionIntent(
     throw new ActionIntentAuthorizationError(`Not authorized to cancel action intent ${intentId}`);
   }
 
-  const ok = await transitionIntent(intentId, ['pending_approval', 'approved'], 'cancelled');
+  // Inlined rather than reusing `transitionIntent` (the shared CAS primitive
+  // below): cancel is the only caller that needs an outbox row written
+  // atomically with the CAS, and `transitionIntent` is shared by
+  // intentReleaseWorker.ts / aiAgentSdk.ts release paths that don't. Same
+  // predicate transitionIntent would apply for this call
+  // (`from: ['pending_approval', 'approved']`, `to: 'cancelled'`, no deadline
+  // fold), just with the outbox write folded into the same
+  // withSystemDbAccessContext transaction (#4798) — without this, a
+  // requester already told "approved and is now running" was never told a
+  // subsequent cancel happened, because intentReleaseWorker.ts's outbox
+  // consumer never saw an event for it.
+  let ok: boolean;
+  try {
+    ok = await withSystemDbAccessContext(async () => {
+      const rows = await db
+        .update(actionIntents)
+        .set({ status: 'cancelled' })
+        .where(and(eq(actionIntents.id, intentId), inArray(actionIntents.status, ['pending_approval', 'approved'])))
+        .returning({ id: actionIntents.id });
+      if (rows.length === 0) return false;
+      await db.insert(intentOutbox).values({
+        intentId,
+        eventType: 'intent_cancelled',
+        // Ids only, no argument content (spec §3.2) — matches the
+        // intent_created/intent_approved/intent_rejected/intent_expired rows.
+        payload: { intentId, orgId: intent.orgId },
+      });
+      return true;
+    });
+  } catch (err) {
+    // Same posture as createActionIntent's transaction catch: the CAS and
+    // the outbox insert share one Postgres transaction (both run through the
+    // same withSystemDbAccessContext callback), so a thrown insert rolls the
+    // status flip back too — there is no committed 'cancelled' row with a
+    // missing outbox event to reconcile. Logged and re-thrown as a typed,
+    // retryable error rather than a bare exception so a caller (once wired
+    // to a route) sees a real failure, never a false success.
+    console.error('[intentService] cancel action intent transaction failed (rolled back):', err);
+    throw new ActionIntentError(
+      `Failed to cancel action intent ${intentId} (CAS / outbox)`,
+      'cancel_failed',
+    );
+  }
   if (ok) {
     return { ok: true, status: 'cancelled' };
   }

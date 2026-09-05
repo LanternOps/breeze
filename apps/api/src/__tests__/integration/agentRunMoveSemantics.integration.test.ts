@@ -36,6 +36,7 @@ import {
   alerts,
   devices,
   metricAnomalyIncidents,
+  ticketComments,
   tickets,
 } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
@@ -521,6 +522,33 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     expect(deviceAndTicketRun!.deviceId).toBe(env.device.id);
     expect(ticketOtherDevice.deviceId).not.toBe(env.device.id);
 
+    // #4644 — reverse pointer: ticket_comments.agent_run_id. ticket_comments has
+    // no org_id (child-via-parent tenancy through tickets), so a comment on
+    // ticketOnDevice travels to the target org along with its ticket while the
+    // run it names stays in the source org (same class as the
+    // metric_anomaly_incidents reverse pointer above). One comment per run,
+    // matching the run fixture's own discriminators: two on the ticket that
+    // moves (must both null), two on tickets that stay (must both survive).
+    const newComment = async (ticketId: string, runId: string) => {
+      const [row] = await adminDb
+        .insert(ticketComments)
+        .values({
+          ticketId,
+          authorType: 'internal',
+          commentType: 'comment',
+          content: `AI note fixture for run ${runId}`,
+          isPublic: false,
+          originPrincipalKind: 'ai_agent',
+          agentRunId: runId,
+        })
+        .returning();
+      return row as typeof ticketComments.$inferSelect;
+    };
+    const movingComment = await newComment(ticketOnDevice.id, movingTicketRun!.id);
+    const deviceAndTicketComment = await newComment(ticketOnDevice.id, deviceAndTicketRun!.id);
+    const orphanComment = await newComment(ticketOrphan.id, orphanTicketRun!.id);
+    const otherDeviceComment = await newComment(ticketOtherDevice.id, otherDeviceTicketRun!.id);
+
     return {
       ticketOnDevice,
       ticketOrphan,
@@ -529,6 +557,10 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
       deviceAndTicketRun: deviceAndTicketRun!,
       orphanTicketRun: orphanTicketRun!,
       otherDeviceTicketRun: otherDeviceTicketRun!,
+      movingComment,
+      deviceAndTicketComment,
+      orphanComment,
+      otherDeviceComment,
     };
   }
 
@@ -571,6 +603,20 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     const otherDevice = await run(seeded.otherDeviceTicketRun.id);
     expect(otherDevice.orgId).toBe(orgA.id);
     expect(otherDevice.ticketId).toBe(seeded.ticketOtherDevice.id);
+
+    // #4644 — reverse pointer: comments on the ticket that followed the device
+    // must have their agent_run_id severed; comments on tickets that stayed
+    // behind must keep theirs.
+    const comment = async (id: string) => {
+      const [row] = await adminDb.select().from(ticketComments).where(eq(ticketComments.id, id));
+      return row as typeof ticketComments.$inferSelect;
+    };
+    expect((await comment(seeded.movingComment.id)).agentRunId).toBeNull();
+    expect((await comment(seeded.deviceAndTicketComment.id)).agentRunId).toBeNull();
+    expect((await comment(seeded.orphanComment.id)).agentRunId).toBe(seeded.orphanTicketRun.id);
+    expect((await comment(seeded.otherDeviceComment.id)).agentRunId).toBe(
+      seeded.otherDeviceTicketRun.id,
+    );
   }
 
   it('#4215: the REAL move route detaches ticket_id on device-less ticket runs, and only those', async () => {

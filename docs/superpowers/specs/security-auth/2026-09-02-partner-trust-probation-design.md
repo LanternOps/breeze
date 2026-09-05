@@ -163,7 +163,7 @@ Replace the static `hostingPrefixes.ts` table as the source of truth with an **a
 
 - New job `ip-classify` on the `abuse-signals` queue, enqueued from `register-partner` (signup IP) and from agent enrollment (enrollment IP). It calls a privacy-detection API (ipinfo `privacy` or ipdata; provider and key behind env vars, never in the repo) and writes `signup_ip_class` / `enrollment_ip_class` plus ASN. Results are cached in Redis per /24 (v4) or /48 (v6) for 7 days so a ring costs one call.
 - Until the result lands (typically < 5 s) the class is `unknown`, which blocks **auto-promotion only**; it does not deny anything by itself, because probation already denies everything that matters.
-- The static prefix table stays as an offline fallback (provider outage or no key configured) and is refreshed from RIPEstat per the note already in that file.
+- The static prefix table lives in breeze-billing and is **not** consulted by core (amended 2026-09-03): with no provider configured, core classifies as `unknown`, which pauses auto-promotion only; the operator approves manually. Porting the table is a possible follow-up.
 
 Hard denies (`probation → restricted`, evaluated by the same job, no human in the loop). Each requires **either** a non-IP axis **or** an IP match corroborated by a second axis. Egress IP alone is not evidence: the repo already rejects it as sole recidivism proof (`services/abuseSignals/recidivistEndpoint.ts:310-317`), and CGNAT, shared offices, and VPN-using MSPs make a bare /24 rule unsafe.
 
@@ -212,7 +212,7 @@ Flag `PARTNER_TRUST_MODE = off | shadow | enforce` (env; hosted default `shadow`
 **Env-var rule (self-hosted safety):** every variable this feature introduces (`PARTNER_TRUST_MODE`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, `PARTNER_MEETING_URL`) is optional. A missing or unrecognised value never fails config validation, never logs above `warn`, and never blocks a request: missing `PARTNER_TRUST_MODE` resolves to `off` unless hosted; missing classification provider or key resolves to provider `none`, which classifies as `unknown` and pauses auto-promotion only; missing meeting URL just omits the link. The boot-time validator in `config/validate` is not extended with any of them. A unit test boots the resolvers with all four unset and `IS_HOSTED=false` and asserts every gate is a no-op.
 
 - `off`: columns exist, nothing reads them. **Self-hosted safeguard:** the resolver returns `off` whenever `IS_HOSTED` is not `true`, regardless of the env value, and a unit test pins that. The guided-setup smoke job additionally asserts that a fresh self-hosted stack can open a remote session, so a regression here fails CI before it ships.
-- `shadow`: `evaluateCapability` runs, logs would-deny decisions as `partner.trust.capability_denied` audit events with `mode: shadow`, and allows. Gives a false-positive count before any customer is affected.
+- `shadow`: new signups **do** enter `probation` (amended 2026-09-03 after the final review: with every partner `trusted`, shadow produced no denials and the acceptance read was unperformable). `evaluateCapability` logs would-deny decisions as `partner.trust.capability_denied` audit events with `mode: shadow` and **allows**; the queue, evidence cards and auto-promotion all run, so the operator sees and can approve the shadow population before `enforce`. Gives a false-positive count before any customer is affected.
 - `enforce`: denies.
 
 Rollout order:

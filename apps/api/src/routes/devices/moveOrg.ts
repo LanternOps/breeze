@@ -188,6 +188,26 @@ moveOrgRoutes.post(
     let currencyGuard: MoveCurrencyGuardDetails | null = null;
     try {
       await db.transaction(async (tx) => {
+        // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
+        // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
+        // INITIALLY IMMEDIATE, so they are checked at the end of EACH statement
+        // unless deferred here. This path moves the device's tickets to the
+        // target org and only then rewrites time_entries / ticket_parts through
+        // the tickets join (~180 lines below), so with a merely IMMEDIATE check
+        // the tickets UPDATE 23503s the instant it completes. Deferring to
+        // COMMIT is exactly right: by then every (ticket_id, org_id) pair
+        // resolves again. See moveTicketOrg in services/ticketService.ts for
+        // the full rationale — this is the same invariant on the device path.
+        //
+        // BY NAME, never `ALL`: the requester-contact / ticket_drafts /
+        // action_intents composites must stay IMMEDIATE so a newly added
+        // referencing row type fails fast instead of silently at COMMIT.
+        //
+        // Safe to precede the org lock below: SET CONSTRAINTS takes no table
+        // locks, so it does not participate in this transaction's lock order.
+        await tx.execute(
+          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`,
+        );
         // Creation barrier / cross-org move lock order (#3778): BOTH organizations
         // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
         // before any device/ticket row is touched. Held to commit, so the
@@ -253,6 +273,18 @@ moveOrgRoutes.post(
               WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // #3205 W07: billing evidence stays in the INVOICE's org — the invoice
+        // and its lines do not move. UNLIKE the ai_agent_runs statement above,
+        // which normally matches nothing because breeze_cascade_device_org_id()
+        // has already run, this one is LOAD-BEARING: invoice_line_devices is
+        // excluded from breeze_device_child_orgid_tables()
+        // (2026-10-08-101300-device-move-exclude-billing-evidence.sql), so the trigger leaves the row entirely alone
+        // and nothing else severs the now-cross-tenant device pointer. The row
+        // keeps its hostname and device_role, so the past invoice stays legible.
+        await tx.execute(
+          sql`UPDATE invoice_line_devices SET device_id = NULL WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // ticket_id is the fifth device-lineage FK and needs its OWN statement
         // (#4215): `tickets` is in getDeviceOrgDenormalizedTables(), so a
         // ticket bound to this device is re-stamped to the target org by the
@@ -291,6 +323,22 @@ moveOrgRoutes.post(
           sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // Reverse pointer: ticket_comments.agent_run_id (#4644). ticket_comments
+        // has no org_id (child-via-parent tenancy through tickets), so a comment
+        // on a ticket bound to this device travels to the target org via the
+        // denormalized-table loop below while the run it names stays with the
+        // SOURCE org — same reverse-pointer class as metric_anomaly_incidents
+        // above, and the mirror image of moveTicketOrg's own ticket_comments
+        // detach (ticketService.ts) on the ticket axis. Same
+        // `ticket_id IN (SELECT id FROM tickets WHERE device_id = ...)` join the
+        // ai_agent_runs.ticket_id detach above uses, so it reaches comments on
+        // both device-less and device-bound ticket runs alike.
+        await tx.execute(
+          sql`UPDATE ticket_comments SET agent_run_id = NULL
+              WHERE agent_run_id IS NOT NULL
+                AND ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
         // pointer class as the two detaches above — an intent whose target
         // device just moved to a different org must not keep pointing at it.
@@ -316,6 +364,93 @@ moveOrgRoutes.post(
                 AND status IN ('pending_approval', 'approved', 'executing')`,
         );
 
+        // tickets.requester_contact_id (#3258 W03): the requester CONTACT is
+        // org-pinned (`tickets_requester_contact_org_fk` is the composite
+        // (requester_contact_id, org_id) -> contacts(id, org_id), DEFERRABLE
+        // INITIALLY IMMEDIATE) and does NOT travel with the device, so the
+        // org_id re-stamp below would 23503 on any contact-linked ticket. The
+        // ticket keeps its submitter name/email snapshot — only the live link
+        // is dropped, which is the same ruling moveTicketOrg applies.
+        //
+        // Ordering: breeze_cascade_device_org_id() is an AFTER ... FOR EACH ROW
+        // trigger on the devices UPDATE above, so it has ALREADY run this same
+        // detach AND the org re-stamp — this statement normally matches
+        // nothing, exactly like the ai_agent_runs detaches beside it. Kept so
+        // the route path stays correct on its own if the trigger is ever
+        // absent, and placed immediately before the generic loop to mirror the
+        // trigger's internal order (the detach cannot follow the re-stamp: the
+        // re-stamp is the statement that trips the constraint).
+        //
+        // No merge fence check here, unlike the trigger: org merge never calls
+        // this route (the loser org is fenced into 'merging', which the device
+        // routes refuse), so the only caller is a genuine cross-org move.
+        await tx.execute(
+          sql`UPDATE tickets SET requester_contact_id = NULL
+              WHERE device_id = ${deviceId}::uuid
+                AND requester_contact_id IS NOT NULL
+                AND org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
+        );
+
+        // action_intents.scope_ticket_id (#4792): composite FK (scope_ticket_id,
+        // org_id) -> tickets(id, org_id) (action_intents_scope_ticket_org_fk,
+        // migrations/2026-09-25-ai-agents-ticket-triage.sql), DEFERRABLE
+        // INITIALLY IMMEDIATE and deliberately NOT named in the SET CONSTRAINTS
+        // above (by-name, never ALL — see that comment): a newly added
+        // referencing row type must still fail fast, not silently at COMMIT.
+        // `tickets` IS in getDeviceOrgDenormalizedTables(), so the loop below
+        // re-stamps tickets.org_id for every ticket bound to this device — the
+        // instant that statement completes, ANY remaining scope_ticket_id
+        // pointer (regardless of status; unlike scope_device_id above, this FK
+        // does not care about status) names a (ticketId, OLD org_id) pair that
+        // no longer exists in `tickets`, and the tickets UPDATE itself 23503s
+        // and aborts the whole move. Same invariant, same fix, as
+        // moveTicketOrg's identical detach for the ticket-level move
+        // (services/ticketService.ts) — ALL statuses, unconditionally, and run
+        // BEFORE the re-stamp that would otherwise trip the constraint. The
+        // immutability trigger (action_intents_block_content_update()) permits
+        // exactly this non-null -> NULL transition regardless of scope_ticket_id
+        // vs scope_device_id, so this is the tombstone path, not a bypass.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_ticket_id = NULL
+              WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // #3182 — a device that has LEFT org A cannot remain a member of org
+        // A's device group, and device_group_memberships_group_org_fk
+        // ((group_id, org_id) -> device_groups(id, org_id)) now says so
+        // structurally. Delete, never re-point: device_groups.org_id is NOT
+        // NULL with no partner axis, groups nest and can be site-bound, and
+        // there is no deterministic source-group -> target-group mapping.
+        // Dynamic groups in the TARGET org re-materialize on their own next
+        // evaluation.
+        //
+        // Placement is load-bearing, same class as the scope_ticket_id
+        // tombstone above: `device_group_memberships` IS returned by
+        // breeze_device_child_orgid_tables(), so the loop immediately below
+        // would otherwise re-stamp these rows' org_id to the target org while
+        // their group_id still names a SOURCE-org group — 23503, aborting the
+        // whole move.
+        //
+        // Ordering: breeze_cascade_device_org_id() is an AFTER ... FOR EACH ROW
+        // trigger on the devices UPDATE above, so it has ALREADY performed this
+        // same delete by the time this statement is sent — the route's copy
+        // normally matches nothing, exactly as for the tombstones beside it. It
+        // is kept so the route stays correct on its own if the trigger is ever
+        // absent, and placed here to mirror the trigger's internal order.
+        //
+        // Unfenced, unlike the trigger's merging-org check: an org merge never
+        // reaches this route, and repoints devices, device_groups and
+        // device_group_memberships together instead
+        // (services/orgMergeRegistry.ts).
+        //
+        // device_group_memberships deliberately STAYS in
+        // getDeviceOrgDenormalizedTables(): the loop's UPDATE below now matches
+        // nothing, and is retained as the backstop for any devices.org_id
+        // writer that somehow reaches the loop without this delete.
+        await tx.execute(
+          sql`DELETE FROM device_group_memberships WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
@@ -328,21 +463,47 @@ moveOrgRoutes.post(
           );
         }
 
+        // device_vulnerabilities.ticket_id (#4645): `device_vulnerabilities` IS
+        // in getDeviceOrgDenormalizedTables(), so the loop just above already
+        // re-stamped org_id to the TARGET org for every finding on this device
+        // — the finding row itself always travels with the device. Its
+        // remediation ticket does NOT: vulnerability-remediation tickets are
+        // created org-scoped only (`POST /vulnerabilities/tickets` never sets
+        // `tickets.device_id`), so `tickets` denormalized-table loop above
+        // never reaches them and they stay put in whatever org they were
+        // created in. Once the finding's org_id is the target org, a ticket_id
+        // still naming a SOURCE-org ticket resolves to nothing under RLS for
+        // any caller in the target org — the reverse of moveTicketOrg's own
+        // device_vulnerabilities detach (services/ticketService.ts) on the
+        // ticket axis.
+        //
+        // Placement — AFTER the loop above, not before: comparing against
+        // `t.org_id` (rather than the finding's own, already-rewritten
+        // org_id) means a ticket that DOES happen to be bound to this device
+        // (`tickets.device_id = deviceId`, and therefore re-stamped to the
+        // target org by that same loop, since `tickets` is also a member) is
+        // correctly left alone — its org now matches the finding's, so the
+        // link is still valid. Checking before the loop would see the ticket's
+        // stale SOURCE org and wrongly null a link that is about to become
+        // valid. Same `org_id IS DISTINCT FROM` precision as moveTicketOrg's
+        // mirror statement and the tickets.requester_contact_id detach above.
+        //
+        // Plain single-column `ON DELETE SET NULL` FK (not composite
+        // tenant-FK'd), so this can never 23503 either way.
+        await tx.execute(
+          sql`UPDATE device_vulnerabilities dv SET ticket_id = NULL
+              FROM tickets t
+              WHERE dv.device_id = ${deviceId}::uuid
+                AND dv.ticket_id = t.id
+                AND t.org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
+        );
+
         // Extension tables that must be DELETED (not re-stamped) on org-move: their rows
         // FK a source/config row that stays in the old org, so rewriting org_id would
         // corrupt cross-row consistency. See the extension tenancy docs.
         for (const table of getDeviceOrgMoveDeleteTables()) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
-
-        // ticket_alert_links denormalizes org_id for RLS but has no
-        // device_id column, so the generic loop above can't reach it —
-        // rewrite via the alert join instead. Excluded from
-        // getDeviceOrgDenormalizedTables(); tracked in
-        // CUSTOM_ORG_REWRITE_TABLES (core.ts).
-        await tx.execute(
-          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
-        );
 
         // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
         // tickets bound to this device move org with it, so these must follow —
@@ -373,15 +534,76 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_alert_links denormalizes org_id for RLS but has no device_id
+        // column, so the generic loop above can't reach it — rewrite via the
+        // alert join instead. Excluded from getDeviceOrgDenormalizedTables();
+        // tracked in CUSTOM_ORG_REWRITE_TABLES (core.ts).
+        //
+        // Placed AFTER ticket_parts, not before the guard where it used to sit
+        // (#4657). moveTicketOrg — the twin path in services/ticketService.ts —
+        // re-stamps this same table from its TICKET_ORG_DENORMALIZED_TABLES loop,
+        // i.e. after its own time_entries/ticket_parts writes, and the two
+        // movers' rows genuinely overlap: a link row joining ticket X to an alert
+        // raised on device D is selected both by this statement's alert join and
+        // by a concurrent moveTicketOrg(X)'s `ticket_id = X`. Taking it on
+        // opposite sides of time_entries/ticket_parts was a live AB-BA that
+        // Postgres resolves by killing one transaction with 40P01 — a 500 on an
+        // admin action. The canonical order both paths now follow, and why it
+        // resolves this way round rather than the other, is documented once in
+        // services/ticketOrgMoveLockOrder.ts.
+        //
+        // The move past the currency guard is safe: the guard only touches
+        // time_entries/ticket_parts, and a guard throw rolls the whole
+        // transaction back, so nothing is left half-restamped. The alert
+        // subselect still resolves after the generic loop re-stamped `alerts` —
+        // alerts.device_id is not what the loop changes, and the request context
+        // spans both orgs (same argument as the ai_agent_runs subselect above).
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // ticket_outbox (#4743) denormalizes org_id from its ticket and has no
+        // device_id; tickets bound to this device move org, so any unpublished
+        // outbox row for one of those tickets must follow via the tickets
+        // join, or it keeps routing to the source org's helpdesk agents after
+        // the move (same class as ticket_alert_links, #3828 wave-6-3). Placed
+        // AFTER ticket_alert_links and BEFORE ticket_attachments to match this
+        // table's position in TICKET_ORG_DENORMALIZED_TABLES
+        // (ticketService.ts) — [..., 'ticket_alert_links', 'ticket_outbox',
+        // 'ticket_attachments'] — so this path and moveTicketOrg's loop touch
+        // the ticket-linked child tables in the same relative order; see the
+        // lock-order comment at moveOrg.ts:~311.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_outbox')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // ticket_attachments (W08 #3902) denormalizes org_id from its ticket and
         // has no device_id; tickets bound to this device move org, so their
-        // attachment rows follow via the tickets join. Placed AFTER ticket_parts
-        // to extend — not reorder — the documented global lock order
-        // (tickets -> time_entries -> ticket_parts -> ticket_attachments); the
-        // moveTicketOrg loop appends it last for the same reason. S3 objects are
-        // keyed by attachment id only (spec D8) and are not touched.
+        // attachment rows follow via the tickets join. Placed LAST to extend —
+        // not reorder — the documented global lock order (tickets ->
+        // time_entries -> ticket_parts -> ticket_alert_links -> ticket_outbox ->
+        // ticket_attachments); the moveTicketOrg loop appends it last for the
+        // same reason. S3 objects are keyed by attachment id only (spec D8) and
+        // are not touched.
         await tx.execute(
           sql`UPDATE ${sql.identifier('ticket_attachments')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // ticket_email_links (#4643) denormalizes org_id from its ticket and
+        // has no device_id; tickets bound to this device move org, so their
+        // email-link rows must follow via the same tickets join, or the
+        // source org keeps read access to this device's ticket-thread
+        // metadata after the move (and the target org loses it). Placed
+        // AFTER ticket_attachments to extend — not reorder — the documented
+        // global lock order (tickets -> time_entries -> ticket_parts ->
+        // ticket_alert_links -> ticket_outbox -> ticket_attachments ->
+        // ticket_email_links); moveTicketOrg's loop appends it last for the
+        // same reason. Inbound-email threading
+        // (threadMatcher.ts) resolves by (partner_id, message_id) under a
+        // system context off the live tickets.org_id, never off this row's
+        // org_id, so re-stamping it here does not touch that contract.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_email_links')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
         // Rewrite denormalized site_id on every device-scoped table that has

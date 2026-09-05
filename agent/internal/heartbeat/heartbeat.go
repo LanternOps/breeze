@@ -88,9 +88,19 @@ type HeartbeatPayload struct {
 	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
 	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
 	PendingReboot       bool                       `json:"pendingReboot"`
-	LastUser            string                     `json:"lastUser,omitempty"`
-	UptimeSeconds       int64                      `json:"uptime,omitempty"`
-	DeviceRole          string                     `json:"deviceRole,omitempty"`
+	// RebootStatus is the scheduled-restart snapshot from RebootManager
+	// (#3207 W5). Sent unconditionally — NO omitempty — for the same reason
+	// SecurityCapabilities below is: the server has to tell an old agent (the
+	// key absent from the JSON body entirely) apart from a capable agent
+	// reporting that nothing is scheduled (an explicit null). Absent means "no
+	// news, keep what you have"; null means "the restart was cancelled or has
+	// already fired, clear it". Collapsing those two would strand a cancelled
+	// restart on the device page forever, or let every pre-#3207 agent in the
+	// fleet wipe the console's view on its next beat.
+	RebootStatus  *RebootStatusReport `json:"rebootStatus"`
+	LastUser      string              `json:"lastUser,omitempty"`
+	UptimeSeconds int64               `json:"uptime,omitempty"`
+	DeviceRole    string              `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
@@ -316,25 +326,31 @@ type Heartbeat struct {
 	inventoryCol          *collectors.InventoryCollector
 	vpnCol                *collectors.VPNCollector
 	changeTrackerCol      *collectors.ChangeTrackerCollector
-	sessionCol            *collectors.SessionCollector
-	policyStateCol        *collectors.PolicyStateCollector
-	patchCol              *collectors.PatchCollector
-	patchMgr              *patching.PatchManager
-	connectionsCol        *collectors.ConnectionsCollector
-	eventLogCol           *collectors.EventLogCollector
-	bootCol               *collectors.BootPerformanceCollector
-	reliabilityCol        *collectors.ReliabilityCollector
-	agentVersion          string
-	desktopMgr            *desktop.SessionManager
-	wsDesktopMgr          *desktop.WsSessionManager
-	terminalMgr           *terminal.Manager
-	tunnelMgr             *tunnel.Manager
-	executor              *executor.Executor
-	backupBinaryPath      string
-	rollbackController    rollbackController
-	rebootMgr             *patching.RebootManager
-	securityScanner       *security.SecurityScanner
-	wsClient              *websocket.Client
+	// changeTrackerMu serializes the change tracker's collect → send → commit
+	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
+	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
+	// overlap; without this they would diff the same baseline, upload the same
+	// records twice, and race to commit (#3529).
+	changeTrackerMu    sync.Mutex
+	sessionCol         *collectors.SessionCollector
+	policyStateCol     *collectors.PolicyStateCollector
+	patchCol           *collectors.PatchCollector
+	patchMgr           *patching.PatchManager
+	connectionsCol     *collectors.ConnectionsCollector
+	eventLogCol        *collectors.EventLogCollector
+	bootCol            *collectors.BootPerformanceCollector
+	reliabilityCol     *collectors.ReliabilityCollector
+	agentVersion       string
+	desktopMgr         *desktop.SessionManager
+	wsDesktopMgr       *desktop.WsSessionManager
+	terminalMgr        *terminal.Manager
+	tunnelMgr          *tunnel.Manager
+	executor           *executor.Executor
+	backupBinaryPath   string
+	rollbackController rollbackController
+	rebootMgr          *patching.RebootManager
+	securityScanner    *security.SecurityScanner
+	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -573,6 +589,14 @@ type Heartbeat struct {
 	untrustedReleaseMu  sync.Mutex
 	untrustedReleaseVer string
 	untrustedReleaseAt  time.Time
+
+	// Cooldown state for an upgrade target whose staged binary failed macOS
+	// code-signature verification (updater.ErrCodeSignatureInvalid). Same
+	// shape and rationale as the untrustedRelease trio above — terminal for
+	// that version, recoverable once a good artifact is published. Issue #3458.
+	badSignatureMu  sync.Mutex
+	badSignatureVer string
+	badSignatureAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1003,12 +1027,34 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications)
-	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
-		if h.sessionBroker != nil {
-			h.sessionBroker.BroadcastNotification(title, body, urgency)
-		}
-	}, cfg.PatchRebootMaxPerDay)
+	// Initialize reboot manager. Warnings and the interactive postponement
+	// prompt go to the desktop helper through the session broker first, and to
+	// the daemon-drawn Linux dialog when no helper session took them — see
+	// chainedRebootPrompt in reboot_prompt.go for why the order is that way and
+	// why patching.Desktop* is a no-op off Linux.
+	h.rebootMgr = patching.NewRebootManagerWithPrompt(
+		chainedRebootNotify(
+			func(title, body, urgency string) {
+				if h.sessionBroker != nil {
+					h.sessionBroker.BroadcastNotification(title, body, urgency)
+				}
+			},
+			patching.DesktopNotify,
+			func() bool {
+				return h.sessionBroker != nil && len(h.sessionBroker.SessionsWithScope("notify")) > 0
+			},
+		),
+		chainedRebootPrompt(
+			rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+				if h.sessionBroker == nil {
+					return ipc.NotifyResult{}, nil
+				}
+				return h.sessionBroker.RequestNotificationDecision(req, timeout)
+			}),
+			patching.DesktopPrompt,
+		),
+		cfg.PatchRebootMaxPerDay,
+	)
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -1568,6 +1614,11 @@ func (h *Heartbeat) Start() {
 	}
 	h.lastHardwareUpdate = startupNow
 	h.lastPatchUpdate = startupNow
+	// The startup fan-out above already sent inventory; without stamping this
+	// gate its zero value makes the very first tick fire a second, duplicate
+	// full inventory ~30s later — which is also the guaranteed overlap window
+	// for the change tracker's collect → send → commit cycle (#3529).
+	h.lastInventoryUpdate = startupNow
 	h.mu.Unlock()
 	if postReliability {
 		go h.sendReliabilityMetrics(startupNow)
@@ -2257,22 +2308,52 @@ func (h *Heartbeat) sendNetworkInventory() {
 	)
 }
 
+// sendConfigurationChanges uploads the config-change delta on the collect →
+// send → commit ordering: the tracker's diff baseline advances only once the
+// API has accepted the records.
+//
+// Committing first (the old order) rebased the diff on a world where the change
+// had already happened, so anything the server rejected could never be
+// re-derived — the delta was gone for good (#3529). Leaving the baseline in
+// place instead means the next cycle simply re-reports the same changes, at the
+// cost of a possible duplicate if a response was lost after the server had
+// already stored them. At-least-once is the correct trade for an audit trail.
 func (h *Heartbeat) sendConfigurationChanges() {
 	if h.changeTrackerCol == nil {
 		return
 	}
 
-	changes, err := h.changeTrackerCol.CollectChanges()
+	h.changeTrackerMu.Lock()
+	defer h.changeTrackerMu.Unlock()
+
+	pending, err := h.changeTrackerCol.CollectPendingChanges()
 	if err != nil {
 		log.Error("failed to collect configuration changes", "error", err.Error())
 		return
 	}
-
-	if len(changes) == 0 {
+	if pending == nil {
 		return
 	}
 
-	h.sendInventoryData("changes", map[string]any{"changes": changes}, fmt.Sprintf("changes (%d)", len(changes)))
+	if len(pending.Records) > 0 {
+		if err := h.sendInventoryData(
+			"changes",
+			map[string]any{"changes": pending.Records},
+			fmt.Sprintf("changes (%d)", len(pending.Records)),
+		); err != nil {
+			log.Warn("configuration changes upload failed, baseline retained for retry",
+				"changes", len(pending.Records),
+				"error", err.Error())
+			return
+		}
+	}
+
+	// Committing with zero records is deliberate: the snapshot may have moved
+	// in ways the diff filtered as noise, and holding the old baseline would
+	// re-run that same filtered diff every cycle.
+	if err := h.changeTrackerCol.Commit(pending); err != nil {
+		log.Warn("failed to persist change tracker baseline after upload", "error", err.Error())
+	}
 }
 
 func (h *Heartbeat) policyRegistryProbes() []collectors.RegistryProbe {
@@ -2807,14 +2888,7 @@ func (h *Heartbeat) sendPolicyRegistryState() {
 		log.Warn("failed to collect policy registry state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"registry-state",
-		map[string]any{
-			"entries": entries,
-			"replace": true,
-		},
-		fmt.Sprintf("registry state (%d entries)", len(entries)),
-	)
+	sendPolicyState(h, "registry-state", "registry state", entries, err)
 }
 
 func (h *Heartbeat) sendPolicyConfigState() {
@@ -2823,13 +2897,41 @@ func (h *Heartbeat) sendPolicyConfigState() {
 		log.Warn("failed to collect policy config state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"config-state",
+	sendPolicyState(h, "config-state", "config state", entries, err)
+}
+
+// sendPolicyState uploads a policy-state observation, choosing the write mode
+// from whether the collection was complete.
+//
+// `replace: true` makes the API delete every prior row for the device before
+// inserting, so it is only safe when the batch is authoritative. A collection
+// that hit a read error is NOT authoritative: uploading it with replace:true
+// erases the server's last good observation of every probe that failed, and the
+// dashboard reads the result as a fresh, successful inventory (#3529). A
+// partial batch is therefore merged (replace:false), and a batch that failed
+// and produced nothing is skipped entirely — there is nothing to merge.
+func sendPolicyState[T any](h *Heartbeat, endpoint string, label string, entries []T, collectErr error) {
+	complete := collectErr == nil
+	if !complete && len(entries) == 0 {
+		log.Warn("skipping policy state upload, collection failed and produced no entries", "label", label)
+		return
+	}
+
+	mode := "replace"
+	if !complete {
+		mode = "partial merge"
+	}
+
+	// Nothing to roll back on failure: policy state is a full re-read of local
+	// state every cycle, so the next cycle re-derives it. sendInventoryData
+	// already logs the failure, and its label carries the mode.
+	_ = h.sendInventoryData(
+		endpoint,
 		map[string]any{
 			"entries": entries,
-			"replace": true,
+			"replace": complete,
 		},
-		fmt.Sprintf("config state (%d entries)", len(entries)),
+		fmt.Sprintf("%s (%d entries, %s)", label, len(entries), mode),
 	)
 }
 
@@ -3456,6 +3558,9 @@ func (h *Heartbeat) sendSessionInventory() {
 		log.Warn("failed to collect sessions", "error", err.Error())
 		return
 	}
+	// Draining removes the events from the collector, so from here until the
+	// server confirms receipt this goroutine is their only copy — a discarded
+	// send error would lose them permanently (#3529).
 	events := h.sessionCol.DrainEvents(256)
 	if events == nil {
 		events = []collectors.UserSessionEvent{}
@@ -3466,7 +3571,13 @@ func (h *Heartbeat) sendSessionInventory() {
 		"events":      events,
 		"collectedAt": time.Now().UTC(),
 	}
-	h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	sendErr := h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	if sendErr != nil && len(events) > 0 {
+		h.sessionCol.RequeueEvents(events)
+		log.Warn("session events requeued after failed upload",
+			"events", len(events),
+			"error", sendErr.Error())
+	}
 }
 
 func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetrics) {
@@ -4094,6 +4205,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
 	payload.PendingReboot = pendingReboot
+	// Scheduled-restart snapshot (#3207 W5). nil here is not "skip it" — it
+	// marshals to an explicit null, which is how the server learns a restart it
+	// was told about is no longer happening.
+	payload.RebootStatus = h.rebootStatusForHeartbeat()
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
@@ -5726,11 +5841,19 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		ExitCode:  result.ExitCode,
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
+		Error:     result.Error,
 	}
 
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
+	// An explicitly-set Result wins. The stdout reparse below stays for the
+	// handlers that depend on it (discovery, backup, snmp, monitor read
+	// `result`, not stdout) but must never clobber a handler that built a
+	// structured payload on purpose — #2698's customFieldWrites envelope is the
+	// first such payload on the script path. The Error-suppresses-reparse
+	// behavior is unchanged: an errored command's raw stdout must not be
+	// mistaken for a successful structured result.
+	if result.Result != nil {
+		wsResult.Result = result.Result
+	} else if result.Error == "" && result.Stdout != "" {
 		var jsonResult any
 		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
 			wsResult.Result = jsonResult
@@ -6782,6 +6905,35 @@ func (h *Heartbeat) noteUntrustedRelease(targetVersion string) {
 	h.untrustedReleaseAt = time.Now()
 }
 
+// codeSignatureRetryCooldown bounds how often an upgrade target whose staged
+// binary failed macOS code-signature verification is retried. Like
+// untrustedReleaseRetryCooldown this is terminal-per-version but not permanent:
+// the artifact is already checksum-verified against the signed manifest, so
+// re-downloading it on the device can only reproduce the same failure, yet a
+// re-published (correctly signed) build must recover automatically. Without the
+// cooldown every macOS device in a fleet would re-download the same doomed
+// binary every ~60s — the exact storm #3544 fixed for untrusted releases.
+// Issue #3458.
+const codeSignatureRetryCooldown = 30 * time.Minute
+
+// codeSignatureBackoffActive reports whether targetVersion already failed
+// signature verification within the cooldown window. Tracked per version so a
+// NEW upgrade target is always attempted immediately.
+func (h *Heartbeat) codeSignatureBackoffActive(targetVersion string) bool {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	return h.badSignatureVer == targetVersion &&
+		time.Since(h.badSignatureAt) < codeSignatureRetryCooldown
+}
+
+// noteCodeSignatureFailure starts (or restarts) the cooldown for targetVersion.
+func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	h.badSignatureVer = targetVersion
+	h.badSignatureAt = time.Now()
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// Checked before sendUpdateStatus and before any download work: the server
@@ -6791,6 +6943,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// refuse again.
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+	// Same reason as above: the server re-sends the same upgradeTo every
+	// heartbeat, so without this gate a version whose binary cannot pass
+	// macOS code-signature verification is re-downloaded in full every cycle.
+	if h.codeSignatureBackoffActive(targetVersion) {
+		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
 		return
 	}
@@ -6909,6 +7069,20 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"targetVersion", targetVersion,
 				"error", err.Error(),
 				"retryAfter", untrustedReleaseRetryCooldown.String())
+			return
+		}
+		// macOS refused to install the staged binary because it fails
+		// `codesign --verify`. The installed binary was never touched (the
+		// gate runs before any write), so the device keeps running the build
+		// its TCC grants are keyed to. Terminal for this target until a
+		// correctly signed artifact is published, so back off rather than
+		// re-download it every heartbeat. Issue #3458.
+		if errors.Is(err, updater.ErrCodeSignatureInvalid) {
+			h.noteCodeSignatureFailure(targetVersion)
+			log.Error("auto-update blocked: the binary published for this version fails macOS code signature verification — republish a Developer ID signed, notarized build; the agent is still running its previous, correctly signed binary",
+				"targetVersion", targetVersion,
+				"error", err.Error(),
+				"retryAfter", codeSignatureRetryCooldown.String())
 			return
 		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a

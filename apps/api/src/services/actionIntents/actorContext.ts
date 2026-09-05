@@ -17,6 +17,70 @@ import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../..
 import type { TokenPayload } from '../jwt';
 
 /**
+ * Tool/action pairs that are TENANT-SHAPE MUTATIONS whose approved intent
+ * names a target org distinct from the intent's own (source) org (#4650).
+ * The tool's own handler (e.g. `aiToolsTicketing.ts`'s `move_org`) gates on
+ * `auth.canAccessOrg(targetOrgId)`, but every release-time `AuthContext`
+ * below is otherwise pinned to `accessibleOrgIds: [intent.orgId]` — so
+ * without this allowlist that gate is unreachable for EVERY approved
+ * cross-org move, not just unauthorized ones.
+ *
+ * Keyed `toolName -> action -> argument key holding the target org id`.
+ * ONLY a tool/action pair listed here is eligible for the widening below;
+ * every other tool/action keeps the single-org `accessibleOrgIds` it always
+ * had. Adding an entry here is a deliberate widening of release-time trust —
+ * pair it with the same three integration-test properties this fix
+ * introduced: an approved release of the new tool/action succeeds
+ * cross-org, no OTHER tool/action gets the widening, and an approver/agent
+ * without access to the recorded target org is still refused.
+ *
+ * The widening below independently re-verifies the target org's CURRENT
+ * partner against the releasing identity's own partner before granting
+ * access — but that bounds WHO gets to widen, not what the tool is then
+ * allowed to do with it. A new entry's TOOL HANDLER must independently
+ * enforce its own tenancy boundary on the target (same-partner, or whatever
+ * the mutation's actual constraint is) before executing — `move_org`'s own
+ * `moveTicketOrg` (ticketService.ts) does this by re-fetching both orgs
+ * under a row lock and rejecting a cross-partner move — never assume the
+ * widening bound alone is a substitute for the tool's own check.
+ */
+const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  manage_tickets: { move_org: 'targetOrgId' },
+};
+
+/**
+ * Resolves the persisted target-org id for a tenant-shape-mutation intent by
+ * reading ONLY the intent's immutable `arguments` snapshot — captured verbatim
+ * from the tool-call input at intent CREATION time and blocked from later
+ * edits by `action_intents_immutable_trg`. Never re-derives the target from a
+ * live lookup of the ticket/device's CURRENT org: that value can legitimately
+ * change between approval and release (a second, unrelated moveOrg), and
+ * trusting it would let release-time access follow a target the four-eyes
+ * approval never saw — the exact TOCTOU the immutable snapshot exists to
+ * close.
+ *
+ * Returns null for any intent whose tool/action is not in the allowlist
+ * above, or whose recorded target-org argument is missing or not a string.
+ */
+function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
+  // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
+  // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
+  // purpose: `services/aiGuardrails.ts` pulls in the full tool-registry import
+  // graph (down to `db/schema`), and this module (like
+  // `actionIntents/durableRelease.ts`) stays a light leaf so its narrowly-
+  // mocked unit test suite doesn't have to mock that graph too. Every entry
+  // in the allowlist above is presently a base-key tool (`manage_tickets`
+  // does not appear in `TOOL_ACTION_INPUT_KEYS`) — add a matching override
+  // here if a future entry ever needs one.
+  const actionValue = intent.arguments.action;
+  if (typeof actionValue !== 'string') return null;
+  const argKey = TENANT_MUTATION_TARGET_ORG_ARG[intent.actionName]?.[actionValue];
+  if (!argKey) return null;
+  const raw = intent.arguments[argKey];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
  * Rebuilds the acting `AuthContext` for a stored action intent at RELEASE
  * time (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §5) — the release worker's trust boundary: a reconstructed identity is
@@ -166,7 +230,47 @@ async function buildUserOwnedAuthContext(
       return null;
     }
 
-    const { orgCondition, canAccessOrg } = buildOrgAccessClosures([intent.orgId]);
+    // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
+    // manage_tickets:move_org), widen accessibleOrgIds to also cover the
+    // TARGET org recorded on the intent at creation time — but ONLY when
+    // this same requester's already-resolved `perms` can reach it too.
+    // Reusing `permsCanAccessOrg` (not a new check) means the bound is
+    // exactly the same all/selected/none partner org-access gate applied to
+    // intent.orgId two lines up: an org-axis requester (whose `perms.orgId`
+    // is fixed to their one org) never widens, and a partner-axis requester
+    // widens only within their own org-access grant. A requester who cannot
+    // reach the target keeps the single-org accessibleOrgIds, so the tool's
+    // existing `auth.canAccessOrg(targetOrgId)` gate 403s exactly as before
+    // — now for the RIGHT reason (this approver really lacks target-org
+    // access) instead of unconditionally.
+    //
+    // `permsCanAccessOrg` ALONE is not a tenancy check: for an `orgAccess:
+    // 'all'` partner requester it returns true for literally any org id, with
+    // no read of which partner that org actually belongs to (unlike the
+    // request-time equivalent, `computeAccessibleOrgIds` in middleware/auth.ts,
+    // which filters by `organizations.partnerId` before ever handing out
+    // `accessibleOrgIds`). So a second, independent check confirms the
+    // recorded target org's CURRENT partner matches `intent.partnerId` —
+    // mirroring the agent-owned path below, which does the same live lookup
+    // for exactly this reason. Without it, a future allowlist entry whose
+    // tool handler lacks its own same-partner guard (unlike
+    // `moveTicketOrg`'s independent check, which is what makes the CURRENT
+    // single entry safe even without this) would hand an `orgAccess: 'all'`
+    // requester a genuinely cross-partner `accessibleOrgIds` widening.
+    const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+    let accessibleOrgIds = [intent.orgId];
+    if (targetOrgId && targetOrgId !== intent.orgId && permsCanAccessOrg(perms, targetOrgId)) {
+      const [targetOrg] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, targetOrgId))
+        .limit(1);
+      if (targetOrg && intent.partnerId && targetOrg.partnerId === intent.partnerId) {
+        accessibleOrgIds = [intent.orgId, targetOrgId];
+      }
+    }
+
+    const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
     const allowedSiteIds = perms.allowedSiteIds;
 
     // Synthesized, not re-verified downstream: executeTool's device/org
@@ -218,7 +322,7 @@ async function buildUserOwnedAuthContext(
       partnerId: intent.partnerId ?? null,
       orgId: intent.orgId,
       scope: 'organization',
-      accessibleOrgIds: [intent.orgId],
+      accessibleOrgIds,
       orgCondition,
       canAccessOrg,
       allowedSiteIds,
@@ -381,8 +485,34 @@ async function buildAgentOwnedAuthContext(
         }
       }
 
+      // #4650: same allowlisted widening as the user-owned path above, bounded
+      // to the ACTING AGENT's own scope (never the human approver's) — this
+      // AuthContext executes AS the agent. An org-scoped agent (agent.orgId
+      // !== null) is never eligible: its home IS a single org, so it can
+      // never legitimately reach a different one. A partner-scoped agent
+      // (agent.orgId === null) may widen only when the recorded target org's
+      // CURRENT partner ownership matches the agent's own partnerId. A live
+      // lookup here is correct, not the TOCTOU the target-org id itself must
+      // avoid — an org's partner assignment changing between approval and
+      // release is exactly the kind of access change release-time
+      // revalidation exists to catch (mirrors permsCanAccessOrg's re-check
+      // above, and the FK-guaranteed run/org/agent lineage asserts earlier in
+      // this function).
+      const targetOrgId = resolveTenantMutationTargetOrgId(intent);
+      let releaseAccessibleOrgIds: string[] = [intent.orgId];
+      if (targetOrgId && targetOrgId !== intent.orgId && agent.orgId === null && agent.partnerId) {
+        const [targetOrg] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, targetOrgId))
+          .limit(1);
+        if (targetOrg?.partnerId === agent.partnerId) {
+          releaseAccessibleOrgIds = [intent.orgId, targetOrgId];
+        }
+      }
+
       try {
-        return buildAgentAuthContext(
+        const agentContext = buildAgentAuthContext(
           {
             id: agent.id,
             orgId: agent.orgId,
@@ -396,6 +526,11 @@ async function buildAgentOwnedAuthContext(
           { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
           { id: run.orgId, partnerId: org.partnerId },
         );
+        if (releaseAccessibleOrgIds.length === 1) {
+          return agentContext;
+        }
+        const { orgCondition, canAccessOrg } = buildOrgAccessClosures(releaseAccessibleOrgIds);
+        return { ...agentContext, accessibleOrgIds: releaseAccessibleOrgIds, orgCondition, canAccessOrg };
       } catch (error) {
         if (error instanceof AgentRunOwnershipError) {
           console.error(

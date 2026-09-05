@@ -35,8 +35,7 @@ vi.mock('./csrfToken', () => ({
   readCsrfCookie: vi.fn(() => ({ kind: 'absent' })),
 }));
 
-import { coreRequest } from './api';
-import { refreshAccessToken } from './tokenRefresh';
+import { coreRequest, refreshAccessToken } from './api';
 import { AUTH_TOKEN_KEY } from './authSessionKeys';
 
 function response(status: number, body: unknown = {}): Response {

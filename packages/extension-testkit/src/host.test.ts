@@ -11,6 +11,13 @@ const TOKEN = 'eyJhbGciOi.super-secret-token.sig';
 const BEARER = `Bearer ${TOKEN}`;
 const API_KEY = 'bzk_live_super-secret-api-key';
 const IMMUTABLE = 'private, max-age=31536000, immutable';
+/** The signed asset token `goodFetch`'s registry response advertises by default. */
+const ASSET_TOKEN = 'sig-tok-9f3e7a2b1c';
+
+/** Builds a registry-advertised `moduleUrl` in the signed shape the asset probe harvests from. */
+function moduleUrlFor(token: string, name = 'acme', digest = 'sha256-abc', member = 'index.js'): string {
+  return `/api/v1/extensions/assets/t/${token}/${name}/${digest}/${member}`;
+}
 
 function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -70,7 +77,9 @@ function goodFetch(overrides: (url: string) => Response | undefined = () => unde
     if (override) return override;
     if (url.endsWith('/health')) return json({ ok: true });
     if (url.endsWith('/api/v1/admin/extensions')) return json({ extensions: [{ name: 'acme' }] });
-    if (url.endsWith('/api/v1/extensions/registry')) return json({ pages: [], navigation: [], slots: [] });
+    if (url.endsWith('/api/v1/extensions/registry')) {
+      return json({ extensions: [{ name: 'acme', moduleUrl: moduleUrlFor(ASSET_TOKEN) }] });
+    }
     if (url.includes('/assets/')) return new Response('<html>', { status: 200, headers: { 'cache-control': IMMUTABLE } });
     if (url.includes('/api/v1/ext/acme')) return json({ error: 'unauthorized' }, { status: 401 });
     return new Response('not found', { status: 404 });
@@ -140,11 +149,15 @@ describe('probeStockHost', () => {
     it('sends the supplied headers on authed probes and nothing on the anonymous ones', async () => {
       const { fetchImpl, sent } = recordingFetch(goodFetch());
       await probeStockHost(baseOptions(fetchImpl, { headers: { authorization: BEARER, 'x-api-key': API_KEY } }));
-      for (const authed of ['/api/v1/admin/extensions', '/api/v1/extensions/registry', '/assets/']) {
+      for (const authed of ['/api/v1/admin/extensions', '/api/v1/extensions/registry']) {
         expect(headersFor(sent, authed)).toEqual({ authorization: BEARER, 'x-api-key': API_KEY });
       }
       expect(headersFor(sent, '/health')).toEqual({});
       expect(headersFor(sent, '/api/v1/ext/acme')).toEqual({});
+      // The asset route is no longer bearer-gated (issue #4164): the signed
+      // token in the URL is the credential, so this request must carry no
+      // auth headers at all — even though the caller supplied credentials.
+      expect(headersFor(sent, '/assets/')).toEqual({});
     });
 
     it('never leaks a Bearer header value, even when a probe throws', async () => {
@@ -332,6 +345,85 @@ describe('probeStockHost', () => {
     });
   });
 
+  describe('signed asset token (issue #4164)', () => {
+    // An unpatched host still advertises the OLD unsigned shape
+    // (`/api/v1/extensions/assets/<name>/<digest>/...`, no `t/<token>` segment).
+    // This is the regression the registry/asset probes exist to catch.
+    function unsignedRegistryFetch(): typeof fetch {
+      return goodFetch((url) =>
+        url.endsWith('/api/v1/extensions/registry')
+          ? json({ extensions: [{ name: 'acme', moduleUrl: '/api/v1/extensions/assets/acme/sha256-abc/index.js' }] })
+          : undefined,
+      );
+    }
+
+    it('fails the registry probe when the response is 200 but advertises no signed moduleUrl', async () => {
+      const result = await probeStockHost(baseOptions(unsignedRegistryFetch()));
+      const registry = result.observations.find((o) => o.name === 'registry');
+      expect(registry?.status).toBe(200);
+      expect(registry?.ok).toBe(false);
+      expect(registry?.detail).toBe('GET /api/v1/extensions/registry -> 200, no signed moduleUrl advertised');
+    });
+
+    it('reports assetImmutable as skipped when the registry advertised nothing to harvest a token from', async () => {
+      const result = await probeStockHost(baseOptions(unsignedRegistryFetch()));
+      const asset = result.observations.find((o) => o.name === 'assetImmutable');
+      expect(asset?.ok).toBe(false);
+      expect(asset?.status).toBeNull();
+      expect(asset?.detail).toBe('skipped: the registry advertised no signed asset URL to derive a token from');
+    });
+
+    it('redacts the harvested token out of a failing asset fetch\'s error message', async () => {
+      // The success paths never put the token in a detail string, but a fetch
+      // rejection can carry the request URL in its message, and that message
+      // goes through `redact` in the probe wrapper. The token is a live
+      // credential — it must not survive into a probe result a caller may log.
+      const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : String(input);
+        if (url.includes('/api/v1/extensions/assets/')) {
+          throw new Error(`connect ECONNREFUSED fetching ${url}`);
+        }
+        return goodFetch()(input as never, init as never);
+      }) as typeof fetch;
+
+      const result = await probeStockHost(baseOptions(fetchImpl));
+      const asset = result.observations.find((o) => o.name === 'assetImmutable');
+      expect(asset?.ok).toBe(false);
+      expect(asset?.detail).toContain('[redacted]');
+      expect(JSON.stringify(result)).not.toContain(ASSET_TOKEN);
+    });
+
+    it('issues the asset request with NO auth headers at all, even though credentials were supplied', async () => {
+      // The signed token in the URL IS the credential — a browser's dynamic
+      // import() cannot send an Authorization header, so the asset route
+      // cannot be bearer-gated. Sending auth here anyway would mask a
+      // regression that re-gates the route on a bearer, so assert directly
+      // on the RequestInit the stub received for the asset URL.
+      const { fetchImpl, sent } = recordingFetch(goodFetch());
+      await probeStockHost(baseOptions(fetchImpl, { headers: { authorization: BEARER, 'x-api-key': API_KEY } }));
+      const assetInit = headersFor(sent, '/assets/');
+      expect(assetInit).toEqual({});
+      expect(assetInit.authorization).toBeUndefined();
+      expect(assetInit.cookie).toBeUndefined();
+    });
+
+    it('never lets the harvested asset token leak into any observation detail or the full result', async () => {
+      // A distinctive, secret-shaped value: if the implementation ever
+      // stringified the token into a detail (e.g. for debugging), this would
+      // be a real assertion failure, not a vacuous pass.
+      const LIVE_TOKEN = 'live-cred-do-not-leak-4f8c2a91';
+      const fetchImpl = goodFetch((url) =>
+        url.endsWith('/api/v1/extensions/registry')
+          ? json({ extensions: [{ name: 'acme', moduleUrl: moduleUrlFor(LIVE_TOKEN) }] })
+          : undefined,
+      );
+      const result = await probeStockHost(baseOptions(fetchImpl));
+      expect(result.ok).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(LIVE_TOKEN);
+      expect(result.observations.every((o) => !o.detail.includes(LIVE_TOKEN))).toBe(true);
+    });
+  });
+
   describe('diagnostic quality', () => {
     it('does not garble details when a short non-secret header rides along', async () => {
       // Blanket-replacing "1" would rewrite every status code and digest.
@@ -340,7 +432,7 @@ describe('probeStockHost', () => {
         baseOptions(fetchImpl, { headers: { authorization: BEARER, 'x-tenant': '1' } }),
       );
       expect(result.observations.find((o) => o.name === 'registry')?.detail)
-        .toBe('GET /api/v1/extensions/registry -> 200');
+        .toBe(`GET /api/v1/extensions/registry -> 200, advertises a signed moduleUrl for "acme"`);
       expect(result.ok).toBe(true);
     });
 
