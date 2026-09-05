@@ -4609,6 +4609,13 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			break
 		}
 		c := cmd // capture
+		// #3525: the same bypass executeCommandViaPool applies on the WebSocket
+		// side. Without it a cancel delivered by the heartbeat poll would queue
+		// behind the script it is meant to stop.
+		if isLifecycleCommand(c.Type) {
+			go h.processCommand(c)
+			continue
+		}
 		if !h.pool.Submit(func() { h.processCommand(c) }) {
 			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
 		}
@@ -5842,6 +5849,11 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #3525: the cancellation marker must survive this conversion — the
+		// WebSocket leg is the primary result channel, and the marker is the
+		// only proof that closes a `cancelling` execution as `cancelled`.
+		Cancelled:            result.Cancelled,
+		CancelledByCommandID: result.CancelledByCommandID,
 	}
 
 	// An explicitly-set Result wins. The stdout reparse below stays for the
@@ -5898,6 +5910,20 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 }
 
 func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
+	// #3525: lifecycle commands BYPASS the worker pool. MaxConcurrentCommands
+	// clamps to a floor of 1 (config/validate.go), so a cancel submitted to the
+	// pool queues behind the very script it must stop — and once the queue is
+	// full Submit rejects it outright with "command rejected, worker pool full".
+	// These handlers never spawn long work of their own (a cancel waits at most
+	// grace + backstop), so running them off-pool cannot exhaust the host.
+	//
+	// The caller is already a per-command goroutine: script_cancel is not an
+	// ordered command, so websocket dispatchCommand gives it its own goroutine,
+	// and the heartbeat poll path spawns one explicitly.
+	if isLifecycleCommand(cmd.Type) {
+		return h.runTrackedCommand(cmd)
+	}
+
 	if h.pool == nil {
 		return h.executeCommand(cmd)
 	}
@@ -6052,6 +6078,18 @@ func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) 
 		}
 	}
 	return inFlight, overdue
+}
+
+// isLifecycleCommand reports whether a command manages OTHER in-flight
+// commands and therefore must never be scheduled behind them (#3525). A cancel
+// queued behind the script it is meant to stop can only ever fire after that
+// script has already finished on its own.
+func isLifecycleCommand(cmdType string) bool {
+	switch cmdType {
+	case tools.CmdScriptCancel, tools.CmdScriptListRunning:
+		return true
+	}
+	return false
 }
 
 func isEphemeralCommand(cmdType string) bool {

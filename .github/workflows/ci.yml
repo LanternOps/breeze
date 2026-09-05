@@ -1361,7 +1361,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1467,7 +1467,7 @@ jobs:
       # the one that most needs the detector on the OS it actually ships to.
       - name: Run Windows race tests
         working-directory: agent
-        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./internal/executor ./cmd/breeze-watchdog
 
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was
