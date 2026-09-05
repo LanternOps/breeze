@@ -567,14 +567,19 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // Wave 4 of #4673: the subset of DUAL_AXIS_TENANT_TABLES whose ownership
 // shape is org_id XOR partner_id — a config-ish "define once, apply
 // partner-wide" table. Excluded (present above but NOT this XOR shape):
-// `users` (three-way: org OR partner OR self), `deployment_invites` /
-// `access_reviews` (org_id AND partner_id together, not exclusive — a
-// partner-wide row still carries the matching org_id), and
-// `software_policy_audit` / `software_remediation_requests` (dual-owned,
-// explicitly documented above as NOT XOR).
+// `users` (three-way: org OR partner OR self), `deployment_invites`
+// (org_id AND partner_id together via the composite FK
+// deployment_invites_org_partner_fk — a row carries BOTH, not one or the
+// other), and `software_policy_audit` / `software_remediation_requests`
+// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` IS
+// included below even though it has no DB-level CHECK: its own migration
+// (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
+// "mutually exclusive, so no composite FK applies" — same app-enforced-only
+// shape as custom_field_definitions and client_ai_prompt_templates.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
+  'access_reviews',
   'custom_field_definitions',
   'client_ai_prompt_templates',
   'configuration_policies',
@@ -617,10 +622,15 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
 // shrink it as each gap is closed; never add a table here to make an
 // unrelated red pass, and never add one for a table that doesn't actually
 // need the branch (add it to XOR_OWNERSHIP_DUAL_AXIS_TABLES's exclusion
-// comment instead, with rationale).
+// comment instead, with rationale). Shrink-only is ENFORCED by the ceiling +
+// frozen name set directly below — the same pattern this file already uses
+// for UNREVIEWED_RLS_CLASSIFICATION_DEBT, added there after an independent
+// review found "documented shrink-only, nothing enforces it" let a future
+// author add an entry and go green.
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
   ['ai_agents', 'TODO(#4942): no breeze_current_partner_id() SELECT branch yet.'],
   ['ai_agent_schedules', 'TODO(#4943): no breeze_current_partner_id() SELECT branch yet.'],
+  ['access_reviews', 'TODO(#4970): no breeze_current_partner_id() SELECT branch yet.'],
   ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
   ['client_ai_prompt_templates', 'TODO(#4945): no breeze_current_partner_id() SELECT branch yet.'],
   ['software_catalog', 'TODO(#4946): no breeze_current_partner_id() SELECT branch yet.'],
@@ -644,6 +654,42 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
   ['contract_templates', 'TODO(#4961): no breeze_current_partner_id() SELECT branch yet.'],
   ['contract_template_versions', 'TODO(#4962): no breeze_current_partner_id() SELECT branch yet.'],
   ['psa_connections', 'TODO(#4963): no breeze_current_partner_id() SELECT branch yet.'],
+]);
+
+// Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
+// UNREVIEWED_RLS_CLASSIFICATION_DEBT's guard above). Fixed at the 2026-09-05
+// review (Wave 4 of #4673). LOWER the ceiling and remove the name from the
+// frozen set when a table's follow-up issue lands and it leaves the map;
+// NEVER raise the ceiling or add a name to the frozen set — a table new to
+// XOR_OWNERSHIP_DUAL_AXIS_TABLES that lacks the branch must get its own filed
+// follow-up issue, not a free ride into an already-frozen exemption. Both
+// constants are asserted by 'the partner-wide SELECT branch exemption map
+// only shrinks' below.
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 23;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
+  'ai_agents',
+  'ai_agent_schedules',
+  'access_reviews',
+  'custom_field_definitions',
+  'client_ai_prompt_templates',
+  'software_catalog',
+  'software_policies',
+  'security_policies',
+  'alert_rules',
+  'automation_policies',
+  'automation_resource_bindings',
+  'automations',
+  'sensitive_data_policies',
+  'peripheral_policies',
+  'maintenance_windows',
+  'notification_channels',
+  'notification_routing_rules',
+  'escalation_policies',
+  'sso_providers',
+  'ticket_forms',
+  'contract_templates',
+  'contract_template_versions',
+  'psa_connections',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
@@ -1598,8 +1644,9 @@ describe('RLS coverage contract', () => {
   });
 
   // Wave 4 of #4673: makes the NEXT partner-wide table's missing read branch
-  // fail loud instead of shipping the #2417 blindness again — see CLAUDE.md
-  // "Partner-Wide First" step 3. Deliberately independent of the assertion
+  // fail loud instead of shipping the same org-token blindness #2468 (the
+  // design issue behind this epic) documents — see CLAUDE.md "Partner-Wide
+  // First" step 3. Deliberately independent of the assertion
   // above: a table can pass "all four DML commands covered" via
   // breeze_has_partner_access alone and still be blind to an ORG-scoped
   // session reading its own partner's partner-wide rows, which is exactly
@@ -1608,6 +1655,11 @@ describe('RLS coverage contract', () => {
     const tables = Array.from(XOR_OWNERSHIP_DUAL_AXIS_TABLES).filter(
       (t) => !PARTNER_WIDE_SELECT_BRANCH_EXEMPT.has(t),
     );
+    // Floor guard: if every XOR table were ever moved into the exempt map,
+    // `tables` would degenerate to [] and the assertion below would pass
+    // vacuously (zero rows checked). At least the six tables Wave 1 and its
+    // precedents already covered must remain provably checked here.
+    expect(tables.length).toBeGreaterThan(0);
 
     const rows = (await db.execute(sql`
       SELECT DISTINCT p.tablename AS table_name
@@ -1635,6 +1687,41 @@ describe('RLS coverage contract', () => {
         `2026-10-05-110000-config-policy-partner-wide-select.sql for the template. If this is a ` +
         `deliberate, reviewed exception rather than a gap, add it to ` +
         `PARTNER_WIDE_SELECT_BRANCH_EXEMPT with a reason instead of silencing this failure.`
+    ).toEqual([]);
+  });
+
+  // Independent-review finding on this PR: an allowlist documented
+  // "shrink-only" with nothing enforcing it is the exact silent-omission
+  // class UNREVIEWED_RLS_CLASSIFICATION_DEBT's ratchet exists to close — so
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT gets the same guard. No database
+  // needed: this is a pure ratchet on the two constants above.
+  it('the partner-wide SELECT branch exemption map only shrinks', () => {
+    const names = [...PARTNER_WIDE_SELECT_BRANCH_EXEMPT.keys()];
+    const added = names.filter((name) => !PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES.has(name));
+    expect(
+      { added, size: names.length, ceiling: PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING },
+      `PARTNER_WIDE_SELECT_BRANCH_EXEMPT is shrink-only. Names not in the frozen 2026-09-05 set: ` +
+        `${JSON.stringify(added)}. A table new to XOR_OWNERSHIP_DUAL_AXIS_TABLES that lacks the ` +
+        `breeze_current_partner_id() branch needs its own filed follow-up issue (see the PR that ` +
+        `introduced this file for the pattern), never a silent addition here. When a table's ` +
+        `follow-up lands, remove it from both the Map and the frozen set and LOWER the ceiling; ` +
+        `never raise it.`
+    ).toEqual({ added: [], size: names.length, ceiling: PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING });
+    expect(names.length).toBeLessThanOrEqual(PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING);
+    // The frozen set must not outgrow the ceiling either (guards against
+    // "add the name to both places" without touching the number).
+    expect(PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES.size).toBeLessThanOrEqual(
+      PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING
+    );
+    // Every exempt entry must actually be one of the tables this contract
+    // covers — an entry for a table not in XOR_OWNERSHIP_DUAL_AXIS_TABLES
+    // (e.g. a typo, or a table since reclassified) would silently exempt
+    // nothing while looking like real coverage.
+    const orphaned = names.filter((name) => !XOR_OWNERSHIP_DUAL_AXIS_TABLES.has(name));
+    expect(
+      orphaned,
+      `These PARTNER_WIDE_SELECT_BRANCH_EXEMPT keys are not in XOR_OWNERSHIP_DUAL_AXIS_TABLES, so ` +
+        `they exempt nothing real: ${JSON.stringify(orphaned)}. Fix the table name or remove the entry.`
     ).toEqual([]);
   });
 
