@@ -431,6 +431,8 @@
       "allCategories": "Toutes les catégories",
       "default": "Par défaut",
       "severityNote": "Les sévérités ne s'appliquent qu'aux mises à jour du système d'exploitation. Les mises à jour d'applications tierces sont contrôlées par l'interrupteur ci-dessous — elles ne sont pas contrôlées par sévérité.",
+      "unratedSeverityNote": "Les correctifs non évalués (sans niveau de gravité) sont exclus de cette sélection de gravité et ne seront pas approuvés automatiquement, même si toutes les gravités sont cochées, sauf si vous activez l'interrupteur ci-dessous.",
+      "autoApproveUnratedLabel": "Approuver aussi automatiquement les correctifs non évalués",
       "manualDefault": "Chaque correctif de cet anneau nécessite une approbation manuelle.",
       "manualCategory": "Les correctifs de cette catégorie nécessitent une approbation manuelle.",
       "noOverrides": "Toutes les catégories suivent la norme par défaut. Ajoutez une dérogation pour traiter un autre type différemment."

@@ -48,6 +48,7 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
       deferralDays: 7,
       thirdPartyApps: false,
       thirdPartyDeferralDays: 0,
+      autoApproveUnrated: false,
     });
   });
 
@@ -301,5 +302,69 @@ describe('UpdateRingForm — third-party app auto-approve', () => {
     );
 
     expect(screen.getByTestId('ring-third-party-enabled')).not.toBeChecked();
+  });
+});
+
+// #3758: unrated patches (no severity, or the 'unknown' sentinel) never
+// auto-approve on severity alone. This opt-in lets an admin explicitly
+// include them too.
+describe('UpdateRingForm — unrated-patch opt-in (#3758)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the unrated-patches warning note and an opt-in toggle once auto-approve is enabled', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+
+    expect(screen.getByTestId('ring-unrated-severity-note')).toHaveTextContent(/unrated patches/i);
+    expect(screen.getByTestId('ring-auto-approve-unrated-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-auto-approve-unrated-toggle')).not.toBeChecked();
+  });
+
+  it('submits autoApproveUnrated: true when the opt-in toggle is checked', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-critical'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-unrated-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.autoApprove.autoApproveUnrated).toBe(true);
+  });
+
+  it('hydrates the opt-in toggle from edit defaults', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          name: 'Broad',
+          autoApprove: { enabled: true, severities: ['critical'], deferralDays: 3, autoApproveUnrated: true },
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('ring-auto-approve-unrated-toggle')).toBeChecked();
+  });
+
+  it('offers the same opt-in toggle on a category override and submits it', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-auto-approve-severity-critical'));
+    fireEvent.click(screen.getByRole('button', { name: /add override/i }));
+    fireEvent.click(screen.getByTestId('ring-category-0-auto-approve-unrated-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.categoryRules?.[0]).toMatchObject({ autoApproveUnrated: true });
   });
 });

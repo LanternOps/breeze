@@ -431,6 +431,8 @@
       "allCategories": "Tutte le categorie",
       "default": "Predefinito",
       "severityNote": "Le gravità si applicano solo agli aggiornamenti del sistema operativo. Gli aggiornamenti delle app di terze parti sono controllati dall'interruttore qui sotto — non sono controllati per gravità.",
+      "unratedSeverityNote": "Le patch non valutate (senza una valutazione di gravità) sono escluse da questa selezione di gravità e non verranno approvate automaticamente, anche se sono selezionate tutte le gravità, a meno che non si attivi l'interruttore qui sotto.",
+      "autoApproveUnratedLabel": "Approva automaticamente anche le patch non valutate",
       "manualDefault": "Ogni patch in questo anello richiede l'approvazione manuale.",
       "manualCategory": "Le patch in questa categoria richiedono l'approvazione manuale.",
       "noOverrides": "Tutte le categorie seguono l'impostazione predefinita. Aggiungi un override per gestirne una diversamente."

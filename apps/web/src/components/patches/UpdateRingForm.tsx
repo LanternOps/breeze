@@ -12,6 +12,7 @@ function makeRingSchema(t: TFunction<'patches'>) {
     category: z.string().min(1, t('updateRingForm.validation.selectCategory')),
     autoApprove: z.boolean(),
     autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+    autoApproveUnrated: z.boolean().optional(),
     deferralDaysOverride: z.coerce.number().int().min(0).max(365).nullable().optional(),
   });
 
@@ -23,6 +24,10 @@ function makeRingSchema(t: TFunction<'patches'>) {
     // Always a concrete number in the form (pre-filled from the ring hold);
     // null "inherit" is an API-writer concept, mirroring deferralDaysOverride.
     thirdPartyDeferralDays: z.coerce.number().int().min(0).max(365),
+    // Opt-in: also auto-approve patches with no severity rating (#3758). Always
+    // a concrete boolean in the form (unlike the API's optional-for-merge
+    // shape) — the form always has an explicit checked/unchecked state.
+    autoApproveUnrated: z.boolean(),
   }).superRefine((data, ctx) => {
     if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
       ctx.addIssue({
@@ -223,7 +228,7 @@ export default function UpdateRingForm({
       deferralDays: 0,
       deadlineDays: null,
       gracePeriodHours: 4,
-      autoApprove: { enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: 0 },
+      autoApprove: { enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: 0, autoApproveUnrated: false },
       categoryRules: [],
       ...defaultValues,
     } satisfies UpdateRingFormDefaults;
@@ -237,6 +242,7 @@ export default function UpdateRingForm({
       severities: [],
       deferralDays: inheritedHold,
       thirdPartyApps: false,
+      autoApproveUnrated: false,
       ...aa,
       thirdPartyDeferralDays: aa.thirdPartyDeferralDays ?? inheritedHold,
     };
@@ -296,6 +302,7 @@ export default function UpdateRingForm({
       category: availableCategories[0].value,
       autoApprove: true,
       autoApproveSeverities: autoApprove?.severities ?? [],
+      autoApproveUnrated: autoApprove?.autoApproveUnrated ?? false,
       // Pre-fill from the default rule's hold so the override is explicit and
       // never blank — the old `—` placeholder read as broken.
       deferralDaysOverride: autoApprove?.deferralDays ?? 0,
@@ -427,6 +434,21 @@ export default function UpdateRingForm({
                   >
                     {t('updateRingForm.approvalPolicy.severityNote')}
                   </p>
+                  <p
+                    className="mt-1.5 max-w-md text-xs text-muted-foreground"
+                    data-testid="ring-unrated-severity-note"
+                  >
+                    {t('updateRingForm.approvalPolicy.unratedSeverityNote')}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <ApproveToggle
+                      checked={!!autoApprove?.autoApproveUnrated}
+                      field={register('autoApprove.autoApproveUnrated')}
+                      testId="ring-auto-approve-unrated-toggle"
+                      t={t}
+                    />
+                    <span className="text-xs text-muted-foreground">{t('updateRingForm.approvalPolicy.autoApproveUnratedLabel')}</span>
+                  </div>
                 </div>
                 <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" t={t} />
 
@@ -521,6 +543,15 @@ export default function UpdateRingForm({
                       </div>
                     </div>
                     <HoldField field={register(`categoryRules.${index}.deferralDaysOverride`)} t={t} />
+                    <div className="mt-3 flex w-full items-center gap-2">
+                      <ApproveToggle
+                        checked={!!rule?.autoApproveUnrated}
+                        field={register(`categoryRules.${index}.autoApproveUnrated`)}
+                        testId={`ring-category-${index}-auto-approve-unrated-toggle`}
+                        t={t}
+                      />
+                      <span className="text-xs text-muted-foreground">{t('updateRingForm.approvalPolicy.autoApproveUnratedLabel')}</span>
+                    </div>
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-muted-foreground">
