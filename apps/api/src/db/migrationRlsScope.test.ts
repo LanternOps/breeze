@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { analyzeMigrationDml, findUnscopedMigrationDml } from './migrationRlsScope';
+import { analyzeMigrationDml, findUnscopedMigrationDml, escapeRegExp } from './migrationRlsScope';
 
 /**
  * Guard for issue #4518: a migration that writes rows without first electing
@@ -476,5 +476,22 @@ describe('analyzeMigrationDml — review regressions', () => {
       expect(unscoped(dml).length).toBe(1);
       expect(unscoped(scope + dml)).toEqual([]);
     }
+  });
+});
+
+describe('escapeRegExp', () => {
+  it('escapes backslash along with every other regex metacharacter', () => {
+    // CodeQL js/incomplete-sanitization: an earlier version of this escaper
+    // (`name.replace(/[$]/g, '\\$&')`, used to embed a routine name in a
+    // RegExp) escaped `$` but left a literal backslash untouched. A stray
+    // backslash then combines with whatever the escaper emits next instead
+    // of being matched literally, desynchronising the built pattern. Proof:
+    // wrapping the escaped output in `^...$` must match the original string
+    // back, verbatim, for input containing a backslash plus other
+    // metacharacters.
+    const input = 'a\\$b.c*d';
+    const escaped = escapeRegExp(input);
+    expect(new RegExp(`^${escaped}$`).test(input)).toBe(true);
+    expect(new RegExp(`^${escaped}$`).test('aXb.c*d')).toBe(false);
   });
 });

@@ -111,6 +111,20 @@ function routineName(header: string): string | null {
 }
 
 /**
+ * Escapes every regex metacharacter — backslash included — so `value`
+ * matches only itself when spliced into a `RegExp` pattern. Escaping the
+ * "special" characters while leaving a literal backslash untouched is the
+ * classic incomplete-sanitization trap (CodeQL `js/incomplete-sanitization`):
+ * a stray backslash in the input combines with whatever the escaper emits
+ * next, instead of being matched literally, and can desynchronise the built
+ * pattern. `\\` is listed first in the class for readability only — order
+ * inside a character class does not matter.
+ */
+export function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Routines this file defines AND invokes itself, so their bodies execute at
  * migration time under the migration's own scope. `code` must come from a pass
  * with every routine body blanked, so a call written INSIDE another routine
@@ -122,7 +136,7 @@ function routinesInvokedAtMigrationTime(sql: string, code: string): Set<string> 
     /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+(?:"?[A-Za-z_][A-Za-z0-9_$]*"?\s*\.\s*)?"?([A-Za-z_][A-Za-z0-9_$]*)"?/gi,
   )) {
     const name = definition[1]!.toLowerCase();
-    const escaped = name.replace(/[$]/g, '\\$&');
+    const escaped = escapeRegExp(name);
     const called = new RegExp(
       String.raw`\b(?:SELECT|PERFORM|CALL|FROM|JOIN)\s+(?:"?public"?\s*\.\s*)?"?${escaped}"?\s*\(`,
       'i',
