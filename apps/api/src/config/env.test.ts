@@ -285,4 +285,88 @@ describe('config env', () => {
       expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
     });
   });
+
+  describe('Apple App Attest configuration (#1374 W03)', () => {
+    afterEach(() => {
+      delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+      delete process.env.APPLE_APP_ATTEST_APP_ID;
+    });
+
+    // The verifier's entire environment gate rests on this one comparison. A
+    // refactor that inverted it (`!== 'production'`) would silently start
+    // accepting developer-signed App Attest attestations in production, which
+    // is exactly the L4 bypass wave W03 exists to close — and nothing else in
+    // the suite would notice.
+    it('resolves production for anything that is not exactly "development"', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const value of ['Development', 'develop', 'dev', 'DEVELOPMENT', 'prod', 'true', '']) {
+          process.env.APPLE_APP_ATTEST_ENVIRONMENT = value;
+          expect(mod.appleAppAttestEnvironment()).toBe('production');
+        }
+        delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+        expect(mod.appleAppAttestEnvironment()).toBe('production');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('resolves development only for the exact string, whitespace tolerated', async () => {
+      const mod = await loadEnv();
+      process.env.APPLE_APP_ATTEST_ENVIRONMENT = 'development';
+      expect(mod.appleAppAttestEnvironment()).toBe('development');
+      process.env.APPLE_APP_ATTEST_ENVIRONMENT = '  development  ';
+      expect(mod.appleAppAttestEnvironment()).toBe('development');
+    });
+
+    // Failing safe silently is what makes a misconfiguration take weeks to
+    // find: every genuine development-build attestation would be rejected with
+    // no hint that the cause is a typo rather than a forged blob.
+    it('warns on an unrecognized value but stays on production', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        process.env.APPLE_APP_ATTEST_ENVIRONMENT = 'Development';
+        expect(mod.appleAppAttestEnvironment()).toBe('production');
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('APPLE_APP_ATTEST_ENVIRONMENT'),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not warn for the two recognized values or for unset', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const value of ['production', 'development']) {
+          process.env.APPLE_APP_ATTEST_ENVIRONMENT = value;
+          mod.appleAppAttestEnvironment();
+        }
+        delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+        mod.appleAppAttestEnvironment();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('falls back to the shipped appId when unset or blank', async () => {
+      // Read at MODULE LOAD, unlike the environment selector — so each case
+      // needs its own module instance.
+      delete process.env.APPLE_APP_ATTEST_APP_ID;
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('D8W6N2JYMA.com.breeze.rmm');
+
+      process.env.APPLE_APP_ATTEST_APP_ID = '   ';
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('D8W6N2JYMA.com.breeze.rmm');
+
+      process.env.APPLE_APP_ATTEST_APP_ID = '  OTHER00000.com.example.app  ';
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('OTHER00000.com.example.app');
+    });
+  });
 });

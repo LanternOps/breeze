@@ -286,6 +286,13 @@ x-api-env: &api-env
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
   AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+  # Apple App Attest (#1374). Empty === unset for both readers, so an unset
+  # value keeps the compiled defaults (the shipped appId, and the PRODUCTION
+  # attestation environment). Mapped rather than omitted so that setting
+  # APPLE_APP_ATTEST_ENVIRONMENT=development on a staging droplet actually
+  # takes effect instead of being an inert line in .env.
+  APPLE_APP_ATTEST_APP_ID: ${APPLE_APP_ATTEST_APP_ID:-}
+  APPLE_APP_ATTEST_ENVIRONMENT: ${APPLE_APP_ATTEST_ENVIRONMENT:-}
   # Break-glass only: lets the API connect to an unauthenticated Redis.
   # Mapped so it can be set deliberately in an incident rather than being
   # inert; leave it unset in normal operation.

@@ -1009,16 +1009,28 @@ describe('assertApprovalAssurance — mobile public_key_alg (#1374 W02)', () => 
 // The cross-module half of the W02 fail-closed contract. Lives here rather than
 // in authenticatorAttestation.test.ts because importing this module pulls in the
 // db layer, which that pure-unit suite deliberately does not stand up.
-describe('verifyPlatformAttestation is fail-closed against the L4 trusted set (#1374 W02)', () => {
-  it('never yields a basis that may reach critical tier while no verifier is wired', async () => {
+describe('verifyPlatformAttestation is fail-closed against the L4 trusted set (#1374 W02/W03)', () => {
+  it('never yields a basis that may reach critical tier from an unverifiable attestation', async () => {
     const { verifyPlatformAttestation } = await import('./authenticatorAttestation');
     const transcript = Buffer.alloc(32, 1);
-    for (const attestation of [
-      { platform: 'ios' as const, attestationObject: 'x', keyId: 'k' },
-      { platform: 'android' as const, certificateChain: ['a', 'b'], playIntegrityToken: 'jwt' },
-    ]) {
-      const result = await verifyPlatformAttestation({ attestation, transcript, publicKeySpkiB64: 'spki' });
-      expect(L4_TRUSTED_PLATFORM_BOUND_BASES.has(result.basis)).toBe(false);
+    // Real verifier, real pinned Apple root, garbage blobs: iOS is wired as of
+    // W03, so this now proves the LIVE path fails closed rather than that a
+    // stub does. Both algorithms, because the basis split is algorithm-driven
+    // and a bug there is exactly how a forged blob would reach L4.
+    for (const publicKeyAlg of ['ES256', 'RS256'] as const) {
+      for (const attestation of [
+        { platform: 'ios' as const, attestationObject: 'x', keyId: 'k' },
+        { platform: 'android' as const, certificateChain: ['a', 'b'], playIntegrityToken: 'jwt' },
+      ]) {
+        const result = await verifyPlatformAttestation({
+          attestation,
+          transcript,
+          publicKeySpkiB64: 'spki',
+          publicKeyAlg,
+        });
+        expect(result.basis).toBe('unattested');
+        expect(L4_TRUSTED_PLATFORM_BOUND_BASES.has(result.basis)).toBe(false);
+      }
     }
   });
 });
