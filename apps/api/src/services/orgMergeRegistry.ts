@@ -329,6 +329,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ...buildFollowsParentEntries(),
 
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
+  audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
@@ -493,7 +494,6 @@ const REPOINT_TABLES: readonly string[] = [
   "audit_baseline_apply_approvals",
   "audit_baseline_results",
   "audit_policy_states",
-  "audit_retention_policies",
   "automation_action_results",
   "automation_policies",
   "automation_run_device_results",

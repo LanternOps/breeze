@@ -263,11 +263,16 @@ describe('org merge engine SQL against real Postgres', () => {
     await expect(previewOrgMerge(L, L, P)).rejects.toThrow(/itself/i);
 
     // Every count statement + both count mirrors execute against the live
-    // catalog. Empty orgs, so all counts are 0.
+    // catalog. Otherwise-empty orgs still each carry the one
+    // audit_retention_policies row a DB trigger seeds on org creation
+    // (breeze_seed_org_audit_retention, #4824) — a keep-survivor collision
+    // the preview must disclose rather than reporting a false "nothing here".
     const preview = await previewOrgMerge(L, S, P);
     expect(preview.verdict).toBe('ok');
-    expect(preview.totalMovableRows).toBe(0);
-    expect(preview.tables).toEqual([]);
+    expect(preview.totalMovableRows).toBe(1);
+    expect(preview.tables).toEqual([
+      { table: 'audit_retention_policies', policy: 'keep-survivor', loserRows: 1, wouldDrop: 1 },
+    ]);
     expect(preview.warnings).toEqual([]);
 
     // I4: an audit row under the loser must surface as a disclosed
@@ -284,7 +289,10 @@ describe('org merge engine SQL against real Postgres', () => {
     expect(auditRow?.loserRows).toBe(1);
     // Destroyed rows are reported as would-drop and excluded from "movable".
     expect(auditRow?.wouldDrop).toBe(1);
-    expect(disclosed.totalMovableRows).toBe(0);
+    // Still just the one movable row from audit_retention_policies (see
+    // above) — the newly-destroyed audit_logs row is disclosed but, being
+    // leave-for-erasure, never counted as movable.
+    expect(disclosed.totalMovableRows).toBe(1);
     expect(disclosed.warnings.join('\n')).toMatch(/PERMANENTLY DESTROYED/);
     expect(disclosed.warnings.join('\n')).toMatch(/audit_logs/);
 
