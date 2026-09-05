@@ -39,7 +39,7 @@ import { describeZodIssues } from '../lib/zodIssues';
 import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
-import { createScheduledBackupJobIfAbsent } from '../services/backupJobCreation';
+import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../services/backupJobCreation';
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
@@ -258,12 +258,14 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
         // Profile fan-out: one job per enabled selection. Legacy custom links
         // (no profile) create a single job with NULL mode, exactly as before.
         const specs = entry.selectionSpecs ?? [undefined];
+        const helperQueues = await deviceHelperQueues(entry.deviceId);
         for (const spec of specs) {
           const result = await createScheduledBackupJobIfAbsent({
             orgId,
             configId: entry.configId,
             featureLinkId: entry.featureLinkId,
             deviceId: entry.deviceId,
+            helperQueues,
             occurrenceKey,
             createdAt: now,
             dedupeWindowMinutes: SCHEDULE_LOOKBACK_MINUTES,
@@ -976,7 +978,10 @@ async function processDispatchBackup(
         })
         .where(and(
           eq(backupJobs.id, data.jobId),
-          inArray(backupJobs.status, ['pending', 'running'])
+          inArray(backupJobs.status, ['pending', 'running']),
+          // Helper admission/start can race this post-send write. Its lifecycle
+          // signal wins; never promote queued work or reset execution start.
+          isNull(backupJobs.lastProgressAt)
         ));
 
       console.log(

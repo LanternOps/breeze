@@ -2,7 +2,10 @@
 // the main breeze-agent and the breeze-backup helper binary.
 package backupipc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // IPC message types for backup helper communication.
 const (
@@ -38,6 +41,33 @@ type BackupCommandRequest struct {
 	// capability (see websocket.Client.HasServerCapability) — an old server
 	// would otherwise parse the ack as a malformed terminal result.
 	Async bool `json:"async,omitempty"`
+	// QueueAsync requires backup_queue_async server capability. It extends async
+	// delivery to SQL/Hyper-V and acknowledges admission with {"queued":true}.
+	// The helper then emits a "queued" progress phase while waiting and a
+	// "starting" phase once it has acquired the device slot, immediately
+	// before execution begins. Without it the helper executes the command
+	// directly (pre-queue behaviour) so a non-queue-aware server's synchronous
+	// round trip never blocks behind another workload.
+	QueueAsync bool `json:"queueAsync,omitempty"`
+}
+
+// Queued workload command types. Only these occupy the per-device execution
+// slot; control/status commands (backup_stop, backup_list, ...) never wait.
+// Shared by the agent forwarder and the helper so the two lists cannot drift.
+const (
+	CommandBackupRun    = "backup_run"
+	CommandMSSQLBackup  = "mssql_backup"
+	CommandHypervBackup = "hyperv_backup"
+)
+
+// IsQueuedWorkload reports whether commandType is serialized through the
+// per-device backup execution queue.
+func IsQueuedWorkload(commandType string) bool {
+	switch commandType {
+	case CommandBackupRun, CommandMSSQLBackup, CommandHypervBackup:
+		return true
+	}
+	return false
 }
 
 // BackupCommandResult is sent from the backup helper to the agent.
@@ -71,3 +101,13 @@ type BackupProgress struct {
 	// stranding the uploaded objects with no restore point.
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
+
+// BackupStopForwardTimeout is how long the agent waits for the helper's
+// backup_stop reply. BackupStopDrainTimeout is how long the helper may block
+// joining a cancelled workload's unwind before replying; it MUST stay below
+// the forward timeout or every drained stop reads as a failed command on the
+// server (the reply then arrives unsolicited). Pinned by types_test.go.
+const (
+	BackupStopForwardTimeout = 30 * time.Second
+	BackupStopDrainTimeout   = 20 * time.Second
+)

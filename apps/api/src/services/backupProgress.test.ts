@@ -19,6 +19,7 @@ vi.mock('../db/schema', () => ({
     fileCount: 'backupJobs.fileCount',
     totalFiles: 'backupJobs.totalFiles',
     lastProgressAt: 'backupJobs.lastProgressAt',
+    startedAt: 'backupJobs.startedAt',
     updatedAt: 'backupJobs.updatedAt',
   },
   devices: {
@@ -38,6 +39,7 @@ import {
   applyBackupProgress,
   applyBackupStartedAck,
   isBackupStartedAck,
+  isBackupQueuedAck,
   isLegacyBackupTimeoutResult,
   tryParseBackupResultPayload,
 } from './backupProgress';
@@ -395,5 +397,58 @@ describe('applyBackupStartedAck', () => {
 
     expect(result).toBe(false);
     expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('queued backup lifecycle', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+
+  it('recognizes queued acknowledgements without treating terminal data as admission', () => {
+    expect(isBackupQueuedAck({ queued: true })).toBe(true);
+    for (const payload of [null, [], 'queued', { queued: false }, { started: true }, { status: 'completed' }]) {
+      expect(isBackupQueuedAck(payload)).toBe(false);
+    }
+  });
+
+  it.each(['queued', 'starting', 'uploading', 'scanning', undefined])('guards %s lifecycle updates by owning agent and in-flight state', async (phase) => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{ id: JOB_UUID, deviceId: 'device-1', agentId: 'agent-1', status: 'pending' }]) as any);
+    const update = updateChain([{ id: JOB_UUID }]);
+    vi.mocked(db.update).mockReturnValue(update as any);
+    await applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress: { phase } });
+    const changes = update.set.mock.calls[0][0];
+    expect(changes.lastProgressAt).toBeInstanceOf(Date);
+    // The database evaluates these guards atomically against the latest row,
+    // not the SELECT snapshot: late queued messages cannot demote starting.
+    const startedAt = JSON.stringify(changes.startedAt);
+    expect(startedAt).toContain('lastProgressAt');
+    expect(startedAt).toContain('IS NULL');
+    expect(startedAt).toContain('ELSE');
+    if (phase !== 'queued') {
+      expect(changes.status).toBe('running');
+      expect(startedAt).toContain("= 'pending'");
+    } else {
+      expect(JSON.stringify(changes.status)).toContain("'pending'::backup_status ELSE");
+    }
+    expect(JSON.stringify(update.where.mock.calls[0][0])).toContain('running');
+    expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', JOB_UUID);
+  });
+
+  it('does not apply queued/starting signals from a different device agent', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{ id: JOB_UUID, agentId: 'owner', status: 'pending' }]) as any);
+    for (const phase of ['queued', 'starting']) {
+      expect(await applyBackupProgress({ agentId: 'other', commandId: JOB_UUID, progress: { phase } }))
+        .toEqual({ applied: false, reason: 'agent-mismatch' });
+    }
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('queued ack preserves an already-started row through an atomic first-signal guard', async () => {
+    const update = updateChain([{ id: JOB_UUID }]);
+    vi.mocked(db.update).mockReturnValue(update as any);
+    await applyBackupStartedAck({ jobId: JOB_UUID, deviceId: 'device-1', queued: true });
+    expect(JSON.stringify(update.set.mock.calls[0][0].status)).toContain('IS NULL');
+    expect(JSON.stringify(update.set.mock.calls[0][0].startedAt)).toContain('ELSE');
+    expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', JOB_UUID);
   });
 });

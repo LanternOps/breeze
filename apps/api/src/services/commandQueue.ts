@@ -907,6 +907,7 @@ export async function queueBackupStopCommand(
   deviceId: string,
   options: {
     userId?: string;
+    jobId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   return runOutsideDbContextSafe(() =>
@@ -914,7 +915,10 @@ export async function queueBackupStopCommand(
       const result = await queueCommandForExecution(
         deviceId,
         CommandTypes.BACKUP_STOP,
-        { reason: 'cancelled' },
+        // jobId targets one workload on a queue-capable helper
+        // (BACKUP_QUEUE_MIN_HELPER_VERSION). Older helpers ignore the field
+        // and stop every backup on the device — the pre-queue behaviour.
+        { reason: 'cancelled', ...(options.jobId ? { jobId: options.jobId } : {}) },
         options
       );
 

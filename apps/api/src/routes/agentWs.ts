@@ -34,6 +34,7 @@ import {
   applyBackupProgress,
   applyBackupStartedAck,
   isBackupStartedAck,
+  isBackupQueuedAck,
   isLegacyBackupTimeoutResult,
   tryParseBackupResultPayload,
 } from '../services/backupProgress';
@@ -87,7 +88,7 @@ import {
   partnerIdForDevice,
 } from '../services/partnerTrust';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
-export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
+export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async', 'backup_queue_async'] as const;
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -1383,12 +1384,12 @@ export async function processOrphanedCommandResult(
     // the backup completes. Treat it as a progress ping, not a terminal
     // result.
     const startedAckPayload = tryParseBackupResultPayload(result.result, result.stdout);
-    if (isBackupStartedAck(startedAckPayload)) {
+    if (isBackupStartedAck(startedAckPayload) || isBackupQueuedAck(startedAckPayload)) {
       // applyBackupStartedAck's guarded update no-ops (returns false) when the
       // job is already terminal — only log the "started-ack" line when it
       // actually applied, so an incident timeline isn't misled by a started-ack
       // that landed after the job had already completed/failed/been reaped.
-      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
+      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId, queued: isBackupQueuedAck(startedAckPayload) });
       if (startedAckApplied) {
         console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
       } else {
