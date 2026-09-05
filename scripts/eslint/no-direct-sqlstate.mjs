@@ -19,7 +19,7 @@ function isSqlstate(node) {
   return node?.type === 'Literal' && typeof node.value === 'string'
     // PostgreSQL standard classes plus FDW, PL/pgSQL and internal-error classes.
     // OS codes such as EPIPE are deliberately excluded.
-    && /^(?:[0-9]{2}|F0|HV|P0|XX)[0-9A-Z]{3}$/.test(node.value);
+    && /^(?:[0-9][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/.test(node.value);
 }
 
 export const noDirectSqlstate = {

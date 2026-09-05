@@ -15,6 +15,9 @@ tester.run('no-direct-sqlstate', noDirectSqlstate, {
   invalid: [
     "error.code === '23505'",
     "error.code === 'F0000'",
+    "error.code === '0A000'",
+    "error.code === '2F000'",
+    "error.code === '3D000'",
     "error?.code !== '23503'",
     "error['code'] == '42P01'",
     "'23505' != (error as { code: string }).code",
