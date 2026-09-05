@@ -81,13 +81,17 @@ pointing at a database the api container can actually reach.
 | `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |
 | `ENROLLMENT_KEY_PEPPER` | — | Yes | HMAC pepper for enrollment key hashing |
 | `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
-| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | | Default enrollment key expiry |
-| `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | `1440` | | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime |
+| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `43200` (30 days) | | Default enrollment key expiry. Every path that mints a key shares this fallback — the Add Device modal, the Partner API, and installer child keys |
+| `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | inherits `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime |
 | `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `1440` | | Base TTL (minutes) for a freshly-issued installer bootstrap token when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment — see [Enrollment Keys](/agents/enrollment-keys/#installer-bootstrap-tokens) |
 | `INSTALLER_PARENT_MIN_REMAINING_SECONDS` | `60` | | Minimum remaining lifetime (seconds) a parent enrollment key must have to be used as an installer source. Guards against building an installer from a parent that expires before the download reaches the target machine |
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
 | `SESSION_SECRET` | — | Yes | Session signing secret |
+| `BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED` | `true` | | Whether an approver device must have **server-verified** platform attestation before it counts as a level-4 authenticator for the most sensitive approvals. **On by default** — leave it alone unless you have a documented reason. Set it to `false` only to accept a device's own unverified claim that it is platform-bound. This is a fail-closed gate: an unrecognized value logs a warning and keeps enforcement on, and the API refuses to boot on a malformed value rather than silently disabling it. |
+| `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
+| `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
+| `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
@@ -138,6 +142,8 @@ deployment env vars.
 | `MAILGUN_DOMAIN` | — | Mailgun sending domain |
 | `MAILGUN_BASE_URL` | `https://api.mailgun.net` | Mailgun API base URL |
 | `MAILGUN_FROM` | `noreply@breeze.local` | Mailgun-specific sender address |
+| `SMTP_TIMEOUT_MS` | `30000` | How long an outbound SMTP send may take before it is abandoned. Applies to **all** outbound mail. Without a bound, a wedged mail host can hold a send open for nodemailer's ten-minute default |
+| `MAILGUN_TIMEOUT_MS` | `120000` | The same bound for the Mailgun HTTP transport |
 
 ## SMS (Twilio)
 
@@ -160,6 +166,14 @@ Push notifications to the iOS app go directly through Apple's push service (APNs
 | `APNS_TEAM_ID` | — | Apple developer team ID |
 | `APNS_BUNDLE_ID` | — | iOS app bundle identifier |
 | `APNS_ENVIRONMENT` | `production` | `production` or `sandbox`. An empty value is treated as unset. |
+
+## Mobile Push Notifications (Android)
+
+Push notifications to the Android app go through Firebase Cloud Messaging.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FIREBASE_SERVICE_ACCOUNT` | — | Firebase service-account credentials JSON for the project that owns the Android app. Optional — leave it unset and Android devices simply receive no push notifications; nothing else changes and the API still boots. iOS push is unaffected either way. |
 
 ## Binary Distribution
 
@@ -228,6 +242,37 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
+
+### Background retention sweeps
+
+Breeze prunes its own operational tables nightly so a long-running instance does not accumulate delivery queues and diagnostic history forever. Every one of these is optional — the defaults are sensible and nothing needs setting on a normal deployment. Each sweep runs in batches so it never holds a long transaction; raise `*_MAX_BATCHES` only if a sweep repeatedly stops before it has caught up.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TICKET_OUTBOX_RETENTION_DAYS` | `14` | Days to keep delivered or exhausted ticket-email delivery records, clamped to 1–365 |
+| `TICKET_OUTBOX_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `TICKET_OUTBOX_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `INTENT_OUTBOX_RETENTION_DAYS` | `14` | Days to keep delivered approval/action-intent delivery records, clamped to 1–365 |
+| `INTENT_OUTBOX_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `INTENT_OUTBOX_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `METRIC_ANOMALY_INCIDENT_RETENTION_DAYS` | `14` | Days to keep resolved metric-anomaly incidents, clamped to 1–365 |
+| `METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `AGENT_LOG_RETENTION_DAYS` | `7` | Days to keep uploaded agent diagnostic logs, clamped to 1–365 |
+| `AGENT_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `AGENT_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+
+Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
+
+### Audit-chain verification
+
+The nightly job that re-verifies the tamper-evident audit chain is bounded rather than walking the whole table every night.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUDIT_CHAIN_VERIFY_ENABLED` | `true` | Set to `false` to turn nightly verification off. From v0.110.0 this also stops a sweep that is already running, not just the schedule — previously, restarting the API with the flag off could hand the in-flight sweep to the fresh container and re-run it from the beginning |
+| `AUDIT_CHAIN_VERIFY_MODE` | `incremental` | `incremental` verifies new rows since the last anchor plus one rolling slice of history per night. Set to `full` to restore the old whole-table walk — expect substantially more database I/O |
+| `AUDIT_CHAIN_VERIFY_RESCAN_SLICES` | `30` | How many nightly slices the historical portion of the chain is divided into. At the default, every historical row is re-verified at least once a month |
 
 ### Event-loop lag monitor
 
@@ -644,9 +689,10 @@ cheap local model, not `$0`. For accurate accounting, add the served model id to
 | `QBO_CLIENT_SECRET` | — | Intuit OAuth client secret |
 | `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/accounting/quickbooks/callback`) |
 | `QBO_ENVIRONMENT` | — | `sandbox` or `production` |
+| `QBO_WEBHOOK_VERIFIER_TOKEN` | — | Intuit app verifier token for `POST /api/v1/webhooks/quickbooks`. Optional. Without it the webhook endpoint answers `503` on every delivery (so Intuit keeps retrying) and payments arrive on the 15-minute reconcile sweep instead — the sweep is the guaranteed path either way, the webhook only makes it faster. Intuit allows one webhook endpoint per app, so a multi-region deployment can only point it at one region. |
 
 <Aside>
-  All four are optional and validated lazily — the API boots fine without them. Until they're set, the in-app QuickBooks connect flow reports that QuickBooks isn't configured on this instance. Set all four to enable [Accounting integration](/features/integrations/#accounting-integrations).
+  The first four are optional and validated lazily — the API boots fine without them. Until they're set, the in-app QuickBooks connect flow reports that QuickBooks isn't configured on this instance. Set all four to enable [Accounting integration](/features/integrations/#accounting-integrations). `QBO_WEBHOOK_VERIFIER_TOKEN` is independent of them and only affects how quickly recorded payments come back.
 </Aside>
 
 ## Vulnerability Management
@@ -654,3 +700,17 @@ cheap local model, not `$0`. For accurate accounting, add the served model id to
 | Variable | Default | Description |
 |---|---|---|
 | `NVD_API_KEY` | — | Optional NIST NVD API key. Raises NVD request rate limits so vulnerability feed syncs run faster. Without it, syncs use the slower public rate; the feature works either way. |
+
+## Partner trust probation (hosted service only)
+
+<Aside type="note" title="Self-hosted installs can skip this section">
+  These variables drive the signup-abuse controls on the hosted Breeze service, where anyone can create a partner account. On a self-hosted install they do nothing: the mode resolves to `off` unless `IS_HOSTED=true`, whatever value you set, and with it off no trust code path touches the database, Redis, or the network. You do not need to set any of them.
+</Aside>
+
+| Variable | Default | Description |
+|---|---|---|
+| `PARTNER_TRUST_MODE` | `off` when `IS_HOSTED` is not `true`; otherwise `shadow` | `off` disables the feature entirely. `shadow` classifies new self-serve partners and records what it *would* have done without denying anything. `enforce` places new partners in probation until a card payment settles and ages, or an admin approves them from the trust queue. |
+| `IP_CLASSIFY_PROVIDER` | — | IP-reputation provider used to classify a signup's origin. Unset means signups classify as `unknown` and promotion out of probation is manual only. |
+| `IP_CLASSIFY_API_KEY` | — | API key for that provider. Setting a provider without a key logs a warning and falls back to the offline classifier. |
+| `TRUST_ACTION_TOKEN_SECRET` | falls back to `JWT_SECRET` | Signs the one-time action links in trust-review emails. |
+| `PARTNER_MEETING_URL` | — | Booking link offered to a partner under review so they can talk to a human. Omitted from the notice when unset. |
