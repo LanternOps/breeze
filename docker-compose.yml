@@ -122,6 +122,10 @@ x-api-env: &api-env
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
+  # Agent diagnostic log retention (worker role; all optional, see .env.example).
+  AGENT_LOG_RETENTION_DAYS: ${AGENT_LOG_RETENTION_DAYS:-}
+  AGENT_LOG_RETENTION_BATCH_SIZE: ${AGENT_LOG_RETENTION_BATCH_SIZE:-}
+  AGENT_LOG_RETENTION_MAX_BATCHES: ${AGENT_LOG_RETENTION_MAX_BATCHES:-}
   METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
   # Platform-operator abuse alerts (all optional; unset = feature disabled)
   OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
