@@ -417,109 +417,200 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         customFieldResult,
       };
 
-      const updatedExecutions = await db
-        .update(scriptExecutions)
-        .set(executionValues)
-        .where(and(
-          eq(scriptExecutions.id, executionId),
-          eq(scriptExecutions.deviceId, resolvedDeviceId),
-          inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
-        ))
-        .returning({
-          id: scriptExecutions.id,
-          scriptId: scriptExecutions.scriptId,
-        });
-      let effectiveExecution = updatedExecutions[0] ?? null;
+      // #3525 closer 1 of 5 — the ORIGINAL script's own result closing a
+      // `cancelling` execution. This MUST run before both branches below:
+      // the primary CAS matches `pending|queued|running` and the #3607 branch
+      // matches swept `timeout|failed` rows, so a `cancelling` row matches
+      // neither and the agent's real output would fall through to the
+      // "matched nothing" path at the bottom and be discarded.
+      //
+      // Two writes, not one, because the honesty contract splits here:
+      //
+      //  1. PROVEN — the agent marked the result as cancelled AND named the
+      //     cancel command it acted on. Pinning `cancel_command_id` is what
+      //     stops a stale or retried cancel being credited with a kill it did
+      //     not do. `cancelled: true` with no id is what a pre-#3525 agent
+      //     answers after a non-blocking signal: a request, not a receipt, so
+      //     it is deliberately NOT enough to reach this write (same rule as
+      //     `resolveCancelAckOutcome`).
+      //  2. UNPROVEN — everything else that arrives while `cancelling`. The
+      //     process reached a real outcome, so keep it (OD9-C) and record the
+      //     losing cancel request in `cancel_state` alone. `status` is never
+      //     `cancelled` here: we cannot prove the stop.
+      const cancelledMarker = (result as Record<string, unknown> | null)?.cancelled === true;
+      const rawMarkerCommandId = (result as Record<string, unknown> | null)?.cancelledByCommandId;
+      const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
-      // #3607 — second chance for an execution a server-side sweep already
-      // stamped terminal.
-      //
-      // Widening the device_commands acceptance predicate lets a result that
-      // arrives after the 60s `waitForCommandResult` deadline reach this
-      // handler at all, but the execution row can meanwhile have been stamped
-      // by `jobs/staleCommandReaper.ts`. The guard above would then drop the
-      // real stdout at the last step — the same defect one table over.
-      //
-      // The predicate is NOT `status = 'timeout'`. The reaper derives the
-      // execution status from the COMMAND row, and in exactly the #3607
-      // scenario that row is `failed` with `result.status = 'timeout'`, so the
-      // reaper stamps the execution **'failed'** (with its "#3097 delivered but
-      // never recorded" message), not 'timeout'. Keying on 'timeout' alone
-      // would leave the dominant path still losing output.
-      //
-      // So the discriminator is "this execution never received the agent's
-      // output": no exit code and no stdout. Every server-side sweep leaves
-      // both NULL; the only writer that fills them is this function, and it is
-      // only reachable once the caller's compare-and-set has already
-      // transitioned the command row — so a duplicate frame cannot get here to
-      // overwrite a genuine earlier result.
-      //
-      // Deliberately does NOT touch the batch counters. Every writer of a
-      // terminal execution status already incremented one of them for this
-      // device, so the batch's slot is spent — bumping again would push
-      // devicesCompleted + devicesFailed past devicesTargeted and corrupt the
-      // batch's completion accounting. The cost is that a recovered success
-      // stays attributed to devicesFailed in the batch summary, which is the
-      // approximation the reaper already made; the per-execution row (the one
-      // the UI and the AI read) is now correct.
-      if (updatedExecutions.length === 0) {
-        const recovered = await db
+      let cancelClosed: Array<{ id: string; scriptId: string }> = [];
+      if (cancelledMarker && markerCommandId) {
+        cancelClosed = await db
           .update(scriptExecutions)
-          .set(executionValues)
+          .set({ ...executionValues, status: 'cancelled' as const, cancelState: 'confirmed' as const })
           .where(and(
             eq(scriptExecutions.id, executionId),
             eq(scriptExecutions.deviceId, resolvedDeviceId),
-            inArray(scriptExecutions.status, ['timeout', 'failed']),
-            isNull(scriptExecutions.exitCode),
-            isNull(scriptExecutions.stdout)
+            eq(scriptExecutions.status, 'cancelling'),
+            eq(scriptExecutions.cancelCommandId, markerCommandId),
           ))
           .returning({
             id: scriptExecutions.id,
             scriptId: scriptExecutions.scriptId,
           });
-
-        if (recovered.length > 0) {
-          effectiveExecution = recovered[0] ?? null;
-          console.warn(
-            `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
-          );
-        } else {
-          // Both updates matched nothing. Before this PR that outcome was
-          // unreachable for a late result — the command lookup rejected it
-          // upstream and `processOrphanedCommandResult` logged the drop. Now
-          // that acceptance is widened, this is the ONE remaining way an
-          // agent's real output can be discarded here, so it must not be
-          // silent (the #3162 lesson, two blocks down: report, never skip
-          // quietly).
-          const [current] = await db
-            .select({
-              status: scriptExecutions.status,
-              exitCode: scriptExecutions.exitCode,
-              deviceId: scriptExecutions.deviceId,
-            })
-            .from(scriptExecutions)
-            .where(eq(scriptExecutions.id, executionId))
-            .limit(1);
-          const currentStatus = current?.status ?? 'row-missing';
-
-          // `cancelled` is a BENIGN race, not a defect, and must not page.
-          // routes/scripts.ts's cancel handler sets the execution to
-          // 'cancelled' but only cancels the paired command `WHERE status =
-          // 'pending'`. A command already 'sent' survives that, later gets the
-          // reaper's provisional timeout marker, and its real result now
-          // reaches this function — where 'cancelled' matches neither update.
-          // Dropping the output is the CORRECT outcome there: the operator
-          // asked for the run to be abandoned. Log the trail, don't alert.
-          const message = 'Late script result matched no script_executions row';
-          console.warn(`[AgentWs] ${message}`, {
-            executionId,
-            commandId: command.id,
-            resolvedDeviceId,
-            currentStatus,
-            currentExitCode: current?.exitCode ?? null,
-            currentDeviceId: current?.deviceId ?? null,
+      }
+      if (cancelClosed.length === 0) {
+        cancelClosed = await db
+          .update(scriptExecutions)
+          .set({ ...executionValues, cancelState: 'unconfirmed' as const })
+          .where(and(
+            eq(scriptExecutions.id, executionId),
+            eq(scriptExecutions.deviceId, resolvedDeviceId),
+            eq(scriptExecutions.status, 'cancelling'),
+          ))
+          .returning({
+            id: scriptExecutions.id,
+            scriptId: scriptExecutions.scriptId,
           });
-          if (currentStatus !== 'cancelled') {
+      }
+
+      let updatedExecutions: Array<{ id: string; scriptId: string }> = [];
+      let effectiveExecution = cancelClosed[0] ?? null;
+
+      if (cancelClosed.length === 0) {
+        updatedExecutions = await db
+          .update(scriptExecutions)
+          .set(executionValues)
+          .where(and(
+            eq(scriptExecutions.id, executionId),
+            eq(scriptExecutions.deviceId, resolvedDeviceId),
+            inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
+          ))
+          .returning({
+            id: scriptExecutions.id,
+            scriptId: scriptExecutions.scriptId,
+          });
+        effectiveExecution = updatedExecutions[0] ?? null;
+
+        // #3607 — second chance for an execution a server-side sweep already
+        // stamped terminal.
+        //
+        // Widening the device_commands acceptance predicate lets a result that
+        // arrives after the 60s `waitForCommandResult` deadline reach this
+        // handler at all, but the execution row can meanwhile have been stamped
+        // by `jobs/staleCommandReaper.ts`. The guard above would then drop the
+        // real stdout at the last step — the same defect one table over.
+        //
+        // The predicate is NOT `status = 'timeout'`. The reaper derives the
+        // execution status from the COMMAND row, and in exactly the #3607
+        // scenario that row is `failed` with `result.status = 'timeout'`, so the
+        // reaper stamps the execution **'failed'** (with its "#3097 delivered but
+        // never recorded" message), not 'timeout'. Keying on 'timeout' alone
+        // would leave the dominant path still losing output.
+        //
+        // So the discriminator is "this execution never received the agent's
+        // output": no exit code and no stdout. Every server-side sweep leaves
+        // both NULL; the only writer that fills them is this function, and it is
+        // only reachable once the caller's compare-and-set has already
+        // transitioned the command row — so a duplicate frame cannot get here to
+        // overwrite a genuine earlier result.
+        //
+        // Deliberately does NOT touch the batch counters. Every writer of a
+        // terminal execution status already incremented one of them for this
+        // device, so the batch's slot is spent — bumping again would push
+        // devicesCompleted + devicesFailed past devicesTargeted and corrupt the
+        // batch's completion accounting. The cost is that a recovered success
+        // stays attributed to devicesFailed in the batch summary, which is the
+        // approximation the reaper already made; the per-execution row (the one
+        // the UI and the AI read) is now correct.
+        if (updatedExecutions.length === 0) {
+          const recovered = await db
+            .update(scriptExecutions)
+            .set(executionValues)
+            .where(and(
+              eq(scriptExecutions.id, executionId),
+              eq(scriptExecutions.deviceId, resolvedDeviceId),
+              inArray(scriptExecutions.status, ['timeout', 'failed']),
+              isNull(scriptExecutions.exitCode),
+              isNull(scriptExecutions.stdout)
+            ))
+            .returning({
+              id: scriptExecutions.id,
+              scriptId: scriptExecutions.scriptId,
+            });
+
+          if (recovered.length > 0) {
+            effectiveExecution = recovered[0] ?? null;
+            console.warn(
+              `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
+            );
+          } else {
+            // Both updates matched nothing. Before this PR that outcome was
+            // unreachable for a late result — the command lookup rejected it
+            // upstream and `processOrphanedCommandResult` logged the drop. Now
+            // that acceptance is widened, this is the ONE remaining way an
+            // agent's real output can be discarded here, so it must not be
+            // silent (the #3162 lesson, two blocks down: report, never skip
+            // quietly).
+            const [current] = await db
+              .select({
+                status: scriptExecutions.status,
+                exitCode: scriptExecutions.exitCode,
+                deviceId: scriptExecutions.deviceId,
+              })
+              .from(scriptExecutions)
+              .where(eq(scriptExecutions.id, executionId))
+              .limit(1);
+            const currentStatus = current?.status ?? 'row-missing';
+
+            // #3525 closer 3 — a late original result after the cancellation
+            // already terminalised the row.
+            //
+            // This block used to drop the output on the floor, with a comment
+            // asserting that was the CORRECT outcome because "the operator asked
+            // for the run to be abandoned". That is the design bug written down:
+            // an operator who stops a script wants to see how far it got, and
+            // the partial stdout is the only record of that. So fill the output
+            // columns and NOTHING else — no status change, no cancel_state
+            // change, no batch accounting, no automation-action closure, since
+            // whichever closer terminalised this row already consumed all four.
+            //
+            // Deliberately NOT gated on `cancel_state`: a *confirmed* cancel has
+            // partial output worth keeping just as much as an unconfirmed one.
+            // `exit_code IS NULL` is the idempotency guard — it is the marker
+            // every server-side sweep leaves behind and this is its only writer,
+            // so a duplicate frame cannot overwrite a genuine earlier recovery.
+            if (currentStatus === 'cancelled') {
+              await db
+                .update(scriptExecutions)
+                .set({
+                  stdout: executionValues.stdout,
+                  stderr: executionValues.stderr,
+                  exitCode: executionValues.exitCode,
+                })
+                .where(and(
+                  eq(scriptExecutions.id, executionId),
+                  eq(scriptExecutions.status, 'cancelled'),
+                  isNull(scriptExecutions.exitCode),
+                ));
+              // No captureException: this is an expected race, not a defect.
+              console.warn('[AgentWs] #3525 recovered late output onto a cancelled execution', {
+                executionId,
+                commandId: command.id,
+                resolvedDeviceId,
+              });
+              return;
+            }
+
+            const message = 'Late script result matched no script_executions row';
+            console.warn(`[AgentWs] ${message}`, {
+              executionId,
+              commandId: command.id,
+              resolvedDeviceId,
+              currentStatus,
+              currentExitCode: current?.exitCode ?? null,
+              currentDeviceId: current?.deviceId ?? null,
+            });
+            // The `cancelled` carve-out that used to live here is gone: that
+            // case now returns above, having actually kept the output.
             captureException(new Error(message), undefined, {
               executionId,
               commandId: command.id,
