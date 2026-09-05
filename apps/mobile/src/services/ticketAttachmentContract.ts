@@ -181,7 +181,8 @@ export function toAttachmentError(err: unknown): AttachmentUploadError {
   // no `code`, but it is a rejection, not a dropped link. Telling the
   // technician to "check your connection" sent them chasing Wi-Fi for a
   // permission problem, and hid the status we needed to diagnose it.
-  if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+  // 408 is the one 4xx that IS transient (request timed out at the proxy).
+  if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500 && statusCode !== 408) {
     return new AttachmentUploadError(
       'UPLOAD_FAILED',
       `Upload rejected (HTTP ${statusCode}${detail ? `: ${detail}` : ''}).`,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
-import { inFlightToolOf, isStreamLostError, isTurnComplete, isTurnSettlingError } from './turnState';
+import { inFlightToolOf, isStreamLostError, isTurnComplete, isTurnSettlingError, transcriptSignature } from './turnState';
 
 const user = (id: string): ChatMessage => ({ id, role: 'user', content: 'hi', sentAt: 't' });
 const assistant = (id: string, content: string, toolEvents: ToolEvent[] = []): ChatMessage => ({
@@ -60,5 +60,16 @@ describe('error classifiers', () => {
     timeout.name = 'FetchTimeoutError';
     expect(isStreamLostError(timeout)).toBe(true);
     expect(isStreamLostError(new Error('HTTP 401'))).toBe(false);
+  });
+});
+
+describe('transcriptSignature', () => {
+  it('changes when the trailing assistant row grows or a tool settles', () => {
+    const a = [user('u1'), assistant('a1', 'Sure', [{ toolUseId: 't1', toolName: 'x', state: 'started' }])];
+    const b = [user('u1'), assistant('a1', 'Sure', [{ toolUseId: 't1', toolName: 'x', state: 'completed' }])];
+    const c = [user('u1'), assistant('a1', 'Sure', [{ toolUseId: 't1', toolName: 'x', state: 'completed' }]), assistant('a2', 'Done')];
+    expect(transcriptSignature(a)).not.toBe(transcriptSignature(b));
+    expect(transcriptSignature(b)).not.toBe(transcriptSignature(c));
+    expect(transcriptSignature(c)).toBe(transcriptSignature(c.map((m) => ({ ...m }))));
   });
 });

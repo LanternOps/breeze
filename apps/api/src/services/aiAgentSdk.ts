@@ -967,9 +967,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
           // The guardrail description names the device by an id stub
-          // ("on device 6eae0f70..."); the approver reads the hostname.
-          const approvalReason = deviceContext?.hostname
-            ? riskSummary.replace(/\bon device [0-9a-f]{8}\.\.\./i, `on ${deviceContext.hostname}`)
+          // ("on device 6eae0f70..." — buildApprovalDescription in
+          // aiGuardrails.ts); the approver reads the hostname. Matched on
+          // THIS call's id prefix, literally, so nothing user-supplied that
+          // happens to look like a stub gets rewritten.
+          const deviceStub = deviceId ? `on device ${deviceId.slice(0, 8)}...` : null;
+          const approvalLabel = deviceStub && deviceContext?.hostname
+            ? riskSummary.split(deviceStub).join(`on ${deviceContext.hostname}`)
             : riskSummary;
 
           // Create the durable intent. This fans out to eligible org approvers
@@ -984,7 +988,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               toolName,
               input: input as Record<string, unknown>,
               source: 'chat',
-              reason: approvalReason,
+              reason: riskSummary,
+              actionLabel: approvalLabel,
               orgId: session.orgId,
             });
           } catch (err) {

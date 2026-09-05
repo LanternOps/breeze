@@ -48,7 +48,7 @@ import { ConversationList } from './components/ConversationList';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
-import { isStreamLostError, isTurnComplete, isTurnSettlingError } from './turnState';
+import { isStreamLostError, isTurnComplete, isTurnSettlingError, transcriptSignature } from './turnState';
 
 /** Catch-up poll cadence while the server is still writing the turn. */
 const RECONCILE_POLL_MS = 3_000;
@@ -76,25 +76,38 @@ export function HomeScreen() {
   const streamHandleRef = useRef<SseStreamHandle | null>(null);
   const lastUserContentRef = useRef<string | null>(null);
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Bumped on every send / new chat / session switch / unmount. Async work
+   * that started under an older generation (a catch-up fetch, a settle
+   * retry) must not write into the turn that replaced it.
+   */
+  const turnGenRef = useRef(0);
   // Read by the mount/foreground effects without re-subscribing on every change.
   const statusRef = useRef(status);
   statusRef.current = status;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  const streamingIdRef = useRef(streamingMessageId);
+  streamingIdRef.current = streamingMessageId;
+
+  /** Cancel every pending async continuation of the current turn. */
+  const cancelTurnWork = useCallback(() => {
+    turnGenRef.current += 1;
+    streamHandleRef.current?.abort();
+    streamHandleRef.current = null;
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+    reconcileTimerRef.current = null;
+    if (settleRetryTimerRef.current) clearTimeout(settleRetryTimerRef.current);
+    settleRetryTimerRef.current = null;
+  }, []);
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const userName = useAppSelector((s) => s.auth.user?.name);
 
   // Abort any in-flight stream when the screen unmounts (signed out, killed).
-  useEffect(() => {
-    return () => {
-      streamHandleRef.current?.abort();
-      streamHandleRef.current = null;
-      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
-      reconcileTimerRef.current = null;
-    };
-  }, []);
+  useEffect(() => cancelTurnWork, [cancelTurnWork]);
 
   /**
    * Catch up from the server's persisted transcript when the live stream is
@@ -104,27 +117,41 @@ export function HomeScreen() {
    * transcript is still partial, e.g. a tool blocked on an approval.
    */
   const reconcileFromServer = useCallback(
-    async (sid: string, attempt = 0) => {
+    async (sid: string, attempt = 0, previousSignature: string | null = null) => {
       if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
       reconcileTimerRef.current = null;
+      const gen = turnGenRef.current;
+      // Surface a terminal failure on the streaming row itself: the error
+      // strip below the list is hidden while a message is streaming, so a
+      // bare setError would leave a permanent, unretryable RUNNING row.
+      const giveUp = (message: string) => {
+        const streamingId = streamingIdRef.current;
+        if (streamingId) dispatch(failAssistantMessage({ id: streamingId, error: message }));
+        else dispatch(setError(message));
+      };
       try {
         const { messages: rows } = await getAiSessionMessages(sid);
-        // A new chat or a different session was opened while we were fetching.
-        if (sessionIdRef.current !== sid) return;
+        // A send, new chat or session switch superseded this catch-up.
+        if (gen !== turnGenRef.current || sessionIdRef.current !== sid) return;
         const msgs = historyToMessages(rows);
-        const complete = isTurnComplete(msgs);
+        const signature = transcriptSignature(msgs);
+        // "Complete" is only trusted once the transcript has stopped changing
+        // between two polls: a tool_result can be persisted a beat before the
+        // model's follow-up text, and that instant looks finished.
+        const complete = isTurnComplete(msgs) && signature === previousSignature;
         dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete }));
         if (complete) return;
         if (attempt >= RECONCILE_MAX_POLLS) {
-          dispatch(setError('Lost track of this reply. Tap to retry.'));
+          giveUp('Lost track of this reply. Tap to retry.');
           return;
         }
         reconcileTimerRef.current = setTimeout(() => {
-          void reconcileFromServer(sid, attempt + 1);
+          void reconcileFromServer(sid, attempt + 1, signature);
         }, RECONCILE_POLL_MS);
       } catch (err) {
+        if (gen !== turnGenRef.current) return;
         reportInternalError(err, 'ai-chat-reconcile');
-        dispatch(setError('Could not reconnect to this conversation. Tap to retry.'));
+        giveUp('Could not reconnect to this conversation. Tap to retry.');
       }
     },
     [dispatch],
@@ -247,10 +274,15 @@ export function HomeScreen() {
           streamHandleRef.current = null;
           // 409 while the previous turn settles (≤3s server-side). One quiet
           // retry instead of a red "Stopped. Tap to retry." for a race the
-          // server documents as expected.
+          // server documents as expected. Generation-guarded: a send or new
+          // chat in the meantime cancels it rather than opening a competing
+          // stream for a stale prompt.
           if (!retry && isTurnSettlingError(err.message)) {
-            setTimeout(() => {
-              if (sessionIdRef.current === sid) beginStream(sid, content, { assistantId });
+            const gen = turnGenRef.current;
+            settleRetryTimerRef.current = setTimeout(() => {
+              settleRetryTimerRef.current = null;
+              if (gen !== turnGenRef.current || sessionIdRef.current !== sid) return;
+              beginStream(sid, content, { assistantId });
             }, SETTLE_RETRY_MS);
             return;
           }
@@ -276,11 +308,9 @@ export function HomeScreen() {
 
   const handleSend = useCallback(
     async (text: string) => {
-      // Abort any prior stream (or catch-up poll) before starting the next one.
-      streamHandleRef.current?.abort();
-      streamHandleRef.current = null;
-      if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
-      reconcileTimerRef.current = null;
+      // Abort any prior stream, catch-up poll or settle retry before starting
+      // the next turn.
+      cancelTurnWork();
 
       const userMessageId = `m-${Date.now()}-u`;
       lastUserContentRef.current = text;
@@ -308,7 +338,7 @@ export function HomeScreen() {
 
       beginStream(sid, text);
     },
-    [beginStream, dispatch, sessionId],
+    [beginStream, cancelTurnWork, dispatch, sessionId],
   );
 
   const handleRetry = useCallback(() => {
@@ -325,11 +355,10 @@ export function HomeScreen() {
   }, []);
 
   const handleNewChat = useCallback(() => {
-    streamHandleRef.current?.abort();
-    streamHandleRef.current = null;
+    cancelTurnWork();
     lastUserContentRef.current = null;
     dispatch(resetChat());
-  }, [dispatch]);
+  }, [cancelTurnWork, dispatch]);
 
   const handleOpenHistory = useCallback(() => {
     setHistoryOpen(true);
@@ -338,8 +367,7 @@ export function HomeScreen() {
   const handleSelectSession = useCallback(
     async (sid: string) => {
       setHistoryOpen(false);
-      streamHandleRef.current?.abort();
-      streamHandleRef.current = null;
+      cancelTurnWork();
       try {
         const { messages: rows } = await getAiSessionMessages(sid);
         const messages = historyToMessages(rows);
@@ -351,7 +379,7 @@ export function HomeScreen() {
         dispatch(setError('Could not load that conversation.'));
       }
     },
-    [dispatch],
+    [cancelTurnWork, dispatch],
   );
 
   const isCold = messages.length === 0 && status !== 'creating-session';

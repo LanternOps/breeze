@@ -123,7 +123,16 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
+  /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
   reason?: string;
+  /**
+   * Human headline for the approver — "Restart service "Spooler" on KIT".
+   * Distinct from `reason`: callers that pass a justification as `reason`
+   * (agent runs, ticket triage) must not have it surface as the action.
+   * Optional; falls back to the guardrail description, then a label built
+   * from the tool name + recognisable arguments (see actionLabel.ts).
+   */
+  actionLabel?: string;
   /**
    * 'ai_agent' (wave 3b) is valid ONLY for an ai_agent principal — and
    * required for one: createActionIntent enforces the pairing in both
@@ -1065,7 +1074,7 @@ export async function createActionIntent(
   const actionLabel = buildActionLabel({
     toolName: input.toolName,
     input: input.input,
-    reason: input.reason ?? guardrail.description ?? null,
+    reason: input.actionLabel ?? guardrail.description ?? null,
   });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
@@ -1746,6 +1755,12 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       argumentDigest: updated.argumentDigest,
       requestingClientLabel: updated.requestingClientLabel ?? 'AI Agent',
       targetSummary: updated.targetSummary,
+      // The guardrail description is not persisted on the intent, so the
+      // deferred path rebuilds a label from the tool + arguments.
+      actionLabel: buildActionLabel({
+        toolName: updated.actionName,
+        input: updated.arguments as Record<string, unknown>,
+      }),
       riskTier: riskTierLabel(updated.riskTier),
       impactSummary: updated.impactSummary,
       // The SAME deadline creation stamped — not a freshly recomputed one; a
@@ -1798,6 +1813,10 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     fanOutUserIds: fanoutResult.fanOutUserIds,
     requestingClientLabel: intent.requestingClientLabel ?? 'AI Agent',
     targetSummary: intent.targetSummary,
+    actionLabel: buildActionLabel({
+      toolName: intent.actionName,
+      input: intent.arguments as Record<string, unknown>,
+    }),
     dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
   });
 }

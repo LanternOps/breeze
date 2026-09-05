@@ -135,7 +135,15 @@ export function processStreamEvent(
         const toolUse = awaited
           ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
           : undefined;
-        const resolvesPending = !!awaited && !!toolUse && toolUse.toolName === awaited.toolName;
+        // Parallel calls to the same tool: the awaited one is the LATEST
+        // tool_use of that name (approval_required is published from the
+        // pre-tool hook, i.e. right after its tool_use_start), so an earlier
+        // sibling's result must not dismiss it.
+        const latestOfName = toolUse
+          ? [...s.messages].reverse().find((m) => m.role === 'tool_use' && m.toolName === toolUse.toolName)
+          : undefined;
+        const resolvesPending =
+          !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
         return {
           messages: [...s.messages, resultMsg],
           ...(resolvesPending ? { pendingApproval: null } : {}),

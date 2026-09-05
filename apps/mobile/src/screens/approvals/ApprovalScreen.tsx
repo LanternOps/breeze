@@ -48,7 +48,10 @@ export function ApprovalScreen() {
   // Keyed by approval id: ApprovalGate keeps this ONE instance mounted while
   // focus rolls from request A to request B, and `approve.fulfilled` moves
   // focus in the same tick the "Approved · …" toast is queued — so without
-  // the key, A's success toast renders over B's Approve/Deny buttons.
+  // the key, A's success toast renders over B's Approve/Deny buttons. The
+  // success/deny confirmations are therefore deliberately dropped once focus
+  // has moved on (the wash / shake animation is the feedback that survives);
+  // outcome ERRORS use `approvalId: null` and stay visible regardless.
   const [toast, setToast] = useState<{
     approvalId: string | null;
     kind: 'success' | 'error';
@@ -99,7 +102,9 @@ export function ApprovalScreen() {
       if (focused.status !== 'pending') return;
       expiredHandledRef.current = focused.id;
       dispatch(markExpired(focused.id));
-      setToast({ approvalId: focused.id, kind: 'error', text: 'This request expired before you could respond.' });
+      // Screen-global: markExpired rolls focus to the next request in the
+      // same tick, and the user still needs to hear that this one lapsed.
+      setToast({ approvalId: null, kind: 'error', text: 'This request expired before you could respond.' });
     }, 1000);
     return () => clearInterval(id);
   }, [focused?.id, focused?.expiresAt, focused?.status]);
@@ -146,7 +151,7 @@ export function ApprovalScreen() {
         setToast({ approvalId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
       })
       .catch((err: Error) => {
-        setToast({ approvalId: approvalSnap.id, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
+        setToast({ approvalId: null, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
       });
   }
 
@@ -176,7 +181,7 @@ export function ApprovalScreen() {
         setToast({ approvalId: approvalSnap.id, kind: 'error', text: 'Denied · logged' });
       })
       .catch((err: Error) => {
-        setToast({ approvalId: approvalSnap.id, kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
+        setToast({ approvalId: null, kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
       });
   }
 

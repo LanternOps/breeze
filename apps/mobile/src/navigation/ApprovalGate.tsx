@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Keyboard, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Keyboard, Modal, Pressable, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -146,29 +146,31 @@ export function ApprovalGate({ children }: Props) {
   const showApprover =
     !error && pushRegistration !== 'failed' && approverSeverity !== null && !dismissedApprover;
 
-  if (focused) {
-    return (
-      <>
-        {children}
-        <View
-          style={StyleSheet.absoluteFill}
-          accessibilityViewIsModal
-          testID="approval-takeover"
-        >
-          <ApprovalScreen />
-        </View>
-      </>
-    );
-  }
-
+  // A native Modal, not an absolute-fill View: a sheet the user already had
+  // open (Settings, Sessions, a ticket picker — all RN Modals) would sit ABOVE
+  // a plain overlay and leave the approval hidden behind an interactive
+  // sheet. A Modal presented later always stacks on top. It also gives
+  // TalkBack/VoiceOver a real modal boundary and swallows Android hardware
+  // Back (`onRequestClose` is a deliberate no-op: an approval is dismissed by
+  // deciding it, expiring, or it being decided elsewhere — never by Back).
   return (
     <>
       {children}
-      {error ? (
+      <Modal
+        visible={!!focused}
+        animationType="none"
+        presentationStyle="fullScreen"
+        statusBarTranslucent
+        onRequestClose={() => undefined}
+        testID="approval-takeover"
+      >
+        <ApprovalScreen />
+      </Modal>
+      {focused ? null : error ? (
         <ApprovalErrorBanner message={error} onDismiss={() => dispatch(clearApprovalsError())} />
       ) : null}
-      {showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
-      {showApprover && approverSeverity ? (
+      {!focused && showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
+      {!focused && showApprover && approverSeverity ? (
         <ApproverSetupBanner
           severity={approverSeverity}
           reason={approverReason}

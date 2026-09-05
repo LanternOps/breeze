@@ -45,3 +45,20 @@ export function isTurnSettlingError(message: string): boolean {
 export function isStreamLostError(err: Error): boolean {
   return err.message === 'Network error' || err.name === 'FetchTimeoutError';
 }
+
+/**
+ * A cheap fingerprint of the transcript, compared across consecutive catch-up
+ * polls. The server writes rows incrementally, and "last row is a finished
+ * assistant turn" is also what the transcript looks like for the instant
+ * between a tool_result landing and the model's follow-up text being
+ * persisted — so completeness is only trusted once the transcript has stopped
+ * changing between two polls.
+ */
+export function transcriptSignature(messages: ChatMessage[]): string {
+  const last = messages[messages.length - 1];
+  if (!last) return '0';
+  const tail = last.role === 'assistant'
+    ? `${last.content.length}:${last.toolEvents.map((t) => `${t.toolUseId}=${t.state}`).join(',')}`
+    : `u:${last.content.length}`;
+  return `${messages.length}|${last.id}|${tail}`;
+}
