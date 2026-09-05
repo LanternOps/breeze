@@ -170,7 +170,58 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     expect(body.code).toBe('invalid-custom-field-value');
     expect(body.fields).toEqual([{ fieldKey: 'purchase_date', reason: 'invalid_date' }]);
     expect(updateSpy.set).not.toHaveBeenCalled();
-    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects the WHOLE PATCH — including a valid displayName — when customFields fails', async () => {
+    // The 400 must fire before `updates` is even built, so a valid sibling
+    // field in the same PATCH must not sneak through either.
+    mockVisibleDefinitions([{ fieldKey: 'purchase_date', type: 'date' }]);
+    rigDeviceLookup(ACCESSIBLE_DEVICE);
+    const updateSpy = rigPlainUpdate(ACCESSIBLE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: 'renamed', customFields: { purchase_date: 'never' } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(updateSpy.set).not.toHaveBeenCalled();
+  });
+
+  it('is all-or-nothing on a MIXED valid+invalid customFields map', async () => {
+    mockVisibleDefinitions([
+      { fieldKey: 'rack_units', type: 'number' },
+      { fieldKey: 'notes', type: 'text' },
+    ]);
+    rigDeviceLookup(ACCESSIBLE_DEVICE);
+    const updateSpy = rigPlainUpdate(ACCESSIBLE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customFields: { rack_units: 'abc', notes: 'a perfectly valid note' } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'invalid_type' }]);
+    expect(updateSpy.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects a value for a definition scoped to a device type the device is not', async () => {
+    mockVisibleDefinitions([{ fieldKey: 'rustdesk_id', type: 'text', deviceTypes: ['windows'] }]);
+    rigDeviceLookup({ ...ACCESSIBLE_DEVICE, osType: 'macos' });
+    const updateSpy = rigPlainUpdate(ACCESSIBLE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customFields: { rustdesk_id: 'abc123' } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).fields).toEqual([{ fieldKey: 'rustdesk_id', reason: 'not_applicable_to_device' }]);
+    expect(updateSpy.set).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown custom field key on PATCH /devices/:id', async () => {

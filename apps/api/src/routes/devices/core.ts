@@ -1534,7 +1534,7 @@ coreRoutes.patch(
     // All-or-nothing per request; nothing else in this PATCH is written when
     // a custom field fails (#3257 W04).
     if (data.customFields !== undefined) {
-      const validation = await validateCustomFieldMap(device.orgId, data.customFields);
+      const validation = await validateCustomFieldMap(device.orgId, device.osType, data.customFields);
       if (!validation.ok) {
         return c.json(
           {

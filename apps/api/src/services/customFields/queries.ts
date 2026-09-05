@@ -12,14 +12,6 @@ export interface WriteBackDevice {
   customFields: unknown;
 }
 
-export interface ScriptWritableDefinition {
-  fieldKey: string;
-  type: 'text' | 'number' | 'boolean' | 'dropdown' | 'date';
-  options: unknown;
-  deviceTypes: string[] | null;
-  scriptWrite: boolean;
-}
-
 export interface VisibleCustomFieldDefinition {
   id: string;
   fieldKey: string;
@@ -53,19 +45,24 @@ export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBac
 /**
  * SYSTEM context, deliberately.
  *
- * `custom_field_definitions` is dual-axis (org OR partner). The caller runs
- * under `runWithAgentOrgDbAccess`, which sets accessiblePartnerIds: [] and
- * currentPartnerId: null, so `breeze_has_partner_access(partner_id)` is false
- * and every partner-wide definition (org_id IS NULL) is INVISIBLE from there.
- * A partner that defines one field for all its orgs would silently have no
- * script-writable fields at all. See CLAUDE.md, Partner-Wide First §3.
+ * `custom_field_definitions` is dual-axis (org OR partner). Every caller of
+ * this function — the script write-back path's `runWithAgentOrgDbAccess`
+ * context, and the two device-PATCH write paths' ordinary org-scoped request
+ * context — sets accessiblePartnerIds: [] and currentPartnerId: null, so
+ * `breeze_has_partner_access(partner_id)` is false and every partner-wide
+ * definition (org_id IS NULL) is INVISIBLE from there. A partner that defines
+ * one field for all its orgs would silently have no fields visible from any
+ * of these paths. See CLAUDE.md, Partner-Wide First §3.
  *
  * `runOutsideDbContext(() => withSystemDbAccessContext(...))` is the only form
  * that genuinely opens a second context — a bare nested
  * `withSystemDbAccessContext` early-returns and runs under the ORG context
  * instead. The scope is app-layer: an explicit org/partner predicate, kept
  * narrow, and the context is released immediately (it holds a second pooled
- * connection for its duration — #1105).
+ * connection for its duration — #1105). This now runs on every custom-field
+ * PATCH, not just script write-back — if this becomes a per-request cost
+ * worth caring about, cache the definition set per org/request rather than
+ * re-querying it per PATCH.
  */
 export async function loadVisibleCustomFieldDefinitions(
   orgId: string,
@@ -103,7 +100,7 @@ export async function loadVisibleCustomFieldDefinitions(
         })
         .from(customFieldDefinitions)
         .where(ownerCondition);
-    }, 'customFields.scriptWriteBack.definitions'),
+    }, 'customFields.loadVisibleCustomFieldDefinitions'),
   );
 }
 

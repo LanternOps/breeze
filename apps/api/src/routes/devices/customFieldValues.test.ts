@@ -488,6 +488,7 @@ describe('device custom-field value routes (#2066)', () => {
         { fieldKey: 'tier', type: 'dropdown', options: { choices: [{ label: 'Gold', value: 'gold' }] } },
       ]);
       rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -496,6 +497,77 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect((await res.json()).fields).toEqual([{ fieldKey: 'tier', reason: 'not_a_choice' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects an out-of-range number', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number', options: { min: 0, max: 8 } }]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: 99 }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'out_of_range' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('is all-or-nothing on a MIXED valid+invalid payload: one bad key rejects the whole PATCH', async () => {
+      // The single-key tests above can't distinguish "atomic across the whole
+      // map" from "the one field it saw happened to fail" — this is the case
+      // that actually exercises the all-or-nothing contract.
+      mockVisibleDefinitions([
+        { fieldKey: 'rack_units', type: 'number' },
+        { fieldKey: 'notes', type: 'text' },
+      ]);
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rack_units: 'abc', notes: 'a perfectly valid note' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'invalid_type' }]);
+      // The valid `notes` key must not be written even though it validated fine.
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects a value for a definition scoped to a device type the device is not', async () => {
+      mockVisibleDefinitions([{ fieldKey: 'rustdesk_id', type: 'text', deviceTypes: ['windows'] }]);
+      rigDeviceLookup(makeDevice({ osType: 'macos' }));
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ rustdesk_id: 'abc123' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).fields).toEqual([{ fieldKey: 'rustdesk_id', reason: 'not_applicable_to_device' }]);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty string as a clear for a dropdown field, not a rejection', async () => {
+      // Regression: the device-edit UI's <select> reports a clear as ''.
+      mockVisibleDefinitions([{ fieldKey: 'tier', type: 'dropdown', options: { choices: ['gold'] } }]);
+      rigDeviceLookup(makeDevice());
+      rigUpdate(makeDevice({ customFields: { existing_field: 'keep-me', tier: null } }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer session-token' },
+        body: JSON.stringify({ tier: '' }),
+      });
+
+      expect(res.status).toBe(200);
     });
 
     it('stores the COERCED value, not the raw string', async () => {

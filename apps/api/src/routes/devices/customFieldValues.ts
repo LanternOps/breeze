@@ -60,6 +60,14 @@ import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../.
  * AFTER it, so mounting after `coreRoutes` would re-introduce the session-only
  * `authMiddleware` ahead of our API-key branch and resurrect the 401. See the
  * `hono_router_use_wildcard_root_mount_auth_leak` lesson.
+ *
+ * #3257 W04: a PATCH now requires a matching `custom_field_definitions` row —
+ * a key with no visible definition is rejected `400 unknown_field`, and a
+ * value that doesn't match the definition's declared type is rejected
+ * `400 invalid-custom-field-value`. The `bitlocker_recovery_key` example above
+ * is pre-#3257 framing kept for the auth-flavour narrative; a caller must now
+ * create the field's definition first (`routes/customFields.ts`) before a
+ * PATCH here will accept it.
  */
 export const customFieldValuesRoutes = new Hono();
 
@@ -233,7 +241,7 @@ customFieldValuesRoutes.patch(
     // Record<string, string|number|boolean|null> was the wrong contract on
     // both branches of dualAuth (#3257 W04). All-or-nothing: one PATCH is one
     // operator action, unlike the importer's partial-apply bulk load.
-    const validation = await validateCustomFieldMap(device.orgId, updates);
+    const validation = await validateCustomFieldMap(device.orgId, device.osType, updates);
     if (!validation.ok) {
       return c.json(
         {
