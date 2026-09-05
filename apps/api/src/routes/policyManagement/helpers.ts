@@ -351,8 +351,29 @@ export function normalizePolicyResponse(
   };
 }
 
-export async function getPolicyComplianceMap(policyIds: string[]) {
-  if (policyIds.length === 0) {
+/**
+ * Site predicate for aggregate queries on automation_policy_compliance that do
+ * not join devices. Compliance totals describe devices, so restricted callers
+ * must use the same site scope as the detailed device list (#4880).
+ * null/undefined means unrestricted; callers short-circuit on [] (deny-all)
+ * before reaching this.
+ */
+export function complianceSiteCondition(allowedSiteIds?: string[] | null): SQL | undefined {
+  if (!allowedSiteIds) return undefined;
+  return sql`exists (
+    select 1 from ${devices}
+    where ${devices.id} = ${automationPolicyCompliance.deviceId}
+      and ${inArray(devices.siteId, allowedSiteIds)}
+  )`;
+}
+
+/**
+ * Per-policy compliance summaries for legacy automation policies.
+ * @param allowedSiteIds Site allowlist from the caller's permissions; only
+ *   devices in these sites are counted. null/undefined = unrestricted, [] = none.
+ */
+export async function getPolicyComplianceMap(policyIds: string[], allowedSiteIds?: string[] | null) {
+  if (policyIds.length === 0 || allowedSiteIds?.length === 0) {
     return new Map<string, ReturnType<typeof buildComplianceSummary>>();
   }
 
@@ -363,7 +384,10 @@ export async function getPolicyComplianceMap(policyIds: string[]) {
       count: sql<number>`count(*)`,
     })
     .from(automationPolicyCompliance)
-    .where(inArray(automationPolicyCompliance.policyId, policyIds))
+    .where(and(
+      inArray(automationPolicyCompliance.policyId, policyIds),
+      complianceSiteCondition(allowedSiteIds)
+    ))
     .groupBy(automationPolicyCompliance.policyId, automationPolicyCompliance.status);
 
   const grouped = new Map<string, Array<{ status: string; count: number }>>();
@@ -449,14 +473,17 @@ export async function getConfigPolicyComplianceRuleInfo(
 /**
  * Gets aggregate compliance stats for config policy compliance rows (those with policyId IS NULL
  * and configPolicyId IS NOT NULL), scoped to a set of featureLinkIds.
+ * @param allowedSiteIds Site allowlist from the caller's permissions; only
+ *   devices in these sites are counted. null/undefined = unrestricted, [] = none.
  */
 export async function getConfigPolicyComplianceStats(
-  featureLinkIds: string[]
+  featureLinkIds: string[],
+  allowedSiteIds?: string[] | null
 ): Promise<{
   complianceRows: Array<{ status: string; count: number }>;
   byFeatureLink: Map<string, ReturnType<typeof buildComplianceSummary>>;
 }> {
-  if (featureLinkIds.length === 0) {
+  if (featureLinkIds.length === 0 || allowedSiteIds?.length === 0) {
     return {
       complianceRows: [],
       byFeatureLink: new Map(),
@@ -474,7 +501,8 @@ export async function getConfigPolicyComplianceStats(
       and(
         isNull(automationPolicyCompliance.policyId),
         isNotNull(automationPolicyCompliance.configPolicyId),
-        inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+        inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
+        complianceSiteCondition(allowedSiteIds)
       )
     )
     .groupBy(automationPolicyCompliance.configPolicyId, automationPolicyCompliance.status);
@@ -511,12 +539,15 @@ export async function getConfigPolicyComplianceStats(
 
 /**
  * Fetches non-compliant config policy compliance rows with device info, scoped to featureLinkIds.
+ * @param allowedSiteIds Site allowlist from the caller's permissions; only
+ *   devices in these sites are returned. null/undefined = unrestricted, [] = none.
  */
 export async function getConfigPolicyNonCompliantDevices(
   featureLinkIds: string[],
-  ruleInfoMap: Map<string, ConfigPolicyComplianceInfo[]>
+  ruleInfoMap: Map<string, ConfigPolicyComplianceInfo[]>,
+  allowedSiteIds?: string[] | null
 ) {
-  if (featureLinkIds.length === 0) {
+  if (featureLinkIds.length === 0 || allowedSiteIds?.length === 0) {
     return [];
   }
 
@@ -537,7 +568,8 @@ export async function getConfigPolicyNonCompliantDevices(
         isNull(automationPolicyCompliance.policyId),
         isNotNull(automationPolicyCompliance.configPolicyId),
         inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
-        eq(automationPolicyCompliance.status, 'non_compliant')
+        eq(automationPolicyCompliance.status, 'non_compliant'),
+        allowedSiteIds ? inArray(devices.siteId, allowedSiteIds) : undefined
       )
     );
 
