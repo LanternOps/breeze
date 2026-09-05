@@ -1834,7 +1834,7 @@
       "networkSkipped": "{{count}} Netzwerkgerät(e) übersprungen – diese Aktion gilt nur für Agent-Geräte.",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
-      "permanentDeleting": "Endgültiges Löschen",
+      "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
       "permanentlyDeleted": "Endgültig gelöscht",
       "permanentlyDeletedWithWarning": "{{hostname}} wurde gelöscht, aber {{warning}}",
       "restored": "Wiederhergestellt",

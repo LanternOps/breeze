@@ -1839,7 +1839,7 @@
       "networkSkipped": "Dispositivos de rede ignorados: {{count}} — esta ação se aplica somente a dispositivos com agente.",
       "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
-      "permanentDeleting": "Excluindo permanentemente",
+      "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
       "permanentlyDeleted": "Excluído permanentemente",
       "permanentlyDeletedWithWarning": "{{hostname}} foi excluído, mas {{warning}}",
       "restored": "Restaurado",

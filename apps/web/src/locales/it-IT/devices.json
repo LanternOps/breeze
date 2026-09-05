@@ -1838,7 +1838,7 @@
       "networkSkipped": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "compareNeedsTwo": "Il confronto richiede almeno 2 dispositivi con agente.",
       "permanentDeleteCancelled": "Eliminazione permanente annullata",
-      "permanentDeleting": "Eliminazione permanente in corso",
+      "permanentDeleting": "Eliminazione permanente di {{hostname}} in corso…",
       "permanentlyDeleted": "Eliminato definitivamente",
       "permanentlyDeletedWithWarning": "{{hostname}} è stato eliminato, ma {{warning}}",
       "restored": "Ripristinato",

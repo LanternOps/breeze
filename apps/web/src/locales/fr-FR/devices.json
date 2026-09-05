@@ -1834,7 +1834,7 @@
       "networkSkipped": "{{count}} Périphérique(s) réseau sauté(s) — cette action s’applique uniquement aux dispositifs agent.",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
-      "permanentDeleting": "Suppression permanente",
+      "permanentDeleting": "Suppression permanente de {{hostname}} en cours…",
       "permanentlyDeleted": "Supprimé définitivement",
       "permanentlyDeletedWithWarning": "{{hostname}} a été supprimé, mais {{warning}}",
       "restored": "Restauré",
