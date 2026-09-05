@@ -53,7 +53,7 @@ import {
  *   b) the action is `SET NULL` AND every column Postgres would actually null
  *      (`confdelsetcols`, else the whole `conkey`) is nullable. A `SET NULL`
  *      onto a NOT NULL column is accepted at DDL time and fails at delete time
- *      with 23502 -- `action_intents -> tickets` does exactly this today;
+ *      with 23502 -- the former `action_intents -> tickets` bug (#4872);
  *   c) the child is a step-1b pre-clear target and that pre-clear runs before
  *      the parent's DELETE -- always true when the parent is only in the
  *      cascade set, and otherwise decided by array order;

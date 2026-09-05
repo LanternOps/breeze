@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import JSZip from 'jszip';
 import { getTestDb } from './setup';
+import { db as appDb, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 
@@ -39,6 +41,8 @@ interface SeededOrgs {
   siteId: string;
   siteName: string;
   prohibitedSentinels: string[];
+  ticketA: string;
+  ticketB: string;
 }
 
 async function seedTwoOrgs(): Promise<SeededOrgs> {
@@ -93,6 +97,36 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       'brz_roundtri', ${userId}
     )
   `);
+
+  // #4872: both live and terminal intents must tombstone on ticket deletion
+  // without changing their tenant. Org B is the untouched control.
+  const ticketA = crypto.randomUUID();
+  const ticketB = crypto.randomUUID();
+  const userB = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO users (id, partner_id, org_id, email, name, password_hash)
+    VALUES (${userB}, ${partnerId}, ${orgB}, ${'control-' + suffix + '@breeze.test'}, 'Control User', 'test-hash')
+  `);
+  for (const [orgId, ticketId, actorId] of [[orgA, ticketA, userId], [orgB, ticketB, userB]]) {
+    await db.execute(sql`
+      INSERT INTO tickets (id, org_id, partner_id, ticket_number, subject, source)
+      VALUES (${ticketId}, ${orgId}, ${partnerId}, ${'RT-' + ticketId}, 'Scoped ticket', 'manual')
+    `);
+    for (const status of ['pending_approval', 'completed']) {
+      await db.execute(sql`
+        INSERT INTO action_intents (
+          org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          idempotency_key, correlation_id, expires_at, status, scope_kind, scope_ticket_id
+        ) VALUES (
+          ${orgId}, ${partnerId}, ${actorId}, 'chat', 'user_session',
+          'ticket.comment.add', ${'a'.repeat(64)}, 'Scoped ticket', 'Adds a comment', 1,
+          ${crypto.randomUUID()}, ${crypto.randomUUID()}, now() + interval '1 hour',
+          ${status}, 'ticket', ${ticketId}
+        )
+      `);
+    }
+  }
 
   // Base rows: Org A has 2 sites + 2 device_groups; Org B has 1 of each.
   const siteA1 = crypto.randomUUID();
@@ -264,6 +298,8 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     siteId: siteA1,
     siteName: siteA1Name,
     prohibitedSentinels,
+    ticketA,
+    ticketB,
   };
 }
 
@@ -410,6 +446,70 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     }
   });
 
+  it('ticket deletion tombstones live and completed intents while preserving org ownership (#4872)', async () => {
+    const { orgA, orgB, ticketA, ticketB } = await seedTwoOrgs();
+    await withSystemDbAccessContext(async () => {
+      const role = await appDb.execute(sql`SELECT current_user AS role`);
+      expect(role[0]?.role).toBe('breeze_app');
+      await appDb.execute(sql`DELETE FROM tickets WHERE id = ${ticketA}`);
+    });
+    const rows = await getTestDb().execute(sql`
+      SELECT org_id, scope_kind, scope_ticket_id, status
+      FROM action_intents WHERE org_id IN (${orgA}, ${orgB}) ORDER BY org_id, status
+    `);
+    expect(rows.filter(row => row.org_id === orgA)).toEqual([
+      { org_id: orgA, scope_kind: 'ticket', scope_ticket_id: null, status: 'completed' },
+      { org_id: orgA, scope_kind: 'ticket', scope_ticket_id: null, status: 'pending_approval' },
+    ]);
+    expect(rows.filter(row => row.org_id === orgB)).toEqual([
+      { org_id: orgB, scope_kind: 'ticket', scope_ticket_id: ticketB, status: 'completed' },
+      { org_id: orgB, scope_kind: 'ticket', scope_ticket_id: ticketB, status: 'pending_approval' },
+    ]);
+  });
+
+  it('the composite FK still rejects cross-org ticket scope even under system context (#4872)', async () => {
+    const { orgA, ticketB } = await seedTwoOrgs();
+    // Clone a valid intent at INSERT: retargeting an existing intent would hit
+    // its immutability trigger before exercising the tenant FK.
+    let failure: unknown;
+    try {
+      await withSystemDbAccessContext(() => appDb.execute(sql`
+        INSERT INTO action_intents (
+          org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          idempotency_key, correlation_id, expires_at, scope_kind, scope_ticket_id
+        ) SELECT org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          ${crypto.randomUUID()}, ${crypto.randomUUID()}, expires_at, 'ticket', ${ticketB}
+        FROM action_intents WHERE org_id = ${orgA} LIMIT 1
+      `));
+    } catch (error) {
+      failure = error;
+    }
+    expect(pgErrorCode(failure)).toBe('23503');
+  });
+
+  it('org-scoped RLS rejects an intent forged into another org (#4872)', async () => {
+    const { orgA, orgB, ticketB } = await seedTwoOrgs();
+    let failure: unknown;
+    try {
+      await withDbAccessContext({ scope: 'organization', orgId: orgA, accessibleOrgIds: [orgA] },
+        () => appDb.execute(sql`
+          INSERT INTO action_intents (
+            org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+            action_name, argument_digest, target_summary, impact_summary, risk_tier,
+            idempotency_key, correlation_id, expires_at, scope_kind, scope_ticket_id
+          ) SELECT ${orgB}, partner_id, requested_by_user_id, source, origin_principal_kind,
+            action_name, argument_digest, target_summary, impact_summary, risk_tier,
+            ${crypto.randomUUID()}, ${crypto.randomUUID()}, expires_at, 'ticket', ${ticketB}
+          FROM action_intents WHERE org_id = ${orgA} LIMIT 1
+        `));
+    } catch (error) {
+      failure = error;
+    }
+    expect(pgErrorCode(failure)).toBe('42501');
+  });
+
   it('cascade erases the target org and leaves the other org intact', async () => {
     const db = getTestDb();
     const { orgA, orgB } = await seedTwoOrgs();
@@ -420,6 +520,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(1);
     expect(await rowCount(db, 'portal_branding', orgA)).toBe(1);
     expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
+    expect(await rowCount(db, 'tickets', orgA)).toBe(1);
+    expect(await rowCount(db, 'action_intents', orgA)).toBe(2);
     expect(await rowCount(db, 'quotes', orgA)).toBe(1);
     expect(await rowCount(db, 'quote_lines', orgA)).toBe(2);
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
@@ -428,6 +530,10 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
     // Target org fully wiped.
+    expect(await rowCount(db, 'tickets', orgA)).toBe(0);
+    expect(await rowCount(db, 'action_intents', orgA)).toBe(0);
+    expect(await rowCount(db, 'tickets', orgB)).toBe(1);
+    expect(await rowCount(db, 'action_intents', orgB)).toBe(2);
     expect(await rowCount(db, 'sites', orgA)).toBe(0);
     expect(await rowCount(db, 'device_groups', orgA)).toBe(0);
     expect(await rowCount(db, 'contracts', orgA)).toBe(0);

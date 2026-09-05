@@ -222,7 +222,8 @@ export const actionIntents = pgTable(
      * scopeDeviceId's plain single-column FK to devices(id) (a Task-2
      * design choice per the P2-4 plan): a forged cross-tenant ticket
      * pointer is 23503 even under system context, not just an app-layer
-     * check. ON DELETE SET NULL is the tombstone transition; the
+     * check. ON DELETE SET NULL (scope_ticket_id) tombstones only the
+     * ticket pointer, preserving the NOT NULL org_id. The
      * immutability trigger (action_intents_block_content_update(),
      * migrations/2026-09-25-ai-agents-ticket-triage.sql) permits only the
      * same non-null -> NULL transition it already permits for
@@ -402,6 +403,9 @@ export const actionIntents = pgTable(
     idOrgUq: uniqueIndex('action_intents_id_org_uq').on(table.id, table.orgId),
     // P2-4: composite FK so a forged cross-tenant ticket pointer is 23503
     // even under system context — see scopeTicketId's column comment above.
+    // The migration restricts SET NULL to scope_ticket_id (PG15+); Drizzle
+    // cannot model the column list. Bare SET NULL would also null org_id
+    // and fail with 23502 (#4872).
     // Also DEFERRABLE INITIALLY IMMEDIATE in the migration (org-lifecycle
     // contract) — drizzle-orm's foreignKey() builder has no deferrable
     // option, so that detail lives in the migration only (same limitation as
