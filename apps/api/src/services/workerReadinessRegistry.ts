@@ -84,6 +84,7 @@ export function createWorkerReadinessRegistry(options: {
   const now = options.now ?? Date.now;
   const consumers = new Map<string, ConsumerReadinessState>();
   const attached = new Set<string>();
+  const refreshers = new Map<string, () => void>();
   // An initialization failure is terminal for the process lifetime: the
   // initializer never completed, so its repeatables were never scheduled and
   // no later event can make the consumer trustworthy again. This has to be a
@@ -151,30 +152,13 @@ export function createWorkerReadinessRegistry(options: {
     notify();
   };
 
-  const recordError = (name: string, error: unknown, stopConsumer: boolean): void => {
+  const recordError = (name: string, error: unknown): void => {
     const consumer = getExpected(name);
     if (terminallyFailed.has(name)) return;
-    const errorAt = timestamp();
-    const errorCode = sanitizeErrorCode(error);
-    const lifecycleChanged = stopConsumer && (
-      consumer.state !== 'redis_disconnected'
-      || consumer.running
-      || consumer.redisConnected
-    );
-    const errorChanged = consumer.lastErrorAt !== errorAt
-      || consumer.lastErrorCode !== errorCode;
-
-    if (!lifecycleChanged && !errorChanged) return;
-
-    if (lifecycleChanged) {
-      consumer.state = 'redis_disconnected';
-      consumer.running = false;
-      consumer.redisConnected = false;
-      consumer.transitionedAt = errorAt;
-    }
-    consumer.lastErrorAt = errorAt;
-    consumer.lastErrorCode = errorCode;
-    notify();
+    consumer.lastErrorAt = timestamp();
+    consumer.lastErrorCode = sanitizeErrorCode(error);
+    // Job/error metadata is internal. Invalidating the dependency-probe cache
+    // here would turn ordinary queue traffic into repeated DB/Redis probes.
   };
 
   const recordInitializationFailure = (name: string, error: unknown): void => {
@@ -225,9 +209,15 @@ export function createWorkerReadinessRegistry(options: {
         // an already-instrumented worker cannot become invisible to readiness.
         createExpected(name, true);
       }
+      type ReadinessClient = {
+        status: string;
+        on?: (event: string, listener: () => void) => unknown;
+      };
       const runtime = worker as unknown as {
-        client?: Promise<{ status: string }>;
+        client?: Promise<ReadinessClient>;
+        waitUntilReady?: () => Promise<ReadinessClient>;
         isRunning?: () => boolean;
+        isPaused?: () => boolean;
       };
       if (
         !runtime.client
@@ -245,47 +235,79 @@ export function createWorkerReadinessRegistry(options: {
       }
       attached.add(name);
 
+      const clients = new Set<ReadinessClient>();
+      const disconnected = new Set<ReadinessClient>();
+      let resolvedClients = 0;
+      let shuttingDown = false;
+      // BullMQ's public waitUntilReady() returns its BLOCKING client, whereas
+      // client returns the command client. The webhook adapter exposes its
+      // blocking client directly and does not implement waitUntilReady().
+      const expectedClients = runtime.waitUntilReady ? 2 : 1;
+      const reconcile = (): void => {
+        if (shuttingDown || terminallyFailed.has(name) || resolvedClients < expectedClients) return;
+        const connected = [...clients].every((client) => client.status === 'ready' && !disconnected.has(client));
+        const running = runtime.isRunning!() && !runtime.isPaused?.();
+        updateLifecycle(name, !connected ? 'redis_disconnected' : running ? 'running' : 'stopped', running && connected, connected);
+      };
+      refreshers.set(name, reconcile);
+
       worker.on('ready', () => {
-        updateLifecycle(name, 'running', true, true);
+        if (!runtime.waitUntilReady) {
+          // The webhook adapter replaces an ended blocking connection. Its
+          // successful BRPOP reports ready on the new client, so follow it.
+          observeClient(runtime.client!, true);
+        }
+        reconcile();
       });
+      worker.on('resumed', reconcile);
+      worker.on('paused', reconcile);
+      worker.on('ioredis:close', reconcile);
       worker.on('error', (error) => {
-        recordError(name, error, true);
+        // BullMQ also emits `error` for lost job locks and processing errors.
+        // Only actual connection status or lifecycle proves unavailability.
+        recordError(name, error);
+        reconcile();
       });
       worker.on('completed', () => {
         const consumer = getExpected(name);
         if (terminallyFailed.has(name)) return;
-        const completedAt = timestamp();
-        if (consumer.lastSuccessfulJobAt === completedAt) return;
-        consumer.lastSuccessfulJobAt = completedAt;
-        notify();
+        consumer.lastSuccessfulJobAt = timestamp();
+        reconcile();
       });
       worker.on('failed', (_job, error) => {
-        recordError(name, error, false);
+        recordError(name, error);
+        reconcile();
       });
       worker.on('closing', () => {
+        shuttingDown = true;
         updateLifecycle(name, 'stopping', false, false);
       });
       worker.on('closed', () => {
+        shuttingDown = true;
         updateLifecycle(name, 'stopped', false, false);
       });
 
-      // Listeners are installed before touching the client promise so a ready
-      // event racing this initial status check cannot be missed.
-      const initialState = getExpected(name).state;
-      void runtime.client.then((client) => {
-        if (
-          getExpected(name).state === initialState
-          && initialState === 'expected'
-          && runtime.isRunning?.()
-          && client.status === 'ready'
-        ) {
-          updateLifecycle(name, 'running', true, true);
-        }
-      }).catch((error: unknown) => {
-        if (getExpected(name).state === initialState && initialState === 'expected') {
-          recordError(name, error, true);
-        }
-      });
+      const observeClient = (promise: Promise<ReadinessClient>, replace = false): void => {
+        void promise.then((client) => {
+          if (!clients.has(client)) {
+            if (replace) { clients.clear(); disconnected.clear(); }
+            clients.add(client);
+            for (const event of ['close', 'end', 'reconnecting']) {
+              client.on?.(event, () => { disconnected.add(client); reconcile(); });
+            }
+            client.on?.('ready', () => { disconnected.delete(client); reconcile(); });
+          }
+          if (!replace) resolvedClients += 1;
+          reconcile();
+        }).catch((error: unknown) => {
+          recordError(name, error);
+          if (!shuttingDown) updateLifecycle(name, 'redis_disconnected', false, false);
+        });
+      };
+      // Install worker listeners before resolving either connection. Readiness
+      // never infers both connections (or the run loop) from a `ready` event.
+      observeClient(runtime.client);
+      if (runtime.waitUntilReady) observeClient(runtime.waitUntilReady());
     },
 
     recordInitializationFailure(name, error): void {
@@ -293,12 +315,14 @@ export function createWorkerReadinessRegistry(options: {
     },
 
     snapshot(): Readonly<Record<string, ConsumerReadinessState>> {
+      for (const refresh of refreshers.values()) refresh();
       return Object.fromEntries(
         Array.from(consumers, ([name, consumer]) => [name, { ...consumer }]),
       );
     },
 
     requiredConsumersRunnable(): boolean {
+      for (const refresh of refreshers.values()) refresh();
       for (const consumer of consumers.values()) {
         if (consumer.required && !isRunnable(consumer)) return false;
       }

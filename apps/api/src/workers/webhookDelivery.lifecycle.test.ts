@@ -117,8 +117,7 @@ describe('webhook delivery worker lifecycle -> readiness registry', () => {
 
   it('(a) a job-level failure on a ready connection emits failed and leaves the consumer running', async () => {
     current = await load();
-    current.registry.expect(NAME, true);
-    current.registry.attach(NAME, current.getWebhookWorker() as never);
+    await current.initializeWebhookDelivery();
     const worker = current.getWebhookWorker();
     brpopMock.mockResolvedValueOnce(null);               // timeout -> emit('ready') -> running
     await processOnce(worker);
@@ -132,8 +131,7 @@ describe('webhook delivery worker lifecycle -> readiness registry', () => {
 
   it('(b) a connection failure emits error, moves the consumer to redis_disconnected without throwing, and recovers on the next BRPOP', async () => {
     current = await load();
-    current.registry.expect(NAME, true);
-    current.registry.attach(NAME, current.getWebhookWorker() as never);
+    await current.initializeWebhookDelivery();
     const worker = current.getWebhookWorker();
     brpopMock.mockResolvedValueOnce(null);
     await processOnce(worker);                            // running

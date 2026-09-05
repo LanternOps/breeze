@@ -550,6 +550,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       consumerSummary: { required: 1, runnable: 1, unavailable: 0, optionalRunning: 0, optionalDisabled: 0 },
     });
 
+    (await leaky.client).status = 'reconnecting';
     leaky.emit('error', Object.assign(new Error('redis://secret.internal:6379'), { name: 'RedisSecretError' }));
     const degraded = await getText(port, '/health/ready');
     expect(degraded.status).toBe(503);
