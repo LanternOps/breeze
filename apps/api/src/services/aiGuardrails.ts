@@ -466,6 +466,12 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // The customer's "regular work on a PC" (spec §3.2's explicit supervised list).
   'execute_command', 'run_script',
+  // #3525: stopping a script is a de-escalation — it never starts work, carries
+  // no operator-chosen content, target, credential or binary, and the worst
+  // outcome of an unwanted one is a job that has to be re-run. Supervised, at
+  // the same gate as the run_script it undoes; four_eyes would leave a runaway
+  // script on a customer endpoint while a second approver is found.
+  'cancel_script_execution',
   // s1_isolate_device is deliberately ABSENT here: its boolean `isolate`
   // discriminator cannot be action-classified (spec §3.1), so its scope is
   // resolved by resolveApprovalScope's override hook instead of this static
@@ -562,6 +568,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
+  // whoever may start a script may stop it, and nobody else.
+  cancel_script_execution: { resource: 'scripts', action: 'execute' },
   manage_alerts: {
     list: { resource: 'alerts', action: 'read' },
     get: { resource: 'alerts', action: 'read' },
@@ -1131,6 +1140,10 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
 const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
   run_script: { limit: 5, windowSeconds: 300 },
+  // Deliberately looser than run_script: a stop is the safe direction, and a
+  // rate limit that blocks a tech's assistant from halting a runaway script is
+  // worse than the burst it prevents.
+  cancel_script_execution: { limit: 20, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
@@ -1993,6 +2006,10 @@ function buildApprovalDescription(
     case 'run_script':
       parts.push(`Run script ${(input.scriptId as string)?.slice(0, 8) ?? 'unknown'}...`);
       if (Array.isArray(input.deviceIds)) parts.push(`on ${input.deviceIds.length} device(s)`);
+      break;
+
+    case 'cancel_script_execution':
+      parts.push(`Stop script execution ${(input.executionId as string)?.slice(0, 8) ?? 'unknown'}...`);
       break;
 
     case 'manage_services':
