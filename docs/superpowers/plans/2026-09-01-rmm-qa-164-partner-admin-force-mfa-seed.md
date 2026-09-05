@@ -1442,3 +1442,29 @@ Independent review of the branch's auth, seed, migration, tests and CI changes
 found no blocking regressions. The API replay is branch-local acceptance; it is
 not composed release-candidate evidence or a deployment claim. No production
 state was changed.
+
+### CI fixture follow-up
+
+Run `33986111044` at `88a32850f7` exposed two newer-main fixture gaps:
+Portal Dev E2E attempted organization creation with an unenrolled seeded admin
+and received HTTP 428; Guided Setup Smoke completed its installer checks but
+received the same 428 at its post-reboot remote-session trust assertion. These
+were consequences of the corrected seed posture, not hydration or installer
+failures. The dedicated Auth Browser Transition and existing Smoke Test jobs
+passed on that head.
+
+The portal hydration fixture and installer smoke now explicitly use the
+documented role-only relief valve. The installer writes it into its staged
+`.env` so it survives the systemd reboot. Login assertions require explicit
+`mfaEnrollmentRequired=false`, including after reboot. The portal fixture also
+asserts that its stored global Partner Admin still has `force_mfa=true`.
+Production defaults and the forced-MFA acceptance tests remain unchanged.
+
+Local verification: five related suites passed all 214 tests; workflow YAML
+parsed; the installer and extracted workflow shell blocks passed `bash -n`.
+Controls executed the actual portal guard and installer login helper with
+stubbed dependencies: intended posture passed, enrollment-required login failed,
+and a false stored role flag failed the portal guard. These are discrimination
+controls, not live E2E evidence. Independent delta review found no actionable
+findings. Portal and Guided Setup CI must rerun on the follow-up head before
+claiming those jobs pass.
