@@ -216,6 +216,25 @@ describe('script result closes a cancelling execution (#3525 closer 1)', () => {
     expect(casOrder()).not.toContain('recovery3607');
   });
 
+  it('closes the automation action as cancelled, not failed, on a confirmed cancel', async () => {
+    // The agent reports a killed process as `failed` with exit -1. Passing that
+    // straight through would have an automation step read "failed" when the
+    // operator stopped it — the same dishonesty the execution row avoids.
+    seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: CC1 });
+    await handleResult({ status: 'failed', exitCode: -1, cancelled: true, cancelledByCommandId: CC1 });
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ terminalStatus: 'cancelled' }),
+    );
+  });
+
+  it('closes the automation action with the REAL outcome on an unconfirmed cancel', async () => {
+    seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: CC1 });
+    await handleResult({ status: 'completed', exitCode: 0, stdout: 'done' });
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ terminalStatus: 'succeeded' }),
+    );
+  });
+
   it('leaves a non-cancelling execution on the ordinary primary CAS', async () => {
     seed({ status: 'running' });
     await handleResult({ status: 'completed', exitCode: 0, stdout: 'ok' });

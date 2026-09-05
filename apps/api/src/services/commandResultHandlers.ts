@@ -442,6 +442,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       let cancelClosed: Array<{ id: string; scriptId: string }> = [];
+      let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db
           .update(scriptExecutions)
@@ -456,6 +457,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             id: scriptExecutions.id,
             scriptId: scriptExecutions.scriptId,
           });
+        cancelConfirmed = cancelClosed.length > 0;
       }
       if (cancelClosed.length === 0) {
         cancelClosed = await db
@@ -625,7 +627,15 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         await applyAutomationActionTerminal({
           source: 'script_execution',
           scriptExecutionId: effectiveExecution.id,
-          terminalStatus: scriptStatus === 'completed' ? 'succeeded' : 'failed',
+          // #3525: a proven cancel closes the automation action as `cancelled`,
+          // never `failed`. The agent reports a killed process as `failed` with
+          // exit -1, so passing `scriptStatus` straight through would make an
+          // automation step read "failed" when the operator stopped it — the
+          // same dishonesty the execution row itself now avoids. An UNPROVEN
+          // cancel keeps the real outcome here too, for the same reason.
+          terminalStatus: cancelConfirmed
+            ? 'cancelled'
+            : scriptStatus === 'completed' ? 'succeeded' : 'failed',
           output: executionValues.stdout,
           error: executionValues.errorMessage ?? executionValues.stderr,
           completedAt: executionValues.completedAt,
