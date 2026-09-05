@@ -282,4 +282,63 @@ describe('InvoiceWorkspace', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-tab-detail')).toHaveAttribute('aria-selected', 'true'));
     expect(screen.getByTestId('invoice-tab-editor')).toHaveAttribute('aria-selected', 'false');
   });
+
+  // Regression: InvoiceLineDevices' writeOpenIds composes its `devices=<ids>`
+  // segment onto whatever hash already exists — it does NOT require a tab
+  // segment to be present first. On an issued invoice opened at the default
+  // tab the hash starts empty, so opening a device appendix produces
+  // `#devices=line-1` with NO tab segment at all. A position-aware readTab
+  // (treating the first `&`-segment as the tab) misreads `devices=line-1` as
+  // the tab, fails the TAB_LABELS match, and falls back to the default —
+  // which happens to still be Detail here, so the read side doesn't expose
+  // the bug. The write side does: a position-aware selectTab drops whatever
+  // it thinks is the "tab" segment when writing a new one, so clicking
+  // another tab discarded the devices= segment entirely, closing the
+  // appendix. readTab/selectTab must be segment-AWARE (match by value, not
+  // position) so a tab-less devices= hash survives a tab switch.
+  it('preserves a lone #devices=… hash (no tab segment) across a tab switch on an issued invoice', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/payments') return json({ data: [] });
+      if (input.startsWith('/invoices/inv-1/lines/line-1/devices')) {
+        return json({ data: { recorded: true, total: 0, devices: [], nextCursor: null } });
+      }
+      if (input === '/invoices/inv-1') return json({ data: invoice({ status: 'sent', invoiceNumber: 'INV-0001', sentAt: '2026-06-02T00:00:00Z' }) });
+      return json({ data: {} });
+    });
+    window.location.hash = '#devices=line-1';
+    render(<InvoiceWorkspace id="inv-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('invoice-tab-detail')).toHaveAttribute('aria-selected', 'true'));
+
+    fireEvent.click(screen.getByTestId('invoice-tab-preview'));
+
+    await waitFor(() => expect(screen.getByTestId('invoice-tab-preview')).toHaveAttribute('aria-selected', 'true'));
+    expect(window.location.hash).toContain('devices=line-1');
+  });
+
+  // Regression companion to the above: when a tab segment IS present,
+  // selecting a different tab must swap only that segment and leave the
+  // devices= segment untouched, regardless of which side of the `&` the tab
+  // was on originally.
+  it('rewrites only the tab segment of a composed #detail&devices=… hash when switching tabs', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/payments') return json({ data: [] });
+      if (input.startsWith('/invoices/inv-1/lines/line-1/devices')) {
+        return json({ data: { recorded: true, total: 0, devices: [], nextCursor: null } });
+      }
+      if (input === '/invoices/inv-1') return json({ data: invoice({}) });
+      return json({ data: {} });
+    });
+    window.location.hash = '#detail&devices=line-1';
+    render(<InvoiceWorkspace id="inv-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('invoice-tab-detail')).toHaveAttribute('aria-selected', 'true'));
+
+    fireEvent.click(screen.getByTestId('invoice-tab-editor'));
+
+    await waitFor(() => expect(screen.getByTestId('invoice-tab-editor')).toHaveAttribute('aria-selected', 'true'));
+    expect(window.location.hash).toBe('#editor&devices=line-1');
+  });
 });
