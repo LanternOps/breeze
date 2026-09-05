@@ -145,3 +145,31 @@ describe('ExecutionDetails run context (#4888)', () => {
     expect(chip).not.toHaveTextContent('System');
   });
 });
+
+// The list/detail endpoints never return `duration` -- only startedAt/
+// completedAt are on the wire -- so this panel must derive it, same as
+// ExecutionHistory's table column.
+describe('ExecutionDetails duration (no `duration` field on the wire)', () => {
+  it('computes the Duration field from startedAt/completedAt when `duration` is absent', () => {
+    renderExecution({
+      startedAt: '2026-09-01T10:00:00.000Z',
+      completedAt: '2026-09-01T10:01:00.000Z',
+      duration: undefined,
+    });
+
+    const durationLabel = screen.getByText('Duration');
+    expect(durationLabel.parentElement).toHaveTextContent('1m 0s');
+  });
+
+  it('shows a placeholder rather than "-" for a pending execution with no started/completed timestamps', () => {
+    renderExecution({
+      status: 'pending',
+      startedAt: null,
+      completedAt: undefined,
+      duration: undefined,
+    });
+
+    const durationLabel = screen.getByText('Duration');
+    expect(durationLabel.parentElement).toHaveTextContent('—');
+  });
+});
