@@ -60,6 +60,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
       // The fixture's challenge IS the transcript the client committed to.
       transcript: fixture.challenge,
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
+      publicKeyAlg: 'ES256',
     });
 
     expect(result.basis).toBe('android_strongbox_key_attestation');
@@ -89,6 +90,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
       } as MobileAttestation,
       transcript: fixture.challenge,
       publicKeySpkiB64: attackerKey.attestedPublicKeyB64,
+      publicKeyAlg: 'ES256',
     });
 
     expect(result.basis).toBe('unattested');
@@ -109,6 +111,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
       } as MobileAttestation,
       transcript: Buffer.alloc(32, 7),
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
+      publicKeyAlg: 'ES256',
     });
 
     expect(result.basis).toBe('unattested');
@@ -130,6 +133,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
       } as MobileAttestation,
       transcript: fixture.challenge,
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
+      publicKeyAlg: 'ES256',
     });
 
     expect(result.basis).toBe('unattested');
@@ -149,6 +153,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
       } as MobileAttestation,
       transcript: fixture.challenge,
       publicKeySpkiB64: 'not-a-key',
+      publicKeyAlg: 'ES256',
     });
 
     expect(result.basis).toBe('unattested');

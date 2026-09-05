@@ -83,6 +83,7 @@ const run = (attestation: MobileAttestation = androidAttestation()) =>
     attestation,
     transcript: TRANSCRIPT,
     publicKeySpkiB64: REGISTERED_SPKI_B64,
+    publicKeyAlg: 'ES256',
   });
 
 beforeEach(() => {
@@ -244,10 +245,15 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
   });
 
   it('leaves iOS alone — W03 owns that branch', async () => {
+    // Since W03 merged, this really does reach the App Attest verifier (which
+    // is NOT mocked here). A junk attestationObject makes it reject, so the
+    // assertion that matters is the one below: the Android verifier is never
+    // consulted for an iOS attestation.
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'ios', attestationObject: 'cbor', keyId: 'kid' },
       transcript: TRANSCRIPT,
       publicKeySpkiB64: REGISTERED_SPKI_B64,
+      publicKeyAlg: 'ES256',
     });
     expect(androidMock.verifyAndroidKeyAttestation).not.toHaveBeenCalled();
     expect(result.basis).toBe('unattested');

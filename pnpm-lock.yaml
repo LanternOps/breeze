@@ -139,6 +139,9 @@ importers:
       '@hono/zod-validator':
         specifier: ^0.9.0
         version: 0.9.0(hono@4.13.5)(zod@4.4.3)
+      '@levischuck/tiny-cbor':
+        specifier: ^0.2.11
+        version: 0.2.11
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -151,6 +154,9 @@ importers:
       '@peculiar/asn1-x509':
         specifier: ^2.8.0
         version: 2.8.0
+      '@peculiar/x509':
+        specifier: ^1.14.3
+        version: 1.14.3
       '@sentry/node':
         specifier: ^10.69.0
         version: 10.69.0(@opentelemetry/core@2.10.0(@opentelemetry/api@1.9.1))
@@ -260,9 +266,6 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@peculiar/x509':
-        specifier: ^1.14.3
-        version: 1.14.3
       '@types/archiver':
         specifier: ^7.0.0
         version: 7.0.0
