@@ -186,6 +186,20 @@ export async function revokeAllRefreshTokenFamiliesForUser(
   });
 }
 
+// `users.passwordChangedAt` is a `timestamp` (no tz) column
+// (apps/api/src/db/schema/users.ts). postgres.js parses that offsetless wire
+// value with a bare `new Date(...)`, so the Date object Drizzle hands back
+// carries the UTC wall clock re-read as THIS PROCESS's local time — wrong by
+// exactly the host's UTC offset on any non-UTC host. A caller-supplied string
+// (e.g. an already-serialized `toISOString()` value) is not affected: it
+// carries an explicit 'Z' offset, so `new Date(string).getTime()` is already
+// correct and must NOT be re-corrected here. Same defect class as #4018; see
+// services/sso.ts's `utcMsFromOffsetlessTimestamp` for the canonical writeup
+// and testUtils/pgOffsetlessTimestamp.ts for the test-side simulation.
+function utcMsFromOffsetlessDbTimestamp(value: Date): number {
+  return value.getTime() - value.getTimezoneOffset() * 60_000;
+}
+
 export function isTokenIssuedBeforePasswordChange(
   tokenIssuedAt: number | undefined,
   passwordChangedAt: Date | string | null | undefined
@@ -193,7 +207,7 @@ export function isTokenIssuedBeforePasswordChange(
   if (!passwordChangedAt) return false;
 
   const changedAtMs = passwordChangedAt instanceof Date
-    ? passwordChangedAt.getTime()
+    ? utcMsFromOffsetlessDbTimestamp(passwordChangedAt)
     : new Date(passwordChangedAt).getTime();
   if (!Number.isFinite(changedAtMs)) return false;
 

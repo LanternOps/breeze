@@ -84,7 +84,7 @@ export interface ContractEstimateLine {
   overage: number;
   overageMode: OverageMode | null;
   overageValue: string;
-  unresolved?: 'group_deleted';
+  unresolved?: 'group_deleted' | 'site_deleted';
 }
 export interface ContractEstimate {
   currencyCode: string;
@@ -104,6 +104,7 @@ export interface ContractLine {
   unitPrice: string;
   manualQuantity: string | null;
   siteId: string | null;
+  siteName: string | null;
   deviceRoles: string[] | null;
   /** #3205 W03: resolved server-side so the detail page needs no site lookup. */
   site: { id: string; name: string } | null;

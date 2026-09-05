@@ -207,28 +207,43 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
-		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
-		if desktopHelperErr != nil {
-			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
+		// Stage the REAL desktop helper — sibling binary first, matching-version
+		// signed release asset second. It must never be substituted with the
+		// agent binary: see stageDesktopHelper for why (#3457). A failure here
+		// is a warning, not a fatal error, so an offline or air-gapped install
+		// still gets a working agent service (same policy as the watchdog).
+		stageHelperErr := stageDesktopHelper(desktopHelperStageOptions{
+			agentPath: exePath,
+			destPath:  darwinDesktopHelperBinaryPath,
+			version:   version,
+			goos:      runtime.GOOS,
+			goarch:    runtime.GOARCH,
+		})
+		if stageHelperErr != nil {
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH))
+		} else {
+			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}
-		if desktopHelperErr != nil {
-			return fmt.Errorf("failed to stage desktop helper binary: %w", desktopHelperErr)
-		}
-		if err := os.WriteFile(darwinDesktopHelperBinaryPath, desktopHelperBytes, 0755); err != nil {
-			return fmt.Errorf("failed to copy desktop helper to %s: %w", darwinDesktopHelperBinaryPath, err)
-		}
-		fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 
-		if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+		// Only register the helper's LaunchAgents when a helper binary is
+		// actually there — see desktopHelperLaunchAgentsWanted.
+		helperLaunchAgents := desktopHelperLaunchAgentsWanted(stageHelperErr, darwinDesktopHelperBinaryPath)
+		if helperLaunchAgents {
+			if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
+			}
+			if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			}
 		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
-		}
-		if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
-		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			fmt.Fprintf(os.Stderr,
+				"Skipping desktop-helper LaunchAgent setup: no helper binary at %s.\n"+
+					"  launchd would otherwise retry a missing program indefinitely.\n",
+				darwinDesktopHelperBinaryPath)
 		}
 
 		// Create the breeze group, put the logged-in console users in it, and only
@@ -238,10 +253,17 @@ var serviceInstallCmd = &cobra.Command{
 		// would not be in the group that owns the IPC socket and would be denied
 		// (#3133/#3134/#3137). This ordering was previously reversed; it is
 		// pinned by TestInstallIPCPrereqsThenHelpersOrdering.
+		// The breeze group is set up regardless — the agent's own IPC socket
+		// belongs to it — but the helper bootstrap is skipped when there is no
+		// helper binary to bootstrap.
+		bootstrapHelpers := bootstrapDesktopHelperPlists
+		if !helperLaunchAgents {
+			bootstrapHelpers = func() {}
+		}
 		if err := installIPCPrereqsThenHelpers(
 			ensureDarwinBreezeGroup,
 			ensureDarwinBreezeGroupConsoleMembers,
-			bootstrapDesktopHelperPlists,
+			bootstrapHelpers,
 		); err != nil {
 			return err
 		}

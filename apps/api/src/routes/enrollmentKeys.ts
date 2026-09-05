@@ -582,10 +582,10 @@ const installerLinkSchema = z.object({
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
-function sanitizeEnrollmentKey(
+export function sanitizeEnrollmentKey(
   enrollmentKey: typeof enrollmentKeys.$inferSelect,
 ) {
-  const { key, ...safeRecord } = enrollmentKey;
+  const { key, keySecretHash, ...safeRecord } = enrollmentKey;
   return safeRecord;
 }
 

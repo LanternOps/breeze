@@ -1,8 +1,9 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
 import { invoices, invoiceLines } from '../db/schema/invoices';
-import { partners } from '../db/schema/orgs';
+import { partners, sites } from '../db/schema/orgs';
+import { deviceGroups } from '../db/schema/devices';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
@@ -12,10 +13,11 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
-import { buildContractSpecsFromQuote } from './quoteToContract';
+import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteToContract';
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
+import { isQuoteLineSiteDeleted } from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import {
@@ -52,6 +54,62 @@ export interface AcceptQuoteResult {
   // Executed contract_documents snapshot ids created for this accept (one per
   // contract block); empty when the quote embeds no contract blocks.
   contractDocumentIds: string[];
+}
+
+/**
+ * #3205 W05. A device-set line whose group or site was deleted carries a
+ * stamped NAME and a NULL id. Accepting it would either fail deep inside
+ * contract creation (group) or silently build an ORG-WIDE contract line from a
+ * site-scoped quote (site). Refuse the whole accept here — before the hash,
+ * before provider.capture, before any insert — so nothing is written.
+ *
+ * Aborting the WHOLE accept (not just the line) is right: the customer is
+ * signing one document at one total, and dropping a line would change the price
+ * they agreed to.
+ *
+ * The message is customer-safe: the accept path is unauthenticated and the
+ * error reaches the person clicking Accept. The refusal is logged here with
+ * ids only (never names) so the operator can find the line; `meta` carries the
+ * detail for in-process callers and is not serialized to the customer.
+ */
+const QUOTE_LINE_REFERENCE_DELETED_MESSAGE =
+  'This quote can no longer be accepted: one of the device sets it prices no longer exists. Please contact your provider for an updated quote.';
+
+/** The subset of a quote_lines row this guard reads. The two ids are mutable
+ *  here because the FOR SHARE re-read above nulls one that did not come back —
+ *  "the row is not ours / is gone" and "the FK already nulled it" are the same
+ *  state and must be reported the same way. */
+interface AcceptableQuoteLine {
+  id: string;
+  contractLineType: string | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  siteId: string | null;
+  siteName: string | null;
+}
+
+export function assertQuoteLinesAcceptable(lines: readonly AcceptableQuoteLine[]): void {
+  for (const l of lines) {
+    if (!l.contractLineType) continue;
+    if (l.deviceGroupName !== null && l.deviceGroupId === null) {
+      console.warn('[quotes] accept refused: line %s references a deleted device group', l.id);
+      throw new QuoteServiceError(
+        QUOTE_LINE_REFERENCE_DELETED_MESSAGE,
+        409,
+        'QUOTE_LINE_REFERENCE_DELETED',
+        { quoteLineId: l.id, reference: 'device_group', name: l.deviceGroupName },
+      );
+    }
+    if (isQuoteLineSiteDeleted(l)) {
+      console.warn('[quotes] accept refused: line %s references a deleted site', l.id);
+      throw new QuoteServiceError(
+        QUOTE_LINE_REFERENCE_DELETED_MESSAGE,
+        409,
+        'QUOTE_LINE_REFERENCE_DELETED',
+        { quoteLineId: l.id, reference: 'site', name: l.siteName ?? undefined },
+      );
+    }
+  }
 }
 
 /**
@@ -145,6 +203,46 @@ export async function acceptQuote(
   // contract parts (version sha + resolved variables) fold into the content hash,
   // so a later template republish or manual-variable edit invalidates the signature.
   assertContractRenderDataComplete(blocks, params.contractRenderData);
+
+  // #3205 W05 decision 10. The stamps tell us what the line REFERENCES; these
+  // reads tell us the rows still exist, and FOR SHARE keeps them existing until
+  // COMMIT. Both predicates are org-scoped, so a forged id from another tenant
+  // simply does not come back and is reported as deleted.
+  //
+  // FOR SHARE is the correct strength: acceptance does not modify these rows, it
+  // only needs them to still exist. Its counterpart is deleteDeviceGroup's
+  // FOR UPDATE (W02) — mutually exclusive, so a concurrent delete either WAITS
+  // for this accept to commit and then finds the quote converted, or it WINS and
+  // this lock request blocks until it commits, at which point the read below
+  // comes back empty and the accept fails cleanly, before provider.capture().
+  // Lock order is quote row (already held) → groups then sites, each by id
+  // ascending. That deterministic order is strictly deeper than
+  // deleteDeviceGroup's group-then-contract order and shares no cycle with it.
+  const setLines = lines.filter((l) => l.contractLineType !== null);
+  if (setLines.length > 0) {
+    const groupIds = [...new Set(setLines.map((l) => l.deviceGroupId).filter((v): v is string => !!v))].sort();
+    const siteIds = [...new Set(setLines.map((l) => l.siteId).filter((v): v is string => !!v))].sort();
+    const liveGroups = groupIds.length === 0 ? [] : await db.select({ id: deviceGroups.id })
+      .from(deviceGroups)
+      .where(and(inArray(deviceGroups.id, groupIds), eq(deviceGroups.orgId, quote.orgId)))
+      .orderBy(deviceGroups.id)
+      .for('share');
+    const liveSites = siteIds.length === 0 ? [] : await db.select({ id: sites.id })
+      .from(sites)
+      .where(and(inArray(sites.id, siteIds), eq(sites.orgId, quote.orgId)))
+      .orderBy(sites.id)
+      .for('share');
+    const liveGroupIds = new Set(liveGroups.map((g) => g.id));
+    const liveSiteIds = new Set(liveSites.map((s) => s.id));
+    // Treat "the id is set but the row did not come back" exactly like the
+    // stamped-orphan state below: deleted, or never ours.
+    for (const l of setLines) {
+      if (l.deviceGroupId && !liveGroupIds.has(l.deviceGroupId)) l.deviceGroupId = null;
+      if (l.siteId && !liveSiteIds.has(l.siteId)) l.siteId = null;
+    }
+  }
+  assertQuoteLinesAcceptable(lines);
+
   const contractRenderData = params.contractRenderData ?? [];
   // Partner row (language setting + invoice numbering), read ONCE: the render
   // locale below and the invoice issue fields further down must agree on it.
@@ -167,7 +265,7 @@ export async function acceptQuote(
   const renderLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
   const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate, renderLocale);
 
-  const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts);
+  const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts, 2);
   const captured = await getAcceptanceProvider().capture({
     quoteId: quote.id,
     signerName: params.signerName,
@@ -191,6 +289,7 @@ export async function acceptQuote(
       ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
       userAgent: params.userAgent ?? null,
       quoteSha256,
+      hashVersion: 2,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
       renderLocale,
     })
@@ -376,6 +475,18 @@ export async function acceptQuote(
       taxable: l.taxable,
       catalogItemId: l.catalogItemId ?? null,
       termMonths: l.termMonths ?? null,
+      // The SQL invariant admits only these four non-null values on quote
+      // lines; the shared Postgres enum type is wider because contracts also
+      // use its flat/manual members.
+      contractLineType: l.contractLineType as QuoteLineForContract['contractLineType'],
+      deviceRoles: l.deviceRoles as QuoteLineForContract['deviceRoles'],
+      deviceGroupId: l.deviceGroupId,
+      deviceGroupName: l.deviceGroupName,
+      siteId: l.siteId,
+      siteName: l.siteName,
+      includedQuantity: l.includedQuantity,
+      overageMode: l.overageMode,
+      overageUnitPrice: l.overageUnitPrice,
     })),
     startDate,
     params.actorUserId ?? null,

@@ -189,6 +189,13 @@ fi
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
 ENV_EXAMPLE_FILE="${WORK_DIR}/.env.example"
 CADDYFILE_FILE="${WORK_DIR}/docker/Caddyfile.prod"
+# Default `file:` source for the optional M365 executor signing-key secrets
+# (docker-compose.yml, secrets: block) once unset — see
+# ensure_m365_jwk_secret_placeholder() and #2991. Not downloaded as a
+# template: it must exist regardless of which release's docker-compose.yml is
+# in play (older releases still default to /dev/null and never read it; this
+# is a harmless no-op for them), so it is created locally instead.
+M365_JWK_PLACEHOLDER_FILE="${WORK_DIR}/docker/secrets/.empty-jwk"
 COMPOSE_PROXY_OVERRIDE_FILE="${WORK_DIR}/docker-compose.byo-proxy.yml"
 PROXY_GUIDE_FILE="${WORK_DIR}/reverse-proxy-setup.md"
 COMPOSE_FILES=("${COMPOSE_FILE}")
@@ -2241,6 +2248,28 @@ apply_proxy_compose_file() {
 
   write_external_proxy_compose_file
   log "Generated ${COMPOSE_FILE} for external reverse proxy mode."
+}
+
+# The installer's WORK_DIR only ever gets docker-compose.yml + .env.example
+# (plus docker/Caddyfile.prod in packaged-Caddy mode) — it is never a full
+# repo checkout. docker-compose.yml's M365 executor signing-key secrets
+# default their `file:` source to ./docker/secrets/.empty-jwk when unset (the
+# common case; see #2991), so that path must exist here too, or `docker
+# compose up` fails with "bind source path does not exist" — a harder,
+# guaranteed failure than the /dev/null bug this placeholder was created to
+# fix in the first place. Create it locally rather than downloading it as a
+# template: an older selected release's docker-compose.yml still defaults to
+# /dev/null and never reads this path, so unconditionally creating an unused
+# empty file is a harmless no-op for it, whereas downloading a
+# release-pinned template that doesn't exist yet in that release would hard
+# fail the installer for every release before this fix ships.
+ensure_m365_jwk_secret_placeholder() {
+  if [[ -e "${M365_JWK_PLACEHOLDER_FILE}" && ! -f "${M365_JWK_PLACEHOLDER_FILE}" ]]; then
+    fail "${M365_JWK_PLACEHOLDER_FILE} exists but is not a regular file. Remove it — it must be an empty, ordinary file."
+  fi
+
+  mkdir -p "$(dirname "${M365_JWK_PLACEHOLDER_FILE}")"
+  : > "${M365_JWK_PLACEHOLDER_FILE}"
 }
 
 ensure_packaged_caddy_assets() {
@@ -4330,6 +4359,7 @@ main() {
   select_breeze_version
   resolve_template_remote_base
   prepare_templates
+  ensure_m365_jwk_secret_placeholder
   prepare_env_file
   preserve_existing_compose_project_name
   materialize_env_from_example

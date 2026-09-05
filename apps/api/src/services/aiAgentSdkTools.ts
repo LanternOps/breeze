@@ -88,6 +88,25 @@ const SECRET_ACTION_REFUSED_TEXT =
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,
+  /**
+   * The `mcp__<server>__<tool>` name this call was EXPOSED to the model as,
+   * when it differs from the `executeTool` handler `toolName` above. Used for
+   * one thing only: the session-allowlist check, which compares against the
+   * names the caller put in `allowedTools` — i.e. exposed names, not handler
+   * names. Everything downstream (tier, RBAC, rate limit, approval, audit)
+   * stays on `toolName`, because that is where the capability actually lives.
+   *
+   * Pass the FULLY-QUALIFIED, non-empty `mcp__<server>__<tool>` string, not a
+   * bare name. Omit it whenever the two identities coincide — as of writing
+   * that is every tool this file's `breeze` server registers, and every
+   * script-builder tool except `execute_script_on_device` -> `run_script`.
+   * Only script builder's registrations are pinned against drift (see
+   * `scriptBuilderTools.guard.test.ts`); a NEW tool registered here under a
+   * name that differs from its handler must wire this argument, or the
+   * session allowlist will refuse it the way it refused every Script Builder
+   * test run with "Tool 'run_script' is not allowed for this session" (#4883).
+   */
+  mcpToolName?: string,
 ) => Promise<
   | { allowed: true; intentId?: string; context?: ToolExecutionContext }
   | { allowed: false; error: string }

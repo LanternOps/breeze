@@ -124,7 +124,6 @@ export const tickets = pgTable('tickets', {
   status: ticketStatusEnum('status').notNull().default('new'),
   priority: ticketPriorityEnum('priority').notNull().default('normal'),
   assignedTo: uuid('assigned_to').references(() => users.id),
-  assignedTeam: uuid('assigned_team'),
   deviceId: uuid('device_id').references(() => devices.id),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields'),

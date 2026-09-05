@@ -16,7 +16,18 @@ export default function AllowanceCell(
 ) {
   const { t } = useTranslation('billing');
   // W02: a group line whose group was deleted has no resolvable quantity at all.
-  if (estimate?.unresolved === 'group_deleted') return <>{t('contracts.shared.values.groupDeleted')}</>;
+  if (estimate?.unresolved === 'group_deleted') {
+    return <span data-testid="allowance-group-deleted">{t('contracts.shared.values.groupDeleted')}</span>;
+  }
+  // #4693: a missing stamped site is equally unresolved. Naming the scope is
+  // what keeps this state visibly distinct from a deliberately org-wide line.
+  if (estimate?.unresolved === 'site_deleted') {
+    return (
+      <span data-testid="allowance-site-deleted">
+        {t('contracts.shared.values.siteDeletedNamed', { name: line.siteName ?? '' })}
+      </span>
+    );
+  }
 
   const base = AUTO_QTY_TYPES.has(line.lineType)
     ? (estimate ? String(estimate.quantity) : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)

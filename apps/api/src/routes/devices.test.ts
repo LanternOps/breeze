@@ -157,6 +157,16 @@ vi.mock('../db', () => {
   dbMock.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(dbMock));
 
   return {
+    // `getCurrentDbAccessContext` is listed even though no test here currently
+    // reaches it: GET /devices/:id resolves the remote-access launcher through
+    // `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts), which imports
+    // all four context helpers BY NAME. A factory missing one throws
+    // "No <name> export is defined on the mock" at call time — and the route
+    // swallows that into `remoteAccessLaunchSkipReason: 'config_error'`, so a
+    // test could go on passing while silently exercising the failure branch
+    // instead of the real path. `undefined` models a request-scoped (non-system)
+    // caller, which is the shape these routes actually run in. See #3419.
+    getCurrentDbAccessContext: vi.fn(() => undefined),
     runOutsideDbContext: vi.fn((fn) => fn()),
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -175,6 +185,8 @@ vi.mock('../services/deviceUninstallDrain', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // routes/devices/events.ts builds module-level SQL fragments from auditLogs at import time (#4835).
+  auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
   deviceHardware: { deviceId: 'deviceId' },
   deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },

@@ -244,6 +244,22 @@ set -e
 [[ "${installer_status}" -eq 0 ]] || fail "guided-setup.sh exited ${installer_status} (see log above)"
 echo "  OK  installer exited 0"
 
+step "Assert the M365 JWK secret placeholder exists (#2991 — bare install dir, not a full checkout)"
+# This WORK_DIR only ever gets docker-compose.yml + .env.example + (in
+# packaged-Caddy mode) docker/Caddyfile.prod staged into it above — it is
+# never a full repo clone. docker-compose.yml's M365 executor signing-key
+# secrets default their file: source to ./docker/secrets/.empty-jwk when
+# unset, so the installer itself must create that file (it is not part of
+# what gets staged/downloaded); otherwise `docker compose up` fails with
+# "bind source path does not exist" instead of starting. If this regresses,
+# the installer run above would already have failed on the api container
+# never starting — this step exists to name the exact cause instead of
+# leaving it to a bisect through installer output.
+placeholder="${WORK_DIR}/docker/secrets/.empty-jwk"
+[[ -f "${placeholder}" ]] || fail "installer did not create ${placeholder}"
+[[ ! -s "${placeholder}" ]] || fail "${placeholder} is not empty"
+echo "  OK  ${placeholder} exists and is empty"
+
 step "Assert the generated .env"
 grep -q "^BREEZE_VERSION=${VERSION}\$" "${WORK_DIR}/.env" || fail "BREEZE_VERSION was not pinned to ${VERSION}"
 grep -q '^BREEZE_DOMAIN=localhost$' "${WORK_DIR}/.env" || fail "BREEZE_DOMAIN default is not localhost"

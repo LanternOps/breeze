@@ -68,7 +68,15 @@ function makeSelectMock() {
   });
 }
 
+// `getCurrentDbAccessContext` is named on purpose: the partner-settings read
+// now goes through `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts),
+// which imports all three context helpers BY NAME. Omitting any of them makes
+// this suite fail with "No <name> export is defined on the mock" rather than
+// silently skipping the RLS escape and reintroducing #3419. Returning
+// `undefined` models a request-scoped (non-system) caller, so the escape is
+// taken — which is the shape every route under test actually runs in.
 vi.mock('../../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

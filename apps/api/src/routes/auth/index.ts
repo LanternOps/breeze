@@ -11,6 +11,7 @@ import { testApprovalRoutes } from './testApproval';
 import { cfAccessRedirectLoginRoutes } from './cfAccessRedirectLogin';
 import { passkeyRoutes } from './passkeys';
 import { loginContextRoutes } from './loginContext';
+import { ssoDiscoveryRoutes } from './ssoDiscovery';
 import { authBindingRoutes } from './binding';
 import { authTransitionTestControlRoutes } from './authTransitionTestControl';
 
@@ -31,5 +32,6 @@ authRoutes.route('/', accountDeletionRoutes);
 authRoutes.route('/', testApprovalRoutes);
 authRoutes.route('/', cfAccessRedirectLoginRoutes);
 authRoutes.route('/', loginContextRoutes);
+authRoutes.route('/', ssoDiscoveryRoutes);
 authRoutes.route('/', authBindingRoutes);
 authRoutes.route('/', authTransitionTestControlRoutes);

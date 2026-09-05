@@ -51,10 +51,17 @@ import { db } from '../db';
 import { queueCommandForExecution } from './commandQueue';
 import { enqueueDrExecutionReconcile } from '../jobs/drExecutionWorker';
 import {
+  classifyDrExecutionAuthorizationError,
   createDrExecutionAndEnqueue,
+  DrRecoveryAuthorizationDeniedError,
   reconcileDrExecution,
   resolveDrGroupAuthorizationRefs,
 } from './drExecutionService';
+import {
+  RecoveryAuthorizationDeniedError,
+  RecoveryAuthorizationTransientError,
+} from './recoveryAuthorizationSubject';
+import { ResilienceAuthorizationError } from './resilienceSiteAuthorization';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PLAN_ID = '22222222-2222-2222-2222-222222222222';
@@ -302,5 +309,50 @@ describe('drExecutionService', () => {
     expect(outcome.execution?.status).toBe('failed');
     expect(outcome.execution?.authorizationState).toBe('denied');
     expect(outcome.nextDelayMs).toBeNull();
+  });
+});
+
+// ── #3653 ───────────────────────────────────────────────────────────────────
+// The DR execute route previously let these escape to the global Hono handler,
+// which renders every non-HTTPException as a 500. The site barrier still held
+// (it throws before the execution row is written) but the caller was told the
+// server had broken, and every denial raised a Sentry event.
+describe('classifyDrExecutionAuthorizationError', () => {
+  it('carries a resilience denial status and code through unchanged', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new ResilienceAuthorizationError(403, 'site_access_denied'),
+    )).toEqual({ status: 403, code: 'site_access_denied' });
+
+    expect(classifyDrExecutionAuthorizationError(
+      new ResilienceAuthorizationError(404, 'resource_not_found'),
+    )).toEqual({ status: 404, code: 'resource_not_found' });
+  });
+
+  it('reports a recovery-subject denial as 403', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new RecoveryAuthorizationDeniedError('base_permission_denied'),
+    )).toEqual({ status: 403, code: 'base_permission_denied' });
+  });
+
+  it('reports an unavailable authorization dependency as 503, not a denial', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new RecoveryAuthorizationTransientError('authorization_dependency_unavailable'),
+    )).toEqual({ status: 503, code: 'authorization_dependency_unavailable' });
+  });
+
+  it('separates an unresolvable plan reference from a site denial', () => {
+    expect(classifyDrExecutionAuthorizationError(
+      new DrRecoveryAuthorizationDeniedError('resource_not_found'),
+    )).toEqual({ status: 404, code: 'resource_not_found' });
+
+    expect(classifyDrExecutionAuthorizationError(
+      new DrRecoveryAuthorizationDeniedError('ambiguous_snapshot_reference'),
+    )).toEqual({ status: 400, code: 'ambiguous_snapshot_reference' });
+  });
+
+  it('returns null for anything else so real faults keep propagating', () => {
+    expect(classifyDrExecutionAuthorizationError(new Error('redis is on fire'))).toBeNull();
+    expect(classifyDrExecutionAuthorizationError('nope')).toBeNull();
+    expect(classifyDrExecutionAuthorizationError(undefined)).toBeNull();
   });
 });

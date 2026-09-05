@@ -840,6 +840,7 @@ export * from './portalVisibility';
 // ============================================
 
 export * from './loginContext';
+export * from './ssoDiscovery';
 export * from './publicQuote';
 
 // ============================================

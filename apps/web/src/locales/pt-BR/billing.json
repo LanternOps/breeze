@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "grupo excluído"
+        "groupDeleted": "grupo excluído",
+        "siteDeleted": "site excluído",
+        "siteDeletedNamed": "site excluído: {{name}}"
       },
       "lineScope": {
         "site": "Site: {{name}}"
@@ -582,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "estações de trabalho", "server": "servidores", "printer": "impressoras", "router": "roteadores", "switch": "comutadores de rede", "firewall": "firewalls de rede",
+        "access_point": "pontos de acesso", "phone": "telefones", "iot": "dispositivos IoT", "camera": "câmeras", "nas": "dispositivos NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Cobrar por conjunto de dispositivos", "typeLabel": "Conjunto de dispositivos",
+        "types": { "per_device": "Por dispositivo", "per_device_role": "Por função de dispositivo", "per_device_group": "Por grupo de dispositivos", "per_seat": "Por licença" },
+        "rolesLabel": "Funções de dispositivo", "groupLabel": "Grupo de dispositivos", "siteLabel": "Site (opcional)", "allSites": "Todos os sites",
+        "quantityAuto": "A quantidade é contada automaticamente", "autoSummary": "Quantidade automática · {{count}} {{set}} · estimada",
+        "driftChip": "contagem alterada: {{stored}} → {{live}}", "refresh": "Atualizar contagens", "estimateError": "Não foi possível verificar a contagem atual de dispositivos.", "pickerError": "Não foi possível carregar os grupos de dispositivos ou os locais. Atualize a página e tente novamente.",
+        "groupDeleted": "O grupo de dispositivos “{{name}}” foi excluído — escolha outro", "siteDeleted": "O site “{{name}}” foi excluído — escolha outro",
+        "typeLocked": "Um conjunto de dispositivos não pode ser alterado após a criação da linha — remova a linha e adicione-a novamente.",
+        "includedLabel": "Quantidade incluída", "overageModeLabel": "Acima da franquia", "overageBill": "Cobrar cada unidade adicional", "overageFlag": "Reportar para revisão", "overagePriceLabel": "Preço de excedente",
+        "driftToast": "{{count}} linha(s) não correspondem mais à contagem atual de dispositivos: {{lines}}",
+        "retargetToast": "{{count}} linha(s) precisam que um grupo de dispositivos ou site seja escolhido novamente para esta organização"
+      },
       "actions": {
         "addImage": "Adicionar imagem",
         "addLine": "Adicionar linha",
@@ -1262,6 +1282,12 @@
       "warehouses": "Depósitos: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.", "estimate": "Quantidade estimada — cobrada pelo número real de {{set}} em cada período de faturamento.",
+        "setDevices": "dispositivos", "setSeats": "licenças", "setGroup": "dispositivos em “{{name}}”", "atSite": "{{set}} em {{site}}",
+        "allowanceBill": "Inclui {{included}}; unidades adicionais são cobradas a {{price}} cada.",
+        "allowanceFlag": "Inclui {{included}}; unidades adicionais são reportadas para revisão, não cobradas automaticamente."
+      },
       "additionalItems": "Itens adicionais",
       "contract": {
         "download": "Baixar contrato",

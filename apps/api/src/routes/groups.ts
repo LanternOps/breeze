@@ -803,13 +803,18 @@ groupRoutes.delete(
       if (err instanceof DeviceGroupDeleteError) {
         if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
         if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
-        // #3205 W02: a draft/active/paused contract bills this group. Contract
-        // names are contract data — disclose them only to a contracts reader.
+        // Contract and quote names/numbers are billing data — disclose each
+        // list only to a caller with that domain's read permission.
         const perms = c.get('permissions') as UserPermissions | undefined;
         const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        const canReadQuotes = !!perms && hasPermission(perms, PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
         return c.json({
-          error: err.message, code: 'GROUP_IN_USE_BY_CONTRACTS', contractCount: err.contractCount,
-          ...(canReadContracts ? { contracts: err.contracts } : {}),
+          error: err.message,
+          code: err.code === 'QUOTED_BY_QUOTES' ? 'GROUP_IN_USE_BY_QUOTES' : 'GROUP_IN_USE_BY_CONTRACTS',
+          ...(err.contractCount ? { contractCount: err.contractCount } : {}),
+          ...(err.quoteCount ? { quoteCount: err.quoteCount } : {}),
+          ...(canReadContracts && err.contracts ? { contracts: err.contracts } : {}),
+          ...(canReadQuotes && err.quotes ? { quotes: err.quotes } : {}),
         }, 409);
       }
       throw err;

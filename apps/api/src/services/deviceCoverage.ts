@@ -17,6 +17,7 @@
  * lives in the Hono permissions context and never in accessibleOrgIds.
  */
 import { and, eq, inArray } from 'drizzle-orm';
+import { isSiteDeletedLine } from '@breeze/shared';
 import { db } from '../db';
 import { contractLines, contracts, deviceGroups, devices } from '../db/schema';
 import { PG_UUID_REGEX } from '../utils/uuid';
@@ -205,6 +206,7 @@ export async function contractLinesCoveringDevice(
     // return, cannot match — the same answer uncoveredByRole gives on the
     // contract page. The contract page already flags the orphaned line.
     if (l.lineType === 'per_device_group' && (l.deviceGroupId === null || !groups.has(l.deviceGroupId))) continue;
+    if (isSiteDeletedLine(l)) continue;
 
     const coverageLine: CoverageLine = {
       lineType: l.lineType,
