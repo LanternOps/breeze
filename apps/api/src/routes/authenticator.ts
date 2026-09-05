@@ -599,6 +599,11 @@ authenticatorRoutes.post(
       attestation: body.attestation,
       transcript,
       publicKeySpkiB64: body.publicKey,
+      // The declared algorithm is inside the signed transcript and the PoP
+      // above already verified under it, so by this point it is a proven
+      // property of the key — which is what lets the iOS branch split
+      // Secure-Enclave P-256 (L4-trusted) from Keychain RSA (not).
+      publicKeyAlg: body.publicKeyAlg,
     });
 
     // A basis that claims a verified attestation MUST carry the digest of the
@@ -693,6 +698,11 @@ authenticatorRoutes.post(
         ...(attested.verifiedAt && !attestationHolds
           ? { attestationDowngraded: attested.basis }
           : {}),
+        // Why a presented attestation was refused. Queryable, unlike the
+        // server log line — this is what makes a fleet-wide misconfiguration
+        // (stale appId, wrong App Attest environment) visible as a spike in one
+        // reason rather than as an unexplained absence of L4-capable devices.
+        ...(attested.failureReason ? { attestationFailureReason: attested.failureReason } : {}),
         mobileDeviceId,
         ...(mobileDeviceHeader && !mobileDeviceId
           ? { mobileDeviceHeaderUnresolved: mobileDeviceHeader }
