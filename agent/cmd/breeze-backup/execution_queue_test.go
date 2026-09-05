@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -188,4 +191,62 @@ func TestBackupStopCancelsQueuedWorkThroughCommandHandler(t *testing.T) {
 		t.Fatalf("queued workload not cancelled: %v", err)
 	}
 	second.release()
+}
+
+// Hold the configured manager inside cancellation cleanup. This exposes the
+// ordering bug where Stop waits for cleanup before cancelling FIFO waiters.
+type stopOrderProvider struct {
+	*blockingRunProvider
+	release chan struct{}
+}
+
+func (p *stopOrderProvider) UploadContext(ctx context.Context, _, _ string) error {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	<-p.release
+	return ctx.Err()
+}
+
+func TestConfiguredBackupStopCancelsWaitersBeforeManagerUnwinds(t *testing.T) {
+	provider := &stopOrderProvider{blockingRunProvider: newBlockingRunProvider(), release: make(chan struct{})}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, Paths: []string{dir}})
+	queue := newBackupExecutionQueue()
+	canceller := newActiveCommandCanceller()
+	active := queue.enqueue("active", canceller)
+	waiting := queue.enqueue("waiting", canceller)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		defer active.release()
+		_, _ = mgr.RunBackupContext(active.ctx, nil)
+	}()
+	t.Cleanup(func() {
+		canceller.cancelAll()
+		close(provider.release)
+		<-runDone
+		waiting.release()
+	})
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("configured backup never entered upload")
+	}
+	stopDone := make(chan backupipc.BackupCommandResult, 1)
+	go func() {
+		stopDone <- executeCommand(backupipc.BackupCommandRequest{CommandType: "backup_stop"}, mgr, nil, nil, canceller)
+	}()
+	select {
+	case <-waiting.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued workload was not cancelled while manager Stop waited for cleanup")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before the configured manager finished cleanup")
+	default:
+	}
 }
