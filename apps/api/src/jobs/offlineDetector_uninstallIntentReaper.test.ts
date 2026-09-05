@@ -132,6 +132,13 @@ vi.mock('../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
 }));
 
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => ['effect-id']),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = vi.fn();

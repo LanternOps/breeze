@@ -7,11 +7,12 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
+import { findDueOfflineEffects, persistOfflineTransition, pruneOfflineEffects } from '../services/offlineEffectsStore';
+import { processOfflineEffect } from '../services/offlineTransitionEffects';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
-import { publishEvent } from '../services/eventBus';
 import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
 import { resolveReevalHorizonMinutes } from '../services/alertConditions/offlineDuration';
@@ -186,6 +187,8 @@ interface ReapUninstallIntentJobData {
 }
 
 type OfflineJobData =
+  | { type: 'recover-offline-effects' }
+  | { type: 'offline-effect'; effectId: string }
   | DetectOfflineJobData
   | MarkOfflineJobData
   | ReevaluateOfflineSweepJobData
@@ -200,6 +203,10 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
     OFFLINE_QUEUE,
     async (job: Job<OfflineJobData>) => {
       switch (job.data.type) {
+        case 'recover-offline-effects':
+          return processRecoverOfflineEffects();
+        case 'offline-effect':
+          return processOfflineEffect(job.data.effectId, enqueueOfflineEffects);
         // The three sweep jobs are deliberately NOT wrapped. Each self-manages
         // its DB context: it reads a page inside a SHORT system context that
         // closes before that page's Redis fan-out (or its per-row writes). A
@@ -373,7 +380,7 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
 /**
  * Process mark-offline job
- * Marks a device as offline and triggers alerts
+ * Atomically marks a device offline and persists asynchronous event/alert work
  */
 export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   transitioned: boolean;
@@ -385,52 +392,38 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   const expectedTransitionId = offlineTransitionId(data.orgId, data.deviceId, observedLastSeenAt);
   if (data.transitionId !== expectedTransitionId) throw new Error('Invalid transitionId');
 
-  const [device] = await runWithSystemDbAccess(() =>
-    db
-      .update(devices)
-      .set({ status: 'offline' })
-      .where(and(
-        eq(devices.id, data.deviceId),
-        eq(devices.orgId, data.orgId),
-        inArray(devices.status, ['online', 'updating']),
-        eq(devices.lastSeenAt, new Date(observedLastSeenAt)),
-      ))
-      .returning()
-  );
+  const effectIds = await runWithSystemDbAccess(async () => {
+    const [device] = await db.update(devices).set({ status: 'offline' }).where(and(
+      eq(devices.id, data.deviceId), eq(devices.orgId, data.orgId),
+      inArray(devices.status, ['online', 'updating']),
+      eq(devices.lastSeenAt, new Date(observedLastSeenAt)),
+    )).returning();
+    if (!device) return [];
+    return persistOfflineTransition(device, data.transitionId, observedLastSeenAt);
+  });
+  if (!effectIds.length) return { transitioned: false, alertCreated: false };
+  // The database has already admitted the work durably. Failed immediate fan-out
+  // is retried by the independent periodic recovery scan, even after a restart.
+  await enqueueOfflineEffects(effectIds);
+  return { transitioned: true, alertCreated: false };
 
-  if (!device) return { transitioned: false, alertCreated: false };
+}
 
-  // Publish device.offline event — carry siteId for site-restricted users
-  await publishEvent(
-    'device.offline',
-    data.orgId,
-    {
-      deviceId: data.deviceId,
-      hostname: device.hostname,
-      displayName: device.displayName,
-      lastSeenAt: observedLastSeenAt
-    },
-    'offline-detector',
-    { siteId: device.siteId }
-  );
+async function enqueueOfflineEffects(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  await getOfflineQueue().addBulk(ids.map((effectId) => ({
+    name: 'offline-effect', data: { type: 'offline-effect' as const, effectId },
+    opts: { jobId: `offline-effect-${effectId}`, attempts: 3,
+      backoff: { type: 'exponential' as const, delay: 1_000 },
+      removeOnComplete: true, removeOnFail: true },
+  })));
+}
 
-  console.log(`[OfflineDetector] Marked device ${data.deviceId} as offline`);
-
-  // Check for offline-type alert rules and create alerts.
-  //
-  // Quick Support ephemeral devices are exempt from ALERTING but deliberately
-  // NOT from the status flip above: going offline is how an ad-hoc support
-  // session ends (the end user closed the client), and the reaper watches for
-  // exactly that transition to tear the session down. Alerting on it would
-  // page the on-call technician after every single support session.
-  // Alert services inherit their caller's RLS context. Open a separate,
-  // per-device context after the CAS commits and the offline event publishes;
-  // otherwise breeze_app silently reads no policy or legacy alert rules.
-  const alertCreated = device.isEphemeral
-    ? false
-    : await runWithSystemDbAccess(() => triggerOfflineAlerts(device));
-
-  return { transitioned: true, alertCreated };
+export async function processRecoverOfflineEffects(): Promise<{ queued: number }> {
+  const ids = await findDueOfflineEffects();
+  await enqueueOfflineEffects(ids);
+  await pruneOfflineEffects();
+  return { queued: ids.length };
 }
 
 /**
@@ -943,6 +936,10 @@ export async function scheduleOfflineJobs(): Promise<void> {
   for (const job of existingJobs) {
     await queue.removeRepeatableByKey(job.key);
   }
+
+  await queue.add('recover-offline-effects', { type: 'recover-offline-effects' }, {
+    repeat: { every: 5_000 }, removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
+  });
 
   // Schedule detect-offline every 30 seconds
   await queue.add(

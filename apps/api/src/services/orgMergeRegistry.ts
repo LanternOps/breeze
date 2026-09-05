@@ -212,6 +212,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // disposition above). Repointing the graduation row while its evidence
   // stays under the loser shell would split one key's story across two
   // orgs, same reasoning as ai_agent_fix_watches immediately above.
+  offline_transition_effects: { kind: 'leave-for-erasure', note: 'immutable source-owned offline history; pending alerts validate current device ownership and historical events never repoint to destination tenant' },
   ai_agent_graduation: { kind: 'leave-for-erasure', note: 'graduation state is derived from evidence tied to runs that stay with the source org (ai_agent_runs disposition); rows die with the loser shell rather than repoint into a story the evidence cannot follow' },
   ai_agent_impact_daily: { kind: 'leave-for-erasure', note: 'derived per-org daily rollup of runs/verdicts/watches that all themselves stay with the loser org (ai_agent_runs disposition) — repointing would double-count the survivor and nothing can regenerate under it; rows die with the loser shell' },
   // ai_agent_op_evidence (P2-5, #4192): each row is a historical copy of a

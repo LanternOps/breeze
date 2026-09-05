@@ -39,6 +39,17 @@ const { mockDb, ctxState, queueMock } = vi.hoisted(() => ({
 
 const workerProcessors: Array<(job: { data: unknown }) => Promise<unknown>> = [];
 
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => {
+    ctxState.events.push(`persistEffects@depth${ctxState.depth}`);
+    if (ctxState.depth !== 1) throw new Error('Outbox admission must share the CAS context');
+    return ['effect-id'];
+  }),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {
     add = queueMock.add;
@@ -285,7 +296,7 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     expect(ctxState.events).toEqual(['ctx:enter', 'detectSelect@depth1', 'ctx:exit']);
   });
 
-  it('mark-offline commits CAS before publication and opens a separate context for alert DB access', async () => {
+  it('mark-offline persists pending effects with CAS and queues them only after commit', async () => {
     const device = {
       id: '00000000-0000-4000-8000-000000000001',
       orgId: '10000000-0000-4000-8000-000000000001',
@@ -312,12 +323,9 @@ describe('offlineDetector DB-context scoping (#3233)', () => {
     expect(ctxState.events).toEqual([
       'ctx:enter',
       'markOfflineCas@depth1',
+      'persistEffects@depth1',
       'ctx:exit',
-      'publishEvent@depth0',
-      'ctx:enter',
-      'alertEvaluation@depth1',
-      'alertRulesSelect@depth1',
-      'ctx:exit',
+      'addBulk(1)@depth0',
     ]);
   });
 

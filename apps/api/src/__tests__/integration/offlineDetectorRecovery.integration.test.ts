@@ -8,6 +8,8 @@ import { closeDb, db, withDbAccessContext } from '../../db';
 import { alerts, alertRules, alertTemplates, devices } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
+import { findDueOfflineEffects } from '../../services/offlineEffectsStore';
+import { processOfflineEffect } from '../../services/offlineTransitionEffects';
 import { closeRedis, getBullMQConnection } from '../../services/redis';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -73,7 +75,10 @@ describe('offline detector recovery (real Postgres RLS and Redis)', () => {
     expect(role[0]?.role).toBe('breeze_app');
     expect(await getAppDb().select().from(alertRules).where(eq(alertRules.id, rule!.id))).toEqual([]);
 
-    expect(await processMarkOffline(data)).toEqual({ transitioned: true, alertCreated: true });
+    expect(await processMarkOffline(data)).toEqual({ transitioned: true, alertCreated: false });
+    for (let pass = 0; pass < 4; pass++) {
+      for (const id of await findDueOfflineEffects()) await processOfflineEffect(id);
+    }
     const created = await getTestDb().select().from(alerts).where(eq(alerts.deviceId, device.id));
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ orgId: org.id, ruleId: rule!.id, status: 'active' });
@@ -105,7 +110,8 @@ describe('offline detector recovery (real Postgres RLS and Redis)', () => {
     let attempts = 0;
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    worker = new Worker<MarkOfflineJobData>('offline-detection', async (job) => {
+    worker = new Worker<MarkOfflineJobData | { type: 'offline-effect'; effectId: string }>('offline-detection', async (job) => {
+      if (job.data.type === 'offline-effect') return processOfflineEffect(job.data.effectId);
       attempts++;
       if (fail) throw new Error('injected pre-CAS database outage');
       await gate;
@@ -134,7 +140,7 @@ describe('offline detector recovery (real Postgres RLS and Redis)', () => {
         expect(await job?.getState()).toBe('completed');
       });
       expect(attempts).toBe(4);
-      expect(vi.mocked(publishEvent)).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(vi.mocked(publishEvent)).toHaveBeenCalledTimes(1));
       const [current] = await getTestDb().select().from(devices).where(eq(devices.id, device.id));
       expect(current!.status).toBe('offline');
     } finally {

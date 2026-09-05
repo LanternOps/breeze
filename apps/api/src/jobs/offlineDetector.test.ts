@@ -8,6 +8,13 @@ const { getJobMock, addMock, closeMock, getRepeatableJobsMock, workerOptions } =
   workerOptions: [] as Array<Record<string, unknown>>,
 }));
 
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => ['effect-id']),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;

@@ -185,6 +185,7 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  * silently writes the old value back — equally fatal, and quieter.
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  'offline_transition_effects.offline_effect_source_guard': 'RAISEs iff immutable source org_id changes; historical intents remain with source until erasure',
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',

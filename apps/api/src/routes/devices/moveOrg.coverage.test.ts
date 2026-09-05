@@ -35,6 +35,7 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  'offline_transition_effects', // immutable historical source route; see core.ts
   // Has org_id, but it is intentionally NOT re-stamped on move: exposure
   // history stays with the org the unattended action ran in (same
   // ai_agent_runs decision above), and a bare org_id repoint would violate

@@ -219,6 +219,9 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
+// offline_transition_effects is intentionally absent: immutable historical source
+// ownership remains with the original org; pending alert admission rejects a moved
+// device. The DB discovery function has the same exclusion in migration000800.
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
@@ -382,6 +385,7 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
