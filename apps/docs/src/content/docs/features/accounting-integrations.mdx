@@ -56,6 +56,11 @@ On the connected panel, choose how issued invoices reach QuickBooks:
 - **Manual** — invoices are held so you push them on your own schedule.
 
 You can switch between the two at any time; the change is saved immediately.
+Changing the mode requires the **Invoices: write** permission.
+
+Only an invoice that has been **issued** can push: sent, partially paid,
+overdue, and paid invoices are all eligible. Drafts and voided invoices are
+never pushed.
 
 ### Invoice sync status
 
@@ -153,11 +158,32 @@ region receives instant notifications today; the EU region (and any
 self-hosted deployment without a public webhook URL configured) always
 mirrors on the 15-minute sweep. Either way, the end state is the same.
 
-**Pull QuickBooks payments** is a switch on the connected panel. Turn it off
+Self-hosting and want the faster path? Register `POST /api/v1/webhooks/quickbooks`
+as your Intuit app's webhook endpoint for the Invoice and Payment event groups,
+and set the app's verifier token as [`QBO_WEBHOOK_VERIFIER_TOKEN`](/deploy/environment/#accounting-quickbooks-online).
+Until you do, the endpoint declines every delivery and the sweep does all the
+work — which is the supported configuration, not a degraded one.
+
+**Payment sync** is a switch on the connected panel — *"Pull payments recorded
+in QuickBooks back into Breeze invoices."* It is **on** by default. Turn it off
 to stop pulling payments from QuickBooks into Breeze — for example, while
 you're still reconciling manually and don't want QuickBooks payments
 overwriting Breeze's own record. A **Sync now** button next to the switch runs
-a pull immediately rather than waiting for the sweep or a webhook.
+a pull immediately rather than waiting for the sweep or a webhook; with Payment
+sync turned off it declines with *"Payment sync is turned off for this
+connection. Turn on Payment sync to sync now."*
+
+Changing Payment sync or the invoice push mode, and using **Sync now**, all
+require the **Invoices: write** permission and a multi-factor confirmation.
+
+The panel shows the outcome of the last reconcile run underneath. Three
+messages are worth recognising:
+
+| Message | What it means |
+|---|---|
+| *"run skipped — disabled for this connection"* | Payment sync is off. Nothing is wrong; nothing is being pulled either. |
+| *"QuickBooks truncated the last change window and the backfill did not complete; payments may be missing"* | More changed in QuickBooks than one change window can report. Check recent QuickBooks payments against Breeze by hand. |
+| *"N item(s) failed in the last reconcile run"* | Some payments could not be applied — open the affected invoices to see why. |
 
 Turn it back on and the next sweep resumes from where it stopped — but only
 **within QuickBooks' 30-day change history**. QuickBooks cannot report changes

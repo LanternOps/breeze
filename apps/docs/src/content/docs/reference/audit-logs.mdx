@@ -148,7 +148,9 @@ Audit log retention is configured per organization in the `audit_retention_polic
 | `archiveToS3` | Boolean | `false` | Whether to archive logs to S3 before deletion (not yet implemented — the column is reserved) |
 | `lastCleanupAt` | Timestamp | null | When the last cleanup ran |
 
-**A fresh organization has no row in this table**, and the daily retention worker skips any organization without one — so audit logs accumulate indefinitely until a policy is set. Configure one from **Settings > Security & Access > Audit Retention** (requires the `audit:manage` permission, held by Org Admin by default), or directly via the API:
+From v0.110.0, **an organization created on this version or later gets a policy automatically** — 365 days, enforced from the moment the organization exists, whichever way it was created.
+
+**An organization created before that has no row**, and the daily retention worker skips any organization without one — so its audit logs accumulate indefinitely until someone sets a policy. This is the case for every organization on an upgraded install: nothing has been pruned and nothing will be until you save a policy, which also means nothing was quietly deleted by the upgrade. Configure one from **Settings > Security & Access > Audit Retention** (requires the `audit:manage` permission, held by Org Admin by default), or directly via the API:
 
 ```
 GET /orgs/organizations/{id}/audit-retention

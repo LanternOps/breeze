@@ -39,6 +39,8 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`low`** | Minor improvement or non-security fix with minimal operational impact |
 | **`unknown`** | Severity not yet classified by the patch source |
 
+A patch whose source published no severity is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
+
 ### Approval States
 
 | State | Meaning |
@@ -344,6 +346,8 @@ GET /patches/compliance
 ```
 
 This returns `compliancePercent` (a value from 0 to 100) and aggregated counts broken down by device patch status. Results are computed in real time from the current state of the fleet and are not cached.
+
+The response also carries an `unratedSummary` breakdown (`total`, `patched`, `pending`) so you can see how much of the backlog carries no severity rating. The dashboard's patch compliance card surfaces the same number as **"N unrated patches pending (won't auto-approve)"** — a prompt to review them by hand, because nothing will approve them for you unless a ring opts in.
 
 Outstanding patches are split into **Approved** and **Pending Approval**: approved patches have cleared the approval workflow and are eligible for installation, while pending-approval patches are detected but not yet reviewed. A bulk install acts on the **approved** patches only — pending-approval patches are never deployed until they are reviewed and approved, so compliance reporting and deployment stay aligned with your approval posture. When patch settings come from a policy with [update rings](#patch-scheduling-via-configuration-policies), approval is driven automatically by the ring each device belongs to.
 
