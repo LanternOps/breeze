@@ -1,7 +1,8 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { BackupMode } from '@breeze/shared';
 import { db } from '../db';
-import { backupJobs } from '../db/schema';
+import { backupJobs, devices } from '../db/schema';
+import { backupHelperSupportsQueue } from './backupHelperCapabilities';
 
 export const ACTIVE_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
 
@@ -50,11 +51,34 @@ export async function createManualBackupJobIfIdle(
 ): Promise<{ job: Row; created: boolean } | null> {
   const createdAt = input.createdAt ?? new Date();
 
-  // Deduplicate repeated requests for the same profile selection only.
-  // Different profiles must retain their own work, even for the same mode;
-  // the helper's device-wide queue owns execution serialization.
+  // Serialization lives in the helper's device-wide execution queue, so the
+  // server only deduplicates repeated requests for the same profile selection
+  // and different profiles retain their own work even for the same mode.
+  //
+  // That relaxation is only safe when the device's helper actually has the
+  // queue. An older helper runs every dispatched job concurrently, so for it
+  // the pre-queue guard stays: one active job per device+mode.
+  const [device] = await db
+    .select({ backupVersion: devices.backupVersion })
+    .from(devices)
+    .where(eq(devices.id, input.deviceId))
+    .limit(1);
+  const helperQueues = backupHelperSupportsQueue(device?.backupVersion);
+
+  const lockKey = helperQueues
+    ? `manual:${input.orgId}:${input.deviceId}:${input.configId}:${input.featureLinkId ?? 'legacy'}:${input.backupMode ?? 'legacy'}`
+    : `manual:${input.orgId}:${input.deviceId}:${input.backupMode ?? 'legacy'}`;
+  const selectionScope = helperQueues
+    ? [
+        eq(backupJobs.configId, input.configId),
+        input.featureLinkId
+          ? eq(backupJobs.featureLinkId, input.featureLinkId)
+          : sql`${backupJobs.featureLinkId} IS NULL`,
+      ]
+    : [];
+
   return withBackupJobLock(
-    `manual:${input.orgId}:${input.deviceId}:${input.configId}:${input.featureLinkId ?? 'legacy'}:${input.backupMode ?? 'legacy'}`,
+    lockKey,
     async (tx) => {
     const [existing] = await tx
       .select()
@@ -63,10 +87,7 @@ export async function createManualBackupJobIfIdle(
         and(
           eq(backupJobs.orgId, input.orgId),
           eq(backupJobs.deviceId, input.deviceId),
-          eq(backupJobs.configId, input.configId),
-          input.featureLinkId
-            ? eq(backupJobs.featureLinkId, input.featureLinkId)
-            : sql`${backupJobs.featureLinkId} IS NULL`,
+          ...selectionScope,
           input.backupMode
             ? eq(backupJobs.backupMode, input.backupMode)
             : sql`${backupJobs.backupMode} IS NULL`,

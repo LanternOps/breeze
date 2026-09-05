@@ -915,6 +915,9 @@ export async function queueBackupStopCommand(
       const result = await queueCommandForExecution(
         deviceId,
         CommandTypes.BACKUP_STOP,
+        // jobId targets one workload on a queue-capable helper
+        // (BACKUP_QUEUE_MIN_HELPER_VERSION). Older helpers ignore the field
+        // and stop every backup on the device — the pre-queue behaviour.
         { reason: 'cancelled', ...(options.jobId ? { jobId: options.jobId } : {}) },
         options
       );

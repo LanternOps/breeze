@@ -806,6 +806,9 @@ describe('reapStaleBackupJobs', () => {
           errorLog: null,
           createdAt: minutesAgo(90),
           lastProgressAt: minutesAgo(20), // > 15min stall window → not "alive"
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.110.0',
         },
       ]));
 
@@ -823,6 +826,77 @@ describe('reapStaleBackupJobs', () => {
       expect.objectContaining({ errorLog: '[stale-backup-reaper] Backup dispatch never completed' })
     );
     expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-queued', { jobId: 'job-pending-dead' });
+  });
+
+  // The queued admission ack can be lost on the agent WS after the helper has
+  // already parked the ticket. last_progress_at stays NULL, but the helper
+  // still holds the job and would run it after the row is failed. A
+  // queue-capable helper must get the targeted stop regardless.
+  it('cancels a reaped pending job on a queue-capable helper even when no admission ack was persisted', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-lost-ack',
+          deviceId: 'device-queued',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: null,
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.110.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-lost-ack' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-queued', { jobId: 'job-pending-lost-ack' });
+  });
+
+  // A pre-queue helper ignores jobId and treats backup_stop as device-wide,
+  // so a stop for a never-delivered pending row would kill whatever backup is
+  // actually running on that device. Only a persisted ack (which proves the
+  // helper speaks the queue protocol) may trigger a stop there.
+  it('does NOT send backup_stop for a reaped pending job on an older helper with no persisted ack', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-legacy',
+          deviceId: 'device-legacy',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: null,
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.109.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-legacy' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT queue a backup_stop for a reaped pending job whose device is offline', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-offline',
+          deviceId: 'device-offline',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: minutesAgo(20),
+          deviceStatus: 'offline',
+          deviceLastSeenAt: minutesAgo(30),
+          deviceBackupVersion: '0.110.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-offline' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
   });
 });
 

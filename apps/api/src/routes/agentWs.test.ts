@@ -2086,7 +2086,7 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
-  it('queued acknowledgement keeps terminal expectation available until the selected workload completes)', async () => {
+  it('queued acknowledgement keeps terminal expectation available until the selected workload completes', async () => {
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // device_commands: no row → orphaned path
@@ -2106,8 +2106,9 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       })
     } as any, ws as any);
 
-    // Legacy started acknowledgements promote pending jobs if the worker's
-    // post-send write has not landed yet.
+    // A queued admission is liveness only: it bumps lastProgressAt and, when
+    // no lifecycle signal has landed yet, demotes the worker's dispatch-time
+    // running marker back to pending (guarded in SQL, see applyBackupStartedAck).
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg).toHaveProperty('lastProgressAt');
