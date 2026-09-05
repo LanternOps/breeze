@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { coverageMatch, DEVICE_COUNTED_LINE_TYPES, isDeviceLine, quantityFor, uncoveredByRole, type CoverageLine, type CoverageMatchReason, type OrgDeviceSnapshot } from './contractCoverage';
+import { coverageMatch, DEVICE_COUNTED_LINE_TYPES, isDeviceLine, matchingDevicesForLine, orderDevicesForEvidence, quantityFor, uncoveredByRole, type CoverageLine, type CoverageMatchReason, type OrgDeviceSnapshot } from './contractCoverage';
 import { CONTRACT_LINE_TYPES } from '@breeze/shared';
 import type { DeviceSnapshotRow } from './contractQuantities';
 
@@ -7,12 +7,12 @@ const A = 'site-a';
 const B = 'site-b';
 // One org: 2 workstations at A, 1 at B; 1 server at A; 1 switch at B; 1 unknown at A.
 const devices: DeviceSnapshotRow[] = [
-  { id: 'ws1', role: 'workstation', siteId: A },
-  { id: 'ws2', role: 'workstation', siteId: A },
-  { id: 'ws3', role: 'workstation', siteId: B },
-  { id: 'srv1', role: 'server', siteId: A },
-  { id: 'sw1', role: 'switch', siteId: B },
-  { id: 'unk1', role: 'unknown', siteId: A },
+  { id: 'ws1', hostname: 'ws1', role: 'workstation', siteId: A },
+  { id: 'ws2', hostname: 'ws2', role: 'workstation', siteId: A },
+  { id: 'ws3', hostname: 'ws3', role: 'workstation', siteId: B },
+  { id: 'srv1', hostname: 'srv1', role: 'server', siteId: A },
+  { id: 'sw1', hostname: 'sw1', role: 'switch', siteId: B },
+  { id: 'unk1', hostname: 'unk1', role: 'unknown', siteId: A },
 ];
 const G_VIP = 'group-vip';       // ws1, srv1, and a decommissioned device not in the snapshot
 const G_SITE_B = 'group-site-b'; // site-bound to B; members ws3 and (off-site) ws1
@@ -25,6 +25,15 @@ const snapshot: OrgDeviceSnapshot = {
 };
 const line = (p: Partial<CoverageLine> & Pick<CoverageLine, 'lineType'>): CoverageLine =>
   ({ siteId: null, deviceRoles: null, deviceGroupId: null, ...p });
+const ALL_FIXTURE_LINES: CoverageLine[] = [
+  line({ lineType: 'per_device' }),
+  line({ lineType: 'per_device', siteId: A }),
+  line({ lineType: 'per_device_role', deviceRoles: ['server'] }),
+  line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }),
+  line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['workstation', 'switch'] }),
+  line({ lineType: 'per_device_group', deviceGroupId: G_VIP }),
+  line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }),
+];
 
 describe('isDeviceLine', () => {
   it('is true only for the three device-counted types', () => {
@@ -178,21 +187,83 @@ describe('coverageMatch (#3205 W06)', () => {
   });
 
   it('PARITY: quantityFor counts exactly the devices coverageMatch calls covered', () => {
-    const lines: CoverageLine[] = [
-      line({ lineType: 'per_device' }),
-      line({ lineType: 'per_device', siteId: A }),
-      line({ lineType: 'per_device_role', deviceRoles: ['server'] }),
-      line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }),
-      line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['workstation', 'switch'] }),
-      line({ lineType: 'per_device_group', deviceGroupId: G_VIP }),
-      line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }),
-    ];
-    for (const l of lines) {
+    for (const l of ALL_FIXTURE_LINES) {
       expect(quantityFor(snapshot, l)).toBe(devices.filter((r) => coverageMatch(l, r, snapshot) !== null).length);
     }
     // …and the uncovered tally is exactly the complement, which is what makes
     // the contract page's warning and the device page's panel one answer.
-    expect(uncoveredByRole(snapshot, lines).total)
-      .toBe(devices.filter((r) => !lines.some((l) => coverageMatch(l, r, snapshot) !== null)).length);
+    expect(uncoveredByRole(snapshot, ALL_FIXTURE_LINES).total)
+      .toBe(devices.filter((r) => !ALL_FIXTURE_LINES.some((l) => coverageMatch(l, r, snapshot) !== null)).length);
+  });
+});
+
+// #3205 W07: matchingDevicesForLine is the ONLY device source generation uses.
+// quantityFor === matchingDevicesForLine(...).length by construction, which is
+// what forbids an invoice saying "12" beside eleven evidence rows.
+describe('matchingDevicesForLine (#3205 W07)', () => {
+  it('returns exactly the rows coverageMatch calls covered, for every fixture line', () => {
+    for (const l of ALL_FIXTURE_LINES) {
+      const expected = snapshot.devices.filter((r) => coverageMatch(l, r, snapshot) !== null);
+      expect(matchingDevicesForLine(snapshot, l)).toEqual(expected);
+    }
+  });
+
+  it('PARITY: quantityFor is exactly its length', () => {
+    for (const l of ALL_FIXTURE_LINES) {
+      expect(quantityFor(snapshot, l)).toBe(matchingDevicesForLine(snapshot, l).length);
+    }
+  });
+
+  it('throws for a non-device line type, like quantityFor', () => {
+    expect(() => matchingDevicesForLine(snapshot, line({ lineType: 'flat' })))
+      .toThrow(/not a device-counted line type/);
+    expect(() => matchingDevicesForLine(snapshot, line({ lineType: 'per_seat' })))
+      .toThrow(/not a device-counted line type/);
+  });
+
+  it('carries hostname through from the snapshot row', () => {
+    const rows = matchingDevicesForLine(snapshot, line({ lineType: 'per_device' }));
+    expect(rows.every((r) => typeof r.hostname === 'string' && r.hostname.length > 0)).toBe(true);
+  });
+});
+
+// Decision 6. localeCompare is locale- and ICU-version-dependent ('a' vs 'B'
+// flips with collation, and Node's ICU data changes between releases), so it
+// cannot underwrite a reproducibility promise. '<'/'>' on strings is a fixed
+// code-unit comparison with no environment input. These cases are chosen so a
+// switch to localeCompare FAILS here.
+describe('orderDevicesForEvidence (#3205 W07)', () => {
+  const row = (id: string, hostname: string): DeviceSnapshotRow => ({ id, hostname, role: 'server', siteId: null });
+
+  it('orders uppercase before lowercase (code units, not collation)', () => {
+    const out = orderDevicesForEvidence([row('i2', 'alpha'), row('i1', 'Alpha')]);
+    expect(out.map((r) => r.hostname)).toEqual(['Alpha', 'alpha']);
+  });
+
+  it('breaks a duplicate-hostname tie on device id', () => {
+    const out = orderDevicesForEvidence([row('bbb', 'dup'), row('aaa', 'dup')]);
+    expect(out.map((r) => r.id)).toEqual(['aaa', 'bbb']);
+  });
+
+  it('orders non-ASCII hostnames by code unit, where collation would disagree', () => {
+    const out = orderDevicesForEvidence([
+      row('n3', 'zürich-01'), row('n1', 'ZÜRICH-02'), row('n2', '東京-01'), row('n0', 'zoo-01'),
+    ]);
+    // 'Z'(0x5A) < 'z'(0x7A); 'zoo' < 'zürich' because 'o'(0x6F) < 'ü'(0xFC);
+    // CJK (0x6771) sorts after every Latin-1 code unit here.
+    expect(out.map((r) => r.hostname)).toEqual(['ZÜRICH-02', 'zoo-01', 'zürich-01', '東京-01']);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [row('b', 'b-host'), row('a', 'a-host')];
+    const copy = [...input];
+    orderDevicesForEvidence(input);
+    expect(input).toEqual(copy);
+  });
+
+  it('is a total order — sorting twice is idempotent', () => {
+    const input = [row('c', 'dup'), row('a', 'dup'), row('b', 'Alpha')];
+    const once = orderDevicesForEvidence(input);
+    expect(orderDevicesForEvidence(once)).toEqual(once);
   });
 });

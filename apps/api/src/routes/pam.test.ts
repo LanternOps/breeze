@@ -30,6 +30,17 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: authMocks.requireMfaMock,
 }));
 
+// #3128 tier-drift predicate. Mocked here on purpose: the real module reaches
+// the full AI tool registry (aiGuardrails -> aiTools), which this file's narrow
+// ../db/schema stub cannot satisfy. Its own correctness is covered against the
+// REAL tier tables in services/pamRuleTierDrift.test.ts; what the routes owe is
+// (a) calling it with the right selector and (b) translating a hit into a 400.
+const tierDriftMocks = vi.hoisted(() => ({ describePamRuleTierDrift: vi.fn() }));
+vi.mock('../services/pamRuleTierDrift', () => ({
+  describePamRuleTierDrift: tierDriftMocks.describePamRuleTierDrift,
+  PAM_RULE_TIER_UNREACHABLE_CODE: 'pam_rule_risk_tier_unreachable',
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -1097,6 +1108,11 @@ describe('POST /pam/elevation-requests/:id/revoke', () => {
   });
 });
 
+beforeEach(() => {
+  // Default for every suite in this file: the tier selector is healthy.
+  tierDriftMocks.describePamRuleTierDrift.mockReturnValue(null);
+});
+
 describe('POST /pam/rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1678,7 +1694,10 @@ describe('PAM rules — site-axis enforcement', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.rules).toEqual([allowedRule]);
+    // #3128 adds two computed fields to every list row (healthy here).
+    expect(body.rules).toEqual([
+      { ...allowedRule, matchRiskTierStale: false, matchRiskTierValidTiers: null },
+    ]);
     // A site-scoping WHERE predicate was applied (not just the bare org condition).
     expect(chain.where).toHaveBeenCalled();
     // Load-bearing: the narrowing MUST be inArray(pamRules.siteId, allowedSiteIds).
@@ -1701,7 +1720,9 @@ describe('PAM rules — site-axis enforcement', () => {
     const res = await app().request('/pam/rules');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.rules).toEqual([orgWide]);
+    expect(body.rules).toEqual([
+      { ...orgWide, matchRiskTierStale: false, matchRiskTierValidTiers: null },
+    ]);
     // No site narrowing for an unrestricted caller: inArray is never invoked
     // with the pam_rules site column.
     expect(inArray).not.toHaveBeenCalledWith('siteId', expect.anything());
@@ -2343,5 +2364,209 @@ describe('Signer groups', () => {
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// #3128 — risk-tier drift on tool-action rules.
+//
+// pamRuleEngine matches matchRiskTier by EXACT equality, and tool tiers are
+// static code that ships with the API, so a re-classification (#3105) can leave
+// a stored rule permanently unmatchable. These cover what the ROUTES owe:
+// calling the predicate with the right selector, and turning a hit into a 400
+// carrying a machine-readable code. The predicate itself is exercised against
+// the real tier tables in services/pamRuleTierDrift.test.ts.
+// ============================================================
+describe('PAM rules — risk-tier drift (#3128)', () => {
+  const RULE_ID = '7b41c9a2-0000-4000-8000-0000000000d1';
+
+  const drift = {
+    matchRiskTier: 1,
+    matchToolName: 'execute_command',
+    validTiers: [2, 3],
+    message: 'matchRiskTier 1 does not match any current risk tier for tool "execute_command"',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(null);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) =>
+      fn({ select: db.select, insert: db.insert, update: db.update, delete: db.delete }),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  function mockInsertReturning() {
+    const returning = vi.fn().mockResolvedValue([
+      { id: RULE_ID, name: 'r', verdict: 'auto_approve', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({ returning })) } as any);
+  }
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([rule]) })) })),
+    } as any);
+  }
+
+  // ---- POST /pam/rules ----
+
+  it('rejects a create whose tier no tool can resolve to, with a machine-readable code', async () => {
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+    mockInsertReturning();
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'dead rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 1,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('pam_rule_risk_tier_unreachable');
+    expect(body.validTiers).toEqual([2, 3]);
+    expect(body.error).toContain('execute_command');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('checks the tier selector the caller actually submitted', async () => {
+    mockInsertReturning();
+
+    await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'ok rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 3,
+      }),
+    });
+
+    expect(tierDriftMocks.describePamRuleTierDrift).toHaveBeenCalledWith(
+      expect.objectContaining({ matchToolName: 'execute_command', matchRiskTier: 3 }),
+    );
+  });
+
+  it('still creates the rule when the tier is merely narrowed, not dead', async () => {
+    // The literal #3128 rule (execute_command + tier 3) is narrowed by #3105
+    // but still matches file_read/kill_process — it must keep working.
+    mockInsertReturning();
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'narrowed rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 3,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  // ---- PATCH /pam/rules/:id ----
+
+  it('validates the MERGED selector — a tier-only PATCH is checked against the STORED tool', async () => {
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      name: 'tool rule',
+      matchSigner: null,
+      matchHash: null,
+      matchPathGlob: null,
+      matchParentImage: null,
+      matchUser: null,
+      matchAdGroup: null,
+      matchToolName: 'execute_command',
+      matchRiskTier: 3,
+      verdict: 'require_approval',
+    });
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchRiskTier: 1 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('pam_rule_risk_tier_unreachable');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    // The payload alone carries no tool name — only the merge does.
+    expect(tierDriftMocks.describePamRuleTierDrift).toHaveBeenLastCalledWith(
+      expect.objectContaining({ matchToolName: 'execute_command', matchRiskTier: 1 }),
+    );
+  });
+
+  // ---- GET /pam/rules ----
+
+  it('badges stale rules in the list response and leaves healthy ones alone', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn().mockResolvedValue([
+            { id: 'stale-rule', matchToolName: 'execute_command', matchRiskTier: 1 },
+            { id: 'healthy-rule', matchToolName: 'execute_command', matchRiskTier: 3 },
+          ]),
+        })),
+      })),
+    } as any);
+    tierDriftMocks.describePamRuleTierDrift.mockImplementation((rule: any) =>
+      rule.matchRiskTier === 1 ? drift : null,
+    );
+
+    const res = await app().request('/pam/rules');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rules[0]).toMatchObject({
+      id: 'stale-rule',
+      matchRiskTierStale: true,
+      matchRiskTierValidTiers: [2, 3],
+    });
+    expect(body.rules[1]).toMatchObject({
+      id: 'healthy-rule',
+      matchRiskTierStale: false,
+      matchRiskTierValidTiers: null,
+    });
+  });
+
+  // ---- POST /pam/rules/preview ----
+
+  it('does NOT gate the dry-run preview on tier drift', async () => {
+    // Preview is the diagnostic that SHOWS a stale rule matching nothing —
+    // 400ing it would remove the only way to see the problem.
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve([]);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchToolName: 'execute_command', matchRiskTier: 1 }),
+    });
+
+    expect(res.status).toBe(200);
   });
 });

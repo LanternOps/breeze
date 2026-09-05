@@ -220,6 +220,9 @@ describe('partner service principal partner-wide capability gate', () => {
   });
 
   it('PATCH /:id succeeds with all access and updates the principal', async () => {
+    // Primes the existing-principal lookup PATCH runs before evaluating
+    // enrollment-keys:write restrictions.
+    queueSelectRows([{ scopes: ['devices:read'], sourceCidrs: [], expiresAt: null }]);
     const res = await requestPatch(makeApp());
 
     expect(res.status).toBe(200);

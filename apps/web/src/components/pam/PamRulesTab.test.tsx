@@ -182,6 +182,54 @@ describe('PamRulesTab', () => {
     expect(screen.getByText('signer=Microsoft Corporation')).toBeInTheDocument();
   });
 
+  describe('stale risk-tier badge (#3128)', () => {
+    it('renders the badge when matchRiskTierStale is true', async () => {
+      const staleRule: PamRule = {
+        ...signedRule,
+        id: 'rule-stale',
+        name: 'Stale tool rule',
+        matchSigner: null,
+        matchToolName: 'run_script',
+        matchRiskTier: 1,
+        matchRiskTierStale: true,
+        matchRiskTierValidTiers: [2, 3],
+      };
+      installFetchRoutes({ rules: [staleRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => {
+        expect(screen.getByTestId('pam-rule-stale-tier-rule-stale')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('pam-rule-stale-tier-rule-stale')).toHaveAttribute(
+        'title',
+        'Risk tier 1 no longer matches anything this rule can select, so it can never match. Tiers currently in use: 2, 3.',
+      );
+    });
+
+    it('does not render the badge when matchRiskTierStale is false', async () => {
+      const freshRule: PamRule = {
+        ...signedRule,
+        id: 'rule-fresh',
+        name: 'Fresh tool rule',
+        matchSigner: null,
+        matchToolName: 'run_script',
+        matchRiskTier: 2,
+        matchRiskTierStale: false,
+        matchRiskTierValidTiers: null,
+      };
+      installFetchRoutes({ rules: [freshRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-fresh'));
+      expect(screen.queryByTestId('pam-rule-stale-tier-rule-fresh')).toBeNull();
+    });
+
+    it('does not render the badge when matchRiskTierStale is absent', async () => {
+      installFetchRoutes({ rules: [signedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-1'));
+      expect(screen.queryByTestId('pam-rule-stale-tier-rule-1')).toBeNull();
+    });
+  });
+
   it('renders a scope cell: Org-wide or the resolved site name', async () => {
     const siteScoped: PamRule = {
       ...signedRule,

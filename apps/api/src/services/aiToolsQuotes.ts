@@ -313,7 +313,10 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               '{enabled (boolean), title?, coverImageId? (quote image UUID, or null to clear — must be an image on ' +
               'this SAME quote), preparedForName?, showPreparedBy? (default true)}. Line (update_line): ' +
               'depositEligible (boolean; whether this line counts toward the deposit-due calculation when ' +
-              'depositType is \'selected_lines\').',
+              'depositType is \'selected_lines\'). On an existing recurring device-set line, deviceRoles, ' +
+              'deviceGroupId, siteId, includedQuantity, overageMode and overageUnitPrice may be patched, but ' +
+              'quantity is server-derived and contractLineType cannot be changed; remove and re-add the line ' +
+              'to change its device-set type.',
             properties: {
               depositType: { type: 'string', enum: ['none', 'percent', 'selected_lines'] },
               depositPercent: { type: ['number', 'null'] },
@@ -338,11 +341,20 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Manual quote line fields (add_manual_line). Required: sourceType (\'manual\'|\'catalog\'|\'bundle\' — ' +
-              'use \'manual\' for a hand-entered line), quantity (> 0), unitPrice (in the quote\'s currencyCode), taxable (boolean), and at least ' +
+              'use \'manual\' for a hand-entered line), unitPrice (in the quote\'s currencyCode), taxable (boolean), and at least ' +
               'one of name/description. Optional: name, description, customerVisible (default true), recurrence ' +
               '(\'one_time\'|\'monthly\'|\'annual\', default \'one_time\'), termMonths, billingFrequency ' +
               '(\'monthly\'|\'annual\'), unitCost, sku, partNumber, depositEligible (default false), blockId (UUID), ' +
-              'catalogItemId (UUID).',
+              'catalogItemId (UUID). Quantity (> 0) is required for an ordinary line. A recurring line may instead ' +
+              'bill a device set: set contractLineType to per_device, per_device_role, per_device_group or per_seat ' +
+              'and omit quantity — the server counts the organization\'s devices (or seats) itself and re-counts ' +
+              'every billing period once the quote is accepted. per_device_role requires deviceRoles; ' +
+              'per_device_group requires deviceGroupId; per_device and per_device_role may take a siteId. Any of ' +
+              'the four may carry includedQuantity + overageMode (bill needs overageUnitPrice, in the quote\'s ' +
+              'currency), which bills the included quantity every period even when the live count is lower. The ' +
+              'quantity shown on the quote is an estimate, labelled as such on the customer\'s document; the ' +
+              'contract bills the actual count. A device set cannot be added to a one-time line, changed after the ' +
+              'line is created (remove and re-add), or set on a bundle component.',
           },
           blockIds: { type: 'array', items: { type: 'string' }, description: 'Ordered block UUIDs' },
           lineIds: { type: 'array', items: { type: 'string' }, description: 'Ordered line UUIDs' },

@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "groupe supprimé"
+        "groupDeleted": "groupe supprimé",
+        "siteDeleted": "site supprimé",
+        "siteDeletedNamed": "site supprimé : {{name}}"
       },
       "lineScope": {
         "site": "Site : {{name}}"
@@ -91,6 +93,15 @@
         "period": "Période",
         "generated": "Généré",
         "invoice": "Facture",
+        "outcome": "Résultat",
+        "outcomeAllBilled": "Tout facturé",
+        "outcomeUncovered": "{{count}} non couverts",
+        "outcomeFlagged": "{{count}} signalés",
+        "outcomeNoDeviceLines": "Aucune ligne d'appareils",
+        "outcomeNotRecorded": "Non enregistré",
+        "outcomeToggle": "Afficher le résultat de la période",
+        "outcomeDevicesEvaluated": "Appareils évalués : {{count}}",
+        "outcomeBilledOverage": "Dépassement facturé : {{count}}",
         "empty": "Aucune facture n'a encore été générée.",
         "viewInvoice": "Voir la facture"
       },
@@ -573,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "postes de travail", "server": "serveurs", "printer": "imprimantes", "router": "routeurs", "switch": "commutateurs", "firewall": "pare-feu",
+        "access_point": "points d’accès", "phone": "téléphones", "iot": "appareils IoT", "camera": "caméras", "nas": "appareils NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Facturer par ensemble d'appareils", "typeLabel": "Ensemble d'appareils",
+        "types": { "per_device": "Par appareil", "per_device_role": "Par rôle d'appareil", "per_device_group": "Par groupe d'appareils", "per_seat": "Par poste" },
+        "rolesLabel": "Rôles d'appareil", "groupLabel": "Groupe d'appareils", "siteLabel": "Site (facultatif)", "allSites": "Tous les sites",
+        "quantityAuto": "La quantité est comptée automatiquement", "autoSummary": "Quantité auto · {{count}} {{set}} · estimée",
+        "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.", "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
+        "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre", "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
+        "typeLocked": "Un ensemble d'appareils ne peut pas être modifié après la création de la ligne — supprimez la ligne et ajoutez-la à nouveau.",
+        "includedLabel": "Quantité incluse", "overageModeLabel": "Au-delà du forfait", "overageBill": "Facturer chaque unité supplémentaire", "overageFlag": "Signaler pour révision", "overagePriceLabel": "Prix des unités supplémentaires",
+        "driftToast": "{{count}} ligne(s) ne correspondent plus au nombre d'appareils actuel : {{lines}}",
+        "retargetToast": "{{count}} ligne(s) nécessitent de resélectionner un groupe d'appareils ou un site pour cette organisation"
+      },
       "actions": {
         "addImage": "Ajouter une image",
         "addLine": "Ajouter une ligne",
@@ -1253,6 +1282,12 @@
       "warehouses": "Entrepôts : {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.", "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
+        "setDevices": "appareils", "setSeats": "postes", "setGroup": "appareils dans « {{name}} »", "atSite": "{{set}} sur le site {{site}}",
+        "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
+        "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
+      },
       "additionalItems": "Articles supplémentaires",
       "contract": {
         "download": "Télécharger le contrat",
@@ -1587,6 +1622,7 @@
       "messageLabel": "Message (facultatif)",
       "messagePlaceholder": "Ajoutez une courte note pour le client…",
       "includePdfLabel": "Joindre le PDF de la facture",
+      "includeDeviceAppendixLabel": "Inclure l'annexe des appareils facturés",
       "signaturePreviewLabel": "Votre signature sera ajoutée :",
       "invalidEmail": "Adresse e-mail non valide : {{addresses}}",
       "tooManyRecipients": "Jusqu’à {{max}} adresses.",
@@ -1687,6 +1723,21 @@
       "tax": "Taxe",
       "total": "Total",
       "allHidden": "Toutes les lignes sont internes uniquement. Utilisez « Afficher coût et marge » pour les voir."
+    },
+    "devices": {
+      "title": "Appareils facturés",
+      "toggle": "Appareils ({{count}})",
+      "notRecorded": "Le détail des appareils n'a pas été enregistré pour cette facture.",
+      "hostname": "Nom d'hôte",
+      "role": "Rôle",
+      "countedAs": "Compté comme",
+      "included": "Inclus",
+      "overage": "Dépassement",
+      "removed": "Appareil supprimé",
+      "showing": "Affichage de {{shown}} sur {{total}}",
+      "flaggedHeading": "Signalés, non facturés",
+      "empty": "Aucun appareil n'a été compté pour cette ligne.",
+      "loadError": "Impossible de charger la liste des appareils."
     },
     "paymentMethods": {
       "cash": "Espèces",
@@ -2033,6 +2084,8 @@
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",
       "description": "Devise, taxe, numérotation et conditions appliquées aux nouveaux devis et factures de tous vos clients.",
+      "deviceAppendix": "Inclure l'annexe des appareils facturés dans les PDF de factures",
+      "deviceAppendixHelp": "Ajoute une page listant chaque appareil compté sur chaque ligne de facture. Désactivé par défaut ; le choix est figé à l'émission de la facture.",
       "documentPageSize": "Format de page",
       "documentPageSizeA4": "A4",
       "documentPageSizeLetter": "Lettre",

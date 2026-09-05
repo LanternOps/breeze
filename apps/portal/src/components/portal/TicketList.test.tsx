@@ -102,3 +102,64 @@ it('hides SLA status unless support usage is enabled', () => {
   render(<TicketList tickets={[ticket()]} />);
   expect(screen.queryByTestId('portal-ticket-sla-t1')).toBeNull();
 });
+
+describe('TicketList — the SLA line keeps the one-mark-per-row diet', () => {
+  const withSla = (status: TicketSummary['sla']['status']) =>
+    ticket({
+      sla: {
+        firstResponseMinutes: null,
+        resolutionMinutes: null,
+        responseTargetMinutes: null,
+        resolutionTargetMinutes: null,
+        status,
+      },
+    });
+
+  it('renders the SLA state as quiet text, never a second dot', () => {
+    render(<TicketList enableSupportUsage tickets={[withSla('at_risk')]} />);
+
+    const sla = screen.getByTestId('portal-ticket-sla-t1');
+    // StatusMark's dot is an aria-hidden span; the SLA line must not grow one.
+    expect(sla.querySelector('[aria-hidden="true"]')).toBeNull();
+    expect(sla.className).toContain('text-xs');
+    expect(sla.className).toContain('text-muted-foreground');
+  });
+
+  it('reserves the destructive foreground for a breached target', () => {
+    render(<TicketList enableSupportUsage tickets={[withSla('breached')]} />);
+
+    expect(screen.getByTestId('portal-ticket-sla-t1').className).toContain(
+      'text-destructive-on-tint',
+    );
+  });
+
+  it('keeps the SLA line inside the status cell as a secondary line', () => {
+    render(<TicketList enableSupportUsage tickets={[withSla('on_track')]} />);
+
+    const sla = screen.getByTestId('portal-ticket-sla-t1');
+    const cell = sla.closest('td');
+    expect(cell).not.toBeNull();
+    expect(cell?.textContent).toContain('Open');
+    expect(sla.className).toContain('block');
+  });
+});
+
+describe('TicketList — the failure state', () => {
+  it('never prints the raw API error at the customer', () => {
+    render(<TicketList tickets={[]} error="Internal Server Error" />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toBe(
+      "We couldn't load your requests just now. Your IT team can help.",
+    );
+    expect(document.body.textContent).not.toContain('Internal Server Error');
+  });
+
+  it('keeps the page title when the request list fails to load', () => {
+    render(<TicketList tickets={[]} error="Internal Server Error" />);
+
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading.textContent).toBe('Support');
+    expect(heading.className).toContain('font-display');
+  });
+});

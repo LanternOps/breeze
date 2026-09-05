@@ -85,14 +85,17 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
         emailed: delivery.emailed,
       }));
     }
-    // Response shape is unchanged from before the deferred split — the web
-    // detail page reads `emailed`/`emailReason` off this payload.
+    // Response shape is otherwise unchanged from before the deferred split —
+    // the web detail page reads `emailed`/`emailReason` off this payload.
+    // `deviceSetDrift` is computed synchronously (before the email is
+    // deferred), so it rides on `sent`, not the post-commit `delivery`.
     return c.json({ data: {
       quote: delivery.quote,
       emailed: delivery.emailed,
       emailReason: delivery.emailReason,
       acceptUrl: sent.acceptUrl,
       superseded: sent.superseded,
+      deviceSetDrift: sent.deviceSetDrift,
     } });
   } catch (err) { return handleServiceError(c, err); }
 });

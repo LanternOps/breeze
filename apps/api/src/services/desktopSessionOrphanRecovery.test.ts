@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const { captureExceptionMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+}));
+
+vi.mock('./sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
 import {
   __desktopSessionOrphanRecoveryTestOnly,
   createDesktopSessionOrphanRecoveryService,
+  STALLED_STOP_PENDING_ESCALATION_MS,
   type DesktopOrphanRecoveryDependencies,
 } from './desktopSessionOrphanRecovery';
 
@@ -210,6 +219,264 @@ describe('desktop orphan recovery', () => {
       sessionId: session.id,
       finalizationId: persistedInput.finalizationId,
     });
+  });
+
+  it('escalates a stop_pending intent that outlives the BullMQ re-enqueue no-op (#3945)', async () => {
+    // `deps.enqueue` re-adds the same stable jobId every scan, which BullMQ
+    // silently no-ops once that job hash exists in a terminal state
+    // (removeOnFail retention) -- so a permanently offline agent used to
+    // yield one 'retained' result and then zero further signal, forever
+    // (#3945). The scanner itself must escalate once the intent has outlived
+    // that no-op for long enough to mean "not coming back soon".
+    const deps = dependencies();
+    const persistedInput = {
+      version: 1 as const,
+      finalizationId: '66666666-6666-4666-8666-666666666666',
+      sessionId: session.id,
+      connection: {
+        connectionId: '77777777-7777-4777-8777-777777777777',
+        generation: 4,
+        instanceId: '88888888-8888-4888-8888-888888888888',
+        leaseToken: '99999999-9999-4999-8999-999999999999',
+      },
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: 'socket_error' as const,
+      terminalStatus: 'failed' as const,
+      // On the synthetic clock scale (deps.now() starts near 0 in these
+      // tests), not a real calendar date -- so `ageMs = now - endedAt` lines
+      // up with the STALLED_STOP_PENDING_ESCALATION_MS comparisons below. In
+      // production both `deps.now()` (Date.now()) and `endedAt` (an ISO
+      // string built from Date.now()) are real epoch time, so this is purely
+      // a test-fixture convention, not a behavior difference.
+      endedAt: new Date(0).toISOString(),
+      startedAt: '2026-07-25T12:00:00.000Z',
+      inputEvents: 4,
+      frameBytes: 128,
+    };
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: persistedInput.finalizationId,
+      canonicalPayload: JSON.stringify(persistedInput),
+      consistent: true,
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    deps.setNow!(0);
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // First observation of this stop_pending episode: too early to escalate.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+
+    // Still under the escalation age on a later scan.
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS - 1);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+
+    // Past the escalation age: must now report once.
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS + 1);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('stop_pending'),
+      expect.anything(),
+    );
+
+    // A further scan while still stalled must NOT report again (once per
+    // episode, matching the reportedWedgedJobIds pattern in
+    // jobs/patchJobExecutor.ts).
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS + 60_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('escalates exactly at the threshold age, derived from endedAt (#3945)', async () => {
+    const deps = dependencies();
+    const persistedInput = {
+      version: 1 as const,
+      finalizationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      sessionId: session.id,
+      connection: {
+        connectionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        generation: 1,
+        instanceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        leaseToken: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      },
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: 'socket_error' as const,
+      terminalStatus: 'failed' as const,
+      endedAt: new Date(0).toISOString(),
+      startedAt: '2026-07-25T12:00:00.000Z',
+      inputEvents: 0,
+      frameBytes: 0,
+    };
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: persistedInput.finalizationId,
+      canonicalPayload: JSON.stringify(persistedInput),
+      consistent: true,
+    });
+    captureExceptionMock.mockClear();
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS);
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a process restart: escalation age comes from endedAt, not local first-observation time (#3945)', async () => {
+    // Regression for the review finding that a purely in-memory
+    // "first observed" clock resets on every deploy/restart, silently
+    // restarting the 10-minute window for a session that was ALREADY most
+    // of the way there.
+    const deps = dependencies();
+    const persistedInput = {
+      version: 1 as const,
+      finalizationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      sessionId: session.id,
+      connection: {
+        connectionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        generation: 1,
+        instanceId: '10101010-1010-4010-8010-101010101010',
+        leaseToken: '20202020-2020-4020-8020-202020202020',
+      },
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: 'socket_error' as const,
+      terminalStatus: 'failed' as const,
+      // Already 9 minutes old when this "process" boots -- e.g. a deploy
+      // happened mid-stall.
+      endedAt: new Date(0).toISOString(),
+      startedAt: '2026-07-25T12:00:00.000Z',
+      inputEvents: 0,
+      frameBytes: 0,
+    };
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: persistedInput.finalizationId,
+      canonicalPayload: JSON.stringify(persistedInput),
+      consistent: true,
+    });
+    captureExceptionMock.mockClear();
+
+    // Simulate a brand-new process: a FRESH service instance (no in-memory
+    // history at all) whose very first observation is already 9 minutes past
+    // endedAt.
+    deps.setNow!(9 * 60 * 1000);
+    const restartedService = createDesktopSessionOrphanRecoveryService(deps);
+    await expect(restartedService.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+
+    // One more minute (still within the same process): must escalate on
+    // crossing 10 minutes of real age, not 10 minutes from this process's
+    // own first observation (which would push it to 19 minutes).
+    deps.setNow!(10 * 60 * 1000 + 1);
+    await expect(restartedService.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a new finalization episode escalate independently after a prior one on the same session resolved (#3945)', async () => {
+    const deps = dependencies();
+    const resolvedFinalizationId = '30303030-3030-4030-8030-303030303030';
+    const newFinalizationId = '40404040-4040-4040-8040-404040404040';
+    // Field order must match desktopSessionFinalizationInputSchema's shape
+    // order exactly: canonicalizeDesktopFinalization round-trips through Zod
+    // (which re-emits keys in schema-declaration order), so the
+    // recover()-internal `persisted.canonicalPayload !== observed.canonicalPayload`
+    // identity check only matches when this literal's key order already
+    // agrees with the schema.
+    function makeInput(finalizationId: string, endedAt: string) {
+      return {
+        version: 1 as const,
+        finalizationId,
+        sessionId: session.id,
+        connection: {
+          connectionId: '50505050-5050-4050-8050-505050505050',
+          generation: 1,
+          instanceId: '60606060-6060-4060-8060-606060606060',
+          leaseToken: '70707070-7070-4070-8070-707070707070',
+        },
+        orgId: session.orgId,
+        userId: session.userId,
+        deviceId: session.deviceId,
+        reason: 'socket_error' as const,
+        terminalStatus: 'failed' as const,
+        endedAt,
+        startedAt: '2026-07-25T12:00:00.000Z',
+        inputEvents: 0,
+        frameBytes: 0,
+      };
+    }
+    const resolvedInput = makeInput(resolvedFinalizationId, new Date(0).toISOString());
+    captureExceptionMock.mockClear();
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // First episode: escalate past the threshold.
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: resolvedFinalizationId,
+      canonicalPayload: JSON.stringify(resolvedInput),
+      consistent: true,
+    });
+    deps.setNow!(STALLED_STOP_PENDING_ESCALATION_MS + 1);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+    // That episode resolves (agent finally acked).
+    vi.mocked(deps.finalize).mockResolvedValueOnce('finalized');
+    await expect(service.recover(session.id, 'background')).resolves.toBe('finalized');
+
+    // A brand-new finalization attempt on the SAME session, already past the
+    // threshold at its very first observation, must escalate again --
+    // leftover state from the resolved episode must not suppress it.
+    const newInput = makeInput(
+      newFinalizationId,
+      new Date(deps.now() - STALLED_STOP_PENDING_ESCALATION_MS - 1).toISOString(),
+    );
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: newFinalizationId,
+      canonicalPayload: JSON.stringify(newInput),
+      consistent: true,
+    });
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs and reports a malformed persisted intent instead of swallowing it (#3945)', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: '66666666-6666-4666-8666-666666666666',
+      // Not valid JSON -- exercises the JSON.parse failure branch of the
+      // bare `catch { return 'retained' }` this used to be (#3945). A
+      // canonicalizeDesktopFinalization shape failure takes the same path.
+      canonicalPayload: '{not-json',
+      consistent: true,
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // Fail-closed behavior is unchanged: a malformed intent must still be
+    // retained, never reclaimed.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to parse'),
+      expect.objectContaining({ sessionId: session.id }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('reuses the unique durable pre-intent stop identity after a crash', async () => {

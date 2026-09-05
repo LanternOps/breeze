@@ -12,7 +12,12 @@ import {
 import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
-import { getQuote, toCustomerLines } from './quoteService';
+import {
+  getQuote,
+  quoteDeviceSetEstimate,
+  toCustomerLines,
+  type QuoteDeviceSetDrift,
+} from './quoteService';
 import {
   QuoteServiceError,
   REVISABLE_STATUSES,
@@ -118,6 +123,8 @@ export interface SendQuoteResult {
   quote: QuoteRow;
   acceptUrl: string;
   superseded?: QuoteSupersedeResult;
+  /** Advisory only: drift never blocks or silently reprices a send. */
+  deviceSetDrift: QuoteDeviceSetDrift[];
   /** Run AFTER this call's transaction commits — see {@link DeferredQuoteEmail}. */
   deliverEmail: DeferredQuoteEmail;
 }
@@ -231,6 +238,41 @@ export async function sendQuote(
     );
     if (!check.ok) {
       throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');
+    }
+  }
+
+  // #3205 W05 decision 12: send REPORTS drift, it never fixes it. A
+  // scheduled/undo-window send fires hours later, so refreshing here would
+  // reprice a document behind the operator's back after they approved it.
+  // Wrapped so it can NEVER block a send: silence is a bug, but so is a send
+  // that fails because a group filter is broken.
+  let deviceSetDrift: QuoteDeviceSetDrift[] = [];
+  if (lines.some((line) => line.contractLineType !== null && line.contractLineType !== undefined)) {
+    try {
+      const counts = await quoteDeviceSetEstimate(id, actor);
+      deviceSetDrift = counts.flatMap<QuoteDeviceSetDrift>((count) => {
+        const line = lines.find((candidate) => candidate.id === count.lineId);
+        if (!line) return [];
+        if (count.error) {
+          return [{
+            lineId: count.lineId,
+            description: line.name ?? line.description ?? '',
+            storedQuantity: line.quantity,
+            liveQuantity: null,
+            error: count.error,
+          }];
+        }
+        return count.billed === Number(line.quantity)
+          ? []
+          : [{
+              lineId: count.lineId,
+              description: line.name ?? line.description ?? '',
+              storedQuantity: line.quantity,
+              liveQuantity: count.billed,
+            }];
+      });
+    } catch (err) {
+      console.error('[quoteLifecycle] device-set drift check failed', id, err);
     }
   }
 
@@ -432,7 +474,7 @@ export async function sendQuote(
     resetReasonOnSuccess: false,
   });
 
-  return { quote: updated!, acceptUrl, superseded: supersededResult, deliverEmail };
+  return { quote: updated!, acceptUrl, superseded: supersededResult, deviceSetDrift, deliverEmail };
 }
 
 /** The `quotes` column patch that persists a freshly-minted token's identity. */
