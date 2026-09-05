@@ -39,6 +39,8 @@ const patchData: PatchCompliance = {
   totalDevices: 42,
   compliantDevices: 38,
   criticalSummary: { total: 5, patched: 4, pending: 1 },
+  importantSummary: { total: 0, patched: 0, pending: 0 },
+  unratedSummary: { total: 0, patched: 0, pending: 0 },
 };
 
 describe('KpiStrip', () => {

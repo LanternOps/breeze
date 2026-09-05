@@ -371,6 +371,9 @@
       "criticalPending": "{{count}} kritische Patches ausstehend",
       "criticalPending_one": "{{count}} kritischer Patch ausstehend",
       "criticalPending_other": "{{count}} kritische Patches ausstehend",
+      "unratedPending": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
+      "unratedPending_one": "{{count}} unbewerteter Patch ausstehend (wird nicht automatisch genehmigt)",
+      "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "empty": "Noch keine Patch-Daten"
     },
     "vuln": {
