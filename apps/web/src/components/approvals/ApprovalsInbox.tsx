@@ -279,6 +279,15 @@ export default function ApprovalsInbox() {
   // pages the way a flat PAGE_SIZE fetch used to.
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState<number | null>(null);
+  // Monotonic request version for the `/pending/count` fetch. `loadApprovals`
+  // fires it on mount and its response can still be in flight when a batch
+  // decision resolves — without versioning, that stale (pre-decision) count
+  // response lands AFTER the decision's own count update and clobbers it with
+  // the old total. Every count fetch captures the version at request time and
+  // only applies its result if the version is still current when it resolves;
+  // `decideGroup` bumps the version whenever it touches `totalCount` itself,
+  // discarding any such stale response in flight.
+  const countVersionRef = useRef(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   // Org filter, text search, and sort are ALL client-side over whatever
@@ -290,6 +299,28 @@ export default function ApprovalsInbox() {
   const [orgFilter, setOrgFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOrder, setSortOrder] = useState<SortOrder>('expiringSoonest');
+
+  // The total pending count is a light, best-effort companion read (same
+  // live-authorized set `/pending` itself computes, unpaginated) — it must
+  // never fail or delay the list load; a failed/unexpected response just
+  // leaves the "of M" total off the paging line. Versioned per the
+  // `countVersionRef` comment above: a caller that mutates `totalCount`
+  // itself (`decideGroup`) bumps the version first, so this fetch's result is
+  // dropped if it turns out to have been racing a decision.
+  const refreshCount = useCallback(async () => {
+    const version = ++countVersionRef.current;
+    try {
+      const countRes = await fetchWithAuth('/approvals/pending/count');
+      if (countRes.ok) {
+        const countBody = (await countRes.json()) as { count?: unknown };
+        if (typeof countBody.count === 'number' && version === countVersionRef.current) {
+          setTotalCount(countBody.count);
+        }
+      }
+    } catch {
+      // Additive.
+    }
+  }, []);
 
   const loadApprovals = useCallback(async (options?: { silent?: boolean; withCount?: boolean }) => {
     // Silent reloads (WS nudge, poll, reconnect, post-decision refresh) must
@@ -358,20 +389,8 @@ export default function ApprovalsInbox() {
     }
 
     if (!withCount) return;
-    // The total pending count is a light, best-effort companion read (same
-    // live-authorized set `/pending` itself computes, unpaginated) — it must
-    // never fail or delay the list load above; a failed/unexpected response
-    // just leaves the "of M" total off the paging line.
-    try {
-      const countRes = await fetchWithAuth('/approvals/pending/count');
-      if (countRes.ok) {
-        const countBody = (await countRes.json()) as { count?: unknown };
-        if (typeof countBody.count === 'number') setTotalCount(countBody.count);
-      }
-    } catch {
-      // Additive.
-    }
-  }, []);
+    await refreshCount();
+  }, [refreshCount]);
 
   /** Fetches the next PAGE_SIZE rows after the last-loaded row and appends
    *  them. A manual, per-view convenience: the next full reload (poll, WS
@@ -838,7 +857,23 @@ export default function ApprovalsInbox() {
         // it by the same authoritative per-row count `removeApprovals` used,
         // rather than a refetch — same reasoning as `removeApprovals`'s own
         // comment: the per-row results already ARE the ground truth.
-        setTotalCount((current) => (current !== null ? Math.max(0, current - decided.size) : current));
+        //
+        // Race: the mount-time `/pending/count` request can still be in
+        // flight when this decision resolves. `totalCount` is `null` until
+        // that first response lands, so decrementing it here would either
+        // no-op against `null` or, worse, get silently overwritten a moment
+        // later when the in-flight request finally resolves with the STALE
+        // pre-decision total. Bump `countVersionRef` unconditionally so any
+        // such in-flight response is discarded on arrival; when `totalCount`
+        // is still `null` there is nothing to decrement, so fetch a fresh
+        // (post-decision, authoritative) count instead of leaving the footer
+        // permanently blank.
+        countVersionRef.current += 1;
+        if (totalCount !== null) {
+          setTotalCount((current) => (current !== null ? Math.max(0, current - decided.size) : current));
+        } else {
+          void refreshCount();
+        }
       }
     } catch (err) {
       const kind = classifyDecideError(err);

@@ -85,5 +85,17 @@ describe('DeviceDetailPage — carries reboot-scheduled fields through its trans
     await waitFor(() =>
       expect(screen.getByTestId('device-reboot-scheduled')).toBeInTheDocument(),
     );
+    // Badge presence alone is a vacuous assertion here: RebootScheduledBadge
+    // renders from `rebootScheduledAt` alone, so a transform that dropped
+    // `rebootDeadline`/`rebootDeferralsUsed`/`rebootMaxDeferrals` would still
+    // pass the check above. The deferral pill (and the deadline folded into
+    // the main badge's tooltip) only render when those three fields survive
+    // the transform, so assert on them too.
+    const deferralBadge = screen.getByTestId('device-reboot-deferrals');
+    expect(deferralBadge).toHaveTextContent('Postponed 1 of 3');
+    expect(screen.getByTestId('device-reboot-scheduled')).toHaveAttribute(
+      'title',
+      expect.stringContaining('2099'),
+    );
   });
 });

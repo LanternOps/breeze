@@ -589,6 +589,72 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     await waitFor(() => expect(pagination).toHaveTextContent('Showing 1 of 1'));
   });
 
+  // Race: the mount-time `/pending/count` request can still be in flight when
+  // a batch decision resolves. `totalCount` is `null` until that first
+  // response lands, so a plain `current !== null ? current - decided.size :
+  // current` decrement no-ops — and worse, the in-flight request then resolves
+  // with the STALE pre-decision total and clobbers whatever the decision path
+  // did next. Deferring the count response until AFTER the batch decide lets
+  // both failure modes show up: the footer must land on the POST-decision
+  // total (1 of 1), never the pre-decision one (1 of 4) the delayed response
+  // would otherwise install last.
+  it('does not let a count response that resolves AFTER a batch decision overwrite the post-decision total', async () => {
+    const group = [agentCard('ap-a'), agentCard('ap-b'), agentCard('ap-c')];
+    const leftover = { ...pendingApproval, id: 'ap-d', origin: 'human' };
+    let resolveCount: (body: unknown) => void = () => {};
+    const deferredCount = new Promise<unknown>((resolve) => { resolveCount = resolve; });
+    let countCalls = 0;
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/batch/decide')) {
+        return response({
+          results: group.map((card) => ({ id: card.id, httpStatus: 200, body: {} })),
+        });
+      }
+      if (raw.includes('/approvals/pending/count')) {
+        countCalls += 1;
+        if (countCalls === 1) {
+          // The mount-time request. Resolves only after the test explicitly
+          // unblocks it, below — simulating it still being in flight when the
+          // batch decision completes — and it carries the STALE pre-decision
+          // total (4), the value it would genuinely have raced with.
+          const count = await deferredCount;
+          return response({ count });
+        }
+        // Any request fired AFTER the decision (the fix's own re-fetch when
+        // `totalCount` was still null) is a fresh, post-decision read and
+        // gets the real, authoritative total (1) immediately.
+        return response({ count: 1 });
+      }
+      return response({ approvals: [...group, leftover], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`));
+    fireEvent.change(screen.getByTestId(`approval-group-deny-reason-${GROUP_KEY}`), {
+      target: { value: 'Wrong maintenance window' },
+    });
+    fireEvent.click(screen.getByTestId(`approval-group-deny-confirm-${GROUP_KEY}`));
+
+    await waitFor(() => expect(batchCalls()).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.queryByTestId('approval-row-ap-a')).not.toBeInTheDocument(),
+    );
+
+    // Now let the mount-time count request resolve with the PRE-decision
+    // total (4) — the value it would have carried had it actually raced and
+    // won.
+    resolveCount(4);
+
+    const pagination = await screen.findByTestId('approvals-pagination');
+    await waitFor(() => expect(pagination).toHaveTextContent('Showing 1 of 1'));
+    // Give the resolved-but-stale response a chance to (wrongly) land before
+    // asserting it never overwrote the total.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pagination).toHaveTextContent('Showing 1 of 1');
+  });
+
   it('leaves every row in place and explains a 403 step_up_required', async () => {
     routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
       status: 403,
