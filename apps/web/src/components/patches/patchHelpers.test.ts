@@ -81,6 +81,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 0,
       thirdPartyApps: false,
       thirdPartyDeferralDays: null,
+      autoApproveUnrated: false,
     });
   });
 
@@ -92,6 +93,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 0,
       thirdPartyApps: false,
       thirdPartyDeferralDays: null,
+      autoApproveUnrated: false,
     });
   });
 
@@ -103,6 +105,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 0,
       thirdPartyApps: false,
       thirdPartyDeferralDays: null,
+      autoApproveUnrated: false,
     });
   });
 
@@ -124,6 +127,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 5,
       thirdPartyApps: false,
       thirdPartyDeferralDays: null,
+      autoApproveUnrated: false,
     });
   });
 
@@ -133,11 +137,11 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
     expect(
       normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], deferralDays: -3, thirdPartyApps: false } })
         .autoApprove
-    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
+    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false });
     expect(
       normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], deferralDays: 1.5, thirdPartyApps: false } })
         .autoApprove
-    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
+    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false });
     // Absent stays fine (0 = no hold).
     expect(
       normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], thirdPartyApps: false } })
@@ -173,6 +177,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 0,
       thirdPartyApps: true,
       thirdPartyDeferralDays: 3,
+      autoApproveUnrated: false,
     });
 
     expect(
@@ -193,6 +198,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       deferralDays: 2,
       thirdPartyApps: false,
       thirdPartyDeferralDays: 0,
+      autoApproveUnrated: false,
     });
   });
 
@@ -252,7 +258,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
             thirdPartyDeferralDays: bad,
           },
         }).autoApprove
-      ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
+      ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false });
     }
     expect(
       normalizeRing({
@@ -260,6 +266,21 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
         name: 'x',
         autoApprove: { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null },
       }).autoApprove
-    ).toEqual({ enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null });
+    ).toEqual({ enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null, autoApproveUnrated: false });
+  });
+});
+
+describe('normalizeRing autoApprove.autoApproveUnrated (#3758)', () => {
+  it('defaults to false when absent from the stored auto_approve object', () => {
+    const ring = normalizeRing({ id: 'r1', name: 'Ring 1', autoApprove: { enabled: true, severities: ['critical'] } });
+    expect(ring.autoApprove?.autoApproveUnrated).toBe(false);
+  });
+
+  it('passes through an explicit true', () => {
+    const ring = normalizeRing({
+      id: 'r1', name: 'Ring 1',
+      autoApprove: { enabled: true, severities: ['critical'], autoApproveUnrated: true },
+    });
+    expect(ring.autoApprove?.autoApproveUnrated).toBe(true);
   });
 });

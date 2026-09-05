@@ -431,6 +431,8 @@
       "allCategories": "Todas as categorias",
       "default": "Padrão",
       "severityNote": "As severidades se aplicam apenas às atualizações do sistema operacional. Atualizações de apps de terceiros são controladas pelo botão abaixo — não são controladas por severidade.",
+      "unratedSeverityNote": "Patches sem classificação (sem severidade atribuída) são excluídos desta seleção de severidade e não serão aprovados automaticamente, mesmo com todas as severidades marcadas, a menos que você ative o botão abaixo.",
+      "autoApproveUnratedLabel": "Também aprovar automaticamente patches sem classificação",
       "manualDefault": "Todos os patches neste anel precisam de aprovação manual.",
       "manualCategory": "Patches nesta categoria precisam de aprovação manual.",
       "noOverrides": "Todas as categorias seguem o padrão. Adicione uma substituição para tratar uma delas de forma diferente."
