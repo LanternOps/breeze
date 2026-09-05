@@ -326,25 +326,31 @@ type Heartbeat struct {
 	inventoryCol          *collectors.InventoryCollector
 	vpnCol                *collectors.VPNCollector
 	changeTrackerCol      *collectors.ChangeTrackerCollector
-	sessionCol            *collectors.SessionCollector
-	policyStateCol        *collectors.PolicyStateCollector
-	patchCol              *collectors.PatchCollector
-	patchMgr              *patching.PatchManager
-	connectionsCol        *collectors.ConnectionsCollector
-	eventLogCol           *collectors.EventLogCollector
-	bootCol               *collectors.BootPerformanceCollector
-	reliabilityCol        *collectors.ReliabilityCollector
-	agentVersion          string
-	desktopMgr            *desktop.SessionManager
-	wsDesktopMgr          *desktop.WsSessionManager
-	terminalMgr           *terminal.Manager
-	tunnelMgr             *tunnel.Manager
-	executor              *executor.Executor
-	backupBinaryPath      string
-	rollbackController    rollbackController
-	rebootMgr             *patching.RebootManager
-	securityScanner       *security.SecurityScanner
-	wsClient              *websocket.Client
+	// changeTrackerMu serializes the change tracker's collect → send → commit
+	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
+	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
+	// overlap; without this they would diff the same baseline, upload the same
+	// records twice, and race to commit (#3529).
+	changeTrackerMu    sync.Mutex
+	sessionCol         *collectors.SessionCollector
+	policyStateCol     *collectors.PolicyStateCollector
+	patchCol           *collectors.PatchCollector
+	patchMgr           *patching.PatchManager
+	connectionsCol     *collectors.ConnectionsCollector
+	eventLogCol        *collectors.EventLogCollector
+	bootCol            *collectors.BootPerformanceCollector
+	reliabilityCol     *collectors.ReliabilityCollector
+	agentVersion       string
+	desktopMgr         *desktop.SessionManager
+	wsDesktopMgr       *desktop.WsSessionManager
+	terminalMgr        *terminal.Manager
+	tunnelMgr          *tunnel.Manager
+	executor           *executor.Executor
+	backupBinaryPath   string
+	rollbackController rollbackController
+	rebootMgr          *patching.RebootManager
+	securityScanner    *security.SecurityScanner
+	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -1608,6 +1614,11 @@ func (h *Heartbeat) Start() {
 	}
 	h.lastHardwareUpdate = startupNow
 	h.lastPatchUpdate = startupNow
+	// The startup fan-out above already sent inventory; without stamping this
+	// gate its zero value makes the very first tick fire a second, duplicate
+	// full inventory ~30s later — which is also the guaranteed overlap window
+	// for the change tracker's collect → send → commit cycle (#3529).
+	h.lastInventoryUpdate = startupNow
 	h.mu.Unlock()
 	if postReliability {
 		go h.sendReliabilityMetrics(startupNow)
@@ -2297,22 +2308,52 @@ func (h *Heartbeat) sendNetworkInventory() {
 	)
 }
 
+// sendConfigurationChanges uploads the config-change delta on the collect →
+// send → commit ordering: the tracker's diff baseline advances only once the
+// API has accepted the records.
+//
+// Committing first (the old order) rebased the diff on a world where the change
+// had already happened, so anything the server rejected could never be
+// re-derived — the delta was gone for good (#3529). Leaving the baseline in
+// place instead means the next cycle simply re-reports the same changes, at the
+// cost of a possible duplicate if a response was lost after the server had
+// already stored them. At-least-once is the correct trade for an audit trail.
 func (h *Heartbeat) sendConfigurationChanges() {
 	if h.changeTrackerCol == nil {
 		return
 	}
 
-	changes, err := h.changeTrackerCol.CollectChanges()
+	h.changeTrackerMu.Lock()
+	defer h.changeTrackerMu.Unlock()
+
+	pending, err := h.changeTrackerCol.CollectPendingChanges()
 	if err != nil {
 		log.Error("failed to collect configuration changes", "error", err.Error())
 		return
 	}
-
-	if len(changes) == 0 {
+	if pending == nil {
 		return
 	}
 
-	h.sendInventoryData("changes", map[string]any{"changes": changes}, fmt.Sprintf("changes (%d)", len(changes)))
+	if len(pending.Records) > 0 {
+		if err := h.sendInventoryData(
+			"changes",
+			map[string]any{"changes": pending.Records},
+			fmt.Sprintf("changes (%d)", len(pending.Records)),
+		); err != nil {
+			log.Warn("configuration changes upload failed, baseline retained for retry",
+				"changes", len(pending.Records),
+				"error", err.Error())
+			return
+		}
+	}
+
+	// Committing with zero records is deliberate: the snapshot may have moved
+	// in ways the diff filtered as noise, and holding the old baseline would
+	// re-run that same filtered diff every cycle.
+	if err := h.changeTrackerCol.Commit(pending); err != nil {
+		log.Warn("failed to persist change tracker baseline after upload", "error", err.Error())
+	}
 }
 
 func (h *Heartbeat) policyRegistryProbes() []collectors.RegistryProbe {
@@ -2847,14 +2888,7 @@ func (h *Heartbeat) sendPolicyRegistryState() {
 		log.Warn("failed to collect policy registry state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"registry-state",
-		map[string]any{
-			"entries": entries,
-			"replace": true,
-		},
-		fmt.Sprintf("registry state (%d entries)", len(entries)),
-	)
+	sendPolicyState(h, "registry-state", "registry state", entries, err)
 }
 
 func (h *Heartbeat) sendPolicyConfigState() {
@@ -2863,13 +2897,41 @@ func (h *Heartbeat) sendPolicyConfigState() {
 		log.Warn("failed to collect policy config state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"config-state",
+	sendPolicyState(h, "config-state", "config state", entries, err)
+}
+
+// sendPolicyState uploads a policy-state observation, choosing the write mode
+// from whether the collection was complete.
+//
+// `replace: true` makes the API delete every prior row for the device before
+// inserting, so it is only safe when the batch is authoritative. A collection
+// that hit a read error is NOT authoritative: uploading it with replace:true
+// erases the server's last good observation of every probe that failed, and the
+// dashboard reads the result as a fresh, successful inventory (#3529). A
+// partial batch is therefore merged (replace:false), and a batch that failed
+// and produced nothing is skipped entirely — there is nothing to merge.
+func sendPolicyState[T any](h *Heartbeat, endpoint string, label string, entries []T, collectErr error) {
+	complete := collectErr == nil
+	if !complete && len(entries) == 0 {
+		log.Warn("skipping policy state upload, collection failed and produced no entries", "label", label)
+		return
+	}
+
+	mode := "replace"
+	if !complete {
+		mode = "partial merge"
+	}
+
+	// Nothing to roll back on failure: policy state is a full re-read of local
+	// state every cycle, so the next cycle re-derives it. sendInventoryData
+	// already logs the failure, and its label carries the mode.
+	_ = h.sendInventoryData(
+		endpoint,
 		map[string]any{
 			"entries": entries,
-			"replace": true,
+			"replace": complete,
 		},
-		fmt.Sprintf("config state (%d entries)", len(entries)),
+		fmt.Sprintf("%s (%d entries, %s)", label, len(entries), mode),
 	)
 }
 
@@ -3496,6 +3558,9 @@ func (h *Heartbeat) sendSessionInventory() {
 		log.Warn("failed to collect sessions", "error", err.Error())
 		return
 	}
+	// Draining removes the events from the collector, so from here until the
+	// server confirms receipt this goroutine is their only copy — a discarded
+	// send error would lose them permanently (#3529).
 	events := h.sessionCol.DrainEvents(256)
 	if events == nil {
 		events = []collectors.UserSessionEvent{}
@@ -3506,7 +3571,13 @@ func (h *Heartbeat) sendSessionInventory() {
 		"events":      events,
 		"collectedAt": time.Now().UTC(),
 	}
-	h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	sendErr := h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	if sendErr != nil && len(events) > 0 {
+		h.sessionCol.RequeueEvents(events)
+		log.Warn("session events requeued after failed upload",
+			"events", len(events),
+			"error", sendErr.Error())
+	}
 }
 
 func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetrics) {

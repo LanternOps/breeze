@@ -1387,6 +1387,25 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # The policy-state registry collector decides whether a batch uploads with
+      # `replace: true` — which deletes every prior row for the device. That
+      # "complete vs partial" judgement is Windows-only code (#3529), so it
+      # executes nowhere else in CI: the macOS/Linux jobs compile the !windows
+      # stub instead. Same -run filter + PASS count as the steps around it,
+      # because the package's inherited Windows backlog (#2523) is still red.
+      - name: Run Windows policy registry state completeness tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsCollectRegistryStateCompleteness$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # Software inventory has platform-specific registry behavior. Keep this
       # filtered until the inherited Windows package backlog in #2523 is green,
       # and count PASS lines so a rename cannot turn the gate vacuously green.
