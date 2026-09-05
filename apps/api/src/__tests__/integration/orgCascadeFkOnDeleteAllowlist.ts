@@ -41,9 +41,9 @@
  * its child table joined the cascade set) fails the burn-down test, so a
  * migration that fixes an edge forces the matching line out in the same PR.
  *
- * Three entries are NOT latent shapes but erasure failures that fire today for
- * any tenant with the relevant rows -- `restore_jobs`, `action_intents` and
- * `script_categories`, each carrying a note with its SQLSTATE and fix. They
+ * Two entries are NOT latent shapes but erasure failures that fire today for
+ * any tenant with the relevant rows -- `restore_jobs` and `script_categories`,
+ * each carrying a note with its SQLSTATE and fix. They
  * are pinned rather than fixed because #4519 is explicitly scoped to making
  * the debt visible; the migrations are follow-up work.
  *
@@ -218,18 +218,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'script_to_tags', constraint: 'script_to_tags_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'script_versions', constraint: 'script_versions_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'snmp_alert_thresholds', constraint: 'snmp_alert_thresholds_device_id_snmp_devices_id_fk', parentTable: 'snmp_devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  {
-    childTable: 'action_intents',
-    constraint: 'action_intents_scope_ticket_org_fk',
-    parentTable: 'tickets',
-    reason: 'set-null-onto-not-null',
-    allColumnsNullable: false,
-    note:
-      'LIVE ERASURE FAILURE, and it fails with 23502 rather than 23503. The FK is ON DELETE SET '
-      + 'NULL over (scope_ticket_id, org_id) with no confdelsetcols, and action_intents.org_id is NOT '
-      + 'NULL -- so deleting a ticket tries to null a NOT NULL column. Fix forward by restricting the '
-      + 'action to SET NULL (scope_ticket_id).',
-  },
   { childTable: 'ticket_comments', constraint: 'ticket_comments_ticket_id_tickets_id_fk', parentTable: 'tickets', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'access_review_items', constraint: 'access_review_items_reviewed_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'access_review_items', constraint: 'access_review_items_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
