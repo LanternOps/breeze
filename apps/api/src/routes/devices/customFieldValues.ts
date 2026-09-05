@@ -18,6 +18,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { createAuditLog } from '../../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 
 /**
  * Device custom-field VALUE read/write API.
@@ -225,9 +226,28 @@ customFieldValuesRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // Validate every key against its definition BEFORE merging. Custom-field
+    // values are an execution sink (installerVariables substitutes them into
+    // installer command lines) and a targeting control (filterEngine's
+    // custom.<key> selects deployment targets), so an unconstrained
+    // Record<string, string|number|boolean|null> was the wrong contract on
+    // both branches of dualAuth (#3257 W04). All-or-nothing: one PATCH is one
+    // operator action, unlike the importer's partial-apply bulk load.
+    const validation = await validateCustomFieldMap(device.orgId, updates);
+    if (!validation.ok) {
+      return c.json(
+        {
+          error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
+          code: 'invalid-custom-field-value',
+          fields: validation.rejected,
+        },
+        400,
+      );
+    }
+
     // Merge with existing values rather than replacing the whole object, matching
     // the PATCH /devices/:id semantics.
-    const merged = { ...readExistingCustomFields(device.customFields), ...updates };
+    const merged = { ...readExistingCustomFields(device.customFields), ...validation.values };
 
     const [updated] = await db
       .update(devices)
