@@ -35,7 +35,7 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 | **L1 -- session tap** | A simple tap to confirm within an authenticated session. |
 | **L2 -- biometric** | A biometric check (Face / fingerprint). |
 | **L3 -- biometric + PIN** | Biometric plus a PIN. |
-| **L4 -- hardware key + PIN** | A hardware security key plus a PIN. |
+| **L4 -- hardware key + re-auth** | A platform-bound hardware security key plus fresh re-authentication (password or login MFA). |
 
 <Aside type="tip">
   The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed).
