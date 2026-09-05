@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { ExtensionAuditEvent } from '../hostTypes';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -246,6 +247,28 @@ describe('sources admin routes', () => {
     expect(invalidPatch.status).toBe(400);
     expect(h.sourcesService.create).not.toHaveBeenCalled();
     expect(h.sourcesService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PATCH'])('maps a wrapped foreign-key violation on %s to 400', async (method) => {
+    const h = makeHarness();
+    const error = new DrizzleQueryError('write source', [],
+      Object.assign(new Error('private database detail'), { code: '23503' }));
+    h.sourcesService.create.mockRejectedValueOnce(error);
+    h.sourcesService.update.mockRejectedValueOnce(error);
+    const path = method === 'POST' ? '/sources' : `/sources/${SOURCE_ID}`;
+    const res = await h.app.request(`${path}?orgId=${ORG_ID}`, jsonRequest(method, sourceInput));
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).not.toContain('private database detail');
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, result: 'failure' }));
+  });
+
+  it('does not turn an unrelated wrapped database error into a validation error', async () => {
+    const h = makeHarness();
+    h.sourcesService.create.mockRejectedValueOnce(new DrizzleQueryError('write source', [],
+      Object.assign(new Error('private database detail'), { code: '42501' })));
+    const res = await h.app.request(`/sources?orgId=${ORG_ID}`, jsonRequest('POST', sourceInput));
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(await res.json())).not.toContain('private database detail');
   });
 
   it('rejects an empty patch without touching the source', async () => {

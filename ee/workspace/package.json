@@ -19,7 +19,8 @@
     "hono": "4.13.5",
     "mailparser": "^3.9.14",
     "v9u-smb2": "^1.0.6",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@breeze/shared": "workspace:*"
   },
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",

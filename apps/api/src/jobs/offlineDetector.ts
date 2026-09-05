@@ -84,6 +84,7 @@ let _configPolicyTableWarningLogged = false;
 function isRelationNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const cause = (error as { cause?: { code?: string } }).cause;
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
   return cause?.code === '42P01';
 }
 

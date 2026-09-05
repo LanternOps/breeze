@@ -155,6 +155,7 @@ function isUniqueViolation(error: unknown, constraint: string): boolean {
       message?: unknown;
       cause?: unknown;
     };
+    // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
     if (details.code === '23505'
       && (details.constraint_name === constraint || typeof details.constraint_name !== 'string')) {
       return true;
