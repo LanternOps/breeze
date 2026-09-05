@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { and, desc, eq, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { devices, organizations, partners } from '../../db/schema';
+import { partners } from '../../db/schema';
 import type { PartnerTrustState } from '../../db/schema/orgs';
 import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
@@ -166,11 +166,20 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
       signupIp: partners.signupIp,
       signupIpClass: partners.signupIpClass,
       signupIpAsn: partners.signupIpAsn,
+      // NOTE: the inner correlated sub-select MUST reference its own tables
+      // and columns as plain SQL text, never as interpolated Drizzle Column
+      // objects (`${organizations.id}`) — Drizzle renders a bare column
+      // reference UNqualified ("id"), so both sides of the join collapse to
+      // the same unqualified name and Postgres raises "column reference
+      // \"id\" is ambiguous". Only the outer correlation to `partners` is
+      // interpolated (`${partners}.id`), which renders the Table object as
+      // its quoted, qualified name. Same pattern/lesson as
+      // routes/software.ts's versionCount subquery.
       deviceCount: sql<number>`(
         SELECT count(*)::int
-        FROM ${devices}
-        INNER JOIN ${organizations} ON ${devices.orgId} = ${organizations.id}
-        WHERE ${organizations.partnerId} = ${partners.id}
+        FROM devices
+        INNER JOIN organizations ON organizations.id = devices.org_id
+        WHERE organizations.partner_id = ${partners}.id
       )`,
     })
     .from(partners)
