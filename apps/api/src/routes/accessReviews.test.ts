@@ -37,13 +37,21 @@ vi.mock('../db', () => ({
     transaction: vi.fn()
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system', orgId: null, accessibleOrgIds: null }))
 }));
 
 vi.mock('../db/schema', () => ({
   accessReviews: {},
   accessReviewItems: {},
   users: {},
+  userPasskeys: {
+    id: { __column: 'user_passkeys.id' },
+    userId: { __column: 'user_passkeys.user_id' },
+    credentialId: { __column: 'user_passkeys.credential_id' },
+    name: { __column: 'user_passkeys.name' },
+    disabledAt: { __column: 'user_passkeys.disabled_at' },
+  },
   roles: {},
   rolePermissions: {},
   permissions: {},
@@ -74,6 +82,17 @@ vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
 }));
 
+// Same reason as tokenRevocation above: unreferenced by any assertion, mocked
+// only to cut the static import cluster the real module drags in
+// (remoteSessionTeardown -> routes/agentWs -> jobs/discoveryWorker ->
+// services/networkBaseline, which reads `discoveredAssetTypeEnum` off the
+// mocked `../db/schema` at module scope). Reached from this route file since
+// it now imports userNeutralization -> mfaFactorReset -> mfaAssurance.
+vi.mock('../services/remoteSessionTeardown', () => ({
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
+  TEARDOWN_FAILED: -1,
+}));
+
 // Task 9: advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they run
 // against the mocked `tx` below); runPostCommitCleanup is mocked so tests
 // control the post-commit outcome per user without exercising the real
@@ -91,7 +110,14 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
   };
 });
 
+const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: writeRouteAuditMock,
+}));
+
 import { db } from '../db';
+import { users, userPasskeys } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
 
@@ -426,25 +452,52 @@ describe('access review routes', () => {
     // file). Route .returning() generically: advanceUserEpochs and the final
     // accessReviews update both just need a truthy row back;
     // revokeAllRefreshFamilies never calls .returning() at all.
-    function mockCompleteTx() {
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      });
+    function mockCompleteTx(opts: {
+      hasOtherMembership?: boolean;
+      passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
+    } = {}) {
+      const { hasOtherMembership = true, passkeyRows = [] } = opts;
       const capturedUpdates: Array<Record<string, unknown>> = [];
+      const capturedDeletes: unknown[] = [];
+      const txDelete = vi.fn((table: unknown) => {
+        capturedDeletes.push(table);
+        return {
+          where: vi.fn(() => {
+            const ret: any = Promise.resolve(undefined);
+            ret.returning = () => Promise.resolve(table === userPasskeys ? passkeyRows : []);
+            return ret;
+          })
+        };
+      });
+      // Orphan checks read partnerUsers/organizationUsers; the factor-reset
+      // inventory snapshot reads `users` — route by table identity.
+      const txSelect = vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(
+              table === users
+                ? [{ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: null, phoneVerified: false }]
+                : hasOtherMembership ? [{ id: 'other-link' }] : []
+            )
+          })
+        }))
+      }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
           return {
-            where: () => ({
-              returning: () => Promise.resolve([updatedReview])
-            })
+            where: () => {
+              const ret: any = Promise.resolve(undefined);
+              ret.returning = () => Promise.resolve('mfaSecret' in values ? [{ id: 'cleared' }] : [updatedReview]);
+              return ret;
+            }
           };
         }
       }));
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
+        return fn({ delete: txDelete, update: txUpdate, select: txSelect } as any);
       });
-      return { txDelete, txUpdate, capturedUpdates };
+      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes };
     }
 
     function seedReviewSelects(revokedItems: Array<{ userId: string }>) {
@@ -575,6 +628,43 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('U-9: a revoked user with no remaining membership is neutralized (disabled, no password, passkeys deleted) AFTER {auth,mfa} epochs + families, and is named in the audit', async () => {
+      seedReviewSelects([{ userId: 'user-1' }]);
+      const { capturedUpdates, capturedDeletes } = mockCompleteTx({ hasOtherMembership: false, passkeyRows: [{ id: 'pk-1', credentialId: 'cred-1', name: null }] });
+
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const epochIdx = capturedUpdates.findIndex((v) => 'authEpoch' in v);
+      const familyIdx = capturedUpdates.findIndex((v) => 'revokedReason' in v);
+      const neutralizeIdx = capturedUpdates.findIndex((v) => v.status === 'disabled' && v.passwordHash === null);
+      const clearIdx = capturedUpdates.findIndex((v) => v.mfaEnabled === false && v.mfaSecret === null);
+      expect(epochIdx).toBeGreaterThanOrEqual(0);
+      expect(capturedUpdates[epochIdx]).toHaveProperty('mfaEpoch'); // D3: both epochs
+      expect(familyIdx).toBeGreaterThan(epochIdx);
+      expect(neutralizeIdx).toBeGreaterThan(familyIdx);
+      expect(clearIdx).toBeGreaterThan(neutralizeIdx);
+      expect(capturedDeletes).toContain(userPasskeys);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'access_review.complete',
+        details: expect.objectContaining({ revokedUserIds: ['user-1'], neutralizedUserIds: ['user-1'] }),
+      }));
+    });
+
+    it('U-10: a revoked user who still holds another membership is NOT neutralized and keeps passkeys', async () => {
+      seedReviewSelects([{ userId: 'user-1' }]);
+      const { capturedUpdates, capturedDeletes } = mockCompleteTx({ hasOtherMembership: true });
+
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.some((v) => v.status === 'disabled')).toBe(false);
+      expect(capturedDeletes).not.toContain(userPasskeys);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ neutralizedUserIds: [] }),
+      }));
     });
   });
 });

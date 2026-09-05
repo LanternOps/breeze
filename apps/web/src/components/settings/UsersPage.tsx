@@ -77,6 +77,7 @@ export default function UsersPage() {
           ? new Date(u.lastLoginAt as string).toLocaleDateString()
           : t('usersPage.never'),
         mfaEnabled: Boolean(u.mfaEnabled),
+        mfaProtected: Boolean(u.mfaProtected ?? u.mfaEnabled),
       }));
       setUsers(rows);
     } catch (err) {

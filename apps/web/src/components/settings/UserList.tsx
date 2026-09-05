@@ -13,6 +13,13 @@ export type User = {
   status: UserStatus | string;
   lastLogin: string;
   mfaEnabled?: boolean;
+  /**
+   * RMM-QA-166: true when the account holds ANY second factor (mfa_enabled OR a
+   * live passkey). Drives the Reset MFA action; `mfaEnabled` alone hides the
+   * button for a passkey-only leftover the admin must be able to reset.
+   * Optional so a payload from an older API still renders (falls back to mfaEnabled).
+   */
+  mfaProtected?: boolean;
 };
 
 type UserListProps = {
@@ -152,7 +159,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                         >
                           {t('userList.actions.devices')}
                         </a>
-                        {user.mfaEnabled && (
+                        {(user.mfaProtected ?? user.mfaEnabled) && (
                           <>
                             <span className="text-muted-foreground">|</span>
                             <button

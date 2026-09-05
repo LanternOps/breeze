@@ -143,3 +143,34 @@ describe('UsersPage — 403 renders access-denied (not the retryable error)', ()
     expect(screen.queryByTestId('access-denied')).not.toBeInTheDocument();
   });
 });
+
+// RMM-QA-166 (D11): GET /users now reports `mfaProtected` (mfa_enabled OR a live
+// passkey) per row. The page must carry that field through to UserList, or the
+// passkey-only leftover this finding is about still gets no Reset MFA button.
+describe('UsersPage — mfaProtected mapping from GET /users (RMM-QA-166)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const seedListOnly = (row: Record<string, unknown>) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/users') return jsonResponse({ data: [row] });
+      if (url === '/users/roles') return jsonResponse({ data: [ROLE_ADMIN] });
+      return jsonResponse({});
+    });
+  };
+
+  it('W-4: a passkey-only row (mfaEnabled=false, mfaProtected=true) gets the Reset MFA action', async () => {
+    seedListOnly({ ...TREVOR, mfaEnabled: false, mfaProtected: true });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+
+    expect(await screen.findByRole('button', { name: 'Reset MFA' })).toBeInTheDocument();
+  });
+
+  it('W-5: a row with no factors (mfaEnabled=false, mfaProtected=false) gets no Reset MFA action', async () => {
+    seedListOnly({ ...TREVOR, mfaEnabled: false, mfaProtected: false });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+
+    expect(screen.queryByRole('button', { name: 'Reset MFA' })).toBeNull();
+  });
+});
