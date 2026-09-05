@@ -50,6 +50,8 @@ vi.mock('./aiTools', async (importOriginal) => ({
 }));
 
 import { __test__ } from './aiAgentSdkTools';
+import { buildScriptBuilderTools } from './scriptBuilderTools';
+import type { PreToolUseCallback } from './aiAgentSdkTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 
 const { makeHandler } = __test__;
@@ -71,7 +73,18 @@ const verifiedContext = {
   },
 } as unknown as ToolExecutionContext;
 
-describe('makeHandler forwards pre-verified release material to executeTool (#3409 PR4c-1)', () => {
+describe.each([
+  { name: 'Fleet AI', makeHandler },
+  {
+    name: 'Script Builder',
+    makeHandler: (toolName: string, getAuth: () => typeof fakeAuth, onPreToolUse?: PreToolUseCallback) => {
+      const exposedName = toolName === 'run_script' ? 'execute_script_on_device' : toolName;
+      const registered = buildScriptBuilderTools(getAuth, onPreToolUse).find(t => t.name === exposedName);
+      if (!registered) throw new Error(`Missing tool: ${exposedName}`);
+      return (args: Record<string, unknown>) => registered.handler(args as never, undefined);
+    },
+  },
+])('$name forwards pre-verified release material to executeTool', ({ makeHandler }) => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
@@ -114,9 +127,9 @@ describe('makeHandler forwards pre-verified release material to executeTool (#34
 
   it('forwards the released intent id even when nothing was verified', async () => {
     const onPreToolUse = vi.fn(async () => ({ allowed: true as const, intentId: 'intent-2' }));
-    const handler = makeHandler('manage_ai_agents', () => fakeAuth, onPreToolUse);
+    const handler = makeHandler('run_script', () => fakeAuth, onPreToolUse);
 
-    await handler({ action: 'authorize_supervised_key' });
+    await handler({ scriptId: 'script-1', deviceIds: ['device-1'] });
 
     const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
     expect(call).toHaveLength(4);
