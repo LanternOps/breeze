@@ -187,6 +187,16 @@ describe('parsePlayIntegrityServiceAccount', () => {
     expect(parsePlayIntegrityServiceAccount('not-a-service-account')).toBeNull();
   });
 
+  it('returns null when the private key has lost its PEM armour', () => {
+    // The realistic mangling: a truncated base64 paste, or a placeholder left
+    // in the key field. Structural only — it does not prove the key parses.
+    expect(
+      parsePlayIntegrityServiceAccount(
+        JSON.stringify({ ...SERVICE_ACCOUNT, private_key: 'REPLACE_ME' }),
+      ),
+    ).toBeNull();
+  });
+
   it('returns null when the required fields are missing', () => {
     expect(parsePlayIntegrityServiceAccount(JSON.stringify({ project_id: 'x' }))).toBeNull();
   });

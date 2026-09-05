@@ -73,6 +73,58 @@ describe('verifyAndroidKeyAttestation (#1374 W04)', () => {
     expect(() => verifyAndroidKeyAttestation({ ...args, now: wayLater })).toThrow(/valid/i);
   });
 
+  /**
+   * The attack this blocks, concretely: an attacker with a rooted phone gets a
+   * GENUINE attestation chain for a key K1 they legitimately generated in the
+   * TEE. K1's attested purpose is SIGN with a SHA-256 digest — which is exactly
+   * what signing an X.509 TBSCertificate needs. So they ask KeyStore to sign a
+   * certificate they authored for a SOFTWARE key K2, stuff it with a forged
+   * KeyDescription claiming StrongBox and a locked bootloader, and present
+   * [forgedLeaf(K2), realLeaf(K1), intermediate, root].
+   *
+   * Every signature in that chain verifies and it terminates in a real pinned
+   * Google root. Only `basicConstraints` stops it: a KeyStore attestation leaf
+   * is CA:FALSE, so it may not issue certificates.
+   */
+  it('rejects a forged leaf signed by a genuine non-CA attestation leaf', async () => {
+    const { args } = await mint({ forgedLeafSignedByLeaf: true });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/not a CA certificate/i);
+  });
+
+  it('rejects an issuer whose keyUsage omits keyCertSign', async () => {
+    const { args } = await mint({ intermediateKeyUsageOmitsCertSign: true });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/not a CA certificate/i);
+  });
+
+  /**
+   * Google's documentation is explicit: "Don't assume that the key attestation
+   * certificate extension is in the leaf certificate of the chain. Only the
+   * first occurrence of the extension in the chain can be trusted. Any further
+   * instances of the extension have not been issued by the secure hardware and
+   * might have been issued by an attacker extending the chain."
+   *
+   * Reading `chain[0]` unconditionally is exactly the assumption that warns
+   * against. This is the same escalation the CA check blocks, approached from
+   * the other side — and it must not depend on real KeyStore leaves happening
+   * to be CA:FALSE, which no test here can prove.
+   */
+  it('rejects a chain carrying more than one key description extension', async () => {
+    // `leafIsCa` models the residual risk the CA check cannot rule out: no test
+    // here can prove that every real KeyMint implementation marks its
+    // attestation leaf CA:FALSE. If one does not, the CA check lets the forged
+    // certificate through and the extension count is the only thing left.
+    const { args } = await mint({ forgedLeafSignedByLeaf: true, leafIsCa: true });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/more than one key description/i);
+  });
+
+  it('rejects an issuer carrying no basicConstraints at all', async () => {
+    // `checkIssued` alone accepts this — OpenSSL treats a missing
+    // basicConstraints as unrestricted for compatibility — so the explicit
+    // `.ca` check is the only thing standing between us and it.
+    const { args } = await mint({ intermediateOmitsBasicConstraints: true });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/not a CA certificate/i);
+  });
+
   it('rejects a chain with fewer than two certificates', async () => {
     const { args } = await mint();
     expect(() =>
@@ -155,7 +207,37 @@ describe('verifyAndroidKeyAttestation (#1374 W04)', () => {
   // Check 8 — hardware-enforced properties
   it('rejects properties asserted only in softwareEnforced', async () => {
     const { args } = await mint({ putPurposeInSoftwareEnforced: true });
-    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/hardware-enforced|softwareEnforced/i);
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/absent from teeEnforced/i);
+  });
+
+  it('rejects properties declared in BOTH lists', async () => {
+    // The dual declaration is its own defence: without this the only reachable
+    // rejection is "absent from teeEnforced", and a key that declares
+    // attacker-controllable duplicates alongside the hardware ones sails past.
+    const { args } = await mint({ duplicatePurposeInSoftwareEnforced: true });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/appear in softwareEnforced/i);
+  });
+
+  it('rejects a key that may also sign attestation certificates (ATTEST_KEY)', async () => {
+    const { args } = await mint({ extraPurposes: [7] });
+    expect(() => verifyAndroidKeyAttestation(args)).toThrow(/disallowed key purposes/i);
+  });
+
+  it('accepts the idiomatic SIGN|VERIFY purpose pair', async () => {
+    const { args } = await mint({ extraPurposes: [3] });
+    expect(verifyAndroidKeyAttestation(args).keyMintSecurityLevel).toBe('TrustedEnvironment');
+  });
+
+  it('accepts a StrongBox key whose attestation was produced by the TEE', async () => {
+    // The realistic StrongBox shape: the key lives in StrongBox, the
+    // attestation itself is countersigned at TrustedEnvironment level.
+    const { args } = await mint({
+      keyMintSecurityLevel: SecurityLevel.strongBox,
+      attestationSecurityLevel: SecurityLevel.trustedEnvironment,
+    });
+    const result = verifyAndroidKeyAttestation(args);
+    expect(result.keyMintSecurityLevel).toBe('StrongBox');
+    expect(result.attestationSecurityLevel).toBe('TrustedEnvironment');
   });
 
   it('rejects a key marked usable by all applications', async () => {

@@ -21,7 +21,7 @@ import { Certificate } from '@peculiar/asn1-x509';
  * WHAT THIS PROVES, and what it does not:
  *
  * A KeyStore-generated key can carry a certificate chain rooted in a Google
- * hardware attestation root. The leaf carries extension OID
+ * hardware attestation root. Exactly one certificate in it carries extension OID
  * `1.3.6.1.4.1.11129.2.1.17` (`KeyDescription`), which the secure hardware
  * itself populated, and which states the security level the private key lives
  * at plus the single-use challenge the key was created with. That — not Play
@@ -55,6 +55,17 @@ const KEY_PURPOSE_SIGN = 2;
 const DIGEST_SHA_2_256 = 4;
 /** KeyMint `KeyOrigin::GENERATED` — minted inside secure hardware, never imported. */
 const KEY_ORIGIN_GENERATED = 0;
+/**
+ * The only `purpose` values an approver signing key may carry.
+ *
+ * SIGN is required; VERIFY rides along on almost every real device because
+ * `KeyProperties.PURPOSE_SIGN | PURPOSE_VERIFY` is the idiomatic Android
+ * generation call. Anything ELSE is refused, and `ATTEST_KEY` (7) is why this
+ * check exists at all: a key permitted to sign attestation certificates can
+ * mint its own chain, which is the same escalation the CA check below blocks
+ * from the other direction.
+ */
+const ALLOWED_KEY_PURPOSES = new Set([KEY_PURPOSE_SIGN, /* VERIFY */ 3]);
 
 export type AndroidSecurityLevel = 'Software' | 'TrustedEnvironment' | 'StrongBox';
 
@@ -72,10 +83,10 @@ export interface AndroidKeyAttestationResult {
   attestationSecurityLevel: AndroidSecurityLevel;
   verifiedBootState: string;
   deviceLocked: boolean;
-  /** SPKI DER of the leaf certificate's public key — the attested key. */
+  /** SPKI DER of the attested certificate's public key — the attested key. */
   attestedPublicKeyDer: Buffer;
   packageName: string | null;
-  /** Uppercase hex serial of the leaf, stored as `attestation_key_id`. */
+  /** Uppercase hex serial of the attested certificate, stored as `attestation_key_id`. */
   leafSerial: string;
 }
 
@@ -180,6 +191,19 @@ export function __resetPinnedRootsForTests(): void {
   cachedRootSpkis = null;
 }
 
+/**
+ * Test seam: pin a synthetic root as the DEFAULT anchor set.
+ *
+ * Needed because `verifyPlatformAttestation` deliberately exposes no
+ * root-injection parameter — production must never be able to choose its own
+ * trust anchor — so an end-to-end test of the Android branch against a real
+ * fixture chain has no other way in. Always pair with
+ * `__resetPinnedRootsForTests()` in an `afterEach`.
+ */
+export function __setPinnedRootsForTests(rootCertificatesPem: string[]): void {
+  cachedRootSpkis = trustedRootSpkis(rootCertificatesPem);
+}
+
 // ---------------------------------------------------------------------------
 // Chain validation
 // ---------------------------------------------------------------------------
@@ -215,6 +239,22 @@ function verifyChain(chain: crypto.X509Certificate[], trusted: Set<string>, now:
   for (let i = 0; i < chain.length - 1; i += 1) {
     const subject = chain[i]!;
     const issuer = chain[i + 1]!;
+    // EVERY issuer must be a CA. Without this, an attacker with a rooted phone
+    // takes their own GENUINE attestation chain for a TEE key K1 — whose
+    // attested purpose is SIGN with SHA-256, exactly what signing an X.509
+    // TBSCertificate needs — and has KeyStore sign a certificate they authored
+    // for a software key, carrying a forged KeyDescription that claims
+    // StrongBox and a locked bootloader. Every signature in that chain
+    // verifies and it terminates in a real pinned Google root.
+    //
+    // `checkIssued` below happens to catch the common shape (OpenSSL's
+    // X509_check_issued folds in basicConstraints and keyCertSign), but it
+    // returns TRUE for an issuer carrying NEITHER extension — a documented
+    // compatibility allowance. `.ca` does not, so the explicit check is the
+    // load-bearing one and must not be removed as redundant.
+    if (!issuer.ca) {
+      fail(`chain[${i + 1}] is not a CA certificate and may not issue chain[${i}]`);
+    }
     if (!subject.checkIssued(issuer)) {
       fail(`certificate chain is not contiguous: chain[${i}] was not issued by chain[${i + 1}]`);
     }
@@ -223,17 +263,15 @@ function verifyChain(chain: crypto.X509Certificate[], trusted: Set<string>, now:
     }
   }
 
+  // The LAST certificate's key must itself be pinned. `KeyStore
+  // .getCertificateChain()` returns the full chain up to the root, so a chain
+  // that stops short of one is not something a real device produces — and
+  // "trust it because a pinned root would have signed it, had it been sent"
+  // is not a check, it is an assumption. Fail closed.
   const terminal = chain[chain.length - 1]!;
-  if (trusted.has(spkiFingerprint(terminal.publicKey))) return;
-
-  // The device may have omitted the self-signed root and stopped at an
-  // intermediate. That is still anchored iff a pinned root signed it.
-  if (terminal.issuer !== terminal.subject) {
-    fail(
-      'attestation chain does not terminate in a pinned Google hardware attestation root (unanchored intermediate)',
-    );
+  if (!trusted.has(spkiFingerprint(terminal.publicKey))) {
+    fail('attestation chain does not terminate in a pinned Google hardware attestation root');
   }
-  fail('attestation chain does not terminate in a pinned Google hardware attestation root');
 }
 
 // ---------------------------------------------------------------------------
@@ -268,12 +306,64 @@ interface ParsedKeyDescription {
   teeEnforced: AnyAuthorizationList;
 }
 
-function parseKeyDescription(leafDer: Buffer): ParsedKeyDescription {
-  const cert = AsnParser.parse(leafDer, Certificate);
+/**
+ * Locate the ONE certificate in the chain carrying the key description.
+ *
+ * Google's documentation is explicit that reading it off `chain[0]` is unsafe:
+ *
+ *   "Don't assume that the key attestation certificate extension is in the leaf
+ *    certificate of the chain. Only the first occurrence of the extension in
+ *    the chain can be trusted. Any further instances of the extension have not
+ *    been issued by the secure hardware and might have been issued by an
+ *    attacker extending the chain while attempting to create fake attestations
+ *    for untrusted keys."
+ *
+ * The attack: anyone can generate an ordinary KeyStore key with purpose SIGN
+ * and digest SHA-256 and receive a GENUINE Google-rooted chain for it. Signing
+ * an X.509 TBSCertificate is just signing bytes with SHA-256, so they have the
+ * secure hardware sign a certificate they authored for a software key of their
+ * own, carrying a KeyDescription that asserts whatever they like, and prepend
+ * it. Every signature verifies and the chain still ends at a pinned root.
+ *
+ * The CA check in `verifyChain` blocks this for a leaf that is CA:FALSE, which
+ * a real KeyStore leaf is — but no test in this repo can prove that holds for
+ * every KeyMint implementation in the field, so the count is the independent
+ * defence and does not rest on that assumption.
+ *
+ * Rejecting a multi-occurrence chain outright, rather than silently preferring
+ * the root-most one, keeps the failure legible: the only way to see two is an
+ * extended chain, and that deserves an error naming what happened.
+ */
+function findKeyDescriptionCertificate(chainDer: Buffer[]): {
+  cert: Certificate;
+  index: number;
+} {
+  const carrying = chainDer
+    .map((der, index) => ({ cert: AsnParser.parse(der, Certificate), index }))
+    .filter(({ cert }) =>
+      cert.tbsCertificate.extensions?.some((e) => e.extnID === KEY_DESCRIPTION_OID),
+    );
+
+  if (carrying.length === 0) {
+    fail(
+      `no certificate in the chain carries an Android key description extension (${KEY_DESCRIPTION_OID}) — the key was not produced by KeyStore attestation`,
+    );
+  }
+  if (carrying.length > 1) {
+    fail(
+      `chain carries more than one key description extension (at positions ${carrying
+        .map((c) => c.index)
+        .join(', ')}) — only secure hardware issues one, so the chain has been extended`,
+    );
+  }
+  return carrying[0]!;
+}
+
+function parseKeyDescription(cert: Certificate): ParsedKeyDescription {
   const ext = cert.tbsCertificate.extensions?.find((e) => e.extnID === KEY_DESCRIPTION_OID);
   if (!ext) {
     fail(
-      `leaf certificate carries no Android key description extension (${KEY_DESCRIPTION_OID}) — the key was not produced by KeyStore attestation`,
+      `certificate carries no Android key description extension (${KEY_DESCRIPTION_OID}) — the key was not produced by KeyStore attestation`,
     );
   }
 
@@ -282,12 +372,17 @@ function parseKeyDescription(leafDer: Buffer): ParsedKeyDescription {
   let parsed: KeyDescription | NonStandardKeyDescription;
   try {
     parsed = AsnParser.parse(ext!.extnValue, KeyDescription);
-  } catch {
+  } catch (strictErr) {
     try {
       parsed = AsnParser.parse(ext!.extnValue, NonStandardKeyDescription);
-    } catch (err) {
+    } catch (permissiveErr) {
+      // Carry BOTH reasons. When a device fails the fallback too, the strict
+      // error is usually the one that says what is actually malformed, and
+      // discarding it leaves an operator diagnosing a real device with only
+      // the less specific of the two messages.
       return fail(
-        `key description extension could not be parsed as a KeyDescription: ${(err as Error).message}`,
+        `key description extension could not be parsed as a KeyDescription ` +
+          `(strict: ${(strictErr as Error).message}; permissive: ${(permissiveErr as Error).message})`,
       );
     }
   }
@@ -355,8 +450,11 @@ function attestedPackageName(
   let appId: AttestationApplicationId;
   try {
     appId = AsnParser.parse(raw, AttestationApplicationId);
-  } catch {
-    return null;
+  } catch (err) {
+    // Distinguishable from "the device sent none": the caller's rejection
+    // message otherwise reads `(absent)` for a field that WAS present and
+    // merely unparseable, which sends an operator looking in the wrong place.
+    return fail(`attestationApplicationId is unparseable: ${(err as Error).message}`);
   }
   const first = appId.packageInfos[0];
   if (!first) return null;
@@ -383,10 +481,11 @@ export function verifyAndroidKeyAttestation(
   // 1. Chain: contiguous, signed, in-window, anchored in a pinned Google root.
   verifyChain(chain, trustedRootSpkis(input.rootCertificatesPem), now);
 
-  const leaf = chain[0]!;
-
-  // 2. The leaf carries a KeyDescription.
-  const desc = parseKeyDescription(chainDer[0]!);
+  // 2. Exactly ONE certificate in the chain carries a KeyDescription, and that
+  //    certificate — not `chain[0]` by assumption — is the attested one.
+  const carrier = findKeyDescriptionCertificate(chainDer);
+  const attestedCert = chain[carrier.index]!;
+  const desc = parseKeyDescription(carrier.cert);
 
   // 3. Challenge binding — byte-exact, constant-time.
   //    `timingSafeEqual` throws on a length mismatch, so length is checked first.
@@ -443,6 +542,10 @@ export function verifyAndroidKeyAttestation(
   if (!teePurpose!.includes(KEY_PURPOSE_SIGN)) {
     fail('attested key is not hardware-constrained to SIGN');
   }
+  const extraPurposes = [...teePurpose!].filter((p) => !ALLOWED_KEY_PURPOSES.has(p));
+  if (extraPurposes.length > 0) {
+    fail(`attested key carries disallowed key purposes [${extraPurposes.join(', ')}]`);
+  }
   if (!teeDigest!.includes(DIGEST_SHA_2_256)) {
     fail('attested key is not hardware-constrained to SHA-256 digests');
   }
@@ -472,16 +575,19 @@ export function verifyAndroidKeyAttestation(
 
   // 9. Hand the attested key back; binding it to the registration is the caller's.
   const attestedPublicKeyDer = Buffer.from(
-    leaf.publicKey.export({ format: 'der', type: 'spki' }),
+    attestedCert.publicKey.export({ format: 'der', type: 'spki' }),
   );
 
   return {
     keyMintSecurityLevel,
     attestationSecurityLevel,
     verifiedBootState,
-    deviceLocked: true,
+    // Read back from the attestation, not asserted as a literal — a hardcoded
+    // `true` would keep reporting `true` if the gate above were ever removed,
+    // and any test asserting it would echo the constant instead of the check.
+    deviceLocked: rootOfTrust!.deviceLocked,
     attestedPublicKeyDer,
     packageName,
-    leafSerial: leaf.serialNumber,
+    leafSerial: attestedCert.serialNumber,
   };
 }

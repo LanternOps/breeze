@@ -65,6 +65,14 @@ export interface AndroidKeyAttestationFixtureOverrides {
   notAfter?: Date;
   /** Move `purpose`/`digest`/`origin` out of teeEnforced into softwareEnforced. */
   putPurposeInSoftwareEnforced?: boolean;
+  /**
+   * Declare `purpose`/`digest` in BOTH lists. Distinct from the override above:
+   * that one trips the "absent from teeEnforced" check, this one is the only
+   * way to reach the "also present in softwareEnforced" check.
+   */
+  duplicatePurposeInSoftwareEnforced?: boolean;
+  /** Extra KeyMint `purpose` values alongside SIGN (7 = ATTEST_KEY). */
+  extraPurposes?: number[];
   /** Drop the RootOfTrust from teeEnforced entirely. */
   omitRootOfTrust?: boolean;
   /** Drop the AttestationApplicationId from both lists. */
@@ -86,6 +94,23 @@ export interface AndroidKeyAttestationFixtureOverrides {
   origin?: number;
   /** Set `noAuthRequired` [503] — a key usable without a biometric prompt. */
   noAuthRequired?: boolean;
+  /**
+   * Model the leaf-signs-leaf escalation: emit a FOUR-cert chain whose first
+   * entry is a forged leaf signed by the genuine (CA:FALSE) attestation leaf.
+   * Every signature verifies and the chain still ends at the fixture root; only
+   * basicConstraints rejects it.
+   */
+  forgedLeafSignedByLeaf?: boolean;
+  /**
+   * Mark the genuine attestation leaf CA:TRUE + keyCertSign. Models the case
+   * the CA check cannot rule out — a KeyMint implementation whose leaf is
+   * CA-shaped — so the extension-count defence can be tested on its own.
+   */
+  leafIsCa?: boolean;
+  /** Give the intermediate a keyUsage that does not include keyCertSign. */
+  intermediateKeyUsageOmitsCertSign?: boolean;
+  /** Emit the intermediate with neither basicConstraints nor keyUsage. */
+  intermediateOmitsBasicConstraints?: boolean;
 }
 
 function attestationApplicationId(packageName: string): OctetString {
@@ -107,7 +132,7 @@ function buildKeyDescription(
 ): KeyDescription {
   const packageName = o.packageName ?? 'com.breeze.rmm';
   const hardwareProps = {
-    purpose: new IntegerSet([KEY_PURPOSE_SIGN]),
+    purpose: new IntegerSet([KEY_PURPOSE_SIGN, ...(o.extraPurposes ?? [])]),
     digest: new IntegerSet([DIGEST_SHA_2_256]),
     origin: o.origin ?? KEY_ORIGIN_GENERATED,
     // A real approver key is minted with setUserAuthenticationRequired(true),
@@ -117,7 +142,9 @@ function buildKeyDescription(
   const appIdInTee = o.attestationApplicationIdInTeeEnforced === true;
 
   const teeEnforced = new AuthorizationList({
-    ...(o.putPurposeInSoftwareEnforced ? {} : hardwareProps),
+    ...(o.putPurposeInSoftwareEnforced && !o.duplicatePurposeInSoftwareEnforced
+      ? {}
+      : hardwareProps),
     ...(o.allApplications ? { allApplications: null } : {}),
     ...(o.omitRootOfTrust
       ? {}
@@ -136,7 +163,9 @@ function buildKeyDescription(
 
   const softwareEnforced = new AuthorizationList({
     creationDateTime: 1_700_000_000_000,
-    ...(o.putPurposeInSoftwareEnforced ? hardwareProps : {}),
+    ...(o.putPurposeInSoftwareEnforced || o.duplicatePurposeInSoftwareEnforced
+      ? hardwareProps
+      : {}),
     ...(!o.omitAttestationApplicationId && !appIdInTee
       ? { attestationApplicationId: attestationApplicationId(packageName) }
       : {}),
@@ -185,6 +214,17 @@ export async function mintAndroidKeyAttestationFixture(
   const leafKeys = await generateKeyPair();
   const strayKeys = await generateKeyPair();
 
+  // Real CAs carry keyCertSign; real KeyStore attestation leaves carry
+  // digitalSignature and CA:FALSE. Both are load-bearing for path validation,
+  // so the fixture models them faithfully rather than omitting the extension.
+  const caKeyUsage = () =>
+    new x509.KeyUsagesExtension(
+      x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
+      true,
+    );
+  const leafKeyUsage = () =>
+    new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true);
+
   const root = await x509.X509CertificateGenerator.createSelfSigned({
     serialNumber: '01',
     name: 'CN=Fixture Android Attestation Root',
@@ -192,7 +232,7 @@ export async function mintAndroidKeyAttestationFixture(
     notAfter: farFuture,
     signingAlgorithm: SIGN_ALG,
     keys: rootKeys,
-    extensions: [new x509.BasicConstraintsExtension(true, 2, true)],
+    extensions: [new x509.BasicConstraintsExtension(true, 2, true), caKeyUsage()],
   });
 
   const intermediate = await x509.X509CertificateGenerator.create({
@@ -204,18 +244,21 @@ export async function mintAndroidKeyAttestationFixture(
     signingAlgorithm: SIGN_ALG,
     publicKey: intermediateKeys.publicKey,
     signingKey: rootKeys.privateKey,
-    extensions: [new x509.BasicConstraintsExtension(true, 1, true)],
+    extensions: overrides.intermediateOmitsBasicConstraints
+      ? []
+      : [
+          new x509.BasicConstraintsExtension(true, 1, true),
+          overrides.intermediateKeyUsageOmitsCertSign ? leafKeyUsage() : caKeyUsage(),
+        ],
   });
 
   const keyDescription = buildKeyDescription(overrides, challenge);
-  const leafExtensions: x509.Extension[] = [
-    new x509.BasicConstraintsExtension(false, undefined, true),
-  ];
-  if (!overrides.omitKeyDescriptionExtension) {
-    leafExtensions.push(
-      new x509.Extension(id_ce_keyDescription, false, AsnConvert.serialize(keyDescription)),
-    );
-  }
+  const keyDescriptionExtension = () =>
+    new x509.Extension(id_ce_keyDescription, false, AsnConvert.serialize(keyDescription));
+  const leafExtensions: x509.Extension[] = overrides.leafIsCa
+    ? [new x509.BasicConstraintsExtension(true, 0, true), caKeyUsage()]
+    : [new x509.BasicConstraintsExtension(false, undefined, true), leafKeyUsage()];
+  if (!overrides.omitKeyDescriptionExtension) leafExtensions.push(keyDescriptionExtension());
 
   const leaf = await x509.X509CertificateGenerator.create({
     serialNumber: '0a1b2c3d',
@@ -229,16 +272,42 @@ export async function mintAndroidKeyAttestationFixture(
     extensions: leafExtensions,
   });
 
+  const attestedKeys = overrides.forgedLeafSignedByLeaf ? strayKeys : leafKeys;
+  const chain = [toB64(leaf), toB64(intermediate), toB64(root)];
+
+  if (overrides.forgedLeafSignedByLeaf) {
+    // The genuine leaf's TEE key signs this. `strayKeys` stands in for the
+    // attacker's software key: it is what the forged certificate attests, and
+    // what a caller would then bind as the registered key.
+    const forged = await x509.X509CertificateGenerator.create({
+      serialNumber: 'deadbeef',
+      subject: 'CN=Forged Keystore Key',
+      issuer: leaf.subject,
+      notBefore,
+      notAfter: overrides.notAfter ?? farFuture,
+      signingAlgorithm: SIGN_ALG,
+      publicKey: strayKeys.publicKey,
+      signingKey: leafKeys.privateKey,
+      extensions: [
+        new x509.BasicConstraintsExtension(false, undefined, true),
+        leafKeyUsage(),
+        keyDescriptionExtension(),
+      ],
+    });
+    chain.unshift(toB64(forged));
+  }
+
   const attestedPublicKeyDer = Buffer.from(
-    await crypto.webcrypto.subtle.exportKey('spki', leafKeys.publicKey),
+    await crypto.webcrypto.subtle.exportKey('spki', attestedKeys.publicKey),
   );
+  const leafCertB64 = chain[0]!;
 
   return {
-    certificateChainDerB64: [toB64(leaf), toB64(intermediate), toB64(root)],
+    certificateChainDerB64: chain,
     rootPem: root.toString('pem'),
     attestedPublicKeyDer,
     attestedPublicKeyB64: attestedPublicKeyDer.toString('base64'),
     challenge,
-    leafSerial: new crypto.X509Certificate(Buffer.from(leaf.rawData)).serialNumber,
+    leafSerial: new crypto.X509Certificate(Buffer.from(leafCertB64, 'base64')).serialNumber,
   };
 }

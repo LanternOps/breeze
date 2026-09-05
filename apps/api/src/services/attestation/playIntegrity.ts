@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { SignJWT, importPKCS8 } from 'jose';
 import { captureException } from '../sentry';
 
@@ -104,6 +105,13 @@ const reject = (message: string): never => {
   throw new PlayIntegrityVerdictError(message);
 };
 
+/** `timingSafeEqual` throws on a length mismatch, so length is compared first. */
+function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
 // ---------------------------------------------------------------------------
 // Configuration — mirrors FIREBASE_SERVICE_ACCOUNT (services/fcm.ts)
 // ---------------------------------------------------------------------------
@@ -138,7 +146,16 @@ export function parsePlayIntegrityServiceAccount(
   const rawKey = (parsed.privateKey ?? parsed.private_key) as string | undefined;
   if (typeof clientEmail !== 'string' || typeof rawKey !== 'string') return null;
 
-  return { clientEmail, privateKey: rawKey.replace(/\\n/g, '\n') };
+  const privateKey = rawKey.replace(/\\n/g, '\n');
+  // STRUCTURAL, not cryptographic. Google service-account keys are always
+  // PKCS#8, so a value that has lost its PEM armour (base64 truncated mid-paste,
+  // the key field filled with a placeholder) is caught here — at boot, via the
+  // `validate.ts` refine. It does NOT prove the key parses: `importPKCS8` is
+  // async and a zod refine is not, so a structurally-intact but corrupt key
+  // still fails later, at the first decode, where it is reported to Sentry.
+  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) return null;
+
+  return { clientEmail, privateKey };
 }
 
 let cachedServiceAccount: PlayIntegrityServiceAccount | null = null;
@@ -171,7 +188,12 @@ export function __resetPlayIntegrityForTests(): void {
 // Google-managed token decoding
 // ---------------------------------------------------------------------------
 
-let cachedAccessToken: { token: string; expiresAtMs: number } | null = null;
+// Keyed by the account it was minted for. Without `clientEmail` here, rotating
+// PLAY_INTEGRITY_SERVICE_ACCOUNT — the exact thing an operator does after a
+// suspected key leak — would keep presenting the OLD account's token for up to
+// an hour, because `serviceAccount()` re-parses on env change but nothing
+// invalidated this.
+let cachedAccessToken: { token: string; expiresAtMs: number; clientEmail: string } | null = null;
 
 /**
  * Mint (and briefly cache) an OAuth2 access token from the service account, via
@@ -180,7 +202,11 @@ let cachedAccessToken: { token: string; expiresAtMs: number } | null = null;
  */
 async function accessToken(account: PlayIntegrityServiceAccount): Promise<string> {
   const nowMs = Date.now();
-  if (cachedAccessToken && cachedAccessToken.expiresAtMs > nowMs + 30_000) {
+  if (
+    cachedAccessToken &&
+    cachedAccessToken.clientEmail === account.clientEmail &&
+    cachedAccessToken.expiresAtMs > nowMs + 30_000
+  ) {
     return cachedAccessToken.token;
   }
 
@@ -211,6 +237,7 @@ async function accessToken(account: PlayIntegrityServiceAccount): Promise<string
   cachedAccessToken = {
     token: body.access_token,
     expiresAtMs: nowMs + (body.expires_in ?? 3600) * 1000,
+    clientEmail: account.clientEmail,
   };
   return body.access_token;
 }
@@ -279,7 +306,11 @@ function assertVerdict(
       'Play Integrity verdict carries no request hash — the client must bind the token to the registration transcript',
     );
   }
-  if (requestHash !== opts.expectedRequestHash) {
+  // Constant-time, matching the Android challenge comparison in the sibling
+  // module. Not because a remote timing attack on this is practical, but
+  // because an inconsistent discipline between two comparisons of the same
+  // server-side secret is how the wrong one gets copied next time.
+  if (!constantTimeEquals(requestHash!, opts.expectedRequestHash)) {
     reject('Play Integrity request hash does not equal the registration transcript');
   }
 
@@ -337,12 +368,20 @@ export async function verifyPlayIntegrityToken(
   } catch (err) {
     // Infrastructure, not a bad client. Loud in Sentry, invisible to the
     // technician, and the registration continues on Key Attestation alone.
+    // The tag carries the error's own name, because this one catch covers two
+    // very different situations: a transient Google outage, and a service
+    // account that passed the structural boot check but whose key does not
+    // actually parse (`importPKCS8` throws `JWSInvalid`/`OPERATION_ERROR`). A
+    // fixed `decode_unavailable` tag would make a permanently broken deploy
+    // look like a one-off blip in Sentry triage.
     captureException(err, undefined, {
       area: 'play_integrity',
       reason: 'decode_unavailable',
+      errorName: (err as Error).name,
     });
     console.error('[play-integrity] could not decode integrity token', {
       packageName: opts.packageName,
+      errorName: (err as Error).name,
       error: (err as Error).message,
     });
     return null;

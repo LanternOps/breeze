@@ -4,8 +4,11 @@ import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
 import { getRedis } from './redis';
 import { captureException } from './sentry';
 import { sha256CanonicalSpki, type MobileKeyAlg } from './mobileHwKey';
-import { verifyAndroidKeyAttestation } from './attestation/androidKeyAttestation';
-import { verifyPlayIntegrityToken } from './attestation/playIntegrity';
+import {
+  AndroidKeyAttestationError,
+  verifyAndroidKeyAttestation,
+} from './attestation/androidKeyAttestation';
+import { PlayIntegrityVerdictError, verifyPlayIntegrityToken } from './attestation/playIntegrity';
 
 /**
  * Attested mobile approver-key registration (#1374, feature #4707 wave W02).
@@ -205,7 +208,11 @@ async function verifyAndroid(input: {
   );
   const registeredDigest = sha256CanonicalSpki(input.publicKeySpkiB64);
   if (!attestedDigest || !registeredDigest || !attestedDigest.equals(registeredDigest)) {
-    throw new Error('android attestation does not cover the registered key');
+    // Typed as an AndroidKeyAttestationError, not a bare Error: the dispatcher
+    // below routes typed failures to the quiet attacker-shaped path and
+    // everything else to Sentry, so an untyped throw here would page an
+    // operator on ordinary abuse.
+    throw new AndroidKeyAttestationError('android attestation does not cover the registered key');
   }
 
   const integrity = input.attestation.playIntegrityToken
@@ -262,20 +269,42 @@ export async function verifyPlatformAttestation(input: {
     try {
       return await verifyAndroid({ ...input, attestation: input.attestation });
     } catch (err) {
-      // A failed attestation is the ROUTINE attacker-shaped case and is not a
-      // server defect, so it is not sent to Sentry — a caller could otherwise
-      // flood it at will. It is still recorded on the row: `evidence` carries
-      // why the downgrade happened, so an operator debugging "why is my phone
-      // not L4" has the reason on the device row instead of nothing.
+      // TWO different failures land here and they must not be treated alike.
+      //
+      // An AndroidKeyAttestationError or PlayIntegrityVerdictError is the
+      // ROUTINE attacker-shaped case: the chain, the challenge, the security
+      // level or the verdict did not hold. Not a server defect, and a caller
+      // can provoke it at will, so it stays out of Sentry.
+      //
+      // ANYTHING ELSE is a bug — a TypeError from a dependency upgrade, a
+      // wrong assumption about what real devices emit. Left unreported, a
+      // defect that broke Android verification for 100% of devices would look
+      // exactly like 100% of devices being attackers, and the only symptom
+      // would be that nobody can reach L4 any more. It is reported loudly and
+      // STILL returns unattested, because the route has no catch.
+      const expected =
+        err instanceof AndroidKeyAttestationError || err instanceof PlayIntegrityVerdictError;
+      if (!expected) {
+        captureException(err, undefined, {
+          area: 'authenticator_attestation',
+          reason: 'android_verifier_defect',
+        });
+      }
       console.warn('[authenticator-attest] android attestation rejected', {
+        expected,
         reason: (err as Error).message,
       });
+      // `evidence` reaches the device row: the /verify route persists it
+      // unconditionally, so an operator asking "why is my phone not L4" reads
+      // the reason off `authenticator_devices.attestation_evidence` rather than
+      // hunting a console line with no user or attempt id on it.
       return {
         ...unattested(),
         evidence: {
           verifier: 'android_key_attestation',
           verifierVersion: 1,
           rejected: (err as Error).message,
+          rejectedAt: new Date().toISOString(),
         },
       };
     }

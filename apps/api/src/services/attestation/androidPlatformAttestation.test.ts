@@ -15,17 +15,41 @@ import type { MobileAttestation } from '@breeze/shared';
  * handling, and the never-throws contract the route depends on.
  */
 
-const { androidMock, playIntegrityMock } = vi.hoisted(() => ({
-  androidMock: { verifyAndroidKeyAttestation: vi.fn() },
-  playIntegrityMock: { verifyPlayIntegrityToken: vi.fn() },
-}));
+// The error CLASSES must be the very objects the module under test imports —
+// `instanceof` is what routes a failure to Sentry or to the quiet path — so
+// they are defined inside `vi.hoisted` and re-exported by the mock factories
+// rather than stubbed away.
+const { androidMock, playIntegrityMock, AndroidKeyAttestationError, PlayIntegrityVerdictError } =
+  vi.hoisted(() => {
+    class AndroidKeyAttestationError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'AndroidKeyAttestationError';
+      }
+    }
+    class PlayIntegrityVerdictError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'PlayIntegrityVerdictError';
+      }
+    }
+    return {
+      androidMock: { verifyAndroidKeyAttestation: vi.fn() },
+      playIntegrityMock: { verifyPlayIntegrityToken: vi.fn() },
+      AndroidKeyAttestationError,
+      PlayIntegrityVerdictError,
+    };
+  });
 
-vi.mock('./androidKeyAttestation', () => androidMock);
-vi.mock('./playIntegrity', () => playIntegrityMock);
+vi.mock('./androidKeyAttestation', () => ({ ...androidMock, AndroidKeyAttestationError }));
+vi.mock('./playIntegrity', () => ({ ...playIntegrityMock, PlayIntegrityVerdictError }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => null) }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import { verifyPlatformAttestation } from '../authenticatorAttestation';
+import { captureException } from '../sentry';
+
+const captureExceptionMock = vi.mocked(captureException);
 
 // A real P-256 key, so the SPKI canonicalization in the branch is exercised for
 // real rather than against a string that happens to compare equal.
@@ -127,7 +151,9 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
 
   it('never throws when the chain fails — the route has no catch', async () => {
     androidMock.verifyAndroidKeyAttestation.mockImplementation(() => {
-      throw new Error('attestation chain does not terminate in a pinned Google root');
+      throw new AndroidKeyAttestationError(
+        'attestation chain does not terminate in a pinned Google root',
+      );
     });
     const result = await run();
 
@@ -136,6 +162,26 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
     expect(result.keyId).toBeNull();
     expect(result.appIntegrityVerifiedAt).toBeNull();
     expect(result.evidence).toMatchObject({ rejected: expect.stringMatching(/pinned Google/) });
+    // Routine attacker-shaped failure: never paged.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an UNEXPECTED verifier failure to Sentry instead of filing it as abuse', async () => {
+    // The scenario this exists for: a dependency upgrade or a wrong assumption
+    // about real devices breaks verification for EVERY phone. Without this,
+    // 100% of devices failing looks identical to 100% of devices attacking, and
+    // the only symptom is that nobody can reach L4 any more.
+    androidMock.verifyAndroidKeyAttestation.mockImplementation(() => {
+      throw new TypeError("Cannot read properties of undefined (reading 'buffer')");
+    });
+    const result = await run();
+
+    expect(result.basis).toBe('unattested');
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(TypeError),
+      undefined,
+      expect.objectContaining({ reason: 'android_verifier_defect' }),
+    );
   });
 
   describe('Play Integrity', () => {
@@ -181,7 +227,9 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
 
     it('revokes the attested basis when a supplied verdict is disqualifying', async () => {
       playIntegrityMock.verifyPlayIntegrityToken.mockRejectedValue(
-        new Error('Play Integrity device integrity verdict [empty] does not include MEETS_DEVICE_INTEGRITY'),
+        new PlayIntegrityVerdictError(
+          'Play Integrity device integrity verdict [empty] does not include MEETS_DEVICE_INTEGRITY',
+        ),
       );
       const result = await run(androidAttestation({ playIntegrityToken: 'pi-token' }));
 
