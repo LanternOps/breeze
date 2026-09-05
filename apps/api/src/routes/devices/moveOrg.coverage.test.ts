@@ -866,3 +866,115 @@ describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
     ).toBeGreaterThan(loop);
   });
 });
+
+/**
+ * device_group_memberships cross-org detach coverage (#3182).
+ *
+ * `device_group_memberships` is tenant-scoped by its own `org_id` column
+ * alone; nothing tied its `group_id` to that same org. A cross-org device move
+ * PRODUCED the resulting forged shape, because the table qualifies for
+ * `breeze_device_child_orgid_tables()`'s auto-discovery and so had its org_id
+ * re-stamped to the target org while its group_id kept naming the SOURCE org's
+ * group. Two system-context readers then dereferenced those rows by group_id.
+ *
+ * The structural fix is two composite FKs — `(group_id, org_id) ->
+ * device_groups(id, org_id)` and `(device_id, org_id) -> devices(id, org_id)`
+ * — which means the memberships must now be DELETED on a move rather than
+ * re-stamped, before the generic re-stamp loop that would otherwise 23503.
+ *
+ * The DEVICE-axis FK's deferrability is the one non-stylistic detail here and
+ * is pinned below: it references `devices(id, org_id)`, so the `UPDATE devices
+ * SET org_id` statement fires its RI check as an AFTER-row constraint trigger
+ * on `devices` — the same queue, at the same moment, as
+ * `breeze_cascade_device_org_id()`, whose detach is what makes the check pass.
+ * Same-timing AFTER-row triggers run in trigger-NAME order, which no migration
+ * controls, so INITIALLY DEFERRED (not IMMEDIATE) is what actually makes the
+ * move deterministic. A BEFORE trigger cannot substitute: memberships carry
+ * `breeze_touch_devices_after_membership_delete`, which UPDATEs `devices`, so
+ * deleting them before the row update aborts with SQLSTATE 27000.
+ *
+ * These are STATIC source assertions only. That the move actually stops
+ * 23503ing, that the rows really disappear, and that the merge fence spares
+ * them all need a real server and live in
+ * `src/__tests__/integration/deviceGroupMembershipTenantFks.integration.test.ts`.
+ */
+describe('device_group_memberships cross-org detach coverage (#3182)', () => {
+  const membershipFkStatements = () =>
+    readdirSync(MIGRATIONS_DIR)
+      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+      .map((name) => readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8'))
+      .join('\n');
+
+  it('pins the group-axis composite FK to device_groups(id, org_id), DEFERRABLE', () => {
+    const match = membershipFkStatements().match(
+      /ADD CONSTRAINT device_group_memberships_group_org_fk[\s\S]{0,400}?;/,
+    );
+    expect(match, 'no migration adds device_group_memberships_group_org_fk (#3182)').toBeTruthy();
+    const ddl = match![0].replace(/\s+/g, ' ');
+    expect(
+      ddl,
+      'the group-axis FK must reference device_groups (id, org_id) — pinning the row to its group\'s org is the whole point',
+    ).toContain('REFERENCES public.device_groups (id, org_id)');
+    expect(
+      ddl,
+      'must be DEFERRABLE: the org merge runs SET CONSTRAINTS ALL DEFERRED and repoints devices/device_groups/device_group_memberships in separate statements, and orgLifecycleFoundations.integration.test.ts rejects any non-deferrable FK referencing a parent org_id',
+    ).toContain('DEFERRABLE');
+  });
+
+  it('declares the device-axis composite FK INITIALLY DEFERRED, not IMMEDIATE', () => {
+    const match = membershipFkStatements().match(
+      /ADD CONSTRAINT device_group_memberships_device_org_fk[\s\S]{0,400}?;/,
+    );
+    expect(match, 'no migration adds device_group_memberships_device_org_fk (#3182)').toBeTruthy();
+    const ddl = match![0].replace(/\s+/g, ' ');
+    expect(ddl).toContain('REFERENCES public.devices (id, org_id)');
+    expect(
+      ddl,
+      'device_group_memberships_device_org_fk must be INITIALLY DEFERRED: it references devices(id, org_id), so `UPDATE devices SET org_id` fires its RI check in the SAME after-row queue as breeze_cascade_device_org_id(), whose detach is what makes the check pass — and same-timing after-row triggers run in trigger-NAME order, which this migration does not control. IMMEDIATE would leave every cross-org device move riding on that coincidence',
+    ).toContain('DEFERRABLE INITIALLY DEFERRED');
+  });
+
+  it('breeze_cascade_device_org_id() detaches the memberships before the generic re-stamp loop', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const detach = body.indexOf('DELETE FROM public.device_group_memberships WHERE device_id = NEW.id');
+    const loop = body.indexOf('breeze_device_child_orgid_tables()');
+    expect(
+      detach,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no device_group_memberships detach — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would re-stamp memberships onto a SOURCE-org group and 23503 on device_group_memberships_group_org_fk (#3182)`,
+    ).toBeGreaterThan(-1);
+    expect(
+      detach,
+      `${name}: the device_group_memberships detach must run BEFORE the generic re-stamp loop — the loop is the statement that trips the group FK`,
+    ).toBeLessThan(loop);
+  });
+
+  it('skips the detach while the source org is fenced for a merge', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const detachIdx = body.indexOf('DELETE FROM public.device_group_memberships');
+    expect(detachIdx, `${name}: no device_group_memberships detach found`).toBeGreaterThan(-1);
+    const guarded = body.slice(Math.max(0, detachIdx - 400), detachIdx);
+    expect(
+      guarded.replace(/\s+/g, ' '),
+      `${name}: the detach must be skipped when the SOURCE org is status='merging' — a merge moves devices AND their groups to the same survivor org together (orgMergeRegistry REPOINT_TABLES) and the memberships must survive it`,
+    ).toMatch(/o\.id = OLD\.org_id AND o\.status::text = 'merging'/);
+  });
+
+  it('moveOrg.ts mirrors the detach, before its own re-stamp loop', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+    const detach = src.indexOf('DELETE FROM device_group_memberships WHERE device_id =');
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(detach, 'moveOrg.ts: no device_group_memberships detach found (#3182)').toBeGreaterThan(-1);
+    expect(
+      detach,
+      'moveOrg.ts: the device_group_memberships detach must run BEFORE the getDeviceOrgDenormalizedTables() loop, mirroring the trigger\'s internal order',
+    ).toBeLessThan(loop);
+  });
+
+  it('keeps device_group_memberships in the denormalized re-stamp list as a backstop', () => {
+    expect(
+      deviceOrgDenormalizedTables,
+      'device_group_memberships stays in getDeviceOrgDenormalizedTables(): the loop UPDATE matches nothing once the detach above has run, and is retained as the backstop for any devices.org_id writer that reaches the loop without it (#3182)',
+    ).toContain('device_group_memberships');
+  });
+});

@@ -15,6 +15,7 @@ import {
   patchJobs,
   devices,
   deviceGroupMemberships,
+  deviceGroups,
   organizations,
   partners,
   sites,
@@ -269,12 +270,40 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'device_group': {
+      // #3182 — the group id arrives from an assignment row and is
+      // dereferenced through device_group_memberships, so BOTH joins carry an
+      // org-equality condition rather than a bare id match. Neither of the two
+      // clamps below is sufficient on its own:
+      //   * the partner branch joins organizations through the MEMBERSHIP's
+      //     org_id, so it only ever proved that the membership's own org sits
+      //     under the policy's partner — never that the group does;
+      //   * the org branch's `memberships.org_id = policyOrgId` proved the same
+      //     for the policy's org.
+      // A membership row was free to name a group in a different org until
+      // #3182's composite FK landed, and a cross-org device move produced
+      // exactly that shape, so an org A group could resolve an org B device.
+      // Requiring group.org_id = membership.org_id = device.org_id makes the
+      // query reject it independently of the constraint. This worker runs under
+      // a system DB context, so there is no RLS behind it to catch a miss.
       if (needsPartnerClamp) {
         const members = await db
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
-          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+          .innerJoin(
+            deviceGroups,
+            and(
+              eq(deviceGroupMemberships.groupId, deviceGroups.id),
+              eq(deviceGroups.orgId, deviceGroupMemberships.orgId)
+            )
+          )
+          .innerJoin(
+            devices,
+            and(
+              eq(deviceGroupMemberships.deviceId, devices.id),
+              eq(devices.orgId, deviceGroupMemberships.orgId)
+            )
+          )
           .where(
             and(
               eq(deviceGroupMemberships.groupId, assignmentTargetId),
@@ -292,7 +321,20 @@ async function resolveDeviceIdsForAssignment(
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+        .innerJoin(
+          deviceGroups,
+          and(
+            eq(deviceGroupMemberships.groupId, deviceGroups.id),
+            eq(deviceGroups.orgId, deviceGroupMemberships.orgId)
+          )
+        )
+        .innerJoin(
+          devices,
+          and(
+            eq(deviceGroupMemberships.deviceId, devices.id),
+            eq(devices.orgId, deviceGroupMemberships.orgId)
+          )
+        )
         .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }

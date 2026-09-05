@@ -44,6 +44,15 @@ vi.mock('../db/schema', () => ({
   deviceGroupMemberships: {
     groupId: 'device_group_memberships.group_id',
     deviceId: 'device_group_memberships.device_id',
+    orgId: 'device_group_memberships.org_id',
+  },
+  deviceGroups: {
+    id: 'device_groups.id',
+    orgId: 'device_groups.org_id',
+  },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.org_id',
   },
 }));
 
@@ -58,7 +67,34 @@ vi.mock('../services/featureConfigResolver', () => ({
 }));
 
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
+import { deviceGroups, devices } from '../db/schema';
 import { checkCompliance } from './backupSlaWorker';
+
+// Drizzle's `eq`/`and` build a real SQL AST (queryChunks tree), even though our
+// mocked schema columns are plain strings rather than real Column objects —
+// `sql\`${left} = ${right}\`` inserts both raw operands directly into
+// queryChunks (they don't satisfy isDriverValueEncoder, so neither side gets
+// wrapped in a Param). That means the exact identifiers passed to eq()/and()
+// are recoverable by walking the tree, which lets a test assert on the ACTUAL
+// filter values a `.where(...)`/`.innerJoin(...)` call was built with, instead
+// of trusting a mock that returns a fixed row regardless of what was asked for.
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const CONFIG_ID = '22222222-2222-2222-2222-222222222222';
@@ -68,6 +104,7 @@ const DEVICE_ID = '44444444-4444-4444-4444-444444444444';
 function createQueryChain(rows: any[] = []) {
   const chain: any = {};
   chain.from = vi.fn(() => chain);
+  chain.innerJoin = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(() => chain);
@@ -131,6 +168,10 @@ describe('backupSlaWorker.checkCompliance', () => {
         targetGroups: [],
         alertOnBreach: false,
       }]) as any)
+      // #3182 — the direct-device clamp query: config.orgId's own device row
+      // comes back (targetDevices is trusted no further than what this query
+      // actually returns).
+      .mockImplementationOnce(() => createQueryChain([{ id: DEVICE_ID }]) as any)
       .mockImplementationOnce(() => createQueryChain([]) as any)
       .mockImplementationOnce(() => createQueryChain([]) as any)
       .mockImplementationOnce(() => createQueryChain([{ estimatedRtoMinutes: 30 }]) as any)
@@ -156,5 +197,94 @@ describe('backupSlaWorker.checkCompliance', () => {
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'missed_backup',
     }));
+  });
+
+  it('#3182 — drops a targetDevices id belonging to another org from the direct-device clamp', async () => {
+    const OTHER_ORG_DEVICE_ID = '55555555-5555-5555-5555-555555555555';
+    let clampChain: any;
+    selectMock
+      .mockImplementationOnce(() => createQueryChain([{
+        id: CONFIG_ID,
+        orgId: ORG_ID,
+        name: 'Tier 1',
+        rpoTargetMinutes: 15,
+        rtoTargetMinutes: 60,
+        // targetDevices names a device from ANOTHER org alongside this
+        // config's own device. Pre-#3182, this array was trusted as-is and
+        // both ids would be checked.
+        targetDevices: [DEVICE_ID, OTHER_ORG_DEVICE_ID],
+        targetGroups: [],
+        alertOnBreach: false,
+      }]) as any)
+      .mockImplementationOnce(() => {
+        // Simulates what a real DB returns once `eq(devices.orgId,
+        // config.orgId)` filters the clamp query: only the config's own-org
+        // device row comes back, even though the request asked for both ids.
+        clampChain = createQueryChain([{ id: DEVICE_ID }]);
+        return clampChain;
+      })
+      .mockImplementationOnce(() => createQueryChain([{ completedAt: new Date() }]) as any) // RPO: recent, no breach
+      .mockImplementationOnce(() => createQueryChain([{ estimatedRtoMinutes: 30 }]) as any); // RTO: under target, no breach
+    vi.mocked(resolveAllBackupAssignedDevices).mockResolvedValueOnce([]); // no scheduled coverage -> skip missed-backup check
+
+    const result = await checkCompliance();
+
+    // Only ONE device gets checked/considered — proving the resolver used the
+    // clamp query's result, not the raw two-entry targetDevices array. Before
+    // #3182 this would be checked: 2 (both ids trusted directly).
+    expect(result.checked).toBe(1);
+    expect(result.breaches).toBe(0);
+    expect(insertMock).not.toHaveBeenCalled();
+
+    // The clamp query itself carries the org-equality condition alongside the
+    // full id list — the filtering is a DB-level guarantee, not app-level
+    // post-filtering of a fetched list.
+    const whereArgs = collectSqlLeafStrings(clampChain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain(DEVICE_ID);
+    expect(whereArgs).toContain(OTHER_ORG_DEVICE_ID);
+    expect(whereArgs).toContain('devices.org_id');
+    expect(whereArgs).toContain(ORG_ID);
+  });
+
+  it('#3182 — issues the group-expansion query with an org predicate on membership, group, and device', async () => {
+    let groupChain: any;
+    selectMock
+      .mockImplementationOnce(() => createQueryChain([{
+        id: CONFIG_ID,
+        orgId: ORG_ID,
+        name: 'Tier 1',
+        rpoTargetMinutes: 15,
+        rtoTargetMinutes: 60,
+        targetDevices: [],
+        targetGroups: [GROUP_ID],
+        alertOnBreach: false,
+      }]) as any)
+      .mockImplementationOnce(() => {
+        groupChain = createQueryChain([{ deviceId: DEVICE_ID }]);
+        return groupChain;
+      })
+      .mockImplementationOnce(() => createQueryChain([{ completedAt: new Date() }]) as any) // RPO: recent, no breach
+      .mockImplementationOnce(() => createQueryChain([{ estimatedRtoMinutes: 30 }]) as any); // RTO: under target, no breach
+    vi.mocked(resolveAllBackupAssignedDevices).mockResolvedValueOnce([]); // no scheduled coverage -> skip missed-backup check
+
+    const result = await checkCompliance();
+
+    expect(result.checked).toBe(1);
+    expect(result.breaches).toBe(0);
+
+    // Two joins — deviceGroups and devices — each independently verifying its
+    // own org_id against the membership row, not just a bare id match (#3182:
+    // a membership row could otherwise name a group or device from a
+    // different org than the membership itself).
+    expect(groupChain.innerJoin).toHaveBeenCalledTimes(2);
+    expect(groupChain.innerJoin.mock.calls[0][0]).toBe(deviceGroups);
+    expect(groupChain.innerJoin.mock.calls[1][0]).toBe(devices);
+
+    const whereArgs = collectSqlLeafStrings(groupChain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain(GROUP_ID);
+    expect(whereArgs).toContain('device_group_memberships.org_id');
+    expect(whereArgs).toContain('device_groups.org_id');
+    expect(whereArgs).toContain('devices.org_id');
+    expect(whereArgs).toContain(ORG_ID);
   });
 });
