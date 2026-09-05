@@ -4,11 +4,16 @@ import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
 import { APPLE_APP_ATTEST_APP_ID, appleAppAttestEnvironment } from '../config/env';
 import { getRedis } from './redis';
 import { captureException } from './sentry';
-import type { MobileKeyAlg } from './mobileHwKey';
+import { sha256CanonicalSpki, type MobileKeyAlg } from './mobileHwKey';
 import {
   AppAttestVerificationError,
   verifyAppAttestAttestation,
 } from './attestation/appleAppAttest';
+import {
+  AndroidKeyAttestationError,
+  verifyAndroidKeyAttestation,
+} from './attestation/androidKeyAttestation';
+import { PlayIntegrityVerdictError, verifyPlayIntegrityToken } from './attestation/playIntegrity';
 
 /**
  * Attested mobile approver-key registration (#1374, feature #4707 wave W02).
@@ -184,15 +189,108 @@ function unattested(): AttestationResult {
 }
 
 /**
+ * Android package the approver app ships under (`apps/mobile/app.json:43`).
+ * An attestation naming any other package is not our app.
+ */
+const ANDROID_PACKAGE_NAME = 'com.breeze.rmm';
+
+/**
+ * Verify an Android Key Attestation and, when the client supplied one, a Play
+ * Integrity verdict.
+ *
+ * Key Attestation ALONE sets the basis (plan decision 3). Play Integrity is an
+ * independent app/device-posture signal that can only ever stamp
+ * `appIntegrityVerifiedAt` — never upgrade a basis, and never substitute for a
+ * missing chain.
+ *
+ * A verdict the client DID supply and that comes back disqualifying
+ * (unrecognised app, device fails integrity, replayed request hash) revokes the
+ * attested basis rather than being ignored: Key Attestation proving the key is
+ * in StrongBox does not make a compromised device an acceptable place to hold a
+ * critical-tier approver key. A Play Integrity outage on OUR side is different
+ * — `verifyPlayIntegrityToken` returns null there, and the Key-Attestation
+ * basis stands.
+ *
+ * NOTE — `publicKeyAlg` is deliberately NOT consulted here, unlike the iOS
+ * branch. On iOS the algorithm IS the evidence: the Secure Enclave holds only
+ * P-256, so an RS256 key provably is not SE-resident and drops to the weaker
+ * basis. Android has no such implication — StrongBox and TEE hold RSA keys just
+ * as happily as EC ones — and the attestation states the security level
+ * directly rather than leaving it to be inferred. Gating on the algorithm here
+ * would reject hardware-backed keys for no security gain.
+ */
+async function verifyAndroid(input: {
+  attestation: Extract<MobileAttestation, { platform: 'android' }>;
+  transcript: Buffer;
+  publicKeySpkiB64: string;
+}): Promise<AttestationResult> {
+  const key = verifyAndroidKeyAttestation({
+    certificateChainDerB64: input.attestation.certificateChain,
+    expectedChallenge: input.transcript,
+    expectedPackageName: ANDROID_PACKAGE_NAME,
+  });
+
+  // The attested leaf key MUST be the key being registered. Without this the
+  // chain proves "SOME hardware key exists on this device", and an attacker
+  // could pair a genuine attestation with a software key of their own.
+  // Compared as canonical-SPKI digests so a re-encoding of the same key still
+  // matches — the same normalization `attested_public_key_sha256` stores.
+  const attestedDigest = sha256CanonicalSpki(
+    key.attestedPublicKeyDer.toString('base64'),
+  );
+  const registeredDigest = sha256CanonicalSpki(input.publicKeySpkiB64);
+  if (!attestedDigest || !registeredDigest || !attestedDigest.equals(registeredDigest)) {
+    // Typed as an AndroidKeyAttestationError, not a bare Error: the dispatcher
+    // below routes typed failures to the quiet attacker-shaped path and
+    // everything else to Sentry, so an untyped throw here would page an
+    // operator on ordinary abuse.
+    throw new AndroidKeyAttestationError('android attestation does not cover the registered key');
+  }
+
+  const integrity = input.attestation.playIntegrityToken
+    ? await verifyPlayIntegrityToken(input.attestation.playIntegrityToken, {
+        packageName: ANDROID_PACKAGE_NAME,
+        // Binds the verdict to THIS registration attempt. W06's Kotlin must
+        // pass the same value to `setRequestHash`.
+        expectedRequestHash: input.transcript.toString('base64url'),
+      })
+    : null;
+
+  return {
+    basis:
+      key.keyMintSecurityLevel === 'StrongBox'
+        ? 'android_strongbox_key_attestation'
+        : 'android_tee_key_attestation',
+    verifiedAt: new Date(),
+    keyId: key.leafSerial,
+    evidence: {
+      verifier: 'android_key_attestation',
+      verifierVersion: 1,
+      keyMintSecurityLevel: key.keyMintSecurityLevel,
+      attestationSecurityLevel: key.attestationSecurityLevel,
+      verifiedBootState: key.verifiedBootState,
+      deviceLocked: key.deviceLocked,
+      packageName: key.packageName,
+      playIntegrity: integrity ?? null,
+    },
+    appIntegrityVerifiedAt: integrity ? new Date() : null,
+  };
+}
+
+/**
  * Dispatch to the per-platform verifier. W03 wires iOS (Apple App Attest), W04
  * wires Android (Key Attestation + Play Integrity).
  *
- * Anything not yet wired — and anything that fails verification — resolves
- * `unattested`: the device registers and works at L2/L3, and simply cannot
- * reach L4, because `unattested` is not in `L4_TRUSTED_PLATFORM_BOUND_BASES`
- * (services/authenticatorAssurance.ts), which a test in this module's suite
- * pins. Fail-closed by construction: an unknown, unimplemented, or forged
- * attestation never yields a trusted basis.
+ * NEVER THROWS. Anything not yet wired — and anything that fails verification
+ * on either platform — resolves `unattested`: the device registers and works at
+ * L2/L3, and simply cannot reach L4, because `unattested` is not in
+ * `L4_TRUSTED_PLATFORM_BOUND_BASES` (services/authenticatorAssurance.ts), which
+ * a test in this module's suite pins. The route relies on the never-throws part:
+ * it does not wrap the call, so a throw here would be a 500 on a registration
+ * that should have degraded to an honest unattested row.
+ *
+ * Fail-closed by construction: an unknown, unimplemented, or forged attestation
+ * never yields a trusted basis.
  */
 export async function verifyPlatformAttestation(input: {
   attestation: MobileAttestation;
@@ -202,6 +300,56 @@ export async function verifyPlatformAttestation(input: {
 }): Promise<AttestationResult> {
   if (input.attestation.platform === 'ios') {
     return verifyIosAttestation(input.attestation, input.transcript, input.publicKeyAlg);
+  }
+  if (input.attestation.platform === 'android') {
+    try {
+      return await verifyAndroid({ ...input, attestation: input.attestation });
+    } catch (err) {
+      // TWO different failures land here and they must not be treated alike.
+      //
+      // An AndroidKeyAttestationError or PlayIntegrityVerdictError is the
+      // ROUTINE attacker-shaped case: the chain, the challenge, the security
+      // level or the verdict did not hold. Not a server defect, and a caller
+      // can provoke it at will, so it stays out of Sentry.
+      //
+      // ANYTHING ELSE is a bug — a TypeError from a dependency upgrade, a
+      // wrong assumption about what real devices emit. Left unreported, a
+      // defect that broke Android verification for 100% of devices would look
+      // exactly like 100% of devices being attackers, and the only symptom
+      // would be that nobody can reach L4 any more. It is reported loudly and
+      // STILL returns unattested, because the route has no catch.
+      const expected =
+        err instanceof AndroidKeyAttestationError || err instanceof PlayIntegrityVerdictError;
+      if (!expected) {
+        captureException(err, undefined, {
+          area: 'authenticator_attestation',
+          reason: 'android_verifier_defect',
+        });
+      }
+      console.warn('[authenticator-attest] android attestation rejected', {
+        expected,
+        reason: (err as Error).message,
+      });
+      // The reason is recorded TWICE, deliberately, because the two records
+      // answer different questions:
+      //  - `evidence.rejected` lands on the device row, so "why is THIS phone
+      //    not L4" is answerable months later from the row itself.
+      //  - `failureReason` lands in the audit log (W03's convention), where it
+      //    is queryable in aggregate — which is what turns a fleet-wide
+      //    misconfiguration into a visible spike on one reason rather than an
+      //    unexplained absence of L4-capable devices.
+      const reason = (err as Error).message;
+      return {
+        ...unattested(),
+        evidence: {
+          verifier: 'android_key_attestation',
+          verifierVersion: 1,
+          rejected: reason,
+          rejectedAt: new Date().toISOString(),
+        },
+        failureReason: expected ? reason : `verifier error: ${(err as Error).name}`,
+      };
+    }
   }
   return unattested();
 }

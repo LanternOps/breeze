@@ -321,15 +321,37 @@ describe('verifyPlatformAttestation', () => {
   });
 
   it('carries NO failureReason for a platform with no verifier wired', async () => {
+    // W03 wrote this against `platform: 'android'`, which was genuinely unwired
+    // at the time. W04 wired it, so that example now exercises "ran and
+    // refused" instead — the exact confusion this test exists to prevent. The
+    // assertion is unchanged; only the example moved to a platform the
+    // dispatcher really does fall through on.
     const result = await verifyPlatformAttestation({
-      attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      attestation: { platform: 'symbian' } as unknown as Parameters<
+        typeof verifyPlatformAttestation
+      >[0]['attestation'],
       transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
     // "Not implemented" and "ran and refused" must stay distinguishable, or the
     // audit signal above cannot be read as evidence of anything.
+    expect(result.basis).toBe('unattested');
     expect(result.failureReason).toBeUndefined();
+  });
+
+  it('DOES carry a failureReason once Android ran and refused (#1374 W04)', async () => {
+    // The other half of the same contract, and the reason the test above had to
+    // change: a wired verifier that rejects must be distinguishable from one
+    // that was never called.
+    const result = await verifyPlatformAttestation({
+      attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.basis).toBe('unattested');
+    expect(result.failureReason).toEqual(expect.stringMatching(/chain/i));
   });
 
   it('carries NO failureReason on the success path', async () => {
@@ -343,7 +365,7 @@ describe('verifyPlatformAttestation', () => {
     expect(result.failureReason).toBeUndefined();
   });
 
-  it('resolves unattested for Android — no verifier is wired until W04', async () => {
+  it('resolves unattested for Android when the chain does not verify', async () => {
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'android', certificateChain: ['a', 'b'] },
       transcript,

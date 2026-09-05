@@ -145,6 +145,15 @@ importers:
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
+      '@peculiar/asn1-android':
+        specifier: ^2.8.0
+        version: 2.8.0
+      '@peculiar/asn1-schema':
+        specifier: ^2.8.0
+        version: 2.8.0
+      '@peculiar/asn1-x509':
+        specifier: ^2.8.0
+        version: 2.8.0
       '@peculiar/x509':
         specifier: ^1.14.3
         version: 1.14.3
