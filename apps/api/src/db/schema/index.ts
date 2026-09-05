@@ -13,6 +13,7 @@ export * from './userPasskeys';
 export * from './authenticatorDevices';
 export * from './authenticatorPolicies';
 export * from './devices';
+export * from './deviceExternalLinks';
 export * from './scripts';
 export * from './alerts';
 export * from './remote';
