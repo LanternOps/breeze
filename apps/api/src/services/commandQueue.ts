@@ -907,6 +907,7 @@ export async function queueBackupStopCommand(
   deviceId: string,
   options: {
     userId?: string;
+    jobId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   return runOutsideDbContextSafe(() =>
@@ -914,7 +915,7 @@ export async function queueBackupStopCommand(
       const result = await queueCommandForExecution(
         deviceId,
         CommandTypes.BACKUP_STOP,
-        { reason: 'cancelled' },
+        { reason: 'cancelled', ...(options.jobId ? { jobId: options.jobId } : {}) },
         options
       );
 

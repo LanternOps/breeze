@@ -470,7 +470,7 @@ describe('reapStaleBackupJobs', () => {
         errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
       })
     );
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-stall' });
   });
 
   it('reaps a running job whose device went offline (rule B) and does NOT queue a stop command', async () => {
@@ -538,7 +538,7 @@ describe('reapStaleBackupJobs', () => {
         errorLog: 'previous warning\n[stale-backup-reaper] Backup timed out (no completion after 24h)',
       })
     );
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-3', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-3', { jobId: 'job-legacy' });
   });
 
   it('does not reap a healthy running job with recent progress', async () => {
@@ -665,7 +665,7 @@ describe('reapStaleBackupJobs', () => {
 
     expect(reaped).toBe(2);
     expect(queueBackupStopCommandMock).toHaveBeenCalledTimes(1);
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-online', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-online', { jobId: 'job-online' });
   });
 
   it('does not double-count or queue a stop command when a concurrent completion wins (terminal-status guard)', async () => {
@@ -802,6 +802,7 @@ describe('reapStaleBackupJobs', () => {
       .mockReturnValueOnce(selectChain([
         {
           id: 'job-pending-dead',
+          deviceId: 'device-queued',
           errorLog: null,
           createdAt: minutesAgo(90),
           lastProgressAt: minutesAgo(20), // > 15min stall window → not "alive"
@@ -821,6 +822,7 @@ describe('reapStaleBackupJobs', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ errorLog: '[stale-backup-reaper] Backup dispatch never completed' })
     );
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-queued', { jobId: 'job-pending-dead' });
   });
 });
 

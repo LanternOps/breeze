@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, devices, IN_FLIGHT_BACKUP_JOB_STATUSES } from '../db/schema';
 // Imported from the leaf module, not the `../db/schema` barrel: that barrel is
@@ -13,8 +13,8 @@ import { refreshDispatchedExpectation } from './agentWorkExpectation';
  * Payload shape emitted by the agent's `backup_progress` WS message
  * (agent side: websocket.Client.SendBackupProgress in
  * agent/internal/websocket/client.go). `current`/`total` are BYTES;
- * `filesDone`/`filesTotal` are counts. `phase` is always "uploading" today —
- * treat it as an opaque optional string, never branch on it.
+ * `filesDone`/`filesTotal` are counts. Queue-capable helpers emit `queued`
+ * liveness and `starting` on execution admission; other phases carry counters.
  *
  * `snapshotId` (#3006) is the snapshot the agent is currently writing. It is
  * absent on emissions that predate snapshot creation (the pre-scan keepalive
@@ -146,6 +146,18 @@ export async function applyBackupProgress(params: {
     lastProgressAt: now,
     updatedAt: now,
   };
+  // Queue messages are liveness, not execution. Only the first signal can
+  // undo the legacy dispatch-time running marker. A delayed queued ping must
+  // never demote a workload that has already emitted its starting signal.
+  if (progress.phase === 'queued') {
+    updateSet.status = sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`;
+    updateSet.startedAt = sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`;
+  } else {
+    // Legacy helpers report uploading/scanning without an explicit starting
+    // signal. Their actual execution progress must also win the dispatch race.
+    updateSet.status = 'running';
+    updateSet.startedAt = sql`CASE WHEN ${backupJobs.status} = 'pending' OR ${backupJobs.lastProgressAt} IS NULL THEN ${now.toISOString()}::timestamptz ELSE ${backupJobs.startedAt} END`;
+  }
   if (progress.current !== undefined) {
     updateSet.transferredSize = progress.current;
   }
@@ -225,11 +237,13 @@ export function tryParseBackupResultPayload(resultResult: unknown, resultStdout:
   }
 }
 
-/**
- * True when a parsed command_result payload is the async backup_run's
- * immediate "started" acknowledgement (`{"started": true}`), as opposed to a
- * terminal completion/failure payload.
- */
+/** Queue admission is non-terminal and must preserve the dispatch expectation. */
+export function isBackupQueuedAck(payload: unknown): boolean {
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+    && (payload as Record<string, unknown>).queued === true;
+}
+
+/** Legacy asynchronous helpers acknowledge execution with {started:true}. */
 export function isBackupStartedAck(payload: unknown): boolean {
   return (
     typeof payload === 'object' &&
@@ -261,19 +275,29 @@ export function isLegacyBackupTimeoutResult(params: {
 }
 
 /**
- * Apply the async started-ack as a progress ping: bumps lastProgressAt (and
- * refreshes the dispatch expectation TTL) on the job without touching status
- * or consuming the one-shot dispatch expectation. Mirrors applyBackupProgress
- * but doesn't require a `progress` payload (a plain started-ack carries none).
+ * Apply admission without consuming the terminal dispatch expectation. Queued
+ * admission clears the dispatch-time start marker only before any lifecycle
+ * signal. Legacy started acknowledgements promote a pending job to running.
  */
 export async function applyBackupStartedAck(params: {
   jobId: string;
   deviceId: string;
+  queued?: boolean;
 }): Promise<boolean> {
   const now = new Date();
   const updated = await db
     .update(backupJobs)
-    .set({ lastProgressAt: now, updatedAt: now })
+    .set({
+      lastProgressAt: now,
+      updatedAt: now,
+      ...(params.queued ? {
+        status: sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN 'pending'::backup_status ELSE ${backupJobs.status} END`,
+        startedAt: sql`CASE WHEN ${backupJobs.lastProgressAt} IS NULL THEN NULL ELSE ${backupJobs.startedAt} END`,
+      } : {
+        status: 'running' as const,
+        startedAt: sql`COALESCE(${backupJobs.startedAt}, ${now.toISOString()}::timestamptz)`,
+      }),
+    })
     .where(and(eq(backupJobs.id, params.jobId), inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES)))
     .returning({ id: backupJobs.id });
 

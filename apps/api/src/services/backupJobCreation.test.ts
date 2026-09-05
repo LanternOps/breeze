@@ -286,7 +286,7 @@ describe('backup job creation helpers', () => {
       expect(whereTextOf(tx)).toContain('backupmode');
     });
 
-    it('uses a distinct lock key per mode, so one device fans out concurrently', async () => {
+    it('uses a distinct lock key per mode, so every selection is retained for the device queue', async () => {
       const keys: string[] = [];
       for (const mode of ['file', 'system_image', 'mssql'] as const) {
         vi.resetAllMocks();
@@ -306,6 +306,38 @@ describe('backup job creation helpers', () => {
       }
 
       expect(new Set(keys).size).toBe(3);
+    });
+
+    it('retains same-mode selections from different profiles on the same device', async () => {
+      const keys: string[] = [];
+      for (const featureLinkId of ['profile-a', 'profile-b']) {
+        const tx = buildTx();
+        vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+        const result = await createManualBackupJobIfIdle({
+          orgId: 'org-1', configId: 'cfg-1', deviceId: 'dev-1',
+          featureLinkId, backupMode: 'file', modeTargets: { paths: [featureLinkId] },
+        });
+        expect(result?.created).toBe(true);
+        expect(whereTextOf(tx)).toContain(featureLinkId);
+        expect(whereTextOf(tx)).toContain('configid');
+        keys.push(lockKeyOf(tx));
+      }
+      expect(new Set(keys).size).toBe(2);
+    });
+
+    it('retains scheduled same-mode selections from different profiles sharing storage', async () => {
+      for (const featureLinkId of ['profile-a', 'profile-b']) {
+        const tx = buildTx();
+        vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+        const result = await createScheduledBackupJobIfAbsent({
+          orgId: 'org-1', configId: 'shared-storage', deviceId: 'dev-1',
+          featureLinkId, backupMode: 'file', occurrenceKey: '2026-09-04T12:00',
+        });
+        expect(result?.created).toBe(true);
+        expect(whereTextOf(tx)).toContain(featureLinkId);
+        expect(whereTextOf(tx)).toContain('shared-storage');
+        expect(lockKeyOf(tx)).toContain(featureLinkId);
+      }
     });
 
     it('keeps legacy (mode-less) jobs on their own lock key and NULL-mode predicate', async () => {

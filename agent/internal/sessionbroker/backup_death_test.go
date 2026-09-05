@@ -575,3 +575,28 @@ func newDiscardPipeConn(t *testing.T) net.Conn {
 	})
 	return a
 }
+
+func TestNativeSynchronousHelperReplyDoesNotRemainActive(t *testing.T) {
+	for _, command := range []string{"mssql_backup", "hyperv_backup"} {
+		t.Run(command, func(t *testing.T) {
+			rig := newBackupDeathRig(t)
+			go func() {
+				env, err := rig.helper.Recv()
+				if err != nil {
+					return
+				}
+				_ = rig.helper.SendTyped(env.ID, backupipc.TypeBackupResult, backupipc.BackupCommandResult{
+					CommandID: "legacy-native", Success: true, Stdout: `{"snapshotId":"snapshot"}`,
+				})
+			}()
+			if _, err := rig.broker.ForwardBackupCommand("legacy-native", command, nil, 5*time.Second, true, true); err != nil {
+				t.Fatal(err)
+			}
+			rig.broker.backup.mu.Lock()
+			defer rig.broker.backup.mu.Unlock()
+			if len(rig.broker.backup.activeRuns) != 0 {
+				t.Fatalf("terminal helper response left active run: %v", rig.broker.backup.activeRuns)
+			}
+		})
+	}
+}

@@ -635,6 +635,7 @@ jobsRoutes.post(
     try {
       const { error } = await queueBackupStopCommand(row.deviceId, {
         userId: auth?.user?.id ?? undefined,
+        jobId: row.id,
       });
       stopQueued = !error;
       if (error) {

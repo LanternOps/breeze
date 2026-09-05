@@ -976,7 +976,10 @@ async function processDispatchBackup(
         })
         .where(and(
           eq(backupJobs.id, data.jobId),
-          inArray(backupJobs.status, ['pending', 'running'])
+          inArray(backupJobs.status, ['pending', 'running']),
+          // Helper admission/start can race this post-send write. Its lifecycle
+          // signal wins; never promote queued work or reset execution start.
+          isNull(backupJobs.lastProgressAt)
         ));
 
       console.log(

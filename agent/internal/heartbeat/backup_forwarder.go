@@ -84,8 +84,10 @@ func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) too
 		return tools.NewErrorResult(fmt.Errorf("failed to marshal command payload: %w", err), time.Since(start).Milliseconds())
 	}
 	hasAsyncCapability := h.wsClient != nil && h.wsClient.HasServerCapability(backupRunAsyncCapability)
-	async := shouldForwardBackupRunAsync(cmd.Type, hasAsyncCapability)
-	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async)
+	queueAsync := h.wsClient != nil && h.wsClient.HasServerCapability("backup_queue_async") &&
+		(cmd.Type == tools.CmdBackupRun || cmd.Type == tools.CmdMSSQLBackup || cmd.Type == tools.CmdHypervBackup)
+	async := queueAsync || shouldForwardBackupRunAsync(cmd.Type, hasAsyncCapability)
+	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async, queueAsync)
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("backup command failed: %w", err), time.Since(start).Milliseconds())
 	}

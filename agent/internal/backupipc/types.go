@@ -38,6 +38,10 @@ type BackupCommandRequest struct {
 	// capability (see websocket.Client.HasServerCapability) — an old server
 	// would otherwise parse the ack as a malformed terminal result.
 	Async bool `json:"async,omitempty"`
+	// QueueAsync requires backup_queue_async server capability. It extends async
+	// delivery to SQL/Hyper-V and acknowledges admission with {"queued":true};
+	// phase starting reports actual execution after acquiring the device slot.
+	QueueAsync bool `json:"queueAsync,omitempty"`
 }
 
 // BackupCommandResult is sent from the backup helper to the agent.

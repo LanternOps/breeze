@@ -45,26 +45,33 @@ var rootCmd = &cobra.Command{
 var socketPath string
 
 type activeCommandCanceller struct {
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc
+	contexts map[string]context.Context
 }
 
 func newActiveCommandCanceller() *activeCommandCanceller {
 	return &activeCommandCanceller{
-		cancels: make(map[string]context.CancelFunc),
+		cancels:  make(map[string]context.CancelFunc),
+		contexts: make(map[string]context.Context),
 	}
 }
 
 func (c *activeCommandCanceller) track(commandID string) (context.Context, func()) {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	c.mu.Lock()
+	if ctx, exists := c.contexts[commandID]; exists {
+		c.mu.Unlock()
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.contexts[commandID] = ctx
 	c.cancels[commandID] = cancel
 	c.mu.Unlock()
 
 	return ctx, func() {
 		c.mu.Lock()
 		delete(c.cancels, commandID)
+		delete(c.contexts, commandID)
 		c.mu.Unlock()
 		cancel()
 	}
@@ -435,6 +442,8 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	defer idleTimer.Stop()
 	var activeCommands atomic.Int64
 	commandCanceller := newActiveCommandCanceller()
+	queue := newBackupExecutionQueue()
+	defer commandCanceller.cancelAll()
 
 	for {
 		select {
@@ -465,10 +474,27 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 
 		switch env.Type {
 		case backupipc.TypeBackupCommand:
+			var req backupipc.BackupCommandRequest
+			var ticket *backupExecutionTicket
+			if json.Unmarshal(env.Payload, &req) == nil && isBackupWorkload(req.CommandType) {
+				ticket = queue.enqueue(req.CommandID, commandCanceller)
+				if ticket == nil {
+					// A retried envelope acknowledges the existing admission; it
+					// must not execute or settle that command a second time.
+					if req.Async {
+						stdout := `{"started":true}`
+						if req.QueueAsync {
+							stdout = `{"queued":true}`
+						}
+						_ = conn.SendTyped(env.ID, backupipc.TypeBackupResult, backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: stdout})
+					}
+					continue
+				}
+			}
 			activeCommands.Add(1)
 			go func() {
 				defer activeCommands.Add(-1)
-				handleBackupCommand(conn, env, mgr, vaultState, commandCanceller)
+				handleBackupCommand(conn, env, mgr, vaultState, commandCanceller, ticket)
 			}()
 		case backupipc.TypeBackupShutdown:
 			slog.Info("received shutdown command")
@@ -482,7 +508,7 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	}
 }
 
-func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller) {
+func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller, tickets ...*backupExecutionTicket) {
 	var req backupipc.BackupCommandRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		sendError(conn, env.ID, "invalid request payload: "+err.Error())
@@ -490,6 +516,58 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 
 	start := time.Now()
+	var ticket *backupExecutionTicket
+	if len(tickets) > 0 {
+		ticket = tickets[0]
+	}
+	if ticket != nil {
+		defer ticket.release()
+	}
+	run := func() backupipc.BackupCommandResult {
+		if req.QueueAsync {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+		}
+		if ticket != nil {
+			if err := ticket.wait(func() {
+				if req.QueueAsync {
+					sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+				}
+			}); err != nil {
+				return fail(err.Error())
+			}
+		}
+		if isBackupWorkload(req.CommandType) {
+			ctx, cleanup := commandCanceller.track(req.CommandID)
+			defer cleanup()
+			ctx, release, err := backup.AcquireExecutionWithProgress(ctx, func() {
+				if req.QueueAsync {
+					sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+				}
+			})
+			if err != nil {
+				return fail(err.Error())
+			}
+			defer release()
+			start = time.Now()
+			commandCanceller.mu.Lock()
+			commandCanceller.contexts[req.CommandID] = ctx
+			commandCanceller.mu.Unlock()
+		}
+		if req.QueueAsync {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "starting"})
+		}
+		if req.QueueAsync && (req.CommandType == "mssql_backup" || req.CommandType == "hyperv_backup") {
+			// Native exports have no progress callback while their subprocess is
+			// running. Keep their liveness/expectation alive until actual return.
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			stop := startBackupHeartbeat(ticker.C, func() {
+				sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "executing"})
+			})
+			defer stop()
+		}
+		return executeCommand(req, mgr, vaultState, conn, commandCanceller)
+	}
 
 	// Async backup_run: ack the request envelope immediately with
 	// {"started":true} so the agent's forward wait (session.SendCommand)
@@ -499,12 +577,16 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	// server has advertised the backup_run_async capability — an old server
 	// would otherwise parse this ack as a malformed terminal result, so this
 	// branch must never fire unless req.Async was explicitly set upstream.
-	if req.CommandType == "backup_run" && req.Async {
+	if isBackupWorkload(req.CommandType) && req.Async {
 		ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"started":true}`}
+		if req.QueueAsync {
+			ack.Stdout = `{"queued":true}`
+		}
 		if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, ack); err != nil {
 			slog.Error("failed to send backup ack", "commandId", req.CommandID, "error", err.Error())
+			return
 		}
-		result := executeCommand(req, mgr, vaultState, conn, commandCanceller)
+		result := run()
 		result.CommandID = req.CommandID
 		result.DurationMs = time.Since(start).Milliseconds()
 		// sendUnsolicitedResult bounds the payload before sending: an oversize
@@ -522,7 +604,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		defer cleanup()
 		result = execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
 	} else {
-		result = executeCommand(req, mgr, vaultState, conn, commandCanceller)
+		result = run()
 	}
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -550,6 +632,23 @@ func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
+	if req.CommandType == "backup_stop" {
+		var payload struct {
+			JobID string `json:"jobId"`
+		}
+		if err := json.Unmarshal(req.Payload, &payload); err != nil && len(req.Payload) > 0 {
+			return fail("invalid backup_stop payload")
+		}
+		if payload.JobID != "" {
+			commandCanceller.mu.Lock()
+			cancel := commandCanceller.cancels[payload.JobID]
+			if cancel != nil {
+				cancel()
+			}
+			commandCanceller.mu.Unlock()
+			return ok(fmt.Sprintf(`{"stopped":%t}`, cancel != nil))
+		}
+	}
 	if req.CommandType == "backup_run" {
 		payloadMgr, err := managerFromBackupRunPayload(req.Payload)
 		if err != nil {
@@ -635,8 +734,8 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "backup_list":
 		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
-		stopped := mgr.Stop()
 		cancelled := commandCanceller.cancelAll()
+		stopped := mgr.Stop()
 		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped || cancelled))
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr, vaultState)

@@ -1029,7 +1029,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
     if (!deviceOffline) {
       try {
-        await queueBackupStopCommand(job.deviceId, {});
+        await queueBackupStopCommand(job.deviceId, { jobId: job.id });
       } catch (err) {
         console.warn(`[StaleCommandReaper] Failed to queue backup_stop for reaped backup job ${job.id}:`, err);
       }
@@ -1037,7 +1037,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
   }
 
   const pendingCutoff = new Date(now - BACKUP_PENDING_TIMEOUT_MS);
-  // applyBackupStartedAck / applyBackupProgress accept a `pending` job and bump
+  // Queued acknowledgements / progress keep a `pending` job alive by bumping
   // last_progress_at WITHOUT promoting it to `running`, so a pending job that is
   // still receiving progress pings is alive and must NOT be reaped on createdAt
   // alone. Spare any pending job whose last_progress_at is recent (within the
@@ -1046,6 +1046,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
   const pendingCandidates = await db
     .select({
       id: backupJobs.id,
+      deviceId: backupJobs.deviceId,
       errorLog: backupJobs.errorLog,
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
@@ -1067,7 +1068,19 @@ export async function reapStaleBackupJobs(): Promise<number> {
     if (job.lastProgressAt && now - job.lastProgressAt.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
 
     const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
-    if (wasReaped) reaped++;
+    if (wasReaped) {
+      reaped++;
+      // Pending can now mean admitted to the helper FIFO. Reconcile the
+      // helper too, otherwise a stale waiter can run after its row failed.
+      // The job ID prevents stopping a different workload on this device.
+      if (job.lastProgressAt) {
+        try {
+          await queueBackupStopCommand(job.deviceId, { jobId: job.id });
+        } catch (err) {
+          console.warn(`[StaleCommandReaper] Failed to cancel queued backup job ${job.id}:`, err);
+        }
+      }
+    }
   }
 
   if (reaped > 0) {

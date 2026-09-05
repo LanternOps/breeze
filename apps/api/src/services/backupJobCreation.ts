@@ -50,12 +50,11 @@ export async function createManualBackupJobIfIdle(
 ): Promise<{ job: Row; created: boolean } | null> {
   const createdAt = input.createdAt ?? new Date();
 
-  // Idle means "no active job for this device AND mode": profile fan-out
-  // runs a device's file/system_image/mssql jobs side by side, but never two
-  // of the same mode concurrently. Legacy (NULL-mode) jobs keep the original
-  // one-active-job-per-device behavior.
+  // Deduplicate repeated requests for the same profile selection only.
+  // Different profiles must retain their own work, even for the same mode;
+  // the helper's device-wide queue owns execution serialization.
   return withBackupJobLock(
-    `manual:${input.orgId}:${input.deviceId}:${input.backupMode ?? 'legacy'}`,
+    `manual:${input.orgId}:${input.deviceId}:${input.configId}:${input.featureLinkId ?? 'legacy'}:${input.backupMode ?? 'legacy'}`,
     async (tx) => {
     const [existing] = await tx
       .select()
@@ -64,6 +63,10 @@ export async function createManualBackupJobIfIdle(
         and(
           eq(backupJobs.orgId, input.orgId),
           eq(backupJobs.deviceId, input.deviceId),
+          eq(backupJobs.configId, input.configId),
+          input.featureLinkId
+            ? eq(backupJobs.featureLinkId, input.featureLinkId)
+            : sql`${backupJobs.featureLinkId} IS NULL`,
           input.backupMode
             ? eq(backupJobs.backupMode, input.backupMode)
             : sql`${backupJobs.backupMode} IS NULL`,
@@ -122,6 +125,9 @@ export async function createScheduledBackupJobIfAbsent(
             eq(backupJobs.deviceId, input.deviceId),
             eq(backupJobs.configId, input.configId),
             eq(backupJobs.type, 'scheduled'),
+            input.featureLinkId
+              ? eq(backupJobs.featureLinkId, input.featureLinkId)
+              : sql`${backupJobs.featureLinkId} IS NULL`,
             input.backupMode
               ? eq(backupJobs.backupMode, input.backupMode)
               : sql`${backupJobs.backupMode} IS NULL`,
