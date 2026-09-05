@@ -429,7 +429,8 @@ describe('sendQuote device-set drift report (#3205 W05)', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]);
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);
     queueResult([{ id: 'q1' }]); // draft -> sent claim
-    queueResult([]); // email failure outcome marker
+    // The email is deferred post-commit (#3905): sendQuote's only remaining DB
+    // call here is the final re-select of the committed row.
     queueResult([{ ...quoteRow, status: 'sent' }]);
   }
 

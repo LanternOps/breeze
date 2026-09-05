@@ -87,6 +87,7 @@ function okSendResult(
   return {
     quote: {} as never,
     acceptUrl: 'https://portal.example.test/quote/test-token',
+    deviceSetDrift: [],
     deliverEmail: async () => {
       if (delivery.emailReason && quoteId) {
         await withSystemDbAccessContext(() =>
