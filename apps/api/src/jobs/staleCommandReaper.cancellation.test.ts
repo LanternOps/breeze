@@ -19,6 +19,7 @@ const {
   scriptExecutionBatchesTable,
   createAuditLogAsyncMock,
   recordCancelUnconfirmedMock,
+  captureExceptionMock,
   applyAutomationActionTerminalMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -63,6 +64,7 @@ const {
   },
   createAuditLogAsyncMock: vi.fn().mockResolvedValue(undefined),
   recordCancelUnconfirmedMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
   applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
@@ -97,7 +99,9 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+}));
 
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: (...args: unknown[]) => createAuditLogAsyncMock(...(args as [])),
@@ -137,13 +141,24 @@ let recordedUpdates: RecordedUpdate[];
  * Every `db.update()` is recorded with the TABLE it targeted, so an assertion
  * about the execution row can never accidentally be satisfied by the write to
  * the cancel command (or vice versa).
+ *
+ * `executionReturning` may be a function so a multi-row sweep can give a
+ * different answer per call — that is how "one row loses its CAS while the
+ * others succeed" is expressed.
  */
-function installUpdateRecorder(executionReturning: unknown[] = [{ id: 'exec-1' }]) {
+function installUpdateRecorder(
+  executionReturning: unknown[] | ((call: number) => unknown[]) = [{ id: 'exec-1' }],
+) {
+  let executionCalls = 0;
   updateMock.mockImplementation((table: unknown) => ({
     set: (values: Record<string, unknown>) => ({
       where: (whereArg: unknown) => {
         recordedUpdates.push({ table, values, where: whereArg });
-        const rows = table === scriptExecutionsTable ? executionReturning : [];
+        const rows = table === scriptExecutionsTable
+          ? (typeof executionReturning === 'function'
+            ? executionReturning(executionCalls++)
+            : executionReturning)
+          : [];
         return Object.assign(Promise.resolve(rows), {
           returning: vi.fn().mockResolvedValue(rows),
         });
@@ -166,11 +181,12 @@ type CancellingRow = {
   cancelRequestedAt?: Date | null;
   cmdStatus?: string | null;
   cmdExecutedAt?: Date | null;
+  cmdCompletedAt?: Date | null;
   cmdResult?: unknown;
 };
 
-function seed(row: CancellingRow) {
-  selectMock.mockReturnValueOnce(selectChain([{
+function candidate(row: CancellingRow) {
+  return {
     executionId: row.executionId ?? 'exec-1',
     deviceId: row.deviceId ?? 'device-1',
     orgId: row.orgId ?? 'org-1',
@@ -179,8 +195,20 @@ function seed(row: CancellingRow) {
     cancelRequestedAt: row.cancelRequestedAt === undefined ? minutesAgo(1) : row.cancelRequestedAt,
     cmdStatus: row.cmdStatus === undefined ? 'sent' : row.cmdStatus,
     cmdExecutedAt: row.cmdExecutedAt === undefined ? null : row.cmdExecutedAt,
+    // A terminal command only counts once its flip has SETTLED, so the default
+    // for a terminal seed is "settled long ago" — tests that exercise the race
+    // pass a recent value explicitly.
+    cmdCompletedAt: row.cmdCompletedAt === undefined ? minutesAgo(30) : row.cmdCompletedAt,
     cmdResult: row.cmdResult ?? null,
-  }]));
+  };
+}
+
+function seed(row: CancellingRow) {
+  selectMock.mockReturnValueOnce(selectChain([candidate(row)]));
+}
+
+function seedMany(...rows: CancellingRow[]) {
+  selectMock.mockReturnValueOnce(selectChain(rows.map(candidate)));
 }
 
 beforeEach(() => {
@@ -281,9 +309,93 @@ describe('reapStaleCancellations (#3525 closer 5)', () => {
     await reapStaleCancellations();
     const { sql: sqlText, params } = new PgDialect()
       .sqlToQuery(updatesTo(scriptExecutionsTable)[0]!.where as never);
-    expect(params).toContain('script_executions.status');
-    expect(params).toContain('cancelling');
-    expect(sqlText).toContain('and');
+    // Ordered, not merely present: `toContain` on each value independently
+    // would still pass if the guard compared the WRONG column against
+    // 'cancelling', or pinned the id to it. The mocked schema's columns compile
+    // to bound params, which is what makes this adjacency assertable.
+    expect(params).toEqual([
+      'script_executions.id', 'exec-1',
+      'script_executions.status', 'cancelling',
+    ]);
+    // A conjunction, not a disjunction — `or()` here would revert rows another
+    // closer already decided.
+    expect(sqlText).toContain(' and ');
+    expect(sqlText).not.toContain(' or ');
+  });
+
+  it('waits for a terminal cancel command to SETTLE before reverting', async () => {
+    // Both transports flip device_commands terminal BEFORE dispatching the
+    // result handler, so a genuine `terminated` ack is in flight against a row
+    // that already reads terminal. Reverting inside that window wins the CAS,
+    // makes the ack a no-op, and downgrades a PROVEN cancel to `unconfirmed`.
+    seed({ cmdStatus: 'completed', cmdCompletedAt: new Date(), cmdExecutedAt: null });
+    expect(await reapStaleCancellations()).toBe(0);
+    expect(recordedUpdates).toHaveLength(0);
+  });
+
+  it('treats a terminal command with no completed_at as settled rather than stranding it', async () => {
+    seed({ cmdStatus: 'failed', cmdCompletedAt: null, cmdExecutedAt: null });
+    expect(await reapStaleCancellations()).toBe(1);
+  });
+
+  it('reports a NULL cancel_prev_status instead of laundering it into ordinary noise', async () => {
+    // applyScriptCancelAck captures the identical broken-writer condition; the
+    // sweep going quiet about it would hide it on exactly the path that runs
+    // when no ack ever arrives.
+    seed({ prevStatus: null, cmdExecutedAt: minutesAgo(5) });
+    await reapStaleCancellations();
+    expect(captureExceptionMock).toHaveBeenCalled();
+    expect(String((captureExceptionMock.mock.calls[0]?.[0] as Error).message))
+      .toContain('cancel_prev_status was NULL');
+  });
+
+  it('audits the value it actually WROTE, not the null column', async () => {
+    seed({ prevStatus: null, cmdExecutedAt: minutesAgo(5) });
+    await reapStaleCancellations();
+    expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+      details: expect.objectContaining({ revertedTo: 'running' }),
+    }));
+  });
+
+  it('reports a cancelling row that never got a cancel_command_id', async () => {
+    // Distinct from the expected orphan (a set id whose command row was reaped):
+    // an unset id means the cancel was never dispatchable at all.
+    seed({ cancelCommandId: null, cmdStatus: null, cmdExecutedAt: null, cancelRequestedAt: minutesAgo(30) });
+    await reapStaleCancellations();
+    expect(String((captureExceptionMock.mock.calls[0]?.[0] as Error).message))
+      .toContain('cancel_command_id was NULL');
+  });
+
+  it('stays silent for the EXPECTED orphan — a reaped command row', async () => {
+    seed({ cancelCommandId: 'cancel-cmd-1', cmdStatus: null, cmdExecutedAt: null, cancelRequestedAt: minutesAgo(30) });
+    expect(await reapStaleCancellations()).toBe(1);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('processes every candidate in one sweep and counts only the ones it won', async () => {
+    // The second row loses its CAS to a concurrent closer. It must not affect
+    // the first row's processing or the returned count.
+    installUpdateRecorder((call) => (call === 0 ? [{ id: 'exec-1' }] : []));
+    seedMany(
+      { executionId: 'exec-1', prevStatus: 'running', cmdExecutedAt: minutesAgo(5) },
+      { executionId: 'exec-2', prevStatus: 'queued', cmdExecutedAt: minutesAgo(5) },
+    );
+    expect(await reapStaleCancellations()).toBe(1);
+    expect(updatesTo(scriptExecutionsTable)).toHaveLength(2);
+    expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+    expect(recordCancelUnconfirmedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates bookkeeping failures per row so one bad audit does not strand the rest', async () => {
+    createAuditLogAsyncMock.mockRejectedValueOnce(new Error('audit down'));
+    seedMany(
+      { executionId: 'exec-1', prevStatus: 'running', cmdExecutedAt: minutesAgo(5) },
+      { executionId: 'exec-2', prevStatus: 'queued', cmdExecutedAt: minutesAgo(5) },
+    );
+    // Both status reverts are committed; the count reflects both.
+    expect(await reapStaleCancellations()).toBe(2);
+    expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('is registered as a reaper domain, after scriptExecutions', () => {
@@ -335,6 +447,20 @@ describe('cancel-command expiry (#3525 closer 4)', () => {
     expect(await reapStaleCancellations()).toBe(1);
     expect(lastExecutionUpdate()).toMatchObject({ status: 'running', cancelState: 'unconfirmed' });
     expect(updatesTo(deviceCommandsTable)).toHaveLength(0);
+  });
+
+  it('treats a cancel command that was itself cancelled as terminal', async () => {
+    seed({ prevStatus: 'running', cmdStatus: 'cancelled', cmdExecutedAt: null });
+    expect(await reapStaleCancellations()).toBe(1);
+    expect(updatesTo(deviceCommandsTable)).toHaveLength(0);
+  });
+
+  it('resolves broken data with a NULL cancel_requested_at immediately', async () => {
+    // Already-broken data must not become permanently unreapable — the `||`
+    // disjunct in the orphan arm is what guarantees that.
+    seed({ cmdStatus: null, cmdExecutedAt: null, cancelRequestedAt: null, prevStatus: 'running' });
+    expect(await reapStaleCancellations()).toBe(1);
+    expect(lastExecutionUpdate()).toMatchObject({ status: 'running', cancelState: 'unconfirmed' });
   });
 
   it('does NOT resolve a missing command row inside the grace window', async () => {

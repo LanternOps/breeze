@@ -589,11 +589,16 @@ export async function reapStaleCancellations(): Promise<number> {
       cancelRequestedAt: scriptExecutions.cancelRequestedAt,
       cmdStatus: deviceCommands.status,
       cmdExecutedAt: deviceCommands.executedAt,
+      cmdCompletedAt: deviceCommands.completedAt,
     })
     .from(scriptExecutions)
     .leftJoin(deviceCommands, eq(deviceCommands.id, scriptExecutions.cancelCommandId))
     .where(eq(scriptExecutions.status, 'cancelling'))
     .limit(MAX_REAP_PER_RUN);
+
+  if (rows.length === MAX_REAP_PER_RUN) {
+    console.warn(`[StaleCommandReaper] scriptCancellations hit ${MAX_REAP_PER_RUN}-item cap — backlog may be growing`);
+  }
 
   const now = Date.now();
   let reaped = 0;
@@ -602,6 +607,19 @@ export async function reapStaleCancellations(): Promise<number> {
     const cmdTerminal = row.cmdStatus === 'failed'
       || row.cmdStatus === 'completed'
       || row.cmdStatus === 'cancelled';
+    // A terminal command is not INSTANTLY ours to act on. Both transports CAS
+    // `device_commands` to a terminal status BEFORE dispatching the result
+    // handler, so between that flip and `applyScriptCancelAck` writing its
+    // verdict there is a window where a genuine `outcome: 'terminated'` ack is
+    // in flight against a row that already reads terminal. Reverting inside
+    // that window would win the CAS, make the ack a no-op ("must not resurrect
+    // a decided row") and silently downgrade a PROVEN cancel to `unconfirmed`.
+    // Requiring the terminal flip to have settled for a full grace window
+    // costs one extra sweep cycle and removes the race. A NULL `completed_at`
+    // on a terminal row is unmeasurable, so it counts as settled rather than
+    // becoming a way to strand the execution.
+    const cmdSettled = cmdTerminal
+      && (row.cmdCompletedAt === null || now - row.cmdCompletedAt.getTime() >= CANCEL_GRACE_MS);
     const deliveredLongAgo = row.cmdExecutedAt !== null
       && now - row.cmdExecutedAt.getTime() >= CANCEL_GRACE_MS;
     // A left-join miss: no command row exists for this cancel any more (or one
@@ -611,7 +629,37 @@ export async function reapStaleCancellations(): Promise<number> {
       && (row.cancelRequestedAt === null || now - row.cancelRequestedAt.getTime() >= CANCEL_GRACE_MS);
     // An undelivered `pending` cancel has not started its clock. Its own
     // 2-hour tier will expire it, and that arrives here as `cmdTerminal`.
-    if (!cmdTerminal && !deliveredLongAgo && !orphaned) continue;
+    if (!cmdSettled && !deliveredLongAgo && !orphaned) continue;
+
+    // Two DIFFERENT broken-writer shapes reach the orphan arm, and only one of
+    // them is expected. A row whose `cancel_command_id` was never set was never
+    // dispatchable at all, which is a bug in whoever requested the cancel —
+    // report it the way `applyScriptCancelAck` reports a NULL
+    // `cancel_prev_status`, rather than letting the sweep launder it into
+    // ordinary operational noise. A set id with no surviving command row is the
+    // expected case (command rows are reaped independently) and stays silent.
+    if (orphaned && row.cancelCommandId === null) {
+      const err = new Error('script_executions.cancel_command_id was NULL on a cancelling row');
+      console.error('[StaleCommandReaper]', err.message, { executionId: row.executionId });
+      captureException(err, undefined, { executionId: row.executionId, deviceId: row.deviceId });
+    }
+
+    // `cancel_prev_status` is written alongside the cancel, so a NULL here is a
+    // broken writer, not a race. `applyScriptCancelAck` captures the identical
+    // condition (`scriptCancellation.ts`) — staying silent about it HERE, on
+    // the path that runs precisely when no ack ever arrives, would be the one
+    // place fleet-wide misreporting of execution history could hide.
+    const revertedTo = row.prevStatus ?? 'running';
+    if (row.prevStatus === null) {
+      const err = new Error(
+        'script_executions.cancel_prev_status was NULL on a cancelling row; reverting to running',
+      );
+      console.error('[StaleCommandReaper]', err.message, { executionId: row.executionId });
+      captureException(err, undefined, {
+        executionId: row.executionId,
+        cancelCommandId: row.cancelCommandId ?? 'none',
+      });
+    }
 
     // Compare-and-swap on `cancelling`: if the agent's ack or the original
     // script result landed between the SELECT and here, that closer owns the
@@ -622,7 +670,7 @@ export async function reapStaleCancellations(): Promise<number> {
       .set({
         // `running` is the safe floor for a NULL prev status: it keeps the row
         // inside reapStaleScriptExecutions' predicate rather than stranding it.
-        status: row.prevStatus ?? 'running',
+        status: revertedTo,
         cancelState: 'unconfirmed',
       })
       .where(and(
@@ -634,52 +682,68 @@ export async function reapStaleCancellations(): Promise<number> {
     if (updated.length === 0) continue;
     reaped++;
 
-    // `cmdStatus !== null` excludes the orphan arm: the join already proved
-    // there is no command row left to close.
-    if (row.cancelCommandId && row.cmdStatus !== null && !cmdTerminal) {
-      // Close the still-open cancel command with the ONLY marker
-      // `commandResultAcceptance` reopens (`failed` + `result.status =
-      // 'timeout'`), so a late ack from a slow device still lands instead of
-      // being rejected as a result for a closed command.
-      await db
-        .update(deviceCommands)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          result: {
-            status: SERVER_TIMEOUT_RESULT_STATUS,
-            error: 'Cancellation not acknowledged within the grace window',
-            timedOutBy: 'server',
-          },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(and(
-          eq(deviceCommands.id, row.cancelCommandId),
-          inArray(deviceCommands.status, ['pending', 'sent']),
-        ));
-    }
+    // The status revert is COMMITTED at this point. Everything below is
+    // secondary bookkeeping, so it is isolated per row: a failure closing one
+    // cancel command or writing one audit row must not abort the sweep and
+    // leave the remaining rows stuck in `cancelling` for another cycle. Same
+    // pattern the deployment-result and backup-job reapers above use.
+    try {
+      // `cmdStatus !== null` excludes the orphan arm: the join already proved
+      // there is no command row left to close.
+      if (row.cancelCommandId && row.cmdStatus !== null && !cmdTerminal) {
+        // Close the still-open cancel command with the ONLY marker
+        // `commandResultAcceptance` reopens (`failed` + `result.status =
+        // 'timeout'`), so a late ack from a slow device still lands instead of
+        // being rejected as a result for a closed command.
+        await db
+          .update(deviceCommands)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            result: {
+              status: SERVER_TIMEOUT_RESULT_STATUS,
+              error: 'Cancellation not acknowledged within the grace window',
+              timedOutBy: 'server',
+            },
+            ...terminalPayloadErasureSet(),
+          })
+          .where(and(
+            eq(deviceCommands.id, row.cancelCommandId),
+            inArray(deviceCommands.status, ['pending', 'sent']),
+          ));
+      }
 
-    // OD3-A: the row field (`cancel_state`) plus an audit event plus a metric.
-    // Deliberately NO device alert and NO captureException — an unacknowledged
-    // cancel is an operational condition (agent offline, script already gone,
-    // agent too old to know the command), not a code defect. Paging on it would
-    // train the on-call to ignore the signal.
-    await createAuditLogAsync({
-      orgId: row.orgId,
-      actorType: 'system',
-      actorId: ANONYMOUS_ACTOR_ID,
-      action: CANCEL_UNCONFIRMED_AUDIT_ACTION,
-      resourceType: 'script_execution',
-      resourceId: row.executionId,
-      details: {
-        deviceId: row.deviceId,
-        cancelCommandId: row.cancelCommandId,
-        revertedTo: row.prevStatus,
-      },
-      result: 'success',
-      initiatedBy: 'schedule',
-    });
-    recordCancelUnconfirmed();
+      // OD3-A: the row field (`cancel_state`) plus an audit event plus a metric.
+      // Deliberately NO device alert and NO captureException FOR THE ORDINARY
+      // CASE — an unacknowledged cancel is an operational condition (agent
+      // offline, script already gone, agent too old to know the command), not a
+      // code defect. Paging on it would train the on-call to ignore the signal.
+      // The two broken-writer shapes above are captured separately.
+      await createAuditLogAsync({
+        orgId: row.orgId,
+        actorType: 'system',
+        actorId: ANONYMOUS_ACTOR_ID,
+        action: CANCEL_UNCONFIRMED_AUDIT_ACTION,
+        resourceType: 'script_execution',
+        resourceId: row.executionId,
+        details: {
+          deviceId: row.deviceId,
+          cancelCommandId: row.cancelCommandId,
+          // The value actually WRITTEN, not the raw column — an audit row that
+          // says `null` where the code wrote `running` destroys the trail.
+          revertedTo,
+        },
+        result: 'success',
+        initiatedBy: 'schedule',
+      });
+      recordCancelUnconfirmed();
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed cancellation bookkeeping for execution ${row.executionId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        executionId: row.executionId,
+        cancelCommandId: row.cancelCommandId ?? 'none',
+      });
+    }
   }
 
   if (reaped > 0) {

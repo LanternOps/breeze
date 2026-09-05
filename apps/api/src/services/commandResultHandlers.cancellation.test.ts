@@ -54,7 +54,7 @@ vi.mock('./sentry', () => ({ captureException: (...args: unknown[]) => captureEx
 
 type Row = Record<string, unknown>;
 let row: Row | null = null;
-const updates: Array<{ label: string; values: Row; matched: boolean }> = [];
+const updates: Array<{ label: string; values: Row; matched: boolean; table?: unknown }> = [];
 const markerGuarded: boolean[] = [];
 
 function evalCond(cond: Cond | undefined | null, target: Row): boolean {
@@ -91,12 +91,12 @@ function guardsMarkerCommandId(cond: Cond | undefined | null): boolean {
 
 vi.mock('../db', () => ({
   db: {
-    update: () => ({
+    update: (table: unknown) => ({
       set: (values: Row) => ({
         where: (cond: Cond) => {
           const label = labelOf(cond);
           const matched = row !== null && evalCond(cond, row);
-          updates.push({ label, values, matched });
+          updates.push({ label, values, matched, table });
           if (label === 'cancellation') markerGuarded.push(guardsMarkerCommandId(cond));
           if (matched && row) Object.assign(row, values);
           const rows = matched && row ? [{ id: row.id, scriptId: row.script_id }] : [];
@@ -122,6 +122,7 @@ vi.mock('../db', () => ({
 }));
 
 import { commandResultHandlers } from './commandResultHandlers';
+import { scriptExecutionBatches } from '../db/schema';
 
 const EXEC_ID = '55555555-5555-4555-8555-555555555555';
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
@@ -143,10 +144,13 @@ function seed(overrides: Row): void {
   };
 }
 
-async function handleResult(result: Record<string, unknown>): Promise<void> {
+async function handleResult(
+  result: Record<string, unknown>,
+  payload: Record<string, unknown> = {},
+): Promise<void> {
   await commandResultHandlers.script!({
     agentId: '33333333-3333-4333-8333-333333333333',
-    command: { id: 'cmd-1', payload: { executionId: EXEC_ID }, type: 'script' } as never,
+    command: { id: 'cmd-1', payload: { executionId: EXEC_ID, ...payload }, type: 'script' } as never,
     commandId: 'cmd-1',
     result: result as never,
     resolvedDeviceId: DEVICE_ID,
@@ -235,6 +239,29 @@ describe('script result closes a cancelling execution (#3525 closer 1)', () => {
     );
   });
 
+  it('bumps the batch counter, or the batch never reaches devicesTargeted', async () => {
+    // The cancellation CAS is the writer that terminalises the row, and no
+    // earlier writer spent the batch slot. Once it lands, the execution is
+    // outside BOTH reapers' predicates forever, so if this does not count here
+    // it is never counted — and every multi-device run containing one cancelled
+    // device stays `pending` permanently.
+    seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: CC1 });
+    await handleResult(
+      { status: 'failed', exitCode: -1, cancelled: true, cancelledByCommandId: CC1 },
+      { batchId: 'batch-1' },
+    );
+    const batchUpdate = updates.find((u) => u.table === scriptExecutionBatches);
+    expect(batchUpdate).toBeDefined();
+    expect(Object.keys(batchUpdate!.values)).toEqual(['devicesFailed']);
+  });
+
+  it('counts an unconfirmed cancel by its REAL outcome', async () => {
+    seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: CC1 });
+    await handleResult({ status: 'completed', exitCode: 0 }, { batchId: 'batch-1' });
+    const batchUpdate = updates.find((u) => u.table === scriptExecutionBatches);
+    expect(Object.keys(batchUpdate!.values)).toEqual(['devicesCompleted']);
+  });
+
   it('leaves a non-cancelling execution on the ordinary primary CAS', async () => {
     seed({ status: 'running' });
     await handleResult({ status: 'completed', exitCode: 0, stdout: 'ok' });
@@ -267,6 +294,27 @@ describe('late original result after a terminal cancel (#3525 closer 3)', () => 
     await handleResult({ status: 'completed', exitCode: 9, stdout: 'second' });
     expect(updates.find((u) => u.label === 'lateOutput')?.matched).toBe(false);
     expect(row?.stdout).toBe('first');
+  });
+
+  it('does not log a recovery for a frame whose output it actually discarded', async () => {
+    // The write is a no-op when an exit code is already present. Claiming
+    // "recovered" there would print a success line for a dropped frame.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seed({ status: 'cancelled', cancel_state: 'confirmed', exit_code: 0, stdout: 'first' });
+    await handleResult({ status: 'completed', exitCode: 9, stdout: 'second' });
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('discarded late output'))).toBe(true);
+    expect(lines.some((l) => l.includes('recovered late output'))).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('logs a recovery when the output really did land', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seed({ status: 'cancelled', cancel_state: 'confirmed' });
+    await handleResult({ status: 'completed', exitCode: 0, stdout: 'x' });
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('recovered late output'))).toBe(true);
+    warn.mockRestore();
   });
 
   it('does not re-run batch accounting or applyAutomationActionTerminal', async () => {

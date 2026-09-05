@@ -25,8 +25,9 @@ import { Counter } from 'prom-client';
 import { metricsRegistry } from './metricsRegistry';
 
 /**
- * Cancels that reached the end of their grace window without the device ever
- * proving what happened to the process.
+ * Cancels the sweep gave up on — whether by grace-window expiry, a cancel
+ * command that reached a terminal status, or a command row that vanished
+ * entirely — without the device ever proving what happened to the process.
  *
  * A non-zero rate here is an OPERATIONAL condition, not a code defect: agents
  * go offline, scripts finish a moment before the signal lands, an old agent
