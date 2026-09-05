@@ -127,9 +127,29 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
     ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    // #3905 — quote send/re-send render the proposal PDF and run the outbound
+    // mail round-trip in the handler, and sendQuote holds a FOR UPDATE lock on
+    // the quote (and a revision's PARENT) that only the commit releases.
+    ['POST', '/api/v1/quotes/abc-123/send'],
+    ['POST', '/api/v1/quotes/abc-123/send/'],
+    ['post', '/api/v1/quotes/abc-123/send'], // method is case-insensitive
+    ['POST', '/api/v1/quotes/abc-123/resend'],
+    ['POST', '/api/v1/quotes/abc-123/resend/'],
+    ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    // #3905 — the /send pattern must not swallow its siblings. Losing the
+    // ambient transaction on a route whose handler does NOT manage its own
+    // contexts means every db call there lands on the bare pool with no RLS
+    // GUC and silently affects 0 rows (#1375).
+    ['POST', '/api/v1/quotes/bulk-send', 'bulk-send is one path segment, and runBulkIsolated already opens a tx per item'],
+    ['POST', '/api/v1/quotes/abc-123/schedule-send', 'schedule-send only enqueues; it keeps the ambient tx'],
+    ['DELETE', '/api/v1/quotes/abc-123/schedule-send', 'undo-send is DB-only'],
+    ['GET', '/api/v1/quotes/abc-123/send', 'send is POST-only'],
+    ['POST', '/api/v1/quotes//send', 'empty id segment must not match'],
+    ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],

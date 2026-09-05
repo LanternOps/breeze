@@ -76,6 +76,9 @@ services:
       MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
       MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-https://api.mailgun.net}
       MAILGUN_FROM: ${MAILGUN_FROM:-noreply@breeze.local}
+      # #3905 — transport deadlines (optional; in-code defaults apply when unset).
+      SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+      MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
       TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
       MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
       LOG_LEVEL: debug

@@ -312,6 +312,12 @@ x-api-env: &api-env
   MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
   MAILGUN_FROM: ${MAILGUN_FROM:-}
   MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+  # #3905 — transport deadlines. Optional: unset falls back to the in-code
+  # defaults (SMTP 30s inactivity, Mailgun 120s whole-request). Mapped here so
+  # an operator can tune them without a code change (compose interpolation only
+  # happens for vars listed in this block).
+  SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+  MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
