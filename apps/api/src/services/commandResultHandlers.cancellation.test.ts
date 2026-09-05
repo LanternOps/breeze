@@ -15,11 +15,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * `sql`, which the schema modules build partial indexes with) stays real.
  */
 
-type Cond =
-  | { op: 'and'; conds: Cond[] }
+type LeafCond =
   | { op: 'eq'; col: string; val: unknown }
   | { op: 'inArray'; col: string; vals: unknown[] }
   | { op: 'isNull'; col: string };
+type Cond = { op: 'and'; conds: Cond[] } | LeafCond;
 
 const colName = (c: unknown): string =>
   c !== null && typeof c === 'object' && 'name' in (c as Record<string, unknown>)
@@ -69,7 +69,7 @@ function evalCond(cond: Cond | undefined | null, target: Row): boolean {
 }
 
 /** Flatten an AND tree so a label can be derived from the leaf predicates. */
-function leaves(cond: Cond | undefined | null): Cond[] {
+function leaves(cond: Cond | undefined | null): LeafCond[] {
   if (!cond) return [];
   return cond.op === 'and' ? cond.conds.flatMap(leaves) : [cond];
 }
