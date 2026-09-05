@@ -2073,12 +2073,46 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       })
     } as any, ws as any);
 
-    // applyBackupStartedAck's update only bumps progress/updatedAt — no
-    // `status` key — so the (pending|running) job never transitions.
+    // Legacy started acknowledgements promote pending jobs if the worker's
+    // post-send write has not landed yet.
     expect(db.update).toHaveBeenCalledTimes(1);
     const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg).toHaveProperty('lastProgressAt');
-    expect(setArg.status).toBeUndefined();
+    expect(setArg.status).toBe('running');
+
+    expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
+    expect(consumeDispatchedExpectation).not.toHaveBeenCalled();
+    expect(applyBackupCommandResultToJob).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('queued acknowledgement keeps terminal expectation available until the selected workload completes', async () => {
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // device_commands: no row → orphaned path
+      .mockReturnValueOnce(selectAgentDevice([]) as any) // discoveryJobs: none
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any); // backupJobs: found
+
+    const updateChain = updateResult([{ id: jobId }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+    vi.mocked(refreshDispatchedExpectation).mockResolvedValue(true);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({ queued: true }),
+      })
+    } as any, ws as any);
+
+    // A queued admission is liveness only: it bumps lastProgressAt and, when
+    // no lifecycle signal has landed yet, demotes the worker's dispatch-time
+    // running marker back to pending (guarded in SQL, see applyBackupStartedAck).
+    expect(db.update).toHaveBeenCalledTimes(1);
+    const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(JSON.stringify(setArg.status)).toContain("'pending'::backup_status");
 
     expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
     expect(consumeDispatchedExpectation).not.toHaveBeenCalled();

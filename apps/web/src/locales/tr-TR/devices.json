@@ -1839,7 +1839,7 @@
       "networkSkipped": "{{count}} ağ cihazı/cihazları atlandı — bu eylem yalnızca aracı cihazlar için geçerlidir.",
       "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
-      "permanentDeleting": "Kalıcı Silme",
+      "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "Kalıcı Olarak Silindi",
       "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
       "restored": "Yenilendi",

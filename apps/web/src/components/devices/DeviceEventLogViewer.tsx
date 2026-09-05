@@ -137,11 +137,39 @@ const categoryConfig: Record<
   },
 };
 
-const resultConfig: Record<string, { label: string; dot: string }> = {
-  success: { label: "Success", dot: "bg-green-500" },
-  failure: { label: "Failed", dot: "bg-red-500" },
-  denied: { label: "Denied", dot: "bg-yellow-500" },
+const resultConfig: Record<string, { label: string; dot: string; badge: string }> = {
+  success: {
+    label: "Success",
+    dot: "bg-green-500",
+    badge: "border-green-500/30 bg-green-500/10 text-green-600",
+  },
+  failure: {
+    label: "Failed",
+    dot: "bg-red-500",
+    badge: "border-red-500/30 bg-red-500/10 text-red-600",
+  },
+  denied: {
+    label: "Denied",
+    dot: "bg-yellow-500",
+    badge: "border-yellow-500/30 bg-yellow-500/10 text-yellow-600",
+  },
+  dispatched: {
+    label: "Dispatched",
+    dot: "bg-blue-500",
+    badge: "border-blue-500/30 bg-blue-500/10 text-blue-600",
+  },
 };
+
+// A result outside the known enum (e.g. a value added server-side before the
+// web client catches up) must never silently render as "Success" — that's
+// the #4223 bug class. Render the raw value with neutral styling instead.
+const unknownResultConfig = (
+  result: string,
+): { label: string; dot: string; badge: string } => ({
+  label: result,
+  dot: "bg-gray-400",
+  badge: "border-gray-400/30 bg-gray-400/10 text-gray-600",
+});
 
 const initiatedByConfig: Record<
   string,
@@ -490,7 +518,9 @@ export default function DeviceEventLogViewer({
             {activities.map((activity) => {
               const isExpanded = expandedId === activity.id;
               const relTime = formatRelativeTime(activity.timestamp);
-              const rc = resultConfig[activity.result] ?? resultConfig.success;
+              const rc =
+                resultConfig[activity.result] ??
+                unknownResultConfig(activity.result);
               const cc =
                 categoryConfig[activity.category] ?? categoryConfig.system;
               const CatIcon = cc.icon;
@@ -579,11 +609,8 @@ export default function DeviceEventLogViewer({
                           {/* Result badge */}
                           {activity.result !== "success" && (
                             <span
-                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-                                activity.result === "failure"
-                                  ? "border-red-500/30 bg-red-500/10 text-red-600"
-                                  : "border-yellow-500/30 bg-yellow-500/10 text-yellow-600"
-                              }`}
+                              data-testid={`event-log-result-badge-${activity.id}`}
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${rc.badge}`}
                             >
                               {rc.label}
                             </span>

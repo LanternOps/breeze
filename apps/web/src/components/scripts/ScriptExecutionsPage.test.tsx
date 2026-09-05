@@ -235,3 +235,56 @@ describe('ScriptExecutionsPage', () => {
     expect(executionListCalls).toBe(1);
   });
 });
+
+// #4886 follow-up: "Run again" (and the plain "Run Script" toolbar button) on
+// this page never navigated to the new execution the way ScriptsPage's
+// library run does -- the operator was left staring at a page that had
+// merely refetched in place, with no indication of which row was new.
+describe('ScriptExecutionsPage post-run navigation (#4886 mirror)', () => {
+  it('navigates to the device Scripts tab, highlighting the new execution, after a successful run', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) return jsonResponse({ executions: [listRow] });
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-new' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/devices/device-1#scripts/execution-new'));
+  });
+
+  it('does not navigate when every target was rejected', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) return jsonResponse({ executions: [listRow] });
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'rejected',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'denied', reasonCode: 'site_access_denied' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)).toBe(true));
+
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+});

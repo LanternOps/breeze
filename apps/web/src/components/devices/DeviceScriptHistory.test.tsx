@@ -202,6 +202,33 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
     expect(screen.queryByText('Execution Details')).toBeNull();
   });
 
+  it('updates an open highlighted execution when polling returns completed output', async () => {
+    vi.useFakeTimers();
+    let completed = false;
+    fetchWithAuthMock.mockImplementation(async () => jsonResponse({ data: [{
+      ...executionRow,
+      status: completed ? 'completed' : 'pending',
+      stdout: completed ? 'fresh completion output' : '',
+      exitCode: completed ? 0 : null,
+      completedAt: completed ? executionRow.completedAt : null,
+    }] }));
+    try {
+      render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText('Execution Details')).toBeInTheDocument();
+      expect(screen.queryByText('fresh completion output')).toBeNull();
+
+      completed = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+
+      expect(screen.getByText('Execution Details')).toBeInTheDocument();
+      expect(screen.getByText('fresh completion output')).toBeInTheDocument();
+      expect(screen.getByText('Completed', { selector: 'p' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Guards `autoOpenedHighlightRef` (DeviceScriptHistory.tsx): the 10s poll
   // refresh must not keep resurrecting a modal the operator already dismissed.
   it('does not reopen the highlighted execution after it is closed once a 10s poll refresh runs', async () => {

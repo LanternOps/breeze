@@ -27,6 +27,7 @@ import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
@@ -1030,7 +1031,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
     if (!deviceOffline) {
       try {
-        await queueBackupStopCommand(job.deviceId, {});
+        await queueBackupStopCommand(job.deviceId, { jobId: job.id });
       } catch (err) {
         console.warn(`[StaleCommandReaper] Failed to queue backup_stop for reaped backup job ${job.id}:`, err);
       }
@@ -1038,7 +1039,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
   }
 
   const pendingCutoff = new Date(now - BACKUP_PENDING_TIMEOUT_MS);
-  // applyBackupStartedAck / applyBackupProgress accept a `pending` job and bump
+  // Queued acknowledgements / progress keep a `pending` job alive by bumping
   // last_progress_at WITHOUT promoting it to `running`, so a pending job that is
   // still receiving progress pings is alive and must NOT be reaped on createdAt
   // alone. Spare any pending job whose last_progress_at is recent (within the
@@ -1047,11 +1048,16 @@ export async function reapStaleBackupJobs(): Promise<number> {
   const pendingCandidates = await db
     .select({
       id: backupJobs.id,
+      deviceId: backupJobs.deviceId,
       errorLog: backupJobs.errorLog,
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
+      deviceStatus: devices.status,
+      deviceLastSeenAt: devices.lastSeenAt,
+      deviceBackupVersion: devices.backupVersion,
     })
     .from(backupJobs)
+    .innerJoin(devices, eq(backupJobs.deviceId, devices.id))
     .where(
       and(
         eq(backupJobs.status, 'pending'),
@@ -1068,7 +1074,30 @@ export async function reapStaleBackupJobs(): Promise<number> {
     if (job.lastProgressAt && now - job.lastProgressAt.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
 
     const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
-    if (wasReaped) reaped++;
+    if (!wasReaped) continue;
+    reaped++;
+
+    // Pending can now mean admitted to the helper FIFO. Reconcile the helper
+    // too, otherwise a stale waiter runs after its row failed and produces an
+    // orphaned backup. The job ID keeps the stop from touching another
+    // workload on the device — but only a queue-capable helper honours it; a
+    // pre-queue helper treats every backup_stop as device-wide and would kill
+    // whatever is actually running. So send it when either the persisted
+    // admission ack proves the helper speaks the protocol, or the device's
+    // reported helper version does (covers an ack lost on the agent WS).
+    const deviceOffline = isDeviceOfflineForReap(job.deviceStatus, job.deviceLastSeenAt);
+    const helperQueues = !!job.lastProgressAt || backupHelperSupportsQueue(job.deviceBackupVersion);
+    if (deviceOffline || !helperQueues) {
+      if (!deviceOffline) {
+        console.warn(`[StaleCommandReaper] Reaped pending backup job ${job.id} without helper reconciliation (helper ${job.deviceBackupVersion ?? 'unknown'} predates the execution queue)`);
+      }
+      continue;
+    }
+    try {
+      await queueBackupStopCommand(job.deviceId, { jobId: job.id });
+    } catch (err) {
+      console.warn(`[StaleCommandReaper] Failed to cancel queued backup job ${job.id}:`, err);
+    }
   }
 
   if (reaped > 0) {

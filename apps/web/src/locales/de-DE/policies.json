@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Diese Richtlinie hat keine Organisation, daher können Zuweisungsziele nicht aufgelistet werden.",
       "failedToAddAssignment": "Aufgabe konnte nicht hinzugefügt werden",
       "failedToRemoveAssignment": "Die Zuweisung konnte nicht entfernt werden",
+      "assignmentAdded": "Aufgabe hinzugefügt",
+      "assignmentRemoved": "Zuweisung entfernt",
       "roleFilter": "Rollenfilter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "Keine Einschränkung – gilt für alle Geräterollen",

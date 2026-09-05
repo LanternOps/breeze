@@ -1839,7 +1839,7 @@
       "networkSkipped": "{{count}} network device(s) skipped — this action applies to agent devices only.",
       "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "permanentDeleteCancelled": "Permanent Delete Cancelled",
-      "permanentDeleting": "Permanent Deleting",
+      "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "Permanently Deleted",
       "permanentlyDeletedWithWarning": "{{hostname}} was deleted, but {{warning}}",
       "restored": "Restored",

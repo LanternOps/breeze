@@ -44,29 +44,98 @@ var rootCmd = &cobra.Command{
 
 var socketPath string
 
+// backupStopDrainTimeout bounds how long a targeted backup_stop waits for the
+// cancelled workload to unwind before replying. Pinned below the agent's
+// backup_stop forward timeout in backupipc so the stop itself never times out.
+const backupStopDrainTimeout = backupipc.BackupStopDrainTimeout
+
 type activeCommandCanceller struct {
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc
+	contexts map[string]context.Context
+	// done is closed by the tracking cleanup once the command has fully
+	// unwound, so a targeted backup_stop can join the run instead of
+	// reporting "stopped" while VSS teardown or an upload is still in flight.
+	done map[string]chan struct{}
 }
 
 func newActiveCommandCanceller() *activeCommandCanceller {
 	return &activeCommandCanceller{
-		cancels: make(map[string]context.CancelFunc),
+		cancels:  make(map[string]context.CancelFunc),
+		contexts: make(map[string]context.Context),
+		done:     make(map[string]chan struct{}),
 	}
 }
 
+// track registers commandID and returns its cancellable context. Calling it
+// again for an id that is already tracked is intentional and re-entrant: the
+// existing context is returned with a no-op cleanup, so the first tracker
+// (the execution queue for queued workloads) keeps ownership of the lifetime.
 func (c *activeCommandCanceller) track(commandID string) (context.Context, func()) {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	c.mu.Lock()
+	if ctx, exists := c.contexts[commandID]; exists {
+		c.mu.Unlock()
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c.contexts[commandID] = ctx
 	c.cancels[commandID] = cancel
+	c.done[commandID] = done
 	c.mu.Unlock()
 
 	return ctx, func() {
 		c.mu.Lock()
 		delete(c.cancels, commandID)
+		delete(c.contexts, commandID)
+		delete(c.done, commandID)
 		c.mu.Unlock()
 		cancel()
+		close(done)
+	}
+}
+
+// rebind replaces the context handed out for commandID with a derived one
+// (the execution-guard context). ctx MUST descend from the tracked context so
+// the registered cancel still propagates. Untracked ids are ignored.
+func (c *activeCommandCanceller) rebind(commandID string, ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, tracked := c.contexts[commandID]; !tracked {
+		return
+	}
+	c.contexts[commandID] = ctx
+}
+
+// cancel aborts one tracked command and returns whether it was tracked.
+func (c *activeCommandCanceller) cancel(commandID string) bool {
+	c.mu.Lock()
+	cancel := c.cancels[commandID]
+	c.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// waitDone blocks until commandID's cleanup has run or timeout elapses.
+// Returns true when the command fully unwound; false on timeout. An untracked
+// id is already done.
+func (c *activeCommandCanceller) waitDone(commandID string, timeout time.Duration) bool {
+	c.mu.Lock()
+	done := c.done[commandID]
+	c.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -435,6 +504,8 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	defer idleTimer.Stop()
 	var activeCommands atomic.Int64
 	commandCanceller := newActiveCommandCanceller()
+	queue := newBackupExecutionQueue()
+	defer commandCanceller.cancelAll()
 
 	for {
 		select {
@@ -465,10 +536,28 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 
 		switch env.Type {
 		case backupipc.TypeBackupCommand:
+			var req backupipc.BackupCommandRequest
+			var ticket *backupExecutionTicket
+			// Only queue-aware dispatches (QueueAsync) enter the FIFO. A server
+			// without backup_queue_async sends SQL/Hyper-V synchronously with a
+			// bounded round trip; parking those behind another workload would
+			// time out the caller and then run the command anyway, orphaned.
+			if json.Unmarshal(env.Payload, &req) == nil && req.QueueAsync && isBackupWorkload(req.CommandType) {
+				ticket = queue.enqueue(req.CommandID, commandCanceller)
+				if ticket == nil {
+					// A retried envelope acknowledges the existing admission; it
+					// must not execute or settle that command a second time.
+					ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"queued":true}`}
+					if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, ack); err != nil {
+						slog.Warn("failed to re-acknowledge duplicate backup admission", "commandId", req.CommandID, "error", err.Error())
+					}
+					continue
+				}
+			}
 			activeCommands.Add(1)
 			go func() {
 				defer activeCommands.Add(-1)
-				handleBackupCommand(conn, env, mgr, vaultState, commandCanceller)
+				handleBackupCommand(conn, env, mgr, vaultState, commandCanceller, ticket)
 			}()
 		case backupipc.TypeBackupShutdown:
 			slog.Info("received shutdown command")
@@ -482,7 +571,17 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 	}
 }
 
-func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller) {
+func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller, tickets ...*backupExecutionTicket) {
+	// Release before anything can return: a ticket that is never released
+	// wedges every later workload on this device.
+	var ticket *backupExecutionTicket
+	if len(tickets) > 0 {
+		ticket = tickets[0]
+	}
+	if ticket != nil {
+		defer ticket.release()
+	}
+
 	var req backupipc.BackupCommandRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		sendError(conn, env.ID, "invalid request payload: "+err.Error())
@@ -490,6 +589,53 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 
 	start := time.Now()
+	run := func() backupipc.BackupCommandResult {
+		if req.QueueAsync {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+		}
+		if ticket != nil {
+			if err := ticket.wait(func() {
+				if req.QueueAsync {
+					sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+				}
+			}); err != nil {
+				return fail(err.Error())
+			}
+		}
+		if ticket != nil {
+			// Queued workloads also take the process-wide guard so they never
+			// overlap a backup_run that reached RunBackupContext without a
+			// ticket (it acquires the same guard internally). Synchronous
+			// mssql/hyperv from a non-queue-aware server take neither the FIFO
+			// nor the guard and are not cancel-tracked — the pre-queue
+			// behaviour, kept so their bounded round trip never blocks.
+			ctx, cleanup := commandCanceller.track(req.CommandID)
+			defer cleanup()
+			ctx, release, err := backup.AcquireExecutionWithProgress(ctx, func() {
+				sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
+			})
+			if err != nil {
+				return fail(err.Error())
+			}
+			defer release()
+			start = time.Now()
+			commandCanceller.rebind(req.CommandID, ctx)
+		}
+		if req.QueueAsync {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "starting"})
+		}
+		if req.QueueAsync && (req.CommandType == "mssql_backup" || req.CommandType == "hyperv_backup") {
+			// Native exports have no progress callback while their subprocess is
+			// running. Keep their liveness/expectation alive until actual return.
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			stop := startBackupHeartbeat(ticker.C, func() {
+				sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "executing"})
+			})
+			defer stop()
+		}
+		return executeCommand(req, mgr, vaultState, conn, commandCanceller)
+	}
 
 	// Async backup_run: ack the request envelope immediately with
 	// {"started":true} so the agent's forward wait (session.SendCommand)
@@ -499,12 +645,16 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	// server has advertised the backup_run_async capability — an old server
 	// would otherwise parse this ack as a malformed terminal result, so this
 	// branch must never fire unless req.Async was explicitly set upstream.
-	if req.CommandType == "backup_run" && req.Async {
+	if isBackupWorkload(req.CommandType) && req.Async {
 		ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"started":true}`}
+		if req.QueueAsync {
+			ack.Stdout = `{"queued":true}`
+		}
 		if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, ack); err != nil {
 			slog.Error("failed to send backup ack", "commandId", req.CommandID, "error", err.Error())
+			return
 		}
-		result := executeCommand(req, mgr, vaultState, conn, commandCanceller)
+		result := run()
 		result.CommandID = req.CommandID
 		result.DurationMs = time.Since(start).Milliseconds()
 		// sendUnsolicitedResult bounds the payload before sending: an oversize
@@ -522,7 +672,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		defer cleanup()
 		result = execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
 	} else {
-		result = executeCommand(req, mgr, vaultState, conn, commandCanceller)
+		result = run()
 	}
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -550,6 +700,30 @@ func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
+	if req.CommandType == "backup_stop" {
+		var payload struct {
+			JobID string `json:"jobId"`
+		}
+		if err := json.Unmarshal(req.Payload, &payload); err != nil && len(req.Payload) > 0 {
+			return fail("invalid backup_stop payload")
+		}
+		if payload.JobID != "" {
+			// Join the run like the untargeted path's mgr.Stop() does, so the
+			// server does not mark the row terminal while VSS teardown or an
+			// in-flight upload is still writing. Native SQL/Hyper-V exports
+			// cannot be interrupted, so the join is bounded; "drained":false
+			// tells the caller the slot is still held.
+			stopped := commandCanceller.cancel(payload.JobID)
+			drained := true
+			if stopped {
+				drained = commandCanceller.waitDone(payload.JobID, backupStopDrainTimeout)
+				if !drained {
+					slog.Warn("backup_stop: workload still unwinding after drain timeout", "jobId", payload.JobID)
+				}
+			}
+			return ok(fmt.Sprintf(`{"stopped":%t,"drained":%t}`, stopped, drained))
+		}
+	}
 	if req.CommandType == "backup_run" {
 		payloadMgr, err := managerFromBackupRunPayload(req.Payload)
 		if err != nil {
@@ -635,8 +809,8 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "backup_list":
 		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
-		stopped := mgr.Stop()
 		cancelled := commandCanceller.cancelAll()
+		stopped := mgr.Stop()
 		return ok(fmt.Sprintf(`{"stopped":%t}`, stopped || cancelled))
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr, vaultState)

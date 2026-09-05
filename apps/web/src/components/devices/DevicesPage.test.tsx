@@ -2198,4 +2198,23 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
     expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
+
+  // Paper cut: the undo toast shown the instant the delete is triggered never
+  // named which device was being deleted (locale value was the untranslated
+  // "Permanent Deleting" constant, with no {{hostname}} interpolation).
+  it('names the device in the initial undo toast', async () => {
+    const { showToast } = await import('../shared/Toast');
+
+    render(<DevicesPage />);
+    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
+    fireEvent.click(trigger);
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        type: 'undo',
+        message: expect.stringContaining('host-alpha'),
+      }),
+    );
+  });
 });

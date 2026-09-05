@@ -17,6 +17,11 @@ import (
 // separate task adds "backup_run_async" to that list server-side.
 const backupRunAsyncCapability = "backup_run_async"
 
+// backupQueueAsyncCapability gates the per-device execution queue protocol
+// ({"queued":true} admission ack, "queued"/"starting" progress phases) for
+// every queued workload type. Must also match AGENT_WS_CAPABILITIES.
+const backupQueueAsyncCapability = "backup_queue_async"
+
 // shouldForwardBackupRunAsync decides whether a given forwarded command
 // should use the async ack/unsolicited-result flow. Only backup_run ever
 // qualifies (backup_list/backup_stop/backup_restore keep their existing
@@ -84,8 +89,10 @@ func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) too
 		return tools.NewErrorResult(fmt.Errorf("failed to marshal command payload: %w", err), time.Since(start).Milliseconds())
 	}
 	hasAsyncCapability := h.wsClient != nil && h.wsClient.HasServerCapability(backupRunAsyncCapability)
-	async := shouldForwardBackupRunAsync(cmd.Type, hasAsyncCapability)
-	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async)
+	queueAsync := h.wsClient != nil && h.wsClient.HasServerCapability(backupQueueAsyncCapability) &&
+		backupipc.IsQueuedWorkload(cmd.Type)
+	async := queueAsync || shouldForwardBackupRunAsync(cmd.Type, hasAsyncCapability)
+	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async, queueAsync)
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("backup command failed: %w", err), time.Since(start).Milliseconds())
 	}

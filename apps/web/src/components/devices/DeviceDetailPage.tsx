@@ -126,6 +126,21 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
         // detail endpoint's full-row spread already includes it.
         helperLifecycleMode: data.helperLifecycleMode ?? null,
+        // Scheduled-restart booking (#3207 W5) — the ONLY input to
+        // RebootScheduledBadge. Not in SENSITIVE_DEVICE_FIELDS, so the detail
+        // endpoint's full-row spread already includes these; omitting them
+        // here silently kills the badge the same way #800/#1273/#2138 did.
+        rebootScheduledAt: data.rebootScheduledAt ?? null,
+        rebootDeadline: data.rebootDeadline ?? null,
+        rebootSource: data.rebootSource ?? null,
+        rebootDeferralsUsed:
+          typeof data.rebootDeferralsUsed === "number"
+            ? data.rebootDeferralsUsed
+            : null,
+        rebootMaxDeferrals:
+          typeof data.rebootMaxDeferrals === "number"
+            ? data.rebootMaxDeferrals
+            : null,
       };
 
       setDevice(transformedDevice);

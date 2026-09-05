@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Bu politikanın organizasyonu yoktur, dolayısıyla atama hedefleri listelenemez.",
       "failedToAddAssignment": "Ödev eklenemedi",
       "failedToRemoveAssignment": "Ödev kaldırılamadı",
+      "assignmentAdded": "Ödev eklendi",
+      "assignmentRemoved": "Ödev kaldırıldı",
       "roleFilter": "Rol Filtresi",
       "optional": "(isteğe bağlı)",
       "noRestrictionAppliesToAllDeviceRoles": "Kısıtlama yok - tüm cihaz rolleri için geçerlidir",

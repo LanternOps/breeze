@@ -28,7 +28,10 @@ export type ScriptExecution = {
   deviceId: string;
   deviceHostname: string;
   status: ExecutionStatus;
-  startedAt: string;
+  // NULL from the API for any execution the agent hasn't picked up yet
+  // (`pending`) — `started_at` is only ever written once a run actually
+  // starts.
+  startedAt: string | null;
   completedAt?: string;
   exitCode?: number;
   stdout?: string;
@@ -60,14 +63,33 @@ type ExecutionHistoryProps = {
   timezone?: string;
 };
 
-function formatDuration(seconds?: number): string {
-  if (seconds === undefined || seconds === null) return '-';
+export function formatDuration(seconds?: number): string {
+  if (seconds === undefined || seconds === null) return '—';
   if (seconds < 1) return '<1s';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${mins}m`;
+}
+
+/**
+ * The list/detail endpoints never return `script_executions.duration` — only
+ * `startedAt`/`completedAt` are on the wire (apps/api/src/routes/scripts.ts).
+ * Prefer an explicit `duration` if a future payload ever supplies one, else
+ * derive it from the two timestamps, else give up honestly.
+ */
+export function computeDurationSeconds(execution: {
+  duration?: number;
+  startedAt?: string | null;
+  completedAt?: string;
+}): number | undefined {
+  if (execution.duration !== undefined && execution.duration !== null) return execution.duration;
+  if (!execution.startedAt || !execution.completedAt) return undefined;
+  const start = new Date(execution.startedAt).getTime();
+  const end = new Date(execution.completedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+  return Math.max(0, (end - start) / 1000);
 }
 
 function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): string {
@@ -140,7 +162,10 @@ export default function ExecutionHistory({
 
       let matchesDate = true;
       if (dateFilter !== 'all') {
-        const executionDate = new Date(execution.startedAt);
+        // A pending execution has no startedAt yet ("" parses to an Invalid
+        // Date, so every comparison below is false) -- it can't match any
+        // specific-date filter, but still shows under "All time".
+        const executionDate = new Date(execution.startedAt ?? '');
         const diffMs = now.getTime() - executionDate.getTime();
         const diffHours = diffMs / (1000 * 60 * 60);
         const diffDays = diffMs / (1000 * 60 * 60 * 24);
@@ -180,10 +205,10 @@ export default function ExecutionHistory({
           cmp = a.status.localeCompare(b.status);
           break;
         case 'startedAt':
-          cmp = a.startedAt.localeCompare(b.startedAt);
+          cmp = (a.startedAt ?? '').localeCompare(b.startedAt ?? '');
           break;
         case 'duration':
-          cmp = (a.duration ?? 0) - (b.duration ?? 0);
+          cmp = (computeDurationSeconds(a) ?? 0) - (computeDurationSeconds(b) ?? 0);
           break;
         case 'exitCode':
           cmp = (a.exitCode ?? -1) - (b.exitCode ?? -1);
@@ -335,7 +360,7 @@ export default function ExecutionHistory({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(execution.startedAt, t, timezone)}
+                      {execution.startedAt ? formatDateTime(execution.startedAt, t, timezone) : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {execution.status === 'running' ? (
@@ -344,7 +369,7 @@ export default function ExecutionHistory({
                           {t('executionHistory.status.running')}
                         </span>
                       ) : (
-                        formatDuration(execution.duration)
+                        formatDuration(computeDurationSeconds(execution))
                       )}
                     </td>
                     <td className="px-4 py-3">
