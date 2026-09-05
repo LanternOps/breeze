@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -505,13 +506,17 @@ func TestScheduleCleanupCoalescesABatch(t *testing.T) {
 	h := &HomebrewProvider{}
 	var calls int32
 	h.cleanupFunc = func() { atomic.AddInt32(&calls, 1) }
-	h.cleanupDebounce = 20 * time.Millisecond
+	// The debounce is generously wide relative to the inter-call sleeps
+	// below (20x) so scheduler jitter on a loaded CI runner can't let an
+	// earlier timer fire before a later scheduleCleanup call resets it —
+	// a real flake risk caught in PR review at tighter margins.
+	h.cleanupDebounce = 200 * time.Millisecond
 
 	// Simulate 3 packages finishing install back-to-back within one batch.
 	h.scheduleCleanup()
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	h.scheduleCleanup()
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	h.scheduleCleanup()
 
 	// Nothing should have fired yet — still inside the debounce window.
@@ -519,10 +524,41 @@ func TestScheduleCleanupCoalescesABatch(t *testing.T) {
 		t.Fatalf("cleanup fired before the batch went quiet: got %d calls", got)
 	}
 
-	time.Sleep(80 * time.Millisecond) // well past the debounce window
+	time.Sleep(600 * time.Millisecond) // well past the debounce window
 
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("expected exactly 1 coalesced cleanup call for the batch, got %d", got)
+	}
+}
+
+// TestScheduleCleanupConcurrentCallsAreRaceFree proves cleanupMu actually
+// serializes concurrent scheduleCleanup calls under go test -race, rather
+// than only ever being exercised sequentially. This mirrors the real
+// production contention: Install() calling scheduleCleanup while an earlier
+// scheduled cleanup timer may still be pending.
+func TestScheduleCleanupConcurrentCallsAreRaceFree(t *testing.T) {
+	h := &HomebrewProvider{}
+	var calls int32
+	h.cleanupFunc = func() { atomic.AddInt32(&calls, 1) }
+	h.cleanupDebounce = 20 * time.Millisecond
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.scheduleCleanup()
+		}()
+	}
+	wg.Wait()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// The race detector is the real assertion here (no data race on
+	// cleanupTimer); the count just confirms the storm still settled to a
+	// cleanup firing rather than being left permanently pending.
+	if got := atomic.LoadInt32(&calls); got < 1 {
+		t.Fatalf("expected at least 1 cleanup call after concurrent scheduling, got %d", got)
 	}
 }
 
@@ -602,6 +638,28 @@ func TestInstallDoesNotScheduleCleanupOnFailure(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Fatalf("a failed Install must not schedule cleanup, got %d calls", got)
 	}
+}
+
+// TestRunBrewCleanupExecutesRealCleanup exercises the actual (non-injected)
+// cleanup path end-to-end against real brew — brewCleanupArgs() ->
+// brewCommand() -> runCmdCombinedOutputWithTimeout — matching this file's
+// existing skip-if-unavailable convention. Every other cleanup test above
+// injects cleanupFunc, so this is the only coverage of runBrewCleanup
+// itself. `brew cleanup --prune=all` is a safe, idempotent maintenance
+// operation to run for real.
+func TestRunBrewCleanupExecutesRealCleanup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("brew rejects root execution")
+	}
+	if _, err := exec.LookPath("brew"); err != nil {
+		t.Skip("brew not installed")
+	}
+
+	h := &HomebrewProvider{}
+	// runBrewCleanup swallows all its own errors (by design — see its doc
+	// comment), so there's nothing to assert on here beyond "the real path
+	// runs to completion without panicking."
+	h.runBrewCleanup()
 }
 
 func TestBrewInstallCaskCallsUpgradeCask(t *testing.T) {

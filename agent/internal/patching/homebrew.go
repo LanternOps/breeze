@@ -38,6 +38,17 @@ type HomebrewProvider struct {
 	cleanupTimer    *time.Timer
 	cleanupDebounce time.Duration // overridden in tests; <=0 means use defaultCleanupDebounce
 	cleanupFunc     func()        // overridden in tests; nil means use h.runBrewCleanup
+
+	// brewMutateMu serializes brew invocations that mutate the
+	// Cellar/Caskroom (upgrade, uninstall, cleanup) against each other.
+	// scheduleCleanup's debounced cleanup fires on its own timer goroutine,
+	// independent of whatever Install/Uninstall call scheduled it — without
+	// this, a cleanup firing mid-batch (e.g. one package's upgrade running
+	// longer than defaultCleanupDebounce, which patchMutateTimeout allows up
+	// to 30 minutes for) could run `brew cleanup --prune=all` concurrently
+	// with an in-flight `brew upgrade`/`brew uninstall`, and Homebrew does
+	// not guarantee that's safe.
+	brewMutateMu sync.Mutex
 }
 
 // defaultCleanupDebounce is how long scheduleCleanup waits after the most
@@ -245,7 +256,9 @@ func (h *HomebrewProvider) Install(patchID string) (InstallResult, error) {
 	}
 	args = append(args, name)
 
+	h.brewMutateMu.Lock()
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
+	h.brewMutateMu.Unlock()
 	if err != nil {
 		return InstallResult{}, fmt.Errorf("brew upgrade failed: %w: %s", err, truncatePatchOutput(output))
 	}
@@ -272,6 +285,12 @@ func brewCleanupArgs() []string {
 // consecutive Install calls (one job upgrading N formulae/casks) triggers
 // exactly one cleanup run, fired shortly after the last package in the
 // batch finishes — not once per package. Safe to call concurrently.
+//
+// The debounce timer is in-memory only: if the agent process exits between
+// an Install and the timer firing, that scheduled cleanup is silently
+// dropped with no persistence or retry-on-restart. This is an accepted
+// best-effort gap (matching the issue's "log but never fail the job"
+// framing) — the next patch batch schedules its own cleanup regardless.
 func (h *HomebrewProvider) scheduleCleanup() {
 	h.cleanupMu.Lock()
 	defer h.cleanupMu.Unlock()
@@ -304,7 +323,11 @@ func (h *HomebrewProvider) runBrewCleanup() {
 		return
 	}
 
+	// Serialized against Install/Uninstall via brewMutateMu — see its
+	// doc comment on HomebrewProvider for why.
+	h.brewMutateMu.Lock()
 	output, err := runCmdCombinedOutputWithTimeout(cmd, patchMutateTimeout)
+	h.brewMutateMu.Unlock()
 	if err != nil {
 		log.Warn("brew cleanup failed", "error", err, "output", truncatePatchOutput(output))
 		return
@@ -325,7 +348,9 @@ func (h *HomebrewProvider) Uninstall(patchID string) error {
 	}
 	args = append(args, name)
 
+	h.brewMutateMu.Lock()
 	output, err := h.brewCombinedOutput(patchMutateTimeout, args...)
+	h.brewMutateMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("brew uninstall failed: %w: %s", err, truncatePatchOutput(output))
 	}
