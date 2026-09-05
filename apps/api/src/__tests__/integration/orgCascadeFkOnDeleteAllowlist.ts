@@ -144,19 +144,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_policy_id_automation_policies_id_f', parentTable: 'automation_policies', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'automation_runs', constraint: 'automation_runs_automation_id_automations_id_fk', parentTable: 'automations', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_deployment_id_deployments_id_fk', parentTable: 'deployments', reason: 'child-not-deleted', allColumnsNullable: false },
-  {
-    childTable: 'restore_jobs',
-    constraint: 'restore_jobs_command_id_fkey',
-    parentTable: 'device_commands',
-    reason: 'child-deleted-after-parent',
-    allColumnsNullable: true,
-    note:
-      'LIVE ERASURE FAILURE, not a latent shape. device_commands is emptied in step 1b, BEFORE the '
-      + 'cascade walk that empties restore_jobs -- so any org that has ever run a restore driven by a '
-      + 'device command aborts erasure at step 1b with 23503. Fix forward with ON DELETE SET NULL on '
-      + 'command_id (it is nullable), or move the restore_jobs clear into '
-      + 'ASSOCIATED_SYSTEM_SCOPED_TABLES ahead of device_commands.',
-  },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'device_software', constraint: 'device_software_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
