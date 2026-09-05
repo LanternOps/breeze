@@ -20,8 +20,8 @@ import {
   invoiceLineDevices, contractBillingPeriods, contractBillingPeriodOutcomes,
   users, roles, organizationUsers,
 } from '../../db/schema';
-import { generateDueInvoice } from '../../services/contractService';
-import { removeLine, updateLine } from '../../services/invoiceService';
+import { computeContractEstimate, getContract, materializeContractLineOntoInvoice, generateDueInvoice } from '../../services/contractService';
+import { createManualInvoice, removeLine, updateLine } from '../../services/invoiceService';
 import type { DeviceRole } from '@breeze/shared';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -144,6 +144,54 @@ const hosts = (n: number, prefix = 'host') =>
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('billing evidence at generation (real DB) #3205 W07', () => {
+  runDb('interactive materialization records devices on manual and generated drafts without changing period outcomes (#4837)', async () => {
+    const f = await seedContract(['zulu', 'alpha'], { lineType: 'per_device', includedQuantity: '1.00', overageMode: 'bill', overageUnitPrice: '12.00' });
+    const generated = await generate(f.contractId);
+    const actor = { ...ACTOR, partnerId: f.partnerId };
+    await withSystemDbAccessContext(async () => {
+      const manual = await createManualInvoice({ orgId: f.orgId }, actor);
+      const before = await db.select().from(contractBillingPeriodOutcomes);
+      const { contract, lines } = await getContract(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' });
+      for (const invoiceId of [manual.id, generated.invoiceId!]) {
+        const evidence = new Map<string, readonly import('../../services/contractQuantities').DeviceSnapshotRow[]>();
+        const estimate = await computeContractEstimate(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' }, evidence);
+        const est = estimate.lines[0]!;
+        const added = await materializeContractLineOntoInvoice(actor, {
+          invoiceId, contract, line: lines[0]!, currencyCode: contract.currencyCode,
+          resolved: { counted: est.counted, billed: est.quantity, included: est.included, overage: est.overage, overageMode: est.overageMode },
+          deviceEvidence: evidence.get(lines[0]!.id),
+        });
+        const rows = await db.select().from(invoiceLineDevices).where(eq(invoiceLineDevices.invoiceLineId, added.baseLine.id));
+        expect(rows).toMatchObject([{ hostname: 'alpha', countedAs: 'included', orgId: f.orgId }]);
+        const tail = await db.select().from(invoiceLineDevices).where(eq(invoiceLineDevices.invoiceLineId, added.overageLine!.id));
+        expect(tail).toMatchObject([{ hostname: 'zulu', countedAs: 'overage' }]);
+        const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId));
+        expect(invoice!.evidenceVersion).toBe(1);
+      }
+      expect(await db.select().from(contractBillingPeriodOutcomes)).toEqual(before);
+    });
+  });
+
+  runDb('interactive evidence failure rolls back the base line and invoice marker (#4837)', async () => {
+    const f = await seedContract(['alpha'], { lineType: 'per_device' });
+    const actor = { ...ACTOR, partnerId: f.partnerId };
+    const manual = await withSystemDbAccessContext(() => createManualInvoice({ orgId: f.orgId }, actor));
+    await expect(withSystemDbAccessContext(async () => {
+      const { contract, lines } = await getContract(f.contractId, { ...actor, userId: '00000000-0000-4000-8000-000000000001' });
+      // A nonexistent device violates the FK after the base line was written.
+      await materializeContractLineOntoInvoice(actor, {
+        invoiceId: manual.id, contract, line: lines[0]!, currencyCode: contract.currencyCode,
+        resolved: { counted: 1, billed: 1, included: null, overage: 0, overageMode: null },
+        deviceEvidence: [{ id: '00000000-0000-4000-8000-000000000099', hostname: 'missing', role: 'server', siteId: null }],
+      });
+    })).rejects.toThrow();
+    await withSystemDbAccessContext(async () => {
+      expect(await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, manual.id))).toEqual([]);
+      const [invoice] = await db.select().from(invoices).where(eq(invoices.id, manual.id));
+      expect(invoice!.evidenceVersion).toBeNull();
+    });
+  });
+
   runDb('GET evidence pages by (hostname, evidence-row id) without overlap across duplicate hostnames', async () => {
     const f = await seedContract(['dup', 'dup', 'dup'], { lineType: 'per_device' });
     const generated = await generate(f.contractId);

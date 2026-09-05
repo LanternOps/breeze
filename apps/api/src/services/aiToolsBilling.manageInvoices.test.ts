@@ -173,12 +173,20 @@ describe('manage_invoices', () => {
       ],
       periods: [],
     });
-    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+    const capturedDevices = [
+      { id: 'd1', hostname: 'one', role: 'server', siteId: null },
+      { id: 'd2', hostname: 'two', role: 'server', siteId: null },
+      { id: 'd3', hostname: 'three', role: 'server', siteId: null },
+    ];
+    vi.mocked(contractService.computeContractEstimate).mockImplementationOnce(async (_id, _actor, evidence) => {
+      evidence!.set('contract-line-1', capturedDevices);
+      return {
       currencyCode: 'USD',
       periodTotal: '37.50',
       lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true, counted: 3, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
       uncoveredDevices: null,
       overages: [],
+      };
     });
 
     const out = await getTool().handler(
@@ -198,12 +206,13 @@ describe('manage_invoices', () => {
     );
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', actor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor);
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor, expect.any(Map));
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
       line: expect.objectContaining({ id: 'contract-line-1', catalogItemId: 'catalog-1' }),
       resolved: { counted: 3, billed: 3, included: null, overage: 0, overageMode: null },
+      deviceEvidence: capturedDevices,
       currencyCode: 'USD',
     });
     expect(invoiceService.addContractLine).not.toHaveBeenCalled();

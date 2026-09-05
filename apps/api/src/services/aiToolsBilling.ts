@@ -49,6 +49,7 @@ import {
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { db } from '../db';
+import type { DeviceSnapshotRow } from './contractQuantities';
 import { computeContractEstimate, getContract, lockContractRow, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
@@ -305,7 +306,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
 
-            const estimate = await computeContractEstimate(contractId, contractActor);
+            const deviceEvidence = new Map<string, readonly DeviceSnapshotRow[]>();
+            const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence);
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
 
@@ -320,6 +322,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
                 overage: est.overage,
                 overageMode: est.overageMode,
               },
+              deviceEvidence: deviceEvidence.get(line.id),
               currencyCode: estimate.currencyCode,
             });
             return JSON.stringify({
