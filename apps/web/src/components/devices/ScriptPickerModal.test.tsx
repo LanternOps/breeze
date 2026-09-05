@@ -542,3 +542,36 @@ describe('ScriptPickerModal secret parameters (#3409 PR4c-2)', () => {
     expect(onSelect.mock.calls[0][1]).toBe('user');
   });
 });
+
+// The `script-run-as` and `script-session-target` selects had no accessible
+// name at all (no <label>, no aria-label) -- every other run-context control
+// in the app uses the labelled RunContextSelect. A screen-reader user gets
+// two unnamed comboboxes with no way to tell what either one does.
+describe('ScriptPickerModal accessible labels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('exposes an accessible name for the run-as select', async () => {
+    routeFetchMock();
+    render(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="rds-01"
+        deviceOs="windows" deviceId="dev-1" helperLifecycleMode="on-demand" />
+    );
+    await waitFor(() => expect(screen.getByTestId('script-run-as')).toBeDefined());
+
+    expect(screen.getByLabelText('Run as')).toBe(screen.getByTestId('script-run-as'));
+  });
+
+  it('exposes an accessible name for the session-target select', async () => {
+    routeFetchMock();
+    render(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="rds-01"
+        deviceOs="windows" deviceId="dev-1" helperLifecycleMode="on-demand" />
+    );
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.getByTestId('script-session-target')).toBeDefined());
+
+    expect(screen.getByLabelText('Target session')).toBe(screen.getByTestId('script-session-target'));
+  });
+});
