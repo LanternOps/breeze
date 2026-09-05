@@ -2,7 +2,10 @@
 // the main breeze-agent and the breeze-backup helper binary.
 package backupipc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // IPC message types for backup helper communication.
 const (
@@ -98,3 +101,13 @@ type BackupProgress struct {
 	// stranding the uploaded objects with no restore point.
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
+
+// BackupStopForwardTimeout is how long the agent waits for the helper's
+// backup_stop reply. BackupStopDrainTimeout is how long the helper may block
+// joining a cancelled workload's unwind before replying; it MUST stay below
+// the forward timeout or every drained stop reads as a failed command on the
+// server (the reply then arrives unsolicited). Pinned by types_test.go.
+const (
+	BackupStopForwardTimeout = 30 * time.Second
+	BackupStopDrainTimeout   = 20 * time.Second
+)

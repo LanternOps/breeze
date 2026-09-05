@@ -394,6 +394,19 @@ describe('backup job creation helpers', () => {
       expect(tx.insert).not.toHaveBeenCalled();
     });
 
+    it('scheduled dedupe on an older helper ignores the profile (pre-queue behaviour)', async () => {
+      vi.resetAllMocks();
+      mockHelperVersion('0.109.0');
+      const tx = buildTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+      await createScheduledBackupJobIfAbsent({
+        orgId: 'org-1', configId: 'shared-storage', deviceId: 'dev-1',
+        featureLinkId: 'profile-a', backupMode: 'file', occurrenceKey: '2026-09-04T12:00',
+      });
+      expect(whereTextOf(tx)).not.toContain('featurelinkid');
+      expect(whereTextOf(tx)).toContain('backupmode');
+    });
+
     it('retains scheduled same-mode selections from different profiles sharing storage', async () => {
       for (const featureLinkId of ['profile-a', 'profile-b']) {
         const tx = buildTx();

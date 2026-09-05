@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBackupCommandRequestRoundTrip(t *testing.T) {
@@ -122,5 +123,14 @@ func TestBackupCapabilitiesRoundTrip(t *testing.T) {
 	}
 	if len(decoded.Providers) != 2 {
 		t.Errorf("expected 2 providers, got %d", len(decoded.Providers))
+	}
+}
+
+func TestBackupStopDrainStaysUnderForwardTimeout(t *testing.T) {
+	if BackupStopDrainTimeout >= BackupStopForwardTimeout {
+		t.Fatalf("drain %v must be shorter than forward %v or a drained stop times out at the agent", BackupStopDrainTimeout, BackupStopForwardTimeout)
+	}
+	if BackupStopForwardTimeout-BackupStopDrainTimeout < 5*time.Second {
+		t.Fatalf("keep >=5s of IPC slack between drain %v and forward %v", BackupStopDrainTimeout, BackupStopForwardTimeout)
 	}
 }

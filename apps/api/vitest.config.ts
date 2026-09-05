@@ -31,6 +31,9 @@ export default defineConfig({
       // inboundEmail exclusion above.
       'src/services/vulnerability*.integration.test.ts',
       'src/services/aiToolsVulnerability.integration.test.ts',
+      // Real-DB backup queue lifecycle proof (#4923); runs under the
+      // integration config's setup (truncating), never the unit runner.
+      'src/services/backupProgress.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
       'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',

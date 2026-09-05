@@ -258,8 +258,8 @@ func TestTargetedBackupStopDrainsCancelledWorkload(t *testing.T) {
 	go func() {
 		<-ctx.Done()
 		time.Sleep(20 * time.Millisecond) // simulate VSS teardown / upload flush
-		cleanup()
-		close(unwound)
+		close(unwound)                    // teardown finished ...
+		cleanup()                         // ... then the tracker releases (last defer in production)
 	}()
 	result := executeCommand(backupipc.BackupCommandRequest{CommandType: "backup_stop", Payload: []byte(`{"jobId":"job-a"}`)}, nil, nil, nil, canceller)
 	if !result.Success || result.Stdout != `{"stopped":true,"drained":true}` {

@@ -23,6 +23,9 @@ type CreateManualBackupJobInput = {
    *  (dispatch reads the feature link's settings row). */
   backupMode?: BackupModeValue;
   modeTargets?: Record<string, unknown>;
+  /** Pre-resolved deviceHelperQueues(); pass it when fanning out several
+   *  selections for one device so the lookup runs once, not per selection. */
+  helperQueues?: boolean;
 };
 
 type CreateScheduledBackupJobInput = {
@@ -35,7 +38,22 @@ type CreateScheduledBackupJobInput = {
   dedupeWindowMinutes?: number;
   backupMode?: BackupModeValue;
   modeTargets?: Record<string, unknown>;
+  helperQueues?: boolean;
 };
+
+/**
+ * Whether the device's installed breeze-backup helper serializes workloads
+ * itself (#4923). A missing device row or unknown version reads as NOT
+ * capable so the caller keeps the pre-queue server-side dedupe.
+ */
+export async function deviceHelperQueues(deviceId: string): Promise<boolean> {
+  const [device] = await db
+    .select({ backupVersion: devices.backupVersion })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  return backupHelperSupportsQueue(device?.backupVersion);
+}
 
 async function withBackupJobLock<T>(lockKey: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
   return db.transaction(async (tx) => {
@@ -58,12 +76,7 @@ export async function createManualBackupJobIfIdle(
   // That relaxation is only safe when the device's helper actually has the
   // queue. An older helper runs every dispatched job concurrently, so for it
   // the pre-queue guard stays: one active job per device+mode.
-  const [device] = await db
-    .select({ backupVersion: devices.backupVersion })
-    .from(devices)
-    .where(eq(devices.id, input.deviceId))
-    .limit(1);
-  const helperQueues = backupHelperSupportsQueue(device?.backupVersion);
+  const helperQueues = input.helperQueues ?? await deviceHelperQueues(input.deviceId);
 
   const lockKey = helperQueues
     ? `manual:${input.orgId}:${input.deviceId}:${input.configId}:${input.featureLinkId ?? 'legacy'}:${input.backupMode ?? 'legacy'}`
@@ -134,6 +147,9 @@ export async function createScheduledBackupJobIfAbsent(
   // Profile fan-out creates one job per selection per occurrence — the mode
   // participates in both the advisory-lock key and the dedupe window so a
   // Server profile's file/system_image/mssql jobs don't dedupe each other.
+  // Same-config, same-mode selections from different profiles are kept apart
+  // only when the device's helper queues them (see createManualBackupJobIfIdle).
+  const helperQueues = input.helperQueues ?? await deviceHelperQueues(input.deviceId);
   return withBackupJobLock(
     `scheduled:${input.orgId}:${input.deviceId}:${input.featureLinkId ?? input.configId}:${input.occurrenceKey}:${input.backupMode ?? 'legacy'}`,
     async (tx) => {
@@ -146,9 +162,11 @@ export async function createScheduledBackupJobIfAbsent(
             eq(backupJobs.deviceId, input.deviceId),
             eq(backupJobs.configId, input.configId),
             eq(backupJobs.type, 'scheduled'),
-            input.featureLinkId
-              ? eq(backupJobs.featureLinkId, input.featureLinkId)
-              : sql`${backupJobs.featureLinkId} IS NULL`,
+            ...(helperQueues
+              ? [input.featureLinkId
+                  ? eq(backupJobs.featureLinkId, input.featureLinkId)
+                  : sql`${backupJobs.featureLinkId} IS NULL`]
+              : []),
             input.backupMode
               ? eq(backupJobs.backupMode, input.backupMode)
               : sql`${backupJobs.backupMode} IS NULL`,

@@ -45,9 +45,9 @@ var rootCmd = &cobra.Command{
 var socketPath string
 
 // backupStopDrainTimeout bounds how long a targeted backup_stop waits for the
-// cancelled workload to unwind before replying. Kept under the agent's 30s
-// backup_stop forward timeout so the stop itself never times out.
-const backupStopDrainTimeout = 20 * time.Second
+// cancelled workload to unwind before replying. Pinned below the agent's
+// backup_stop forward timeout in backupipc so the stop itself never times out.
+const backupStopDrainTimeout = backupipc.BackupStopDrainTimeout
 
 type activeCommandCanceller struct {
 	mu       sync.Mutex
@@ -604,7 +604,11 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		}
 		if ticket != nil {
 			// Queued workloads also take the process-wide guard so they never
-			// overlap a helper-local run that bypassed the queue.
+			// overlap a backup_run that reached RunBackupContext without a
+			// ticket (it acquires the same guard internally). Synchronous
+			// mssql/hyperv from a non-queue-aware server take neither the FIFO
+			// nor the guard and are not cancel-tracked — the pre-queue
+			// behaviour, kept so their bounded round trip never blocks.
 			ctx, cleanup := commandCanceller.track(req.CommandID)
 			defer cleanup()
 			ctx, release, err := backup.AcquireExecutionWithProgress(ctx, func() {
