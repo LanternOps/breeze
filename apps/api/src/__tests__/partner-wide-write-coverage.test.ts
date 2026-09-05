@@ -175,6 +175,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
+  'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
   'services/tdSynnexDigitalBridge.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate; search caches tokens',
   'services/tdSynnexEcExpress.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate',
   'services/tdSynnexSftpSync.ts': 'credential config/test/sync gated at routes/catalog/distributors.ts partnerWideGate; worker is system context',
