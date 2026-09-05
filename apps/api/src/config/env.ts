@@ -513,6 +513,34 @@ export function authenticatorAttestationEnforced(): boolean {
   return true;
 }
 
+/**
+ * Apple App Attest configuration (#1374 W03).
+ *
+ * `appId` is Apple's "<TeamID>.<bundle id>" form and is hashed into the
+ * attestation's rpIdHash, so a wrong value here rejects every genuine
+ * attestation rather than accepting a foreign one — fail-closed either way.
+ * Default matches the committed identifiers (apps/mobile/eas.json team
+ * D8W6N2JYMA, apps/mobile/app.json bundle com.breeze.rmm).
+ */
+export const APPLE_APP_ATTEST_APP_ID =
+  process.env.APPLE_APP_ATTEST_APP_ID?.trim() || 'D8W6N2JYMA.com.breeze.rmm';
+
+/**
+ * Which App Attest environment's aaguid sentinel is accepted.
+ *
+ * DEFAULTS TO `production`, and only the exact string `development` opts out.
+ * A typo, an empty value, or a missing variable must NOT silently accept
+ * development attestations: those come from any developer-signed build of the
+ * app, which would hand an attacker the very L4 basis this wave exists to
+ * protect. Read at call time so ops can flip it without a rebuild and tests
+ * need no module reload.
+ */
+export function appleAppAttestEnvironment(): 'production' | 'development' {
+  return process.env.APPLE_APP_ATTEST_ENVIRONMENT?.trim() === 'development'
+    ? 'development'
+    : 'production';
+}
+
 // Delegant service configuration for M365 helpdesk agent capability.
 // Delegant is a sibling service that manages AI-agent identity and governance.
 export const DELEGANT_BASE_URL = process.env.DELEGANT_BASE_URL ?? '';

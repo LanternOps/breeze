@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import type { MobileAttestation } from '@breeze/shared';
 import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
+import { APPLE_APP_ATTEST_APP_ID, appleAppAttestEnvironment } from '../config/env';
 import { getRedis } from './redis';
 import { captureException } from './sentry';
 import type { MobileKeyAlg } from './mobileHwKey';
+import { verifyAppAttestAttestation } from './attestation/appleAppAttest';
 
 /**
  * Attested mobile approver-key registration (#1374, feature #4707 wave W02).
@@ -163,17 +165,98 @@ function unattested(): AttestationResult {
  * Dispatch to the per-platform verifier. W03 wires iOS (Apple App Attest), W04
  * wires Android (Key Attestation + Play Integrity).
  *
- * Until then every attestation resolves `unattested`: the device registers and
- * works at L2/L3, and simply cannot reach L4 — `unattested` is not in
- * `L4_TRUSTED_PLATFORM_BOUND_BASES` (services/authenticatorAssurance.ts), which
- * a test in this module's suite pins. Fail-closed by construction, which is what
- * makes W02 safe to ship before the verifiers exist: an unknown, unimplemented,
- * or forged attestation never yields a trusted basis.
+ * Anything not yet wired — and anything that fails verification — resolves
+ * `unattested`: the device registers and works at L2/L3, and simply cannot
+ * reach L4, because `unattested` is not in `L4_TRUSTED_PLATFORM_BOUND_BASES`
+ * (services/authenticatorAssurance.ts), which a test in this module's suite
+ * pins. Fail-closed by construction: an unknown, unimplemented, or forged
+ * attestation never yields a trusted basis.
  */
-export async function verifyPlatformAttestation(_input: {
+export async function verifyPlatformAttestation(input: {
   attestation: MobileAttestation;
   transcript: Buffer;
   publicKeySpkiB64: string;
+  publicKeyAlg: MobileKeyAlg;
 }): Promise<AttestationResult> {
+  if (input.attestation.platform === 'ios') {
+    return verifyIosAttestation(input.attestation, input.transcript, input.publicKeyAlg);
+  }
   return unattested();
+}
+
+/**
+ * iOS — Apple App Attest (#1374 W03).
+ *
+ * A verification FAILURE is a downgrade, not a 5xx: the phone still gets a
+ * working L2/L3 approver key, it just never reaches L4. That is deliberate —
+ * the shapes that land here are client-provokable (a development build against
+ * a production-configured server, a stale attempt, a genuinely forged blob) and
+ * none of them should block a technician from enrolling a device that is still
+ * useful at lower tiers. The reason is logged rather than returned: the route
+ * writes the audit row, and `evidence` on an unattested result must stay empty
+ * so no unverified claim is ever persisted.
+ */
+function verifyIosAttestation(
+  attestation: Extract<MobileAttestation, { platform: 'ios' }>,
+  transcript: Buffer,
+  publicKeyAlg: MobileKeyAlg,
+): AttestationResult {
+  const appId = APPLE_APP_ATTEST_APP_ID;
+  const environment = appleAppAttestEnvironment();
+
+  let attested: { attestedPublicKeyDer: Buffer; receiptB64: string };
+  try {
+    attested = verifyAppAttestAttestation({
+      attestationObjectB64: attestation.attestationObject,
+      keyIdB64: attestation.keyId,
+      clientDataHash: transcript,
+      appId,
+      environment,
+    });
+  } catch (err) {
+    console.warn('[authenticator-attest] App Attest verification failed', {
+      environment,
+      reason: err instanceof Error ? err.message : 'unknown',
+    });
+    return unattested();
+  }
+
+  // The App Attest key and the APPROVAL key are two different keys. App Attest
+  // proves a genuine app instance on genuine hardware; the transcript binding
+  // proves that instance vouched for THIS approval SPKI. What decides the basis
+  // is whether the approval key is itself Secure-Enclave resident, which the
+  // client asserts by minting a P-256 key with kSecAttrTokenIDSecureEnclave —
+  // and which iOS gives us NO API to verify server-side. So: ES256 gets
+  // ios_se_p256_app_attest; RS256 (which CANNOT be Secure Enclave — the SE
+  // holds only P-256) gets the weaker ios_keychain_rsa_app_attest, which is
+  // deliberately NOT in L4_TRUSTED_PLATFORM_BOUND_BASES.
+  const basis: PlatformBoundBasis =
+    publicKeyAlg === 'ES256' ? 'ios_se_p256_app_attest' : 'ios_keychain_rsa_app_attest';
+
+  return {
+    basis,
+    verifiedAt: new Date(),
+    keyId: attestation.keyId,
+    // DIGESTS ONLY, never the raw receipt. The receipt is a bearer artifact for
+    // Apple's fraud-metric endpoint; hashing it keeps the forensic link without
+    // persisting a credential in a jsonb column.
+    evidence: {
+      verifier: 'apple_app_attest',
+      verifierVersion: 1,
+      appId,
+      environment,
+      attestedAppAttestKeySha256: crypto
+        .createHash('sha256')
+        .update(attested.attestedPublicKeyDer)
+        .digest('hex'),
+      receiptSha256: crypto
+        .createHash('sha256')
+        .update(Buffer.from(attested.receiptB64, 'base64'))
+        .digest('hex'),
+    },
+    // App Attest attests the app instance itself, so a pass IS an app-integrity
+    // signal — unlike Android, where key attestation and Play Integrity are two
+    // separate checks (W04).
+    appIntegrityVerifiedAt: new Date(),
+  };
 }
