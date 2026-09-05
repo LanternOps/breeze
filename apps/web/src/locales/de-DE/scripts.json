@@ -644,7 +644,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "In die Zwischenablage kopieren"
+      "copyToClipboard": "In die Zwischenablage kopieren",
+      "runAgain": "Erneut ausführen"
     },
     "title": "Ausführungsdetails",
     "statusDescription": {
@@ -1331,6 +1332,8 @@
     "offlineWarning": "Das ausgewählte Gerät ist offline — der Lauf wartet, bis es sich wieder verbindet.",
     "exitCode": "Exit {{code}}",
     "viewHistory": "Verlauf anzeigen",
+    "runAgain": "Erneut ausführen",
+    "viewOnDevice": "Auf Gerät anzeigen",
     "status": {
       "pending": "In Warteschlange",
       "running": "Läuft",

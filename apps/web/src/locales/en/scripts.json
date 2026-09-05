@@ -644,7 +644,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Copy to clipboard"
+      "copyToClipboard": "Copy to clipboard",
+      "runAgain": "Run again"
     },
     "title": "Execution Details",
     "statusDescription": {
@@ -1331,6 +1332,8 @@
     "offlineWarning": "The selected device is offline — the run will wait until it reconnects.",
     "exitCode": "exit {{code}}",
     "viewHistory": "View history",
+    "runAgain": "Run again",
+    "viewOnDevice": "View on device",
     "status": {
       "pending": "Queued",
       "running": "Running",

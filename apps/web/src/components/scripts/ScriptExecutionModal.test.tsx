@@ -523,3 +523,97 @@ describe('ScriptExecutionModal empty state on the server options path', () => {
     expect(probeUrl).toContain('osType=windows');
   });
 });
+
+// #4885 — "Run again": the modal accepts the previous execution's device and
+// parameter values so the operator doesn't re-pick either from scratch.
+describe('ScriptExecutionModal initial values (#4885 Run again)', () => {
+  const twoDevices: Device[] = [
+    { id: 'd-1', hostname: 'ws-01', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ' },
+    { id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('pre-selects the device from initialDeviceIds without the operator touching the picker', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        devices={twoDevices}
+        initialDeviceIds={['d-2']}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    // Seeded before any click — proves the selection came from the prop, not
+    // from the operator checking a box.
+    expect(screen.getByText('1 device(s) selected')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    // The exact target must be the pre-filled device, not merely "some device"
+    // — ws-01 (d-1) is also on screen and must NOT have been picked instead.
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-2'], {}, 'system');
+  });
+
+  it('pre-fills runtime parameter values from initialParameters, overriding the definition default', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{
+          ...baseScript,
+          parameters: [{ name: 'message', type: 'string', defaultValue: 'hello' }],
+        }}
+        devices={twoDevices}
+        initialDeviceIds={['d-1']}
+        initialParameters={{ message: 'previous run value' }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    // The stored run value wins over the script's own definition default.
+    expect(screen.getByDisplayValue('previous run value')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('hello')).toBeNull();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-1'], { message: 'previous run value' }, 'system');
+  });
+
+  it('ignores an initialParameters key the current script definition no longer has', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{
+          ...baseScript,
+          parameters: [{ name: 'message', type: 'string' }],
+        }}
+        devices={twoDevices}
+        initialDeviceIds={['d-1']}
+        initialParameters={{ message: 'kept', removedParam: 'stale-value' }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    expect(screen.getByDisplayValue('kept')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('stale-value')).toBeNull();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-1'], { message: 'kept' }, 'system');
+  });
+});

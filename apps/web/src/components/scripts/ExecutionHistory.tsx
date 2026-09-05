@@ -37,6 +37,11 @@ export type ScriptExecution = {
   // marker. Only present once the execution-detail endpoint has been fetched
   // (the list endpoint omits it, same as stdout/stderr).
   customFieldResult?: ScriptCustomFieldWriteResult | null;
+  // #4885 — the runtime values this execution was submitted with. Both
+  // GET /scripts/:id/executions and GET /scripts/executions/:id already
+  // return `script_executions.parameters` on the wire; this was simply never
+  // declared on the type any consumer read through. Powers "Run again".
+  parameters?: Record<string, string | number | boolean> | null;
 };
 
 type ExecutionHistoryProps = {

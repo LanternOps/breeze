@@ -1521,6 +1521,7 @@
     "output": "Output",
     "refreshing": "Aggiornamento...",
     "running": "In esecuzione...",
+    "runAgain": "Esegui di nuovo",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Annullato",
