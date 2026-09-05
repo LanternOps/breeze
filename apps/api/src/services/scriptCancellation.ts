@@ -6,7 +6,7 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
-import { scriptExecutions } from '../db/schema/scripts';
+import { executionStatusEnum, scriptExecutions } from '../db/schema/scripts';
 import { deviceCommands, devices } from '../db/schema/devices';
 import { users } from '../db/schema/users';
 import { sendCommandToAgent } from '../routes/agentWs';
@@ -226,14 +226,22 @@ export async function applyScriptCancelAck(input: {
 // The request side (#3525 W02b)
 // ===========================================================================
 
+/**
+ * One value of the `execution_status` enum. Deriving it from the Drizzle enum
+ * rather than widening to `string` means a consumer that switches on it — W03's
+ * closers are the obvious candidates — gets exhaustiveness checking, and a
+ * renamed enum value fails to compile instead of silently never matching.
+ */
+export type ExecutionStatus = (typeof executionStatusEnum.enumValues)[number];
+
 /** What a cancel request resolved to. Every caller maps this, nothing else. */
 export type CancelOutcome =
   /** No such execution — a race with a delete, or a bad id. */
   | { kind: 'not_found' }
   /** Terminal with no cancellation history: there is nothing left to stop. */
-  | { kind: 'already_terminal'; status: string }
+  | { kind: 'already_terminal'; status: ExecutionStatus }
   /** A cancel is already in flight, or already resolved. Repeat calls are safe. */
-  | { kind: 'idempotent'; status: string }
+  | { kind: 'idempotent'; status: ExecutionStatus }
   /** Server-side proof: the command was still queued and was retracted. */
   | { kind: 'retracted'; executionId: string; completedAt: Date }
   /** The command already finished; its real result is the closer, not us. */
@@ -443,7 +451,11 @@ export async function cancelScriptExecution(input: {
           scriptExecutionId: execution.id,
           graceSeconds: grace,
         },
-        createdBy: cancelledBy ?? '',
+        // NULL, never `''`: the column is a nullable uuid, and an empty string
+        // is `22P02 invalid input syntax for type uuid` — which would roll the
+        // whole cancel back and 500 exactly the synthetic-principal caller
+        // `resolveCancelledBy`'s degrade exists to keep working.
+        createdBy: cancelledBy,
       });
     }
 
@@ -457,9 +469,15 @@ export async function cancelScriptExecution(input: {
   }));
 
   // (4) Only a terminal branch may close the paired automation action, and only
-  // AFTER commit — the helper opens its own system context and takes its own
-  // FOR UPDATE, so calling it inside the transaction above would self-deadlock
-  // against a row this transaction still holds.
+  // AFTER commit.
+  //
+  // Not a deadlock argument — the helper's own `inDeliberateSystemContext`
+  // would see the ambient scope this function already established as `system`
+  // and run INLINE, joining the transaction above rather than opening its own.
+  // That is exactly the problem: the automation action would be closed inside
+  // an as-yet-uncommitted cancel, so any later failure would silently roll back
+  // a terminal transition the reconciler had already published on. Closing it
+  // only once the cancel is durable keeps the two in the right order.
   if (outcome.kind === 'retracted') {
     await applyAutomationActionTerminal({
       source: 'cancellation',
@@ -525,15 +543,26 @@ export async function deliverCancelCommand(
   return false;
 }
 
-/** Per-kind tally of a run-wide cancel sweep. Exactly one bucket per execution. */
+/**
+ * Per-kind tally of a run-wide cancel sweep. Exactly one bucket per execution.
+ *
+ * The buckets are split the way an operator watching a run needs them, NOT the
+ * way the `CancelOutcome` union is shaped: `alreadyCancelling` is deliberately
+ * separate from `noActionNeeded` because an execution whose cancel is still in
+ * flight has NOT stopped, and folding the two together would let a "cancel this
+ * run" summary claim work is finished while a script is still running — the
+ * same dishonesty the status/cancel_state split exists to prevent.
+ */
 export type RunCancelTally = {
-  /** A `script_cancel` is in flight on the device. */
+  /** A `script_cancel` went out because of THIS call. Not yet stopped. */
   requested: number;
   /** Proven stopped: the command was retracted before the device saw it. */
   retracted: number;
-  /** Nothing left to stop — already terminal, already cancelling, or the command finished. */
-  alreadyTerminal: number;
-  /** Refused: the execution vanished, or has no paired command (fail-closed). */
+  /** A cancel was ALREADY in flight. Still awaiting the device; not stopped. */
+  alreadyCancelling: number;
+  /** Nothing left to stop: already terminal, or the command already finished. */
+  noActionNeeded: number;
+  /** Refused: the execution vanished, has no paired command, or threw. */
   failed: number;
 };
 
@@ -561,34 +590,74 @@ export async function cancelExecutionsForRun(input: {
       )),
   );
 
-  const tally: RunCancelTally = { requested: 0, retracted: 0, alreadyTerminal: 0, failed: 0 };
+  const tally: RunCancelTally = {
+    requested: 0,
+    retracted: 0,
+    alreadyCancelling: 0,
+    noActionNeeded: 0,
+    failed: 0,
+  };
+
   for (const row of rows) {
-    const outcome = await cancelScriptExecution({
-      executionId: row.id,
-      actorId: input.actorId,
-      actorLabel: input.actorLabel,
-      graceSeconds: input.graceSeconds,
-    });
+    // One execution's failure must not abandon the rest of the run. A
+    // transient deadlock on execution 3 of 20 would otherwise leave 17 devices
+    // never even asked to stop, and the caller would get a rejected promise
+    // instead of the tally this function promises.
+    let outcome: CancelOutcome;
+    try {
+      outcome = await cancelScriptExecution({
+        executionId: row.id,
+        actorId: input.actorId,
+        actorLabel: input.actorLabel,
+        graceSeconds: input.graceSeconds,
+      });
+    } catch (err) {
+      tally.failed += 1;
+      console.error('[scriptCancellation] cancel threw during a run sweep', {
+        runId: input.runId,
+        executionId: row.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, undefined, { runId: input.runId, executionId: row.id });
+      continue;
+    }
+
     switch (outcome.kind) {
       case 'cancelling':
-        tally.requested += 1;
-        if (!outcome.alreadyQueued) {
-          await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+        if (outcome.alreadyQueued) {
+          tally.alreadyCancelling += 1;
+          break;
         }
+        tally.requested += 1;
+        await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
         break;
       case 'retracted':
         tally.retracted += 1;
         break;
-      // `recovered` belongs here too: the command finished, so there is nothing
-      // left to stop even though the execution row has not closed yet.
+      case 'idempotent':
+        // `cancelling` here means another request's cancel is still awaiting
+        // the device. That is NOT "nothing left to stop".
+        if (outcome.status === 'cancelling') tally.alreadyCancelling += 1;
+        else tally.noActionNeeded += 1;
+        break;
+      // `recovered` belongs with the terminal cases: the command finished, so
+      // there is nothing left to stop even though the row has not closed yet.
       case 'recovered':
       case 'already_terminal':
-      case 'idempotent':
-        tally.alreadyTerminal += 1;
+        tally.noActionNeeded += 1;
         break;
-      default:
+      case 'not_found':
+      case 'inconsistent':
         tally.failed += 1;
         break;
+      default: {
+        // A new CancelOutcome variant must be classified deliberately, not
+        // land in `failed` by accident. This fails the build instead.
+        const unhandled: never = outcome;
+        throw new Error(
+          `unhandled CancelOutcome kind: ${(unhandled as CancelOutcome).kind}`,
+        );
+      }
     }
   }
   return tally;

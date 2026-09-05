@@ -31,6 +31,8 @@ import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+// Type-only: the runtime import stays dynamic inside the handler.
+import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
@@ -535,9 +537,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3,
     // The device is derived from the execution, not supplied — so there is no
-    // device-id property for the central `enforceDeviceArgs` gate to check and
-    // the handler gates inline with verifyDeviceAccess, exactly as
-    // get_script_execution does on the read side.
+    // device-id property for the central `enforceDeviceArgs` gate to check.
+    // The handler therefore gates inline. It uses the shared
+    // `verifyDeviceAccess` helper (org + site on the DEVICE row), which is
+    // STRICTER than `get_script_execution`'s hand-rolled site-only check on
+    // the read side: this is a write, so the device's own org is re-checked
+    // rather than inferred from the execution.
     deviceArgs: [],
     definition: {
       name: 'cancel_script_execution',
@@ -588,9 +593,25 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       // Report the OUTCOME, never a claimed stop: only `retracted` proves the
       // script never ran, and `cancelling` is still awaiting the device.
+      //
+      // Each kind carries a plain-English `detail` because the bare kind names
+      // are not self-describing to a model — `recovered` in particular reads as
+      // "successfully resolved" when it means the opposite: the cancel was too
+      // late and the script already finished on its own.
+      const CANCEL_OUTCOME_DETAIL: Record<CancelOutcome['kind'], string> = {
+        not_found: 'No such execution, or it is outside your access.',
+        already_terminal: 'The execution had already finished; nothing was cancelled.',
+        idempotent: 'A cancellation was already recorded for this execution; nothing new was sent.',
+        retracted: 'Proven stopped: the script had not reached the device and the command was withdrawn.',
+        recovered: 'TOO LATE — the script already finished on its own and the cancel had no effect. Read the execution to see how it ended.',
+        cancelling: 'A stop was sent to the device. The script is NOT stopped yet; re-read the execution to see whether it was.',
+        inconsistent: 'Refused: the execution has no paired command, so a stop cannot be proven either way.',
+      };
+
       return JSON.stringify({
         executionId,
         outcome: outcome.kind,
+        detail: CANCEL_OUTCOME_DETAIL[outcome.kind],
         ...(outcome.kind === 'already_terminal' || outcome.kind === 'idempotent'
           ? { status: outcome.status }
           : {}),

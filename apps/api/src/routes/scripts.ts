@@ -1244,7 +1244,21 @@ scriptRoutes.post(
     // rejected rather than silently reinterpreted: the agent is only promised
     // 0..30 s, and quietly turning a requested 999 into the 5 s default would
     // misreport what the endpoint is about to do.
-    const rawBody = await c.req.json().catch(() => ({}));
+    //
+    // The empty/malformed split matters for the same reason: `c.req.json()`
+    // throws the same SyntaxError for both, so a bare `.catch(() => ({}))`
+    // would read a truncated `{"graceSeconds":30` as "no grace requested" and
+    // quietly hand the agent 5 s — the very substitution the range check below
+    // refuses, just one step earlier.
+    const rawText = await c.req.text().catch(() => '');
+    let rawBody: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: 'Malformed JSON body' }, 400);
+      }
+    }
     const parsedBody = cancelExecutionBodySchema.safeParse(rawBody);
     if (!parsedBody.success) {
       return c.json({
@@ -1305,6 +1319,21 @@ scriptRoutes.post(
         undefined,
         { executionId, deviceId: execution.deviceId },
       );
+      // Audited as well as reported: an operator reading this device's history
+      // must be able to see that a stop was attempted and refused, not just
+      // find it in Sentry.
+      writeRouteAudit(c, {
+        orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
+        action: 'script.execution.cancel',
+        resourceType: 'script_execution',
+        resourceId: executionId,
+        details: {
+          scriptExecutionId: executionId,
+          deviceId: execution.deviceId,
+          previousStatus: execution.status,
+          outcome: outcome.kind,
+        },
+      });
       return c.json({ error: 'Execution state is inconsistent; cancellation refused' }, 500);
     }
 

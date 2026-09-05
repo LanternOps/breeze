@@ -49,6 +49,12 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 const dialect = new PgDialect();
 const renderSql = (clause: unknown) => dialect.sqlToQuery(clause as SQL).sql;
+/**
+ * The BOUND VALUES of a clause. Asserting on the compiled SQL alone is not
+ * enough for a predicate whose bug would be the wrong constant: `type = $2`
+ * renders identically for `'script'` and `'script_cancel'`.
+ */
+const sqlParams = (clause: unknown) => dialect.sqlToQuery(clause as SQL).params;
 
 type Fixture = {
   executionId?: string;
@@ -67,6 +73,7 @@ let executionUpdates: Record<string, unknown>[] = [];
 let commandUpdates: Record<string, unknown>[] = [];
 /** Rendered WHERE clause of each `device_commands` SELECT, in call order. */
 let commandLookups: string[] = [];
+let commandLookupParams: unknown[][] = [];
 let eventOrder: string[] = [];
 
 /**
@@ -82,6 +89,7 @@ function withFixture(fx: Fixture) {
   executionUpdates = [];
   commandUpdates = [];
   commandLookups = [];
+  commandLookupParams = [];
   eventOrder = [];
 
   const executionRow = {
@@ -117,7 +125,10 @@ function withFixture(fx: Fixture) {
           // The FIRST device_commands select is the paired original `script`
           // command; a SECOND one is the script_cancel dedup probe.
           const lookupIndex = isCommandLookup ? commandLookups.length : -1;
-          if (isCommandLookup) commandLookups.push(renderSql(clause));
+          if (isCommandLookup) {
+            commandLookups.push(renderSql(clause));
+            commandLookupParams.push(sqlParams(clause));
+          }
           return {
             limit: vi.fn(() => {
               const rows = table === scriptExecutions
@@ -310,14 +321,46 @@ describe('cancel branch matrix', () => {
     expect(insertInTx).not.toHaveBeenCalled();
   });
 
-  it('the paired-command lookup constrains type=script', async () => {
-    // Today's route omits it, so an unrelated pending command whose payload
-    // happens to carry the same executionId can be collided with.
+  it('the paired-command lookup constrains type=script, and the dedup probe type=script_cancel', async () => {
+    // Today's route omits the type predicate, so an unrelated pending command
+    // whose payload happens to carry the same executionId can be collided with
+    // and "retracted" — reporting a confirmed stop for a script still running.
     const { cancelScriptExecution } = await import('./scriptCancellation');
     withFixture({ commandStatus: 'sent', executionStatus: 'running' });
     await cancelScriptExecution({ executionId: 'exec-uuid', actorId: 'user-uuid', actorLabel: 'tech' });
+
     expect(commandLookups[0]).toContain('"type"');
     expect(commandLookups[0]).toContain('device_id');
+    // The BOUND VALUE, not just the column: `type = $2` renders identically
+    // whichever constant was passed, so a script/script_cancel mix-up between
+    // the two lookups is invisible to a text-only assertion.
+    expect(commandLookupParams[0]).toContain('script');
+    expect(commandLookupParams[0]).not.toContain('script_cancel');
+    expect(commandLookupParams[1]).toContain('script_cancel');
+  });
+
+  it('passes the cancel through the device-execute trust gate', async () => {
+    // A documented no-op today (script_cancel is a LIFECYCLE type), but the
+    // call is the guard against a future reclassification silently bypassing
+    // trust — so the arguments have to be right, not merely present.
+    const { cancelScriptExecution } = await import('./scriptCancellation');
+    withFixture({ commandStatus: 'sent', executionStatus: 'running' });
+    await cancelScriptExecution({ executionId: 'exec-uuid', actorId: 'user-uuid', actorLabel: 'tech' });
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+      'device-uuid', 'script_cancel', 'user-uuid',
+    );
+  });
+
+  it('propagates a trust denial instead of queueing the cancel anyway', async () => {
+    const { cancelScriptExecution } = await import('./scriptCancellation');
+    withFixture({ commandStatus: 'sent', executionStatus: 'running' });
+    assertDeviceExecuteAllowedMock.mockRejectedValue(new Error('trust denied'));
+
+    await expect(cancelScriptExecution({
+      executionId: 'exec-uuid', actorId: 'user-uuid', actorLabel: 'tech',
+    })).rejects.toThrow('trust denied');
+    expect(insertInTx).not.toHaveBeenCalled();
+    expect(executionUpdates).toEqual([]);
   });
 
   it('an actor id that is not a users row degrades to NULL rather than raising 23503', async () => {
@@ -463,6 +506,35 @@ describe('cancelExecutionsForRun', () => {
       })),
     })) as never);
     const out = await mod.cancelExecutionsForRun({ runId: 'run-1', actorId: null, actorLabel: 'tech' });
-    expect(out).toEqual({ requested: 0, retracted: 0, alreadyTerminal: 0, failed: 2 });
+    expect(out).toEqual({
+      requested: 0, retracted: 0, alreadyCancelling: 0, noActionNeeded: 0, failed: 2,
+    });
+  });
+
+  it('keeps sweeping after one execution throws, and counts it as failed', async () => {
+    const mod = await import('./scriptCancellation');
+    let prereads = 0;
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => Object.assign(
+          Promise.resolve([{ id: 'exec-a' }, { id: 'exec-b' }, { id: 'exec-c' }]),
+          {
+            limit: vi.fn(async () => {
+              prereads += 1;
+              // The second execution's pre-read blows up the way a transient
+              // deadlock would. Without isolation, executions 2 and 3 are
+              // never even asked to stop and the caller gets a rejection
+              // instead of the tally this function promises.
+              if (prereads === 2) throw new Error('deadlock detected');
+              return [];
+            }),
+          },
+        )),
+      })),
+    })) as never);
+
+    const out = await mod.cancelExecutionsForRun({ runId: 'run-1', actorId: null, actorLabel: 'tech' });
+    expect(prereads).toBe(3);
+    expect(out.failed).toBe(3);
   });
 });

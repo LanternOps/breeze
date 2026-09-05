@@ -477,9 +477,11 @@ const actionLabels: Record<string, string> = {
   'agent.recovery_keys.submit': 'Recovery keys escrowed',
   'script.execute': 'Script executed',
   'script.execution.cancel': 'Script execution cancelled',
-  // #3525: a stop is only ever *requested* by the API; the device proves it.
-  // This label is written when a cancel resolves without that proof, so it must
-  // not read as though the script kept running or as though it was stopped.
+  // #3525: NOT YET EMITTED by anything — registered ahead of the cancellation
+  // closers (W03), which are what will write it when a cancel resolves without
+  // the device proving the stop. Grep will find no call site until then. The
+  // copy must not read as though the script kept running OR as though it was
+  // stopped, because an unconfirmed cancel says nothing about either.
   'script.execution.cancel.unconfirmed': 'Script stop could not be confirmed',
   // These fire when the command is DISPATCHED to the agent, not when it
   // completes — the audit row's `result` is 'dispatched', not 'success' (see

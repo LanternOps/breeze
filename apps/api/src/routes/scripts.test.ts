@@ -1904,6 +1904,36 @@ describe('scripts routes', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('rejects a malformed JSON body instead of silently defaulting the grace', async () => {
+    // No preflight mock queued: this must reject before the handler reads
+    // anything. `c.req.json()` throws the same error for "empty" and
+    // "truncated", so swallowing it would turn a requested 30s into 5s.
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      body: '{"graceSeconds":30',
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('Malformed JSON body');
+    expect(cancelScriptExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('audits the refused inconsistent case so the device history records the attempt', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({ kind: 'inconsistent' });
+
+    await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'script.execution.cancel',
+      details: expect.objectContaining({ outcome: 'inconsistent' }),
+    }));
+  });
+
   it('audits the request with the outcome, not with an assumed cancellation', async () => {
     mockCancelPreflight();
     cancelScriptExecutionMock.mockResolvedValue({

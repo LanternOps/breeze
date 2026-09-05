@@ -322,6 +322,43 @@ describe('cancelScriptExecution against real Postgres (#3525 W02b)', () => {
     expect((second as { cancelCommandId: string }).cancelCommandId).toBe(queued[0]!.id);
   });
 
+  it('queues the cancel for an actor that is not a users row', async () => {
+    // The AI-agent principal's id is an `ai_agents` id, so `resolveCancelledBy`
+    // degrades it to NULL. `device_commands.created_by` is a nullable UUID —
+    // passing an empty string instead of NULL is `22P02 invalid input syntax
+    // for type uuid`, which rolls the whole transaction back and 500s the very
+    // caller the degrade exists to keep working. Mocked suites cannot see this:
+    // only Postgres types the column.
+    const { executionId } = await seedRun(fx, 'sent');
+
+    const outcome = await withDbAccessContext(requestContext(fx), () =>
+      cancelScriptExecution({
+        executionId,
+        actorId: randomUUID(), // a valid uuid that is NOT a users row
+        actorLabel: 'AI assistant (agent@breeze.test)',
+      }),
+    );
+    expect(outcome.kind).toBe('cancelling');
+
+    const [cancelCommand] = await readFromAnotherTransaction(() =>
+      db
+        .select({ createdBy: deviceCommands.createdBy })
+        .from(deviceCommands)
+        .where(eq(deviceCommands.type, 'script_cancel'))
+        .limit(1),
+    );
+    expect(cancelCommand!.createdBy).toBeNull();
+
+    const [row] = await readFromAnotherTransaction(() =>
+      db
+        .select({ cancelledBy: scriptExecutions.cancelledBy, status: scriptExecutions.status })
+        .from(scriptExecutions)
+        .where(eq(scriptExecutions.id, executionId))
+        .limit(1),
+    );
+    expect(row).toMatchObject({ cancelledBy: null, status: 'cancelling' });
+  });
+
   it('fails closed when the execution has no paired script command', async () => {
     const [execution] = await withSystemDbAccessContext(() =>
       db.insert(scriptExecutions).values({

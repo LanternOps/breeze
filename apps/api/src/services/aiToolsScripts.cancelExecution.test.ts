@@ -170,7 +170,7 @@ describe('cancel_script_execution', () => {
       graceSeconds: 10,
     }));
     expect(deliverCancelCommandMock).toHaveBeenCalledWith('cancel-cmd-1', DEVICE_ID);
-    expect(result).toEqual({ executionId: EXECUTION_ID, outcome: 'cancelling' });
+    expect(result).toMatchObject({ executionId: EXECUTION_ID, outcome: 'cancelling' });
   });
 
   it('does not re-deliver a cancel that was already in flight', async () => {
@@ -187,12 +187,38 @@ describe('cancel_script_execution', () => {
     expect(deliverCancelCommandMock).not.toHaveBeenCalled();
   });
 
+  it('spells out that a "recovered" outcome means the cancel was too late', async () => {
+    // Of the seven outcome kinds this is the one whose bare name points the
+    // WRONG way to a model — "recovered" reads as "successfully resolved" when
+    // it means the script finished on its own and the cancel did nothing.
+    mockLookups({});
+    cancelScriptExecutionMock.mockResolvedValue({
+      kind: 'recovered', executionId: EXECUTION_ID, commandId: 'cmd-1',
+    });
+
+    const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
+    expect(result.outcome).toBe('recovered');
+    expect(result.detail).toMatch(/TOO LATE/);
+    expect(result.detail).toMatch(/no effect/);
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('never describes a queued cancel as a completed stop', async () => {
+    mockLookups({});
+    const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
+    expect(result.outcome).toBe('cancelling');
+    expect(result.detail).toMatch(/NOT stopped yet/);
+  });
+
   it('reports a terminal execution honestly rather than claiming a stop', async () => {
     mockLookups({});
     cancelScriptExecutionMock.mockResolvedValue({ kind: 'already_terminal', status: 'completed' });
 
     const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
-    expect(result).toEqual({ executionId: EXECUTION_ID, outcome: 'already_terminal', status: 'completed' });
+    expect(result).toMatchObject({
+      executionId: EXECUTION_ID, outcome: 'already_terminal', status: 'completed',
+    });
+    expect(result.detail).toMatch(/nothing was cancelled/);
     expect(deliverCancelCommandMock).not.toHaveBeenCalled();
   });
 });
