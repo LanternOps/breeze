@@ -269,6 +269,13 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		// also needs the unmodified text.
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
+		// #3525: the cancellation marker travels with the SCRIPT's own result,
+		// not only with the cancel's ack. It is what lets the server close a
+		// `cancelling` execution as `cancelled` when the script result wins the
+		// race with the cancel ack — without it every such race resolves as
+		// `unconfirmed` and the operator sees a stop that never confirmed.
+		Cancelled:            scriptResult.Cancelled,
+		CancelledByCommandID: scriptResult.CancelledByCommandID,
 	}
 	if len(customFields) > 0 {
 		result.Result = map[string]any{
@@ -606,6 +613,14 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			}
 			if writes, ok := nested["customFieldWrites"]; ok && writes != nil {
 				cmdResult.Result = map[string]any{"customFieldWrites": writes}
+			}
+			// #3525: lift the helper's cancellation marker to the top level of
+			// the command result, where the server reads it.
+			if cancelled, ok := nested["cancelled"].(bool); ok && cancelled {
+				cmdResult.Cancelled = true
+				if by, ok := nested["cancelledByCommandId"].(string); ok {
+					cmdResult.CancelledByCommandID = by
+				}
 			}
 		}
 	}

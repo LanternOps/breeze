@@ -5849,6 +5849,11 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
 		Error:     result.Error,
+		// #3525: the cancellation marker must survive this conversion — the
+		// WebSocket leg is the primary result channel, and the marker is the
+		// only proof that closes a `cancelling` execution as `cancelled`.
+		Cancelled:            result.Cancelled,
+		CancelledByCommandID: result.CancelledByCommandID,
 	}
 
 	// An explicitly-set Result wins. The stdout reparse below stays for the

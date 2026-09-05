@@ -179,6 +179,103 @@ func TestScriptCancelReportsTerminatedForARunningScript(t *testing.T) {
 	}
 }
 
+func TestCancelledScriptResultCarriesTheMarkerOnTheWire(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	// Closer 1 of the server state machine reads result.cancelled and
+	// result.cancelledByCommandId as siblings of status/exitCode. If the marker
+	// stops at the executor boundary, a confirmed cancel can never be proven by
+	// the script's OWN result and every race resolves as `unconfirmed`.
+	h := newTestHeartbeat(nil)
+	scriptDone := make(chan tools.CommandResult, 1)
+	go func() {
+		scriptDone <- handleScript(h, Command{
+			ID:   "cmd-marker",
+			Type: tools.CmdScript,
+			Payload: map[string]any{
+				"content":        "for _ in $(seq 1 600); do sleep 0.1; done",
+				"language":       "bash",
+				"timeoutSeconds": 120,
+			},
+		})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.executor.ListRunning()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("script never registered as running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := outcomeOf(t, handleScriptCancel(h, cancelCommand("cc-1", "cmd-marker", 0))); got != "terminated" {
+		t.Fatalf("cancel outcome = %q, want terminated", got)
+	}
+
+	var scriptResult tools.CommandResult
+	select {
+	case scriptResult = <-scriptDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the script never returned a result")
+	}
+	if !scriptResult.Cancelled {
+		t.Fatalf("script result carries no cancellation marker: %+v", scriptResult)
+	}
+	if scriptResult.CancelledByCommandID != "cc-1" {
+		t.Fatalf("cancelledByCommandId = %q, want cc-1", scriptResult.CancelledByCommandID)
+	}
+
+	ws := toWSCommandResult("cmd-marker", scriptResult)
+	if !ws.Cancelled || ws.CancelledByCommandID != "cc-1" {
+		t.Fatalf("the marker was dropped converting to the WebSocket result: %+v", ws)
+	}
+}
+
+func TestHelperCancellationMarkerCrossesTheIPCHop(t *testing.T) {
+	// A runAs=user script is killed inside the HELPER's executor, so its marker
+	// reaches the server only if executeViaUserHelper lifts it out of the
+	// nested result onto the top-level command result.
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "marker-hop", []string{"run_as_user"})
+
+	go func() {
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			return
+		}
+		resultPayload, _ := json.Marshal(map[string]any{
+			"exitCode":             -1,
+			"stdout":               "",
+			"stderr":               "",
+			"cancelled":            true,
+			"cancelledByCommandId": "cc-helper",
+		})
+		payload, _ := json.Marshal(ipc.IPCCommandResult{CommandID: env.ID, Status: "failed", Result: resultPayload})
+		_ = clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeCommandResult, Payload: payload})
+	}()
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+	result := h.executeViaUserHelper(session, Command{
+		ID:      "cmd-helper-script",
+		Type:    tools.CmdScript,
+		Payload: map[string]any{"content": "sleep 60", "language": "bash", "timeoutSeconds": 120},
+	}, 10)
+
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	if !result.Cancelled {
+		t.Fatalf("the helper's cancellation marker was dropped at the IPC hop: %+v", result)
+	}
+	if result.CancelledByCommandID != "cc-helper" {
+		t.Fatalf("cancelledByCommandId = %q, want cc-helper", result.CancelledByCommandID)
+	}
+}
+
 func TestScriptCancelMalformedPayloadStaysAnError(t *testing.T) {
 	h := newTestHeartbeat(nil)
 	result := handleScriptCancel(h, Command{ID: "cmd-bad", Type: tools.CmdScriptCancel, Payload: map[string]any{}})

@@ -842,6 +842,13 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		"stdout":   executor.SanitizeOutput(cleanedStdout),
 		"stderr":   executor.SanitizeOutput(result.Stderr),
 	}
+	// #3525: a runAs=user script is killed by the HELPER's executor, so its
+	// cancellation marker only reaches the server if it rides back over the IPC
+	// hop. Omitted when absent so an uncancelled run's payload is unchanged.
+	if result.Cancelled {
+		resultPayload["cancelled"] = true
+		resultPayload["cancelledByCommandId"] = result.CancelledByCommandID
+	}
 	if len(customFields) > 0 {
 		resultPayload["customFieldWrites"] = map[string]any{
 			"schemaVersion": 1,

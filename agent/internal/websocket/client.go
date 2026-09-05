@@ -81,6 +81,11 @@ type CommandResult struct {
 	Stderr    string `json:"stderr,omitempty"`
 	Result    any    `json:"result,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// #3525 cancellation marker, mirrored from tools.CommandResult. The
+	// WebSocket leg is the primary result channel, so dropping these here would
+	// mean the server only ever saw the marker on the HTTP fallback.
+	Cancelled            bool   `json:"cancelled,omitempty"`
+	CancelledByCommandID string `json:"cancelledByCommandId,omitempty"`
 }
 
 // outboundResult pairs a marshalled command-result frame with the structured
