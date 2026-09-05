@@ -17,6 +17,10 @@ export type CategoryRule = {
   category: string;
   autoApprove: boolean;
   autoApproveSeverities?: Array<'critical' | 'important' | 'moderate' | 'low'>;
+  /** Opt-in: also auto-approve patches with no severity rating in this
+   *  category override (#3758). Absent on rules saved before the opt-in
+   *  existed. */
+  autoApproveUnrated?: boolean;
   deferralDaysOverride?: number | null;
 };
 
@@ -31,6 +35,9 @@ export type RingAutoApprove = {
   thirdPartyApps?: boolean;
   /** null = inherit the ring's hold. */
   thirdPartyDeferralDays?: number | null;
+  /** Opt-in: also auto-approve patches with no severity rating (#3758).
+   *  Absent on rings saved before the opt-in existed. */
+  autoApproveUnrated?: boolean;
 };
 
 export type UpdateRingItem = {
