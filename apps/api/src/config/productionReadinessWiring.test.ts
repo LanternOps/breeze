@@ -96,11 +96,11 @@ describe('production readiness wiring', () => {
   });
 
   // Task 3's declare-time rules only hold if index.ts hands the manifest the
-  // live role and the three real flag expressions. Nothing else exercises
+  // live role and the real flag expressions. Nothing else exercises
   // initializeWorkers()' body, so pin the call site's arguments as text —
   // a hardcoded `role: 'all'` or `eventDispatchEnabled: true` would silently
   // re-require every socket-owner / flag-gated consumer on a worker-only box.
-  it('declares expected consumers from the live role and the three feature-flag expressions', () => {
+  it('declares expected consumers from the live role and the feature-flag expressions', () => {
     const index = read('apps/api/src/index.ts');
     const call = index.slice(
       index.indexOf('declareExpectedConsumers({'),
@@ -110,6 +110,8 @@ describe('production readiness wiring', () => {
     expect(call).toContain("eventDispatchEnabled: eventDispatchMode() !== 'off'");
     expect(call).toContain('aiAgentsEnabled: AI_AGENTS_ENABLED');
     expect(call).toContain('abuseSignalsEnabled: abuseSignalsEnabled()');
+    expect(call).toContain("partnerTrustEnabled: partnerTrustMode() !== 'off'");
+    expect(call).toContain('auditChainVerifyEnabled: auditChainVerifyEnabled()');
     expect(call).toContain('registry: workerReadinessRegistry');
   });
 

@@ -55,6 +55,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { auditChainVerifyEnabled as isEnabled } from '../config/auditChainVerify';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema/incidentResponse';
@@ -76,13 +77,6 @@ const INTER_ORG_DELAY_MS = 50;
 const INCIDENT_CLASSIFICATION = 'audit_integrity';
 const INCIDENT_SEVERITY = 'p1' as const;
 const EVENT_SOURCE = 'audit-chain-verify';
-
-function isEnabled(): boolean {
-  const raw = process.env.AUDIT_CHAIN_VERIFY_ENABLED;
-  if (raw === undefined || raw === '') return true; // default ON
-  const v = raw.trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
-}
 
 export type ChainVerifyMode = 'incremental' | 'full';
 

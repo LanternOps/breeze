@@ -4,7 +4,8 @@ import { selectWorkers } from '../services/workerRegistry';
 
 export type ConsumerRequirementRule =
   | 'redis'                   // required whenever Redis is available
-  | 'abuse_signals_enabled'   // Track C: abuseSignalsWorker
+  | 'abuse_or_partner_trust_enabled' // shared abuse/partner-trust consumer
+  | 'audit_chain_verify_enabled' // audit verification kill switch
   | 'event_dispatch_enabled'  // D3a: eventDispatch (EVENT_DISPATCH_MODE !== 'off')
   | 'ai_agents_enabled';      // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
 
@@ -64,7 +65,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('securityPostureWorker'),
   consumers('reliabilityWorker'),
   consumers('userRiskWorker'),
-  consumers('abuseSignalsWorker', ['abuseSignalsWorker'], 'abuse_signals_enabled'),
+  consumers('abuseSignalsWorker', ['abuseSignalsWorker'], 'abuse_or_partner_trust_enabled'),
   consumers('userRiskRetention'),
   consumers('backupVerificationJobs', ['backupVerificationWorker']),
   consumers('eventLogRetention'),
@@ -88,7 +89,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareUploadSessionCleanup'),
   consumers('softwareRemediationRequestCleanup'),
   consumers('auditRetention'),
-  consumers('auditChainVerify'),
+  consumers('auditChainVerify', ['auditChainVerify'], 'audit_chain_verify_enabled'),
   consumers('auditChainAnchor'),
   consumers('tenantErasure'),
   consumers('desktopSessionFinalization', ['desktopSessionFinalizationWorker']),
@@ -213,13 +214,21 @@ export function consumersForInitializer(initializer: string): readonly string[] 
 
 function ruleEnabled(
   rule: ConsumerRequirementRule,
-  input: { abuseSignalsEnabled: boolean; eventDispatchEnabled: boolean; aiAgentsEnabled: boolean },
+  input: {
+    partnerTrustEnabled: boolean;
+    auditChainVerifyEnabled: boolean;
+    abuseSignalsEnabled: boolean;
+    eventDispatchEnabled: boolean;
+    aiAgentsEnabled: boolean;
+  },
 ): boolean {
   switch (rule) {
     case 'redis':
       return true;
-    case 'abuse_signals_enabled':
-      return input.abuseSignalsEnabled;
+    case 'abuse_or_partner_trust_enabled':
+      return input.abuseSignalsEnabled || input.partnerTrustEnabled;
+    case 'audit_chain_verify_enabled':
+      return input.auditChainVerifyEnabled;
     case 'event_dispatch_enabled':
       return input.eventDispatchEnabled;
     case 'ai_agents_enabled':
@@ -231,6 +240,8 @@ export function declareExpectedConsumers(input: {
   role: BreezeRole;
   redisAvailable: boolean;
   abuseSignalsEnabled: boolean;
+  partnerTrustEnabled: boolean;
+  auditChainVerifyEnabled: boolean;
   eventDispatchEnabled: boolean;
   aiAgentsEnabled: boolean;
   registry: WorkerReadinessRegistry;

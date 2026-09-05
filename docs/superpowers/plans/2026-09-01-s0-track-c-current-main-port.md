@@ -1994,3 +1994,30 @@ Hand back to the controller for the independent whole-branch review scoped to `<
 - [x] **Step 4: Gates on `82702d0b8`** — `tsc --noEmit` exit 0, 0 `error TS`; `lint` exit 0; §10.2 battery `Test Files 34 passed (34)` / `Tests 562 passed (562)` and `offlineDetector`+`aiAgentRunner` `7 passed (7)` / `70 passed (70)`; four compose `config --quiet` invocations exit 0 (`:?` var sets unchanged, existing placeholder env-files reused); `bash -n scripts/prod/deploy.sh` exit 0; `git diff --check` clean for the worktree and for `origin/main...HEAD`; §10.1 tripwires all at expected values with the registry-name count now 118. Spec §1 gained the second re-pin note; Task 7 Steps 5/6 carry truth notes.
 
 - [ ] **Step 5: Push, CI on the exact head, PR body** — push; `gh workflow run ci.yml --ref fix/s0-readiness-offline-scaling` so a ci.yml `CI Success` attaches to the bare head; poll `check-runs` until ci.yml's `CI Success` concludes (cite the ci.yml run ID — Docs CI has a same-named job); confirm `Check Migrations` passes on the new head; rewrite #4007's body. Deliberately left unticked here: ticking it would move the head under CI. Outcome is recorded in the PR body and the Task 8 report. No merge, no draft-status change.
+
+
+### Task 9: September 4 merge-forward and consumer gate drift
+
+Merged `origin/main` at `78eae279fb1ede458fe2c740755fe0b26dfb254a` into
+existing PR head `c8bdfc45958203a6dda90c8fa7ef09fad961894d` as `5ff296e971`.
+Rerere was disabled. The only textual conflict was the `pamActuationWorker.ts`
+import block: preserve both readiness observability and partner-trust command
+authorization. The registry has no additional initializers in this interval;
+`partnerTrustJobs.ts` uses the existing abuse queue and creates no consumer.
+
+The original manifest/coverage check passed 24/24, but manual inspection found
+two initializer gate changes that constructor/name coverage cannot detect:
+
+- Audit verification now creates no worker while `AUDIT_CHAIN_VERIFY_ENABLED`
+  is disabled. Its declaration uses the same extracted flag parser as the
+  initializer, preserving all existing accepted values and the default on state.
+- The abuse consumer now runs if abuse signals **or** partner trust is enabled.
+  Its declaration must require it under either condition, including hosted
+  shadow/enforce mode with abuse signals explicitly disabled.
+
+Both entrypoints pass these live flags to the manifest. Regression tests cover
+the audit kill switch, all four abuse/trust combinations, and worker boot wiring.
+RED: manifest/coverage 6 failed / 23 passed. GREEN: manifest/coverage plus audit,
+abuse, production wiring and worker boot suites, 106 passed across 6 files.
+Full battery, independent review, and exact-head CI remain controller-owned.
+No production or candidate-evidence claim is made by this merge-forward.

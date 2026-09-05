@@ -46,9 +46,22 @@ function expectedDeclaredCount(): number {
 // ---------------------------------------------------------------------------
 
 type Role = 'all' | 'api' | 'worker';
-interface Flags { abuseSignalsEnabled: boolean; eventDispatchEnabled: boolean; aiAgentsEnabled: boolean }
-const ALL_ON: Flags = { abuseSignalsEnabled: true, eventDispatchEnabled: true, aiAgentsEnabled: true };
-const ALL_OFF: Flags = { abuseSignalsEnabled: false, eventDispatchEnabled: false, aiAgentsEnabled: false };
+interface Flags {
+  partnerTrustEnabled: boolean;
+  auditChainVerifyEnabled: boolean;
+  abuseSignalsEnabled: boolean;
+  eventDispatchEnabled: boolean;
+  aiAgentsEnabled: boolean;
+}
+const ALL_ON: Flags = {
+  partnerTrustEnabled: true, auditChainVerifyEnabled: true, abuseSignalsEnabled: true,
+  eventDispatchEnabled: true, aiAgentsEnabled: true,
+};
+// Default configuration: opt-in flags off, audit verification on.
+const DEFAULT_FLAGS: Flags = {
+  partnerTrustEnabled: false, auditChainVerifyEnabled: true, abuseSignalsEnabled: false,
+  eventDispatchEnabled: false, aiAgentsEnabled: false,
+};
 
 /** Initializers a process of `role` starts: registry entries by placement + the role-gated out-of-registry starters. */
 function selectedInitializers(role: Role): Set<string> {
@@ -64,7 +77,8 @@ function selectedInitializers(role: Role): Set<string> {
 function ruleIsOn(rule: string, flags: Flags): boolean {
   switch (rule) {
     case 'redis': return true;
-    case 'abuse_signals_enabled': return flags.abuseSignalsEnabled;
+    case 'abuse_or_partner_trust_enabled': return flags.abuseSignalsEnabled || flags.partnerTrustEnabled;
+    case 'audit_chain_verify_enabled': return flags.auditChainVerifyEnabled;
     case 'event_dispatch_enabled': return flags.eventDispatchEnabled;
     case 'ai_agents_enabled': return flags.aiAgentsEnabled;
     default: throw new Error(`unknown rule ${rule}`);
@@ -151,12 +165,12 @@ describe('worker readiness manifest', () => {
 
   it('declares Redis consumers required and abuse signals optional-disabled when configured off', () => {
     const registry = fakeRegistry();
-    declareExpectedConsumers({ role: 'all', redisAvailable: true, ...ALL_OFF, registry });
+    declareExpectedConsumers({ role: 'all', redisAvailable: true, ...DEFAULT_FLAGS, registry });
     expect(registry.expect.mock.calls.filter(([name]) => name === 'abuseSignalsWorker')).toEqual([['abuseSignalsWorker', false]]);
     expect(registry.disable).toHaveBeenCalledWith('abuseSignalsWorker', 'feature_disabled');
     const required = registry.expect.mock.calls.filter(([, r]) => r).map(([n]) => n as string).sort();
-    expect(required).toEqual(expectedRequiredNames('all', ALL_OFF));
-    // Named, not numbered: exactly these consumers are optional on a box with every flag off.
+    expect(required).toEqual(expectedRequiredNames('all', DEFAULT_FLAGS));
+    // Named, not numbered: exactly these consumers are optional on a default self-hosted box.
     const optional = declaredConsumerNames().filter((n) => !required.includes(n)).sort();
     expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance']);
   });
@@ -175,7 +189,7 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
   it.each<Role>(['api', 'worker', 'all'])(
     'role %s declares exactly the selected consumers with the required flag each rule yields',
     (role) => {
-      for (const flags of [ALL_ON, ALL_OFF]) {
+      for (const flags of [ALL_ON, DEFAULT_FLAGS]) {
         const { declared, disabled } = declare(role, flags);
         expect([...declared.entries()].sort()).toEqual([...expectedDeclarations(role, flags).entries()].sort());
         expect(disabled).toEqual(expectedDisabled(role, flags));
@@ -205,7 +219,8 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
   it.each([
     ['event_dispatch_enabled', 'eventDispatch', 'worker', { ...ALL_ON, eventDispatchEnabled: false }],
     ['ai_agents_enabled', 'aiAgentRunner', 'api', { ...ALL_ON, aiAgentsEnabled: false }],
-    ['abuse_signals_enabled', 'abuseSignalsWorker', 'worker', { ...ALL_ON, abuseSignalsEnabled: false }],
+    ['abuse_or_partner_trust_enabled', 'abuseSignalsWorker', 'worker', { ...ALL_ON, abuseSignalsEnabled: false, partnerTrustEnabled: false }],
+    ['audit_chain_verify_enabled', 'auditChainVerify', 'worker', { ...ALL_ON, auditChainVerifyEnabled: false }],
   ] as const)('%s off: %s is declared optional and disabled feature_disabled; on: required', (_rule, name, role, offFlags) => {
     const off = declare(role, offFlags);
     expect(off.declared.get(name)).toBe(false);
@@ -215,8 +230,20 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
     expect(on.registry.disable).not.toHaveBeenCalledWith(name, expect.anything());
   });
 
+  it.each([
+    [false, false, false],
+    [false, true, true],
+    [true, false, true],
+    [true, true, true],
+  ])('abuse=%s trust=%s makes the shared consumer required=%s', (abuseSignalsEnabled, partnerTrustEnabled, required) => {
+    const { declared, registry } = declare('worker', { ...DEFAULT_FLAGS, abuseSignalsEnabled, partnerTrustEnabled });
+    expect(declared.get('abuseSignalsWorker')).toBe(required);
+    if (required) expect(registry.disable).not.toHaveBeenCalledWith('abuseSignalsWorker', expect.anything());
+    else expect(registry.disable).toHaveBeenCalledWith('abuseSignalsWorker', 'feature_disabled');
+  });
+
   it('a flag only matters where its consumer is selected: api never declares abuseSignalsWorker or eventDispatch', () => {
-    const { declared, disabled } = declare('api', ALL_OFF);
+    const { declared, disabled } = declare('api', DEFAULT_FLAGS);
     expect(declared.has('abuseSignalsWorker')).toBe(false);
     expect(declared.has('eventDispatch')).toBe(false);
     expect(disabled).not.toContain('abuseSignalsWorker');
@@ -229,7 +256,7 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
   });
 
   it('on a default all box exactly four consumers are optional (names, not a number)', () => {
-    const { declared } = declare('all', ALL_OFF);
+    const { declared } = declare('all', DEFAULT_FLAGS);
     const optional = [...declared.entries()].filter(([, r]) => !r).map(([n]) => n).sort();
     expect(optional).toEqual(['abuseSignalsWorker', 'aiAgentRunner', 'eventDispatch', 'eventDispatchMaintenance']);
     expect([...declared.values()].filter(Boolean)).toHaveLength(declared.size - optional.length);

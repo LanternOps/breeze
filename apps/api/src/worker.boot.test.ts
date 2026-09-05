@@ -30,6 +30,8 @@ type DeclareExpectedConsumersInput = {
   role: string;
   redisAvailable: boolean;
   abuseSignalsEnabled: boolean;
+  partnerTrustEnabled: boolean;
+  auditChainVerifyEnabled: boolean;
   eventDispatchEnabled: boolean;
   aiAgentsEnabled: boolean;
   registry: { expect(name: string, required: boolean): void };
@@ -63,6 +65,8 @@ const mocks = vi.hoisted(() => {
     registerAiAgentEnqueuer: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
+    partnerTrustMode: vi.fn(() => 'off'),
+    auditChainVerifyEnabled: vi.fn(() => true),
     abuseSignalsEnabled: vi.fn(() => false),
     eventDispatchMode: vi.fn(() => 'off' as const),
     declareExpectedConsumers: vi.fn<(input: DeclareExpectedConsumersInput) => void>(),
@@ -88,6 +92,9 @@ const mocks = vi.hoisted(() => {
     ),
   };
 });
+
+vi.mock('./config/partnerTrustMode', () => ({ partnerTrustMode: mocks.partnerTrustMode }));
+vi.mock('./config/auditChainVerify', () => ({ auditChainVerifyEnabled: mocks.auditChainVerifyEnabled }));
 
 vi.mock('./config/env', () => ({
   breezeRole: mocks.breezeRole,
@@ -299,6 +306,8 @@ beforeEach(() => {
   mocks.createExtensionStateStore.mockReturnValue({});
   mocks.buildWebhookFanoutDeps.mockReturnValue({});
   mocks.abuseSignalsEnabled.mockReturnValue(false);
+  mocks.partnerTrustMode.mockReturnValue('off');
+  mocks.auditChainVerifyEnabled.mockReturnValue(true);
   mocks.eventDispatchMode.mockReturnValue('off');
   mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
     registry.expect('fakeGlobalWorker', true);
@@ -427,8 +436,22 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       role: 'worker',
       redisAvailable: true,
       abuseSignalsEnabled: false,
+      partnerTrustEnabled: false,
+      auditChainVerifyEnabled: true,
       eventDispatchEnabled: false,
       aiAgentsEnabled: false,
+    }));
+  });
+
+  it('passes live trust and audit kill-switch values into readiness declaration', async () => {
+    mocks.partnerTrustMode.mockReturnValue('shadow');
+    mocks.auditChainVerifyEnabled.mockReturnValue(false);
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+    expect(mocks.declareExpectedConsumers).toHaveBeenCalledWith(expect.objectContaining({
+      abuseSignalsEnabled: false,
+      partnerTrustEnabled: true,
+      auditChainVerifyEnabled: false,
     }));
   });
 
