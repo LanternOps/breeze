@@ -1,5 +1,5 @@
--- #4872: a composite SET NULL without a column list also nulls org_id,
--- which is NOT NULL, aborting ticket deletion / org erasure with 23502.
+-- #4872: a composite SET NULL without a column list attempts to clear
+-- immutable, NOT NULL org_id, aborting ticket deletion / org erasure.
 -- Preserve the composite tenant boundary and automatic scope tombstone.
 -- PG15+ column lists are already used by the invoice-lineage and agent
 -- evidence migrations; the supported test/development stack is PG16.
