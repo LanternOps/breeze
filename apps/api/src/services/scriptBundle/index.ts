@@ -339,9 +339,10 @@ type ScriptRow = typeof scripts.$inferSelect;
 export function canReadScript(auth: BundleAuth, script: ScriptRow): boolean {
   if (auth.scope === 'system') return true;
   if (script.isSystem) return true;
-  if (script.orgId && auth.canAccessOrg(script.orgId)) return true;
-  // Partner-wide (and partner-denormalized) rows are readable by the owning
-  // partner's users — same visibility the list route grants.
+  // An org-owned row's denormalized partnerId does not grant access to
+  // sibling organizations outside the caller's organization grants.
+  if (script.orgId) return auth.canAccessOrg(script.orgId);
+  // Only partner-wide rows are shared with the owning partner's users.
   if (script.partnerId && auth.partnerId === script.partnerId) return true;
   return false;
 }

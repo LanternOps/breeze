@@ -96,7 +96,10 @@ export async function cloneScript(
     return { error: describeParameterSecretMismatch(mismatches), status: 400 };
   }
 
-  const name = input.name?.trim() || `${source.name} (copy)`;
+  // Reserve space for the suffix within the 255-character name limit.
+  // Avoid leaving half a surrogate pair when truncating a Unicode name.
+  const copyBaseName = source.name.slice(0, 248).replace(/[\uD800-\uDBFF]$/, '');
+  const name = input.name?.trim() || `${copyBaseName} (copy)`;
 
   // Insert + tag copy run in ONE transaction: insertScriptRow/ensureTagIds/
   // linkTags (services/scriptWrite.ts, services/scriptBundle) all hard-code

@@ -1113,6 +1113,28 @@ describe('scripts routes', () => {
       expect(getInserted().version).toBe(1);
     });
 
+    it.each([248, 249, 255])('bounds the default clone name for a %i-character source', async (length) => {
+      mockCloneSource(orgSource({ name: 'a'.repeat(length) }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe(`${'a'.repeat(248)} (copy)`);
+    });
+
+    it('does not split a Unicode character at the default clone name boundary', async () => {
+      mockCloneSource(orgSource({ name: `${'a'.repeat(247)}😀${'b'.repeat(6)}` }));
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      const res = await clone();
+
+      expect(res.status).toBe(201);
+      expect(getInserted().name).toBe(`${'a'.repeat(247)} (copy)`);
+    });
+
     it('honors an explicit name override in the body', async () => {
       mockCloneSource(orgSource());
       mockTagLookup();
@@ -1134,6 +1156,16 @@ describe('scripts routes', () => {
 
       expect(res.status).toBe(201);
       expect(getInserted().orgId).toBe(ORG_ID_2);
+    });
+
+    it('rejects an inaccessible sibling-org source even when its partnerId matches', async () => {
+      await useAuth(makePartnerAuth('selected', [ORG_ID]));
+      mockCloneSource(orgSource({ orgId: ORG_ID_2, partnerId: PARTNER_ID }));
+
+      const res = await clone({ orgId: ORG_ID });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
     it('rejects an explicit orgId the caller cannot access (cross-org negative)', async () => {
