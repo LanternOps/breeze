@@ -401,12 +401,13 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
 
     if (resp.ok) {
       const data = await resp.json();
-      if (data.webrtcAnswer) {
-        return data.webrtcAnswer;
-      }
-      // If the agent reported a failure, surface it immediately
+      // A terminal failure takes precedence over an answer from an earlier
+      // attempt on this session. Never reconnect using stale signaling data.
       if (data.status === 'failed') {
         throw new AgentSessionError(data.errorMessage || 'Remote desktop failed to start on agent');
+      }
+      if (data.webrtcAnswer) {
+        return data.webrtcAnswer;
       }
     } else if (isSessionEndedResponse(resp.status)) {
       // Session ended/revoked server-side mid-poll — stop immediately so the

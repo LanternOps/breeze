@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { connectWebRTC, type WebRTCDeps } from './webrtc';
-import type { AuthenticatedConnectionParams } from '../webrtc';
+import { AgentSessionError, type AuthenticatedConnectionParams } from '../webrtc';
 
 const globalScope = globalThis as Record<string, unknown>;
 
@@ -127,3 +127,35 @@ describe('connectWebRTC — WebView without WebRTC (issue #3410)', () => {
 // only ever invoked from a live `pc.onconnectionstatechange` handler, so any
 // throw from createWebRTCSession skips them regardless of this PR's changes —
 // such a test passes under every mutation and guards nothing.
+
+
+describe('connectWebRTC — capture failure diagnostics (#4162)', () => {
+  it('propagates the agent diagnosis instead of returning null for fallback', async () => {
+    vi.stubGlobal('RTCPeerConnection', class {
+      iceGatheringState = 'complete';
+      localDescription = { sdp: 'v=0', type: 'offer' };
+      addTransceiver() {}
+      createDataChannel() { return { close() {}, bufferedAmountLowThreshold: 0 }; }
+      async createOffer() { return this.localDescription; }
+      async setLocalDescription() {}
+      close() {}
+    });
+    const message = 'no display attached — open the lid or attach an external display';
+    let polls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      let body: unknown = {};
+      if (url.includes('/ice-servers')) body = { iceServers: [] };
+      if (url.includes('/viewer/session')) {
+        polls += 1;
+        body = { status: 'failed', errorMessage: message };
+      }
+      return { ok: true, status: 200, headers: new Headers(), json: async () => body };
+    }));
+
+    const error = await connectWebRTC(auth, makeDeps()).catch((err) => err);
+    expect(error).toBeInstanceOf(AgentSessionError);
+    expect(error.message).toBe(message);
+    expect(polls).toBe(1);
+  });
+});
