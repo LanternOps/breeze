@@ -564,6 +564,88 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'psa_connections',
 ]);
 
+// Wave 4 of #4673: the subset of DUAL_AXIS_TENANT_TABLES whose ownership
+// shape is org_id XOR partner_id — a config-ish "define once, apply
+// partner-wide" table. Excluded (present above but NOT this XOR shape):
+// `users` (three-way: org OR partner OR self), `deployment_invites` /
+// `access_reviews` (org_id AND partner_id together, not exclusive — a
+// partner-wide row still carries the matching org_id), and
+// `software_policy_audit` / `software_remediation_requests` (dual-owned,
+// explicitly documented above as NOT XOR).
+const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  'ai_agents',
+  'ai_agent_schedules',
+  'custom_field_definitions',
+  'client_ai_prompt_templates',
+  'configuration_policies',
+  'cis_baselines',
+  'software_catalog',
+  'software_policies',
+  'security_policies',
+  'alert_rules',
+  'alert_templates',
+  'automation_policies',
+  'automation_resource_bindings',
+  'automations',
+  'sensitive_data_policies',
+  'peripheral_policies',
+  'maintenance_windows',
+  'notification_channels',
+  'notification_routing_rules',
+  'escalation_policies',
+  'sso_providers',
+  'ticket_forms',
+  'tenant_variables',
+  'backup_profiles',
+  'config_policy_backup_settings',
+  'contract_templates',
+  'contract_template_versions',
+  'psa_connections',
+]);
+
+// Every XOR_OWNERSHIP_DUAL_AXIS_TABLES entry is expected to carry a FOR
+// SELECT (or FOR ALL) policy that ORs in `breeze_current_partner_id()` — the
+// read branch (#4673) that lets an ORG-scoped session see its own partner's
+// partner-wide rows for this feature without the app-layer #1105 escalation
+// (CLAUDE.md "Partner-Wide First" step 3, superseded by this branch). Three
+// tables predate the convention (cis_baselines, alert_templates,
+// tenant_variables); Wave 1 of #4673 added it to the configuration_policies
+// chain (configuration_policies, backup_profiles,
+// config_policy_backup_settings). Every other entry below is a REAL,
+// already-shipped gap, not a design choice — filed as one follow-up issue per
+// table against #4673 (see PR body for the list). This map is a ratchet:
+// shrink it as each gap is closed; never add a table here to make an
+// unrelated red pass, and never add one for a table that doesn't actually
+// need the branch (add it to XOR_OWNERSHIP_DUAL_AXIS_TABLES's exclusion
+// comment instead, with rationale).
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
+  ['ai_agents', 'TODO(#4942): no breeze_current_partner_id() SELECT branch yet.'],
+  ['ai_agent_schedules', 'TODO(#4943): no breeze_current_partner_id() SELECT branch yet.'],
+  ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
+  ['client_ai_prompt_templates', 'TODO(#4945): no breeze_current_partner_id() SELECT branch yet.'],
+  ['software_catalog', 'TODO(#4946): no breeze_current_partner_id() SELECT branch yet.'],
+  ['software_policies', 'TODO(#4947): no breeze_current_partner_id() SELECT branch yet.'],
+  ['security_policies', 'TODO(#4948): no breeze_current_partner_id() SELECT branch yet.'],
+  ['alert_rules', 'TODO(#4949): no breeze_current_partner_id() SELECT branch yet.'],
+  // Known gap found during W03 of #4673: automation_policies is read by
+  // buildPolicyProbeConfigUpdate, which is exactly why that resolver still
+  // escalates via the #1105 pattern instead of reading through RLS.
+  ['automation_policies', 'TODO(#4950): no breeze_current_partner_id() SELECT branch yet.'],
+  ['automation_resource_bindings', 'TODO(#4951): no breeze_current_partner_id() SELECT branch yet.'],
+  ['automations', 'TODO(#4952): no breeze_current_partner_id() SELECT branch yet.'],
+  ['sensitive_data_policies', 'TODO(#4953): no breeze_current_partner_id() SELECT branch yet.'],
+  ['peripheral_policies', 'TODO(#4954): no breeze_current_partner_id() SELECT branch yet.'],
+  ['maintenance_windows', 'TODO(#4955): no breeze_current_partner_id() SELECT branch yet.'],
+  ['notification_channels', 'TODO(#4956): no breeze_current_partner_id() SELECT branch yet.'],
+  ['notification_routing_rules', 'TODO(#4957): no breeze_current_partner_id() SELECT branch yet.'],
+  ['escalation_policies', 'TODO(#4958): no breeze_current_partner_id() SELECT branch yet.'],
+  ['sso_providers', 'TODO(#4959): no breeze_current_partner_id() SELECT branch yet.'],
+  ['ticket_forms', 'TODO(#4960): no breeze_current_partner_id() SELECT branch yet.'],
+  ['contract_templates', 'TODO(#4961): no breeze_current_partner_id() SELECT branch yet.'],
+  ['contract_template_versions', 'TODO(#4962): no breeze_current_partner_id() SELECT branch yet.'],
+  ['psa_connections', 'TODO(#4963): no breeze_current_partner_id() SELECT branch yet.'],
+]);
+
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
 // RLS policies join through `devices` to reach the org boundary.
 // Policies must contain both `FROM devices` and `breeze_has_org_access`
@@ -1512,6 +1594,47 @@ describe('RLS coverage contract', () => {
         `Fix: each DML command must be covered by a policy referencing at least one of ` +
         `breeze_has_org_access or breeze_has_partner_access. See 2026-04-11-users-rls.sql ` +
         `for the users table template (the canonical dual-axis case with a self-read branch).`
+    ).toEqual([]);
+  });
+
+  // Wave 4 of #4673: makes the NEXT partner-wide table's missing read branch
+  // fail loud instead of shipping the #2417 blindness again — see CLAUDE.md
+  // "Partner-Wide First" step 3. Deliberately independent of the assertion
+  // above: a table can pass "all four DML commands covered" via
+  // breeze_has_partner_access alone and still be blind to an ORG-scoped
+  // session reading its own partner's partner-wide rows, which is exactly
+  // the gap breeze_current_partner_id() closes.
+  it('every org_id-XOR-partner_id dual-axis table has a breeze_current_partner_id() partner-wide SELECT branch', async () => {
+    const tables = Array.from(XOR_OWNERSHIP_DUAL_AXIS_TABLES).filter(
+      (t) => !PARTNER_WIDE_SELECT_BRANCH_EXEMPT.has(t),
+    );
+
+    const rows = (await db.execute(sql`
+      SELECT DISTINCT p.tablename AS table_name
+      FROM pg_policies p
+      WHERE p.schemaname = 'public'
+        AND p.permissive = 'PERMISSIVE'
+        AND (p.cmd = 'SELECT' OR p.cmd = 'ALL')
+        AND COALESCE(p.qual, '') LIKE '%breeze_current_partner_id%'
+        AND p.tablename = ANY(${sql.raw(
+          `ARRAY[${tables.map((t) => `'${t}'`).join(',')}]::text[]`,
+        )});
+    `)) as unknown as Array<{ table_name: string }>;
+
+    const covered = new Set(rows.map((r) => r.table_name));
+    const offenders = tables.filter((t) => !covered.has(t));
+
+    expect(
+      offenders,
+      `These org_id-XOR-partner_id dual-axis tables have no FOR SELECT (or FOR ALL) policy ` +
+        `referencing breeze_current_partner_id(), so an org-scoped session cannot see its own ` +
+        `partner's partner-wide rows for this feature without the #1105 escalation pattern ` +
+        `(CLAUDE.md "Partner-Wide First" step 3):\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: add a migration creating a FOR SELECT policy (name it <table>_partner_wide_select) ` +
+        `\`USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id())\` — see ` +
+        `2026-10-05-110000-config-policy-partner-wide-select.sql for the template. If this is a ` +
+        `deliberate, reviewed exception rather than a gap, add it to ` +
+        `PARTNER_WIDE_SELECT_BRANCH_EXEMPT with a reason instead of silencing this failure.`
     ).toEqual([]);
   });
 
