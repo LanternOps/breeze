@@ -2723,21 +2723,58 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         operationId: 'cancelScriptExecution',
         tags: ['Scripts'],
-        summary: 'Cancel execution',
+        summary: 'Request a stop for an execution',
+        description: 'Asks the device to stop a running script (#3525). The execution moves to the transient `cancelling` state and only becomes `cancelled` once the stop is proven — either the server retracted a command the device never received, or the agent reported the process terminated. Poll the execution for the final `status` and `cancelState`.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  graceSeconds: {
+                    type: 'integer',
+                    minimum: 0,
+                    maximum: 30,
+                    default: 5,
+                    description: 'Seconds to wait after SIGTERM before SIGKILL. No graceful phase on Windows.'
+                  }
+                }
+              }
+            }
+          }
+        },
         responses: {
           '200': {
-            description: 'Execution cancelled',
+            description: 'Cancellation requested; the returned execution carries the current status and cancelState',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/Success' }
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    execution: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        status: { type: 'string', enum: ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled'] },
+                        cancelState: { type: 'string', nullable: true, enum: ['requested', 'confirmed', 'unconfirmed', 'failed'] },
+                        completedAt: { type: 'string', format: 'date-time', nullable: true }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           '400': { $ref: '#/components/responses/BadRequest' },
           '403': { $ref: '#/components/responses/Forbidden' },
           '404': { $ref: '#/components/responses/NotFound' },
-          '409': { description: 'Execution transitioned out of a cancellable state before the update landed' }
+          // Changed from 400 in #3525 W02b: a terminal execution is a conflict,
+          // not a malformed request.
+          '409': { description: 'Execution is no longer cancellable (already terminal)' },
+          '500': { description: 'Execution state is inconsistent (no paired script command); cancellation refused rather than stamped unproven' }
         }
       }
     },
