@@ -25,6 +25,7 @@ import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
 import ConnectDesktopButton from './ConnectDesktopButton';
+import { showToast } from '@/components/shared/Toast';
 import { getInitialFilePath } from './filePathUtils';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -991,6 +992,15 @@ export default function RemoteToolsPage({
           <RemoteTerminal
             deviceId={deviceId}
             deviceHostname={resolvedDeviceName}
+            // Without this the terminal's only failure report went nowhere: it
+            // calls onError and, before #4152, did nothing else — so a dead
+            // terminal was indistinguishable from an idle one. The in-pane
+            // retry overlay is the primary signal now; the toast is what makes
+            // the failure noticeable if the user is looking elsewhere.
+            onError={(msg) => {
+              console.error('[RemoteToolsPage] Terminal error:', msg);
+              showToast({ type: 'error', message: msg });
+            }}
           />
         )}
         {activeTab === 'files' && (

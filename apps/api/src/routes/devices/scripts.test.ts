@@ -19,6 +19,7 @@ vi.mock('../../db/schema', () => ({
     stdout: 'stdout',
     stderr: 'stderr',
     errorMessage: 'errorMessage',
+    parameters: 'parameters',
     startedAt: 'startedAt',
     completedAt: 'completedAt',
     createdAt: 'createdAt',
@@ -143,6 +144,55 @@ describe('device scripts routes', () => {
     expect(body.data[0].completedAt).toBe('2026-02-08T00:00:03.000Z');
     expect(getDeviceWithOrgCheck).toHaveBeenCalledWith('device-1', expect.any(Object));
     expect(limit).toHaveBeenCalledWith(50);
+  });
+
+  it('includes the run parameters so the web UI can offer "Run again" (#4885)', async () => {
+    vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+      id: 'device-1',
+      orgId: 'org-123',
+      hostname: 'host-1'
+    } as never);
+
+    const executionRows = [
+      {
+        id: 'exec-1',
+        scriptId: 'script-1',
+        scriptName: 'Collect Inventory',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+        stderr: '',
+        errorMessage: null,
+        parameters: { target: 'C:\\Temp' },
+        startedAt: new Date('2026-02-08T00:00:00.000Z'),
+        completedAt: new Date('2026-02-08T00:00:03.000Z'),
+        createdAt: new Date('2026-02-08T00:00:00.000Z')
+      }
+    ];
+
+    const limit = vi.fn().mockResolvedValue(executionRows);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const leftJoin = vi.fn().mockReturnValue({ where });
+    const from = vi.fn().mockReturnValue({ leftJoin });
+
+    vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+    const res = await app.request('/devices/device-1/scripts', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].parameters).toEqual({ target: 'C:\\Temp' });
+
+    // The real assertion: the route must actually SELECT the parameters
+    // column, not merely pass through whatever the mock returns. db.select
+    // is mocked here (real Drizzle needs a live DB), so the only way to prove
+    // the production query changed is to inspect what it was called with.
+    const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(selectArg.parameters).toBe('parameters');
   });
 
   it('returns 404 when the device is not accessible', async () => {

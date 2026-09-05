@@ -637,9 +637,14 @@ secrets:
   turn_secret:
     environment: TURN_SECRET
   # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
-  # target attributes. /dev/null keeps dark deployments optional; when enabled,
-  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  # target attributes. docker/secrets/.empty-jwk (a tracked empty regular file)
+  # keeps dark deployments optional; when enabled, the source JWK must already
+  # have numeric owner 1001:1001 and mode 0400. Do NOT default this to
+  # /dev/null: bind-mounting that character device and remounting it read-only
+  # inside overlayfs is rejected by the kernel on some host kernel/storage-
+  # driver combinations, failing `docker compose up` for anyone who never
+  # touched this feature (#2991). See docker/secrets/README.md.
   m365_graph_read_executor_signing_private_jwk:
-    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-../docker/secrets/.empty-jwk}
   m365_graph_actions_executor_signing_private_jwk:
-    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-../docker/secrets/.empty-jwk}

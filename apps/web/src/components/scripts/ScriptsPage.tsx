@@ -17,6 +17,7 @@ import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { cloneScript } from '@/lib/api/scripts';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -179,8 +180,20 @@ export default function ScriptsPage() {
       throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
-    if (data.targets.some(target => target.admission === 'admitted')) {
+    const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
       await fetchScripts();
+      // #4886 — a library run left the operator stranded on this (now stale)
+      // list with no way to see the result land. A single-device run goes to
+      // that device's Scripts tab (same hash-highlight convention DeviceDetails
+      // already uses for anomalies), where the new execution is expanded live;
+      // a multi-device run has no single "the" device, so it goes to the
+      // script's execution-history list instead.
+      if (deviceIds.length === 1) {
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      } else {
+        void navigateTo(scriptExecutionsHref(scriptId));
+      }
     }
     return data;
   };

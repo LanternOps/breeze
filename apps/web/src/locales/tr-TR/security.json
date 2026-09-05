@@ -1070,6 +1070,11 @@
       "title": "PAM kuralını sil",
       "message": "\"{{name}}\" kuralı silinsin mi? Yükseklik istekleri artık bununla eşleşmeyecek.",
       "confirm": "Kuralı sil"
+    },
+    "staleTierBadge": {
+      "label": "Eskimiş",
+      "tooltip": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez.",
+      "tooltipWithTiers": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez. Şu anda kullanılan seviyeler: {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

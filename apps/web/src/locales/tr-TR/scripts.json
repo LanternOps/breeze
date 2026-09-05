@@ -644,7 +644,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Panoya kopyala"
+      "copyToClipboard": "Panoya kopyala",
+      "runAgain": "Tekrar çalıştır"
     },
     "title": "Yürütme Ayrıntıları",
     "statusDescription": {
@@ -1334,6 +1335,8 @@
     "offlineWarning": "Seçilen cihaz çevrimdışı — çalıştırma, cihaz yeniden bağlanana kadar bekleyecek.",
     "exitCode": "çıkış {{code}}",
     "viewHistory": "Geçmişi görüntüle",
+    "runAgain": "Tekrar çalıştır",
+    "viewOnDevice": "Cihazda görüntüle",
     "status": {
       "pending": "Kuyrukta",
       "running": "Çalışıyor",

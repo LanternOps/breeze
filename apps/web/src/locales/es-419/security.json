@@ -1070,6 +1070,11 @@
       "title": "Eliminar regla PAM",
       "message": "¿Eliminar la regla \"{{name}}\"? Las solicitudes de elevación ya no coincidirán con él.",
       "confirm": "Eliminar regla"
+    },
+    "staleTierBadge": {
+      "label": "Obsoleto",
+      "tooltip": "El nivel de riesgo {{tier}} ya no coincide con nada que esta regla pueda seleccionar, por lo que nunca podrá coincidir.",
+      "tooltipWithTiers": "El nivel de riesgo {{tier}} ya no coincide con nada que esta regla pueda seleccionar, por lo que nunca podrá coincidir. Niveles actualmente en uso: {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemoteToolsPage from './RemoteToolsPage';
 import { fetchWithAuth } from '@/stores/auth';
+import { showToast } from '@/components/shared/Toast';
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -16,11 +17,22 @@ vi.mock('./ConnectDesktopButton', () => ({
 }));
 
 // RemoteTerminal lazy-imports xterm.js and opens a WebSocket on mount — that
-// machinery is covered by RemoteTerminal.test.tsx. Here we only need proof
-// that RemoteToolsPage mounted the Terminal tab's content, so stub it out
-// with a marker element.
+// machinery is covered by RemoteTerminal.test.tsx / RemoteTerminal.initFailure
+// .test.tsx. Here we only need proof that RemoteToolsPage mounted the Terminal
+// tab's content, so stub it out with a marker element. The stub also captures
+// the props it was handed, which is how the onError wiring below is asserted.
+const terminalStubProps: { onError?: (message: string) => void } = {};
+
 vi.mock('./RemoteTerminal', () => ({
-  default: () => <div data-testid="remote-terminal-stub" />,
+  default: (props: { onError?: (message: string) => void }) => {
+    terminalStubProps.onError = props.onError;
+    return <div data-testid="remote-terminal-stub" />;
+  },
+}));
+
+vi.mock('@/components/shared/Toast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/shared/Toast')>()),
+  showToast: vi.fn(),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -33,6 +45,8 @@ const makeResponse = (payload: unknown = {}, ok = false): Response =>
   } as unknown as Response);
 
 beforeEach(() => {
+  vi.mocked(showToast).mockClear();
+  terminalStubProps.onError = undefined;
   fetchMock.mockReset();
   // Nothing under test here depends on real device/process/service data —
   // every fetch resolves not-ok so effects bail out quietly.
@@ -113,5 +127,28 @@ describe('RemoteToolsPage tab hash persistence (#4512)', () => {
     });
     const processesButton = await screen.findByRole('button', { name: 'Processes' });
     expect(processesButton.className).toMatch(/border-primary/);
+  });
+});
+
+// The terminal's only channel for reporting a failed initialisation is the
+// onError prop. RemoteToolsPage never passed one, so a terminal that died on
+// mount was completely silent — the defect behind #4152 was invisible to the
+// user and to support.
+describe('RemoteToolsPage surfaces terminal errors (#4152)', () => {
+  it('passes an onError handler that raises a toast', async () => {
+    window.location.hash = '#terminal';
+
+    renderPage();
+    await screen.findByTestId('remote-terminal-stub');
+
+    expect(terminalStubProps.onError).toBeTypeOf('function');
+
+    act(() => {
+      terminalStubProps.onError!('Failed to initialize terminal');
+    });
+
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: 'Failed to initialize terminal' }),
+    );
   });
 });

@@ -265,6 +265,34 @@ describe('tool-action rules (Phase 1 helper governance)', () => {
     ).toBeNull();
   });
 
+  // #3128: exact tier equality is a DELIBERATE contract, pinned here so nobody
+  // "fixes" it into a >=/<= comparison without a policy decision. Widening it
+  // would silently move auto-approval boundaries on every existing rule: a
+  // `tier 3 -> auto_approve` rule would start auto-approving tier 1 and 2 calls
+  // too. The mitigation for the surprise is the drift detector
+  // (services/pamRuleTierDrift.ts) plus the create/update 400 and the list
+  // badge — not looser matching.
+  it('stops matching when a tool call is re-classified to another tier (#3128)', () => {
+    // The #3105 scenario: the rule was authored for execute_command at Tier 3,
+    // then three read-only commandTypes were downgraded to Tier 2.
+    const r = rule({
+      matchToolName: 'execute_command',
+      matchRiskTier: 3,
+      verdict: 'auto_approve',
+    });
+    const beforeReclass: PamRuleCandidate = {
+      toolName: 'execute_command',
+      riskTier: 3,
+      subjectUsername: 'HOST-01',
+    };
+    const afterReclass: PamRuleCandidate = { ...beforeReclass, riskTier: 2 };
+
+    expect(evaluatePamToolActionRules([r], beforeReclass)?.verdict).toBe('auto_approve');
+    // Fails to the safe side: no match at all, so the caller falls through to
+    // its pending/require-approval default rather than auto-approving.
+    expect(evaluatePamToolActionRules([r], afterReclass)).toBeNull();
+  });
+
   it('ANDs tool criteria with user and time window', () => {
     const r = rule({
       matchToolName: 'manage_services',
