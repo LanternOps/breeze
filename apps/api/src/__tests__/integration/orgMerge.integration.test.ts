@@ -810,9 +810,13 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
       quote_order_lines: { moved: 1, dropped: 0 },
       invoices: { moved: 1, dropped: 0 },
       invoice_lines: { moved: 2, dropped: 0 },
-      // keep-survivor: two collide, ai_budgets has no survivor row so it moves
+      // keep-survivor: two collide, ai_budgets has no survivor row so it moves.
+      // audit_retention_policies is seeded for every org by a DB trigger
+      // (breeze_seed_org_audit_retention, #4824), so both the loser and the
+      // survivor always have a row and it always collides here.
       portal_branding: { moved: 0, dropped: 1 },
       org_ticket_settings: { moved: 0, dropped: 1 },
+      audit_retention_policies: { moved: 0, dropped: 1 },
       ai_budgets: { moved: 1, dropped: 0 },
       // repoint-dedupe: one colliding + one unique loser row each
       tenant_variables: { moved: 1, dropped: 1 },

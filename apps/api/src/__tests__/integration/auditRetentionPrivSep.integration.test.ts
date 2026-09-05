@@ -80,6 +80,7 @@ describe('#915 audit-retention privilege separation', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 30)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
     await getTestDb().execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
@@ -110,6 +111,7 @@ describe('#915 audit-retention privilege separation', () => {
     await getTestDb().execute(sql`
       INSERT INTO audit_retention_policies (org_id, retention_days)
       VALUES (${orgId}, 30)
+      ON CONFLICT (org_id) DO UPDATE SET retention_days = EXCLUDED.retention_days
     `);
     // Each execute is its own transaction, so statement order == chain_seq order.
     for (const days of [95, 94, 93, 92, 91]) {
