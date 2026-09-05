@@ -664,6 +664,7 @@
     "retry": "Tekrar dene",
     "activities": "Faaliyetler",
     "total": "toplam)",
+    "totalAtLeast": "{{count}} ve üzeri",
     "searchActivities": "Arama etkinlikleri...",
     "all": "Hepsi",
     "success": "Başarılı",
@@ -683,7 +684,8 @@
     "details": "Ayrıntılar",
     "showing": "Gösteriliyor",
     "text": "–",
-    "of": "arasında"
+    "of": "arasında",
+    "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dosya sistemi durumu getirilemedi",
@@ -1519,6 +1521,7 @@
     "output": "Çıkış",
     "refreshing": "Yenileniyor...",
     "running": "Koşuyor...",
+    "runAgain": "Tekrar çalıştır",
     "scriptFallback": "Komut Dosyası",
     "status": {
       "cancelled": "İptal edildi",

@@ -2,6 +2,8 @@ package collectors
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"strings"
@@ -95,9 +97,21 @@ func NewPolicyStateCollector() *PolicyStateCollector {
 	return &PolicyStateCollector{readFile: os.ReadFile}
 }
 
+// CollectConfigState reads each configured probe out of the local filesystem.
+//
+// The returned error is a completeness signal, not a fatal one: entries always
+// holds whatever was readable, and a non-nil error means at least one probe
+// could not be read (permissions, I/O) so the result is PARTIAL. Callers must
+// not upload a partial result with replace:true — that deletes the server's
+// prior observation of every probe missing from this batch (#3529).
+//
+// A probe target that simply does not exist, or a file that does not contain
+// the key, is genuine absence rather than failure: it is reported by omission
+// with no error, so a complete collection still clears stale server state.
 func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]ConfigStateEntry, error) {
 	entries := make([]ConfigStateEntry, 0, len(probes))
 	seen := make(map[string]struct{})
+	var probeErrs []error
 
 	for _, probe := range probes {
 		filePath := strings.TrimSpace(probe.FilePath)
@@ -118,6 +132,9 @@ func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]Confi
 
 		content, err := c.readConfigFile(filePath)
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				probeErrs = append(probeErrs, fmt.Errorf("read %s: %w", filePath, err))
+			}
 			continue
 		}
 
@@ -133,7 +150,7 @@ func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]Confi
 		})
 	}
 
-	return entries, nil
+	return entries, errors.Join(probeErrs...)
 }
 
 func (c *PolicyStateCollector) readConfigFile(filePath string) ([]byte, error) {

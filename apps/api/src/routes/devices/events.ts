@@ -103,6 +103,14 @@ export const DETAILS_HAS_DEVICE_ID: SQL = sql`${auditLogs.details} ? 'deviceId'`
 // fixed-width text key sorts exactly like the column.
 export const FEED_SORT_KEY: SQL<string> = sql<string>`to_char(${auditLogs.timestamp}, 'YYYYMMDDHH24MISSUS')`;
 
+// Stop-gap cap for the Activities-tab `withTotal` count (#4834, option 2 of
+// the three the issue lays out). Past this many matching rows in an arm, the
+// count query stops instead of walking the rest of the device's audit
+// history, and the UI renders "10,000+" instead of an exact total. The root
+// fix — de-telemetrying audit_logs so the count is cheap outright — is
+// #4340 / #4021.
+export const FEED_TOTAL_CAP = 10000;
+
 // Merge the two feed arms (each already ordered timestamp DESC, id DESC in SQL
 // and bounded to offset+limit rows) and cut the requested page. Exact for any
 // offset because the top-(offset+limit) of the union is contained in the union
@@ -329,14 +337,31 @@ eventsRoutes.get(
         .orderBy(desc(auditLogs.timestamp), desc(auditLogs.id))
         .limit(fetchLimit);
 
-    // The total is an unbounded count(*) over the device's whole audit history;
-    // only run it when the caller actually renders a total (issue #1726).
-    const countArm = (where: SQL) =>
-      db
-        .select({ count: sql<number>`count(*)::int` })
+    // Only run the count when the caller actually renders a total (issue
+    // #1726); when it does run, cap it (issue #4834 stop-gap — option 2 of
+    // the three in that issue; the root fix, de-telemetrying audit_logs, is
+    // #4340 / #4021). An uncapped count(*) over a device's whole audit
+    // history read 76k rows (99% agent telemetry) in 118s on US prod, because
+    // the RLS org_id filter forces a heap fetch per row and the table is
+    // never vacuumed (no visibility map for an index-only count). Capping
+    // each arm's count at FEED_TOTAL_CAP + 1 rows via a LIMIT inside a
+    // derived table makes the query stop after that many matches instead of
+    // scanning the rest of the device's history — cost is now bounded
+    // regardless of how large that history grows. The inner SELECT stays on
+    // auditLogs alone (no join to `users`) and reuses the arm's `where`
+    // unchanged, so it hits the same index the row read for that arm uses.
+    const countArm = (where: SQL) => {
+      const cappedRows = db
+        .select({ one: sql`1` })
         .from(auditLogs)
         .where(where)
+        .limit(FEED_TOTAL_CAP + 1)
+        .as('capped_rows');
+      return db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(cappedRows)
         .then((r) => Number(r[0]?.count ?? 0));
+    };
 
     const [resourceRows, detailsRows, resourceCount, detailsCount] = await Promise.all([
       selectArm(resourceArm),
@@ -346,8 +371,19 @@ eventsRoutes.get(
     ]);
 
     const rows = mergeFeedPage(resourceRows, detailsRows, offset, limit);
-    const total =
-      resourceCount === null || detailsCount === null ? null : resourceCount + detailsCount;
+
+    // Each arm's count is itself capped at FEED_TOTAL_CAP + 1, so the raw sum
+    // can read anywhere up to 2 * (FEED_TOTAL_CAP + 1) — that's fine, since
+    // all we need past the cap is the boolean "more than FEED_TOTAL_CAP rows
+    // matched", not a precise number. When the sum is at or under the cap,
+    // neither arm could have hit its own +1 ceiling, so the sum is exact.
+    let total: number | null = null;
+    let totalIsLowerBound = false;
+    if (resourceCount !== null && detailsCount !== null) {
+      const rawTotal = resourceCount + detailsCount;
+      totalIsLowerBound = rawTotal > FEED_TOTAL_CAP;
+      total = totalIsLowerBound ? FEED_TOTAL_CAP : rawTotal;
+    }
 
     const data = rows.map((row) => ({
       id: row.id,
@@ -374,7 +410,10 @@ eventsRoutes.get(
 
     return c.json({
       data,
-      pagination: { page, limit, total },
+      pagination:
+        total === null
+          ? { page, limit, total }
+          : { page, limit, total, totalIsLowerBound },
     });
   }
 );

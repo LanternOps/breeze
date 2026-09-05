@@ -58,6 +58,24 @@ const ARCHIVED_ORG: Organization = {
   purgeAt: '2026-09-26T00:00:00.000Z', // 30 days after the fixed "now" below
 };
 
+/**
+ * #4166 — an org mid-ARCHIVE drain. It sits in `status: 'offboarding'` with
+ * `offboardingTarget: 'archive'` for the whole agent-uninstall window, and the
+ * API serves it through the same READ ONLY archived door (hence `archived:
+ * true`) so the operator can see the Archive click took effect and can still
+ * abort it with Restore.
+ */
+const DRAINING_ORG: Organization = {
+  id: 'eeeeeeee-5555-4555-8555-555555555555',
+  name: 'Epsilon Corp',
+  status: 'offboarding',
+  offboardingTarget: 'archive',
+  deviceCount: 5,
+  createdAt: '2026-01-05T00:00:00Z',
+  archived: true,
+  purgeAt: '2026-09-26T00:00:00.000Z', // 30 days after the fixed "now"
+};
+
 const DELTA_ARCHIVED_ORG: Organization = {
   id: 'dddddddd-4444-4444-8444-444444444444',
   name: 'Delta Inc',
@@ -386,6 +404,114 @@ describe('OrganizationsPage — Archived section search race safety', () => {
     expect(screen.getAllByTestId('org-archived-row')).toHaveLength(1);
     expect(screen.getByText('Delta Inc')).toBeInTheDocument();
     expect(screen.queryByText('Gamma LLC')).not.toBeInTheDocument();
+  });
+});
+
+// #4166 — the drain window is where an operator most needs to see the org:
+// it is the only point at which the archive is still cancellable, and before
+// this fix the row was in neither list, so Restore had nothing to click.
+describe('OrganizationsPage — org mid-archive-drain (#4166)', () => {
+  it('lists a draining org in the Archived section under an "Archiving…" badge', async () => {
+    mockApi({ archivedOrgs: [DRAINING_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    const row = screen.getByTestId('org-archived-row');
+    expect(within(row).getByText('Epsilon Corp')).toBeInTheDocument();
+    // "Archiving…", not "Archived" — the distinction is what tells the operator
+    // the agent uninstall is still running rather than finished.
+    expect(within(row).getByTestId('org-archived-badge')).toHaveTextContent('Archiving…');
+    // purge_at is stamped at drain entry, so the countdown is real here.
+    expect(within(row).getByText('Purges in 30 days')).toBeInTheDocument();
+  });
+
+  it('still labels a settled archived org "Archived"', async () => {
+    mockApi({ archivedOrgs: [ARCHIVED_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    expect(screen.getByTestId('org-archived-badge')).toHaveTextContent('Archived');
+  });
+
+  // The real-world view: an MSP mid-cleanup has settled archives AND a fresh
+  // one still draining, side by side in the same section. `archiveBadge` is a
+  // per-row pure function, so this is the case that proves it stays per-row.
+  it('labels a draining and a settled org differently in the same list', async () => {
+    mockApi({ archivedOrgs: [ARCHIVED_ORG, DRAINING_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    const rows = screen.getAllByTestId('org-archived-row');
+    expect(rows).toHaveLength(2);
+    const byName = (name: string) => rows.find((row) => row.textContent?.includes(name))!;
+    expect(within(byName('Gamma LLC')).getByTestId('org-archived-badge')).toHaveTextContent('Archived');
+    expect(within(byName('Epsilon Corp')).getByTestId('org-archived-badge')).toHaveTextContent('Archiving…');
+  });
+
+  it('serves the draining org through the read-only pane, with Restore as the only action', async () => {
+    mockApi({ archivedOrgs: [DRAINING_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    fireEvent.click(screen.getByTestId('org-archived-row'));
+    await flush();
+
+    const panel = screen.getByTestId('org-detail-panel');
+    expect(within(panel).getByTestId('org-restore')).toBeInTheDocument();
+    expect(within(panel).getByTestId('org-archived-detail-badge')).toHaveTextContent('Archiving…');
+    // The mutable pane's affordances would all 404 against an org outside
+    // `accessibleOrgIds`, so none of them may render.
+    expect(within(panel).queryByTestId('org-archive-open')).not.toBeInTheDocument();
+    expect(within(panel).queryByTestId('org-merge-open')).not.toBeInTheDocument();
+    expect(within(panel).getAllByRole('button')).toHaveLength(1);
+    // Drain-specific copy, not the settled-archive read-only notice.
+    expect(within(panel).getByTestId('org-archived-readonly-notice'))
+      .toHaveTextContent('agents are being removed');
+  });
+
+  // The sites read runs in the caller's own RLS context, which cannot see this
+  // org — an empty array back would be indistinguishable from "no sites".
+  it('does not issue a sites read for a draining org', async () => {
+    mockApi({ archivedOrgs: [DRAINING_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    fireEvent.click(screen.getByTestId('org-archived-row'));
+    await flush();
+
+    expect(fetchMock.mock.calls.some(
+      (call) => String(call[0]).includes(`/orgs/sites?organizationId=${DRAINING_ORG.id}`),
+    )).toBe(false);
+  });
+
+  // `restoreOrgFromArchive`'s abort edge: `offboarding` + target `archive`.
+  // Reaching it from the UI at all is the point of the fix.
+  it('aborts the drain through the same Restore action', async () => {
+    mockApi({
+      archivedOrgs: [DRAINING_ORG],
+      restoreResponse: () => ({ body: { status: 'active', recreateRequired: [], aborted: true, uninstallsCancelled: 5 } }),
+    });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+
+    fireEvent.click(screen.getByTestId('org-archived-row'));
+    await flush();
+    fireEvent.click(screen.getByTestId('org-restore'));
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith(`/orgs/organizations/${DRAINING_ORG.id}/restore`, { method: 'POST' });
+    // Back in the active list, and the detail pane is mutable again.
+    const row = screen.getByTestId(`org-row-${DRAINING_ORG.id}`);
+    expect(within(row).getByText('Active')).toBeInTheDocument();
+    const panel = screen.getByTestId('org-detail-panel');
+    expect(within(panel).queryByTestId('org-restore')).not.toBeInTheDocument();
+    expect(within(panel).getByTestId('org-archive-open')).toBeInTheDocument();
   });
 });
 

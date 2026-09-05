@@ -147,6 +147,22 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('prior_status', 'failed:server-timeout');
   });
 
+  // #4137: `dispatch-backup` is a one-shot, so a refused re-delivery drops a
+  // whole backup run on purpose. scrubEvent redacts the exception value, so
+  // this tag is the only thing that distinguishes that deliberate drop from any
+  // other backup-worker crash. Gated TWICE, like the pairs above.
+  it('captureException keeps the #4137 backup_dispatch_issue tag', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    captureException(new Error('Refusing to re-dispatch backup job'), undefined, {
+      backup_dispatch_issue: 'redelivery-refused',
+    });
+
+    expect(setTagMock).toHaveBeenCalledWith('backup_dispatch_issue', 'redelivery-refused');
+  });
+
   // #3022: a CONNECT_TIMEOUT already arrives tagged `pg_code:CONNECT_TIMEOUT`,
   // but that bucket mixes two unrelated failures — a handshake that really
   // failed, and a main thread too busy to run the socket callbacks. These tags
@@ -464,6 +480,7 @@ describe('scrubEvent', () => {
         manifest_refusal_reason: 'not-distributable',
         release_sync_failure_reason: 'ssrf-blocked',
         release_sync_context: 'stale-volume-fallback',
+        backup_dispatch_issue: 'redelivery-refused',
         worker: 'patchScheduler',
         worker_failure_reason: 'desktop_stop_pending',
         patch_reconcile_stage: 'enqueue_failed',
@@ -543,6 +560,12 @@ describe('scrubEvent', () => {
       // cannot tell a guard refusal from an ordinary GitHub outage.
       release_sync_failure_reason: 'ssrf-blocked',
       release_sync_context: 'stale-volume-fallback',
+      // #4137: dispatch-backup is at-most-once, so a refused re-delivery
+      // deliberately drops a backup run. scrubEvent rewrites the exception
+      // value to '[redacted]' — dropped here too, the capture arrives
+      // contentless and an operator cannot tell a deliberate at-most-once drop
+      // from an ordinary backup-worker crash.
+      backup_dispatch_issue: 'redelivery-refused',
       // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
       // and the allowlist introduced two days later (a50769487) has discarded
       // it ever since, which is why ~12k held-context events carry an empty
@@ -691,5 +714,81 @@ describe('sentry bootstrap wiring (index.ts)', () => {
 
   it('flushes Sentry on shutdown so buffered events are not lost', () => {
     expect(indexSource).toMatch(/flushSentry\s*\(/);
+  });
+});
+
+// #4828: every `captureException(err, undefined, { ...tags })` call in the
+// accounting sync path was passing camelCase tag keys (`invoiceId`,
+// `mappingId`, `partnerId`, `remoteEntityId`) and an unallowlisted `service`
+// key — none of which `pickAllowedTags` forwards, so `scrubEvent` strips
+// `message`/`extra`/`logentry` and the event arrives at Sentry with NO usable
+// content at all. A source-grep contract test (rather than a unit test on one
+// call site) so a future call site added to either file with a NEW,
+// not-yet-allowlisted tag key fails CI immediately instead of shipping another
+// silent drop.
+describe('accounting captureException tags stay allowlisted (#4828)', () => {
+  const sentrySource = readFileSync(
+    fileURLToPath(new URL('./sentry.ts', import.meta.url)),
+    'utf-8',
+  );
+  const allowlistMatch = sentrySource.match(
+    /const ALLOWED_TAG_NAMES = new Set\(\[([\s\S]*?)\]\);/,
+  );
+  if (!allowlistMatch?.[1]) {
+    throw new Error('Could not locate ALLOWED_TAG_NAMES in sentry.ts — has it been renamed?');
+  }
+  const allowlistBody: string = allowlistMatch[1];
+  const allowedTagNames = new Set(
+    [...allowlistBody.matchAll(/'([a-zA-Z0-9_]+)'/g)].map((m) => m[1]!),
+  );
+
+  // Every `captureException(<err expr>, undefined, { <tags> })` call's tags
+  // object, in source-code order. Anchored on the literal `undefined,` second
+  // argument (every tag-bearing call in both files uses this exact calling
+  // convention) rather than lazily hunting for the first `{` after
+  // `captureException(` — an earlier version of this matcher did that and was
+  // fooled by `markInvoiceMappingError`/`markMappingError`'s error-message
+  // template literal (`` `... (id=${mappingId})` ``), whose `${...}`
+  // interpolation is itself a `{`/`}` pair: it matched THAT as the "tags
+  // object" (capturing only the bare word `mappingId`) and then skipped clean
+  // over the real tags object entirely — a call site could have shipped an
+  // unallowlisted key there and this test would never have seen it. Assumes
+  // (true of both files today) the tags object contains no nested `{`/`}` and
+  // the call contains no `;` before its closing `)` — a call that grows
+  // either would need a smarter matcher here.
+  function extractCaptureExceptionTagCalls(source: string): string[][] {
+    const calls: string[][] = [];
+    for (const call of source.matchAll(/captureException\([^;]*?undefined,\s*\{([^}]*)\}\s*,?\s*\)/gs)) {
+      const tagsBody = call[1] ?? '';
+      const keys = [...tagsBody.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map((m) => m[1]!);
+      calls.push(keys);
+    }
+    return calls;
+  }
+
+  it.each([
+    // The second number is how many `captureException(` calls in that file
+    // pass a tags object at all (i.e. exclude tag-less calls like
+    // `captureException(err)`) — asserted below so a future regex blind spot
+    // like the one this test guards against (see the comment above) fails
+    // LOUDLY as a count mismatch, instead of silently extracting zero keys
+    // for a skipped call and passing anyway.
+    ['accounting/accountingInvoicePush.ts', 7],
+    ['accounting/accountingMappingService.ts', 5],
+  ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
+    const source = readFileSync(
+      fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),
+      'utf-8',
+    );
+    const calls = extractCaptureExceptionTagCalls(source);
+    expect(calls.length).toBe(expectedTagBearingCalls);
+    const tagKeys = calls.flat();
+    // Guards the guard: if the file's captureException calls stop passing a
+    // tags object entirely (e.g. a refactor), this test would vacuously pass
+    // with zero assertions below — fail loudly instead.
+    expect(tagKeys.length).toBeGreaterThan(0);
+    for (const key of tagKeys) {
+      expect(allowedTagNames.has(key), `tag "${key}" in ${relativePath} is not in sentry.ts ALLOWED_TAG_NAMES — it will be silently dropped`).toBe(true);
+    }
   });
 });

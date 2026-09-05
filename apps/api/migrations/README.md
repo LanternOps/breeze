@@ -72,6 +72,32 @@ with anything.
   logs. Silently fixing bad data destroys the forensic trail.
 - **RLS policies ship in the same migration that creates the table** — never
   deferred. See the tenancy shapes in the root `CLAUDE.md`.
+- **Writing rows requires system scope first.** Before the first
+  `UPDATE`/`DELETE`/`INSERT`/`MERGE` in the file:
+
+  ```sql
+  SELECT set_config('breeze.scope', 'system', true);
+  ```
+
+  (or `PERFORM set_config('breeze.scope', 'system', true);` as the first
+  statement inside a `DO` block). `breeze_current_scope()` defaults to `'none'`
+  (`0012-tenant-rls-deny-default.sql`) and 425 of the 442 public tables are
+  `FORCE ROW LEVEL SECURITY`, which binds the table **owner** too — and the
+  owner is the role migrations run as. On a connection that does not bypass
+  RLS, an unwrapped `UPDATE`/`DELETE` therefore matches **zero rows with no
+  error** — your `RAISE WARNING` prints a truthful-looking `0 cleaned` and the
+  migration moves on — and an unwrapped `INSERT` aborts with 42501. Reference
+  file: `2026-09-30-100000-rls-scoped-backfill-replay.sql`.
+
+  `is_local = true` scopes the setting to autoMigrate's per-file transaction,
+  so one line at the top covers the whole file — **except** in a
+  `-- @no-transaction` file, where each statement is sent separately and the
+  elevation must sit inside the same statement as the write.
+
+  Enforced by `apps/api/src/db/migrationRlsScope.test.ts` in the **Test API**
+  job. It carries a frozen baseline of the 122 shipped migrations that predate
+  the rule; that list is capped at a cutoff filename, so a new migration
+  **cannot** be silenced by adding it. See issue #4518.
 
 ## Never edit a shipped migration
 
@@ -113,7 +139,8 @@ later definer automatically; see its header comment.
 4. New tenant-scoped table? Work the RLS + cascade + export-policy registration
    lists in the root `CLAUDE.md` — they are separate contracts and the missed
    one is always a cascade list.
-5. `pnpm --filter @breeze/api test src/db/autoMigrate.test.ts`.
+5. Does it write rows? Elect system scope first (see Content rules).
+6. `pnpm --filter @breeze/api test --run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts`.
 
 ## Rule 3 — a new migration must sort AFTER every committed one
 

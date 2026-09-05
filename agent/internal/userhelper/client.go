@@ -256,7 +256,8 @@ func (c *Client) authenticate() error {
 
 	binaryHash, _ := computeSelfHash()
 	displayEnv := detectDisplayEnv()
-	sessionID := fmt.Sprintf("helper-%s-%d", username, os.Getpid())
+	// Opaque, host-identity-free session id (#3109) — see newSessionID.
+	sessionID := newSessionID()
 
 	authReq := ipc.AuthRequest{
 		ProtocolVersion:   ipc.ProtocolVersion,

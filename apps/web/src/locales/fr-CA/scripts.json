@@ -644,7 +644,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Copier dans le presse-papiers"
+      "copyToClipboard": "Copier dans le presse-papiers",
+      "runAgain": "Exécuter à nouveau"
     },
     "title": "Détails d’exécution",
     "statusDescription": {
@@ -804,7 +805,8 @@
     "errors": {
       "fetch": "Impossible de récupérer le script",
       "generic": "Une erreur est survenue",
-      "save": "Impossible d’enregistrer le script"
+      "save": "Impossible d’enregistrer le script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "created": "Script créé",
@@ -814,6 +816,7 @@
     "actions": {
       "backToScripts": "Retour aux scripts",
       "executionHistory": "Historique d’exécution",
+      "duplicate": "Dupliquer",
       "create": "Créer le script",
       "saveChanges": "Enregistrer les modifications"
     },
@@ -1124,6 +1127,7 @@
     "actions": {
       "runTitle": "Exécuter le script",
       "editTitle": "Modifier le script",
+      "duplicateTitle": "Dupliquer le script",
       "deleteTitle": "Supprimer le script"
     },
     "pagination": {
@@ -1244,7 +1248,8 @@
       "delete": "Impossible de supprimer un script",
       "deleteTryAgain": "Impossible de supprimer le script. Veuillez réessayer.",
       "alreadyInLibrary": "\"{{name}}\" est déjà dans votre bibliothèque",
-      "import": "Impossible d’importer un script"
+      "import": "Impossible d’importer un script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "deleting": "Suppression de \"{{name}}\"...",
@@ -1331,6 +1336,8 @@
     "offlineWarning": "L'appareil sélectionné est hors ligne — l'exécution attendra sa reconnexion.",
     "exitCode": "sortie {{code}}",
     "viewHistory": "Voir l'historique",
+    "runAgain": "Exécuter à nouveau",
+    "viewOnDevice": "Voir sur l'appareil",
     "status": {
       "pending": "En attente",
       "running": "En cours",

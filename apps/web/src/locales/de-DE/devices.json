@@ -664,6 +664,7 @@
     "retry": "Versuchen Sie es noch einmal",
     "activities": "Aktivitäten",
     "total": "insgesamt)",
+    "totalAtLeast": "{{count}} oder mehr",
     "searchActivities": "Aktivitäten suchen...",
     "all": "Alle",
     "success": "Erfolg",
@@ -683,7 +684,8 @@
     "details": "Details",
     "showing": "Zeigt",
     "text": "–",
-    "of": "von"
+    "of": "von",
+    "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dateisystemstatus konnte nicht abgerufen werden",
@@ -1519,6 +1521,7 @@
     "output": "Ausgabe",
     "refreshing": "Wird aktualisiert...",
     "running": "Wird ausgeführt...",
+    "runAgain": "Erneut ausführen",
     "scriptFallback": "Skript",
     "status": {
       "cancelled": "Abgesagt",

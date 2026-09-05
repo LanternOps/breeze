@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
@@ -473,7 +473,27 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   addedAt: timestamp('added_at').defaultNow().notNull(),
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
 }, (table) => ({
-  pk: primaryKey({ columns: [table.deviceId, table.groupId] })
+  pk: primaryKey({ columns: [table.deviceId, table.groupId] }),
+  // #3182 — the row's org_id alone is what RLS gates on, so without these the
+  // group_id and device_id are free to name a DIFFERENT org's group/device.
+  // Together they pin the triangle: group.org_id = membership.org_id =
+  // device.org_id. Created in SQL migration
+  // 2026-10-09-000200-device-group-memberships-composite-tenant-fks.sql, which
+  // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
+  // foreignKey() builder has no deferrable option, so that detail lives in the
+  // migration only) and adds the detach — to breeze_cascade_device_org_id(),
+  // an AFTER trigger — that drops these rows on a cross-org device move.
+  // Declared here for db:check-drift.
+  groupOrgFk: foreignKey({
+    columns: [table.groupId, table.orgId],
+    foreignColumns: [deviceGroups.id, deviceGroups.orgId],
+    name: 'device_group_memberships_group_org_fk',
+  }),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_group_memberships_device_org_fk',
+  }),
 }));
 
 // Audit log for group membership changes

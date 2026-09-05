@@ -644,7 +644,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Copiar para a área de transferência"
+      "copyToClipboard": "Copiar para a área de transferência",
+      "runAgain": "Executar novamente"
     },
     "title": "Detalhes da execução",
     "statusDescription": {
@@ -804,7 +805,8 @@
     "errors": {
       "fetch": "Falha ao buscar script",
       "generic": "Ocorreu um erro",
-      "save": "Falha ao salvar script"
+      "save": "Falha ao salvar script",
+      "duplicate": "Falha ao duplicar script"
     },
     "toast": {
       "created": "Script criado",
@@ -814,6 +816,7 @@
     "actions": {
       "backToScripts": "Voltar para scripts",
       "executionHistory": "Histórico de execuções",
+      "duplicate": "Duplicar",
       "create": "Criar script",
       "saveChanges": "Salvar alterações"
     },
@@ -1124,6 +1127,7 @@
     "actions": {
       "runTitle": "Executar script",
       "editTitle": "Editar script",
+      "duplicateTitle": "Duplicar script",
       "deleteTitle": "Excluir script"
     },
     "pagination": {
@@ -1244,7 +1248,8 @@
       "delete": "Falha ao excluir script",
       "deleteTryAgain": "Falha ao excluir script. Tente novamente.",
       "alreadyInLibrary": "\"{{name}}\" já está na sua biblioteca",
-      "import": "Falha ao importar script"
+      "import": "Falha ao importar script",
+      "duplicate": "Falha ao duplicar script"
     },
     "toast": {
       "deleting": "Excluindo \"{{name}}\"...",
@@ -1331,6 +1336,8 @@
     "offlineWarning": "O dispositivo selecionado está offline — a execução aguardará até que ele reconecte.",
     "exitCode": "saída {{code}}",
     "viewHistory": "Ver histórico",
+    "runAgain": "Executar novamente",
+    "viewOnDevice": "Ver no dispositivo",
     "status": {
       "pending": "Na fila",
       "running": "Em execução",

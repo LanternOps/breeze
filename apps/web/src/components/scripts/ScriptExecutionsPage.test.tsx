@@ -10,14 +10,23 @@ vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: fetchWithAuthMock };
 });
+
+type MockExecuteModalProps = {
+  onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
+  script: { id: string };
+  initialDeviceIds?: string[];
+  initialParameters?: Record<string, string | number | boolean>;
+};
+
 vi.mock('./ScriptExecutionModal', () => ({
-  default: ({ onExecute, script }: {
-    onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
-    script: { id: string };
-  }) => (
-    <button type="button" onClick={() => void onExecute(script.id, ['device-1'], {}, 'system')}>
-      Confirm Execute
-    </button>
+  default: ({ onExecute, script, initialDeviceIds, initialParameters }: MockExecuteModalProps) => (
+    <div>
+      <div data-testid="mock-initial-device-ids">{JSON.stringify(initialDeviceIds ?? null)}</div>
+      <div data-testid="mock-initial-parameters">{JSON.stringify(initialParameters ?? null)}</div>
+      <button type="button" onClick={() => void onExecute(script.id, ['device-1'], {}, 'system')}>
+        Confirm Execute
+      </button>
+    </div>
   ),
 }));
 
@@ -169,6 +178,34 @@ describe('ScriptExecutionsPage', () => {
     fireEvent.click(await screen.findByText('Confirm Execute'));
 
     await waitFor(() => expect(executionListCalls).toBeGreaterThanOrEqual(2));
+  });
+
+  // #4885 — "Run again" from the execution-details modal.
+  it('opens the execute modal pre-filled with the clicked execution\'s device and parameters', async () => {
+    mockApi(() =>
+      jsonResponse({
+        ...listRow,
+        stdout: 'FULL STDOUT FROM DETAIL',
+        stderr: '',
+        parameters: { target: 'C:\\Temp', force: true },
+      })
+    );
+
+    await openDetails();
+    await screen.findByText('FULL STDOUT FROM DETAIL');
+
+    fireEvent.click(screen.getByTestId('execution-run-again'));
+
+    // The details view is gone (replaced by the execute flow), and the
+    // execute modal received exactly this execution's device + parameters —
+    // not an empty/blank form.
+    expect(screen.queryByText('Execution Details')).toBeNull();
+    expect(await screen.findByTestId('mock-initial-device-ids')).toHaveTextContent(
+      JSON.stringify([listRow.deviceId])
+    );
+    expect(screen.getByTestId('mock-initial-parameters')).toHaveTextContent(
+      JSON.stringify({ target: 'C:\\Temp', force: true })
+    );
   });
 
   it('does not refresh executions for a typed all-target rejection', async () => {

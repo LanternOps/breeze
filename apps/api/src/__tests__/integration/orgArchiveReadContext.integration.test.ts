@@ -58,6 +58,31 @@ async function archiveOrg(orgId: string): Promise<void> {
 }
 
 /**
+ * Land an existing org mid-DRAIN (#4166) as the privileged test role — the
+ * state `beginOrgArchive` leaves an org in while its agents uninstall.
+ *
+ * `target` is what makes this test meaningful: `'archive'` is the reversible
+ * archive drain the read-only door admits, `'churn'` is the one-way exit it
+ * must keep refusing. Only real Postgres evaluates that distinction — the
+ * mocked unit suites return canned rows regardless of the WHERE clause, so
+ * they can pin the compiled SQL's SHAPE but never that it filters correctly.
+ *
+ * `purge_at` mirrors production: stamped at drain entry for an archive drain,
+ * NULL for a churn drain (which purges nothing).
+ */
+async function drainOrg(orgId: string, target: 'archive' | 'churn'): Promise<void> {
+  const purgeAt = target === 'archive' ? sql`now() + interval '90 days'` : sql`NULL`;
+  await getTestDb().execute(sql`
+    UPDATE organizations
+       SET status = 'offboarding',
+           offboarding_started_at = now(),
+           offboarding_target = ${target},
+           purge_at = ${purgeAt}
+     WHERE id = ${orgId}
+  `);
+}
+
+/**
  * Returns the postgres.js cause of a rejection, or undefined when the call
  * unexpectedly succeeded. Drizzle wraps the top-level message as
  * "Failed query: ..." — the real SQLSTATE lands on `.cause`.
@@ -258,6 +283,50 @@ describe('GET /organizations — includeArchived', () => {
     expect(wholeBody.archivedTruncated).toBe(false);
   });
 
+  // #4166 — the drain window is the gap this whole PR exists to close, and it
+  // is the ONE property no mocked suite can prove: both drains compile through
+  // the same query, and only Postgres decides which row comes back.
+  it('serves an ARCHIVE drain through the archived block but still hides a CHURN drain', async () => {
+    const app = buildApp();
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+    const activeOrgId = client.env.organization.id;
+
+    const draining = await createOrganization({
+      partnerId: client.env.partner.id,
+      name: 'Draining Customer',
+    });
+    await drainOrg(draining.id, 'archive');
+
+    const churning = await createOrganization({
+      partnerId: client.env.partner.id,
+      name: 'Churning Customer',
+    });
+    await drainOrg(churning.id, 'churn');
+
+    // Neither is in `accessibleOrgIds` (status IN ('active','trial')), so the
+    // plain list must still show only the live org — the read fix must not
+    // have leaked into the live branch.
+    const defaultBody = (await (
+      await client.get('/api/v1/orgs/organizations')
+    ).json()) as ListResponse;
+    expect(defaultBody.data.map((o) => o.id)).toEqual([activeOrgId]);
+
+    const res = await client.get('/api/v1/orgs/organizations?includeArchived=true');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ListResponse;
+    const ids = body.data.map((o) => o.id);
+    expect(ids).toContain(draining.id);
+    expect(ids).not.toContain(churning.id);
+
+    const drainRow = body.data.find((o) => o.id === draining.id)!;
+    expect(drainRow.archived).toBe(true);
+    expect(drainRow.status).toBe('offboarding');
+    expect(drainRow.offboardingTarget).toBe('archive');
+    // Stamped at drain entry, so the UI countdown is real rather than a
+    // "kept indefinitely" placeholder.
+    expect(drainRow.purgeAt).toBeTruthy();
+  });
+
   it('returns the archived org even when the partner has no active orgs left', async () => {
     const app = buildApp();
     const client = await createIntegrationTestClient(app, { scope: 'partner' });
@@ -303,6 +372,51 @@ describe('GET /organizations/:id — archived target', () => {
       `/api/v1/orgs/organizations/${otherArchived.id}`,
     );
     expect(crossRes.status).toBe(404);
+  });
+
+  // #4166 — the detail route shares one predicate with the list route
+  // (`archiveLifecycleEligibility`), and this is where that sharing is proven
+  // against Postgres rather than against a compiled-SQL string.
+  it('serves an ARCHIVE drain and still 404s a CHURN drain', async () => {
+    const app = buildApp();
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+
+    const draining = await createOrganization({
+      partnerId: client.env.partner.id,
+      name: 'Draining Detail Org',
+    });
+    await drainOrg(draining.id, 'archive');
+
+    const churning = await createOrganization({
+      partnerId: client.env.partner.id,
+      name: 'Churning Detail Org',
+    });
+    await drainOrg(churning.id, 'churn');
+
+    const drainRes = await client.get(`/api/v1/orgs/organizations/${draining.id}`);
+    expect(drainRes.status).toBe(200);
+    const drainBody = (await drainRes.json()) as Record<string, unknown>;
+    expect(drainBody.status).toBe('offboarding');
+    expect(drainBody.archived).toBe(true);
+
+    expect(
+      (await client.get(`/api/v1/orgs/organizations/${churning.id}`)).status,
+    ).toBe(404);
+  });
+
+  // A drain must not become an existence oracle either — same collapse to 404
+  // as every other ineligible target.
+  it("404s another partner's archive drain", async () => {
+    const app = buildApp();
+    const client = await createIntegrationTestClient(app, { scope: 'partner' });
+
+    const otherPartner = await createPartner();
+    const otherDraining = await createOrganization({ partnerId: otherPartner.id });
+    await drainOrg(otherDraining.id, 'archive');
+
+    expect(
+      (await client.get(`/api/v1/orgs/organizations/${otherDraining.id}`)).status,
+    ).toBe(404);
   });
 
   // Against real Postgres, because the failure this guards is a DRIVER error:

@@ -37,6 +37,12 @@ scriptsRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #4885 — the "Run again" action needs the runtime values the
+        // execution was submitted with. Already exposed at the same
+        // SCRIPTS_READ permission level by GET /scripts/:id/executions and
+        // GET /scripts/executions/:id, so this adds no new exposure — just
+        // parity for the device-scoped history list.
+        parameters: scriptExecutions.parameters,
         startedAt: scriptExecutions.startedAt,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt

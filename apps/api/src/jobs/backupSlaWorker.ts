@@ -14,6 +14,8 @@ import {
   backupJobs,
   recoveryReadiness,
   deviceGroupMemberships,
+  deviceGroups,
+  devices,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../db/schema';
 import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
@@ -72,7 +74,27 @@ function createSlaWorker(): Worker<SlaJobData> {
 
 // ── check-compliance ─────────────────────────────────────────────────────────
 
-async function resolveTargetDeviceIds(config: typeof backupSlaConfigs.$inferSelect): Promise<string[]> {
+/**
+ * #3182 — every candidate is clamped to the config's own org here, and the
+ * clamp is this function's job alone: this worker runs under
+ * `withSystemDbAccessContext`, so RLS is bypassed and nothing downstream will
+ * catch a foreign device. `createBreachEvent` stamps events with
+ * `config.orgId`, so a device that leaks through is written into the config
+ * org's SLA history as though it belonged there.
+ *
+ * Both target arrays are plain jsonb id lists with no FK behind them, so
+ * neither is trustworthy on its own:
+ *  - `targetGroups` — a group id is dereferenced through
+ *    device_group_memberships, whose rows named a foreign org's group for
+ *    free until #3182's composite FK landed (a cross-org device move produced
+ *    exactly that shape). The group's OWN org is checked too, not just the
+ *    membership's, so a stale row cannot launder a foreign group through a
+ *    correctly-stamped membership.
+ *  - `targetDevices` — written straight through by POST/PATCH
+ *    /backup/sla without an ownership check, so the ids are whatever the
+ *    request body said.
+ */
+export async function resolveTargetDeviceIds(config: typeof backupSlaConfigs.$inferSelect): Promise<string[]> {
   const directDeviceIds = Array.isArray(config.targetDevices)
     ? config.targetDevices.filter((value): value is string => typeof value === 'string')
     : [];
@@ -80,16 +102,33 @@ async function resolveTargetDeviceIds(config: typeof backupSlaConfigs.$inferSele
     ? config.targetGroups.filter((value): value is string => typeof value === 'string')
     : [];
 
+  const ownedDirectDeviceIds = directDeviceIds.length === 0
+    ? []
+    : (await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(inArray(devices.id, directDeviceIds), eq(devices.orgId, config.orgId)))
+      ).map((row) => row.id);
+
   if (groupIds.length === 0) {
-    return [...new Set(directDeviceIds)];
+    return [...new Set(ownedDirectDeviceIds)];
   }
 
   const memberships = await db
     .select({ deviceId: deviceGroupMemberships.deviceId })
     .from(deviceGroupMemberships)
-    .where(inArray(deviceGroupMemberships.groupId, groupIds));
+    .innerJoin(deviceGroups, eq(deviceGroupMemberships.groupId, deviceGroups.id))
+    .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+    .where(
+      and(
+        inArray(deviceGroupMemberships.groupId, groupIds),
+        eq(deviceGroupMemberships.orgId, config.orgId),
+        eq(deviceGroups.orgId, config.orgId),
+        eq(devices.orgId, config.orgId),
+      ),
+    );
 
-  return [...new Set([...directDeviceIds, ...memberships.map((row) => row.deviceId)])];
+  return [...new Set([...ownedDirectDeviceIds, ...memberships.map((row) => row.deviceId)])];
 }
 
 async function loadScheduledBackupCoverageByOrg(orgId: string): Promise<Set<string>> {

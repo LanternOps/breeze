@@ -58,7 +58,8 @@ vi.mock('./catalogPricing', async (importOriginal) => {
 
 import * as svc from './contractService';
 import { db } from '../db';
-import { contractLines } from '../db/schema';
+import { contractLines, invoiceLineDevices, invoices, contractBillingPeriodOutcomes } from '../db/schema';
+import type { DeviceSnapshotRow } from './contractQuantities';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
@@ -1050,6 +1051,18 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     { id: 'unknown-1', hostname: 'unknown-1', role: 'unknown', siteId: null },
   ];
 
+  it('captures only matched devices from the quantity snapshot without exposing them in the estimate', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshot);
+    queueResult([contract]);
+    queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: ['server'] })]);
+    const captured = new Map<string, readonly DeviceSnapshotRow[]>();
+    const out = await svc.computeContractEstimate('c1', actor, captured);
+    expect(captured.get('l1')).toEqual(snapshot.filter((row) => row.role === 'server'));
+    expect(captured.get('l1')).toHaveLength(out.lines[0]!.counted);
+    expect(snapshotContractDevices).toHaveBeenCalledExactlyOnceWith('org1');
+    expect(out.lines[0]).not.toHaveProperty('devices');
+  });
+
   it('bills the role set from the snapshot and reports uncovered devices by role', async () => {
     vi.mocked(snapshotContractDevices).mockResolvedValue(snapshot);
     queueResult([contract]); // getOwnedContractOr404
@@ -1861,11 +1874,63 @@ describe('allowance writers (#3205 W04)', () => {
 describe('materializeContractLineOntoInvoice (#3205 W04)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  const contract = { id: 'c1', currencyCode: 'USD' };
+  const contract = { id: 'c1', orgId: 'org1', currencyCode: 'USD' };
   const line = {
     id: 'cl1', description: 'Endpoints', unitPrice: '10.00', taxable: true,
     catalogItemId: null, overageUnitPrice: '12.00',
   };
+
+  const evidenceDevices = [
+    { id: 'd2', hostname: 'zulu', role: 'server', siteId: 'site1' },
+    { id: 'd1', hostname: 'alpha', role: 'workstation', siteId: null },
+  ];
+
+  it.each(['bill', 'flag'] as const)('persists interactive %s evidence with stable allowance disposition and no period outcome', async (mode) => {
+    vi.mocked(addContractLine)
+      .mockResolvedValueOnce({ line: { id: 'base', taxable: true, costBasis: null }, pricedFrom: 'contract_snapshot' } as never);
+    if (mode === 'bill') vi.mocked(addContractLine).mockResolvedValueOnce({
+      line: { id: 'overage', lineTotal: '12.00' }, pricedFrom: 'contract_snapshot',
+    } as never);
+    await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line,
+      resolved: { counted: 2, billed: 1, included: 1, overage: 1, overageMode: mode },
+      deviceEvidence: evidenceDevices, currencyCode: 'USD',
+    });
+    expect(db.insert).toHaveBeenCalledExactlyOnceWith(invoiceLineDevices);
+    expect(db.insert).not.toHaveBeenCalledWith(contractBillingPeriodOutcomes);
+    expect((db as any).values).toHaveBeenCalledWith([
+      { invoiceId: 'inv1', orgId: 'org1', invoiceLineId: 'base', deviceId: 'd1', hostname: 'alpha', deviceRole: 'workstation', siteId: null, countedAs: 'included' },
+      { invoiceId: 'inv1', orgId: 'org1', invoiceLineId: mode === 'bill' ? 'overage' : 'base', deviceId: 'd2', hostname: 'zulu', deviceRole: 'server', siteId: 'site1', countedAs: mode === 'bill' ? 'overage' : 'flagged' },
+    ]);
+    expect(db.update).toHaveBeenCalledExactlyOnceWith(invoices);
+    expect((db as any).set).toHaveBeenCalledWith({ evidenceVersion: 1 });
+  });
+
+  it('records an empty interactive device set without inventing evidence for an allowance', async () => {
+    vi.mocked(addContractLine).mockResolvedValueOnce({ line: { id: 'base' }, pricedFrom: 'contract_snapshot' } as never);
+    await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line,
+      resolved: { counted: 0, billed: 1, included: 1, overage: 0, overageMode: 'bill' },
+      deviceEvidence: [], currencyCode: 'USD',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect((db as any).set).toHaveBeenCalledWith({ evidenceVersion: 1 });
+  });
+
+  it('chunks large interactive evidence and propagates a failed write before stamping the invoice', async () => {
+    vi.mocked(addContractLine).mockResolvedValueOnce({ line: { id: 'base' }, pricedFrom: 'contract_snapshot' } as never);
+    queueResult([]);
+    queueError(new Error('evidence insert failed'));
+    const deviceEvidence = Array.from({ length: 501 }, (_, i) => ({ ...evidenceDevices[0]!, id: `device-${i}` }));
+    await expect(svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line,
+      resolved: { counted: 501, billed: 501, included: null, overage: 0, overageMode: null },
+      deviceEvidence, currencyCode: 'USD',
+    })).rejects.toThrow('evidence insert failed');
+    expect(vi.mocked((db as any).values).mock.calls.map(([rows]: unknown[]) => (rows as unknown[]).length)).toEqual([500, 1]);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).toHaveBeenCalledOnce();
+  });
 
   it('writes the bill-mode base and overage sibling and returns its summary', async () => {
     vi.mocked(addContractLine)

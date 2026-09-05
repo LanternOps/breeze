@@ -67,6 +67,7 @@ import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
+import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
@@ -230,6 +231,18 @@ function anomalyIdFromHash(hash: string): string | undefined {
   return tab === "anomalies" && anomalyId ? anomalyId : undefined;
 }
 
+// #4886 — mirrors anomalyIdFromHash: `#scripts/<executionId>` both selects the
+// Scripts tab (via tabFromHash, which only looks at the first segment) and
+// tells DeviceScriptHistory which execution to auto-open/highlight, so a
+// post-run redirect lands the operator watching the right row rather than a
+// generic tab switch. The segment is percent-decoded — deviceScriptsHash()
+// (the only writer) percent-encodes it, so this must reverse that or a
+// highlight for any id needing an escape would silently never match.
+function scriptExecutionIdFromHash(hash: string): string | undefined {
+  const [tab, executionId] = hash.split("/");
+  return tab === "scripts" ? decodeScriptExecutionId(executionId) : undefined;
+}
+
 type LinkedNetworkAsset = { id: string; label: string };
 
 // Back-link to any discovered assets identity-linked to this device (#3261
@@ -321,6 +334,9 @@ export default function DeviceDetails({
   const [focusedAnomalyId, setFocusedAnomalyId] = useHashState<
     string | undefined
   >(undefined, anomalyIdFromHash);
+  const [highlightedExecutionId, setHighlightedExecutionId] = useHashState<
+    string | undefined
+  >(undefined, scriptExecutionIdFromHash);
   // Whether the Overview Activity rail is collapsed to its thin vertical bar.
   // Starts collapsed so the page paints at full width during the async load and
   // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
@@ -353,6 +369,7 @@ export default function DeviceDetails({
     window.location.hash = tab;
     setActiveTab(tab);
     setFocusedAnomalyId(undefined);
+    setHighlightedExecutionId(undefined);
   };
 
   // Use provided timezone or browser default
@@ -836,6 +853,7 @@ export default function DeviceDetails({
         <DeviceScriptHistory
           deviceId={device.id}
           timezone={effectiveTimezone}
+          highlightExecutionId={highlightedExecutionId}
         />
       )}
 

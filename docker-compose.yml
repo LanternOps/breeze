@@ -122,6 +122,10 @@ x-api-env: &api-env
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
+  # Agent diagnostic log retention (worker role; all optional, see .env.example).
+  AGENT_LOG_RETENTION_DAYS: ${AGENT_LOG_RETENTION_DAYS:-}
+  AGENT_LOG_RETENTION_BATCH_SIZE: ${AGENT_LOG_RETENTION_BATCH_SIZE:-}
+  AGENT_LOG_RETENTION_MAX_BATCHES: ${AGENT_LOG_RETENTION_MAX_BATCHES:-}
   METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
   # Platform-operator abuse alerts (all optional; unset = feature disabled)
   OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
@@ -312,6 +316,12 @@ x-api-env: &api-env
   MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
   MAILGUN_FROM: ${MAILGUN_FROM:-}
   MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+  # #3905 — transport deadlines. Optional: unset falls back to the in-code
+  # defaults (SMTP 30s inactivity, Mailgun 120s whole-request). Mapped here so
+  # an operator can tune them without a code change (compose interpolation only
+  # happens for vars listed in this block).
+  SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+  MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
@@ -784,11 +794,16 @@ secrets:
   turn_secret:
     environment: TURN_SECRET
   # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
-  # target attributes. /dev/null keeps dark deployments optional; when enabled,
-  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  # target attributes. docker/secrets/.empty-jwk (a tracked empty regular file)
+  # keeps dark deployments optional; when enabled, the source JWK must already
+  # have numeric owner 1001:1001 and mode 0400. Do NOT default this to
+  # /dev/null: bind-mounting that character device and remounting it read-only
+  # inside overlayfs is rejected by the kernel on some host kernel/storage-
+  # driver combinations, failing `docker compose up` for anyone who never
+  # touched this feature (#2991). See docker/secrets/README.md.
   m365_graph_read_executor_signing_private_jwk:
-    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}
   m365_graph_actions_executor_signing_private_jwk:
-    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}
   m365_comms_executor_signing_private_jwk:
-    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}

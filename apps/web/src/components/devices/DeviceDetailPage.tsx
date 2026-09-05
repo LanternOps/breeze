@@ -26,6 +26,7 @@ import {
 } from "../../services/deviceActions";
 import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
+import { deviceScriptsHash } from "@/lib/deviceScriptsLink";
 import { runAction, ActionError } from "@/lib/runAction";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
@@ -489,6 +490,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           type: "success",
           message: `Script "${script.name}" queued for ${device.hostname}`,
         });
+        // #4886 — land on the Scripts tab with the new execution highlighted,
+        // so the operator watches the result instead of staying wherever they
+        // happened to trigger the run from (often Overview). Same page, so a
+        // direct hash write is enough — DeviceDetails' useHashState picks up
+        // the resulting hashchange (the CLAUDE.md tab-state convention).
+        window.location.hash = deviceScriptsHash(target.executionId);
       } else {
         showToast({
           type: "error",

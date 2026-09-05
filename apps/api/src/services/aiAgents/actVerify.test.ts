@@ -28,10 +28,14 @@ vi.mock('../../db', () => ({
   }),
 }));
 
-const executeCommand = vi.hoisted(() =>
+// #4150: the verification reads go through the depth-0-safe entry point, which
+// opens the short system context its own precheck needs instead of the caller
+// holding one across the whole device round-trip. `actVerify.dbcontext.test.ts`
+// asserts the depth; this suite asserts the read semantics.
+const executeCommandWithSystemPrecheck = vi.hoisted(() =>
   vi.fn<(deviceId: string, type: string, payload: Record<string, unknown>, options: Record<string, unknown>) =>
     Promise<{ status: string; stdout?: string; error?: string }>>());
-vi.mock('../commandQueue', () => ({ executeCommand }));
+vi.mock('../commandQueue', () => ({ executeCommandWithSystemPrecheck }));
 
 import { ACT_MANIFEST } from './actManifest';
 import type { ActOperation } from './actManifest';
@@ -79,7 +83,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   const target = { kind: 'service' as const, serviceName: 'Spooler' };
 
   it('completed + running read-back → succeeded/passed', async () => {
-    executeCommand.mockResolvedValue({
+    executeCommandWithSystemPrecheck.mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Running' }] }),
     });
@@ -88,13 +92,13 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
-    expect(executeCommand).toHaveBeenCalledWith('device-1', 'list_services', { search: 'Spooler' }, {
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith('device-1', 'list_services', { search: 'Spooler' }, {
       userId: AGENT_USER_ID, timeoutMs: 8_000,
     });
   });
 
   it('service found but not running → failed with detail', async () => {
-    executeCommand.mockResolvedValue({
+    executeCommandWithSystemPrecheck.mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Stopped' }] }),
     });
@@ -106,7 +110,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 
   it('service missing from the read-back entirely → failed', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
     const result = await verifyActExecution({
       pin: pin(restartOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -115,7 +119,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 
   it('the read-back itself times out → inconclusive, not failed', async () => {
-    executeCommand.mockResolvedValue({ status: 'timeout', error: 'Command timed out after 30000ms' });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'timeout', error: 'Command timed out after 30000ms' });
     const result = await verifyActExecution({
       pin: pin(restartOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -124,7 +128,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 
   it('the restart command itself timed out → execution: timeout', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
     const result = await verifyActExecution({
       pin: pin(restartOp, target),
       toolOutput: JSON.stringify({ status: 'timeout', error: 'Command timed out after 30000ms' }),
@@ -134,7 +138,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 
   it('an unparseable execution output falls back to the SDK isError flag, not unknown', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ services: [] }) });
     const okResult = await verifyActExecution({
       pin: pin(restartOp, target), toolOutput: 'not json', isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
@@ -146,7 +150,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 
   it('a thrown verification read degrades to inconclusive, never throws', async () => {
-    executeCommand.mockRejectedValue(new Error('WS connection lost'));
+    executeCommandWithSystemPrecheck.mockRejectedValue(new Error('WS connection lost'));
     const result = await verifyActExecution({
       pin: pin(restartOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -159,7 +163,7 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
   const target = { kind: 'process' as const, pid: '4242', processName: 'notepad.exe' };
 
   it('pid still present in the read-back → failed', async () => {
-    executeCommand.mockResolvedValue({
+    executeCommandWithSystemPrecheck.mockResolvedValue({
       status: 'completed',
       stdout: JSON.stringify({ processes: [{ pid: 4242, name: 'notepad.exe' }] }),
     });
@@ -168,13 +172,13 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'failed', verifyDetail: 'process with the pinned pid is still present' });
-    expect(executeCommand).toHaveBeenCalledWith('device-1', 'list_processes', { search: 'notepad.exe', limit: 200 }, {
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith('device-1', 'list_processes', { search: 'notepad.exe', limit: 200 }, {
       userId: AGENT_USER_ID, timeoutMs: 8_000,
     });
   });
 
   it('pid absent from the read-back → passed', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ processes: [] }) });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ processes: [] }) });
     const result = await verifyActExecution({
       pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -186,7 +190,7 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
   // proven" — that is absence of evidence, not evidence of absence, and the
   // sibling verifyServiceRunning already treats it conservatively.
   it('read-back stdout is not JSON at all → inconclusive, not passed', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: 'not json' });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: 'not json' });
     const result = await verifyActExecution({
       pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -199,7 +203,7 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
   });
 
   it('read-back stdout parses but carries no `processes` array → inconclusive, not passed', async () => {
-    executeCommand.mockResolvedValue({ status: 'completed', stdout: '{}' });
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: '{}' });
     const result = await verifyActExecution({
       pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
@@ -223,7 +227,7 @@ describe('verifyActExecution — disk_cleanup.execute (disk_usage_improved)', ()
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
     // Purely output-derived — no extra read for this op family.
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithSystemPrecheck).not.toHaveBeenCalled();
   });
 
   it('failed status → failed/failed', async () => {

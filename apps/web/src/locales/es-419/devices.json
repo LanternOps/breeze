@@ -664,6 +664,7 @@
     "retry": "Reintentar",
     "activities": "Actividades",
     "total": "total)",
+    "totalAtLeast": "{{count}} o más",
     "searchActivities": "Buscar actividades...",
     "all": "Todo",
     "success": "Éxito",
@@ -683,7 +684,8 @@
     "details": "Detalles",
     "showing": "Mostrando",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "No hay más actividad"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "No se pudo recuperar el estado del sistema de archivos",
@@ -1519,6 +1521,7 @@
     "output": "Salida",
     "refreshing": "Actualizando...",
     "running": "En ejecución...",
+    "runAgain": "Ejecutar de nuevo",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Cancelado",

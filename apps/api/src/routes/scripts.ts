@@ -42,6 +42,7 @@ import {
   findSecretVariableReferences,
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
+import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
@@ -254,6 +255,15 @@ const createScriptSchema = z.object({
   exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
   availability: z.enum(['org', 'partner']).optional()
 });
+
+// Optional retarget/rename body for POST /scripts/:id/clone (#4887). Omitted
+// fields fall back to the source script — see resolveScriptCloneScope.
+// `.strict()` so a mis-keyed field is a 400, not silently ignored (mirrors
+// cloneQuoteSchema).
+const cloneScriptSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  orgId: z.string().guid().optional(),
+}).strict();
 
 const updateScriptSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -971,6 +981,53 @@ scriptRoutes.delete(
     });
 
     return c.json({ success: true });
+  }
+);
+
+// POST /scripts/:id/clone - Duplicate an existing script (#4887). Tenancy
+// resolution, the save-time secret checks, and tag copying all live in
+// services/scriptClone.ts (cloneScript) so this handler stays a thin
+// body-parsing + status-mapping wrapper, matching POST /quotes/:id/clone.
+scriptRoutes.post(
+  '/:id/clone',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
+  zValidator('param', scriptIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: scriptId } = c.req.valid('param');
+
+    // Optional retarget/rename body, same discipline as POST /quotes/:id/clone:
+    // an ABSENT body degrades to a plain same-scope clone; ANY non-empty body
+    // that fails to read, parse, or validate is a 400 — never a silent
+    // same-scope clone of a retarget the caller intended.
+    let input: { name?: string; orgId?: string } = {};
+    let raw: string;
+    try { raw = await c.req.text(); } catch { return c.json({ error: 'Failed to read request body' }, 400); }
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = cloneScriptSchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid clone options' }, 400);
+      input = parsed.data;
+    }
+
+    const result = await cloneScript(auth, scriptId, input);
+    if (isScriptCloneError(result)) {
+      return c.json({ error: result.error }, result.status);
+    }
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, result.script.orgId ?? null),
+      action: 'script.clone',
+      resourceType: 'script',
+      resourceId: result.script.id,
+      resourceName: result.script.name,
+      details: { sourceScriptId: scriptId }
+    });
+
+    return c.json(result.script, 201);
   }
 );
 

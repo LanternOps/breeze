@@ -3420,6 +3420,8 @@
     "archived": {
       "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
       "bannerWithDate": "Diese Organisation ist archiviert – die Löschung ist für {{date}} geplant. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "drainBanner": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und sie bleibt schreibgeschützt, bis der Vorgang abgeschlossen ist.",
+      "drainBannerWithDate": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und die Löschung ist für {{date}} geplant.",
       "restoreLink": "Diese Organisation wiederherstellen",
       "saveBlocked": "Diese Organisation ist archiviert und kann nicht bearbeitet werden. Stellen Sie sie zuerst wieder her."
     },
@@ -3959,12 +3961,14 @@
       "empty": "Keine archivierten Organisationen.",
       "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
       "badge": "Archiviert",
+      "archivingBadge": "Wird archiviert…",
       "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
       "purgeToday": "Wird heute endgültig gelöscht",
       "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
       "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
       "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
       "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
+      "drainNotice": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und sie bleibt schreibgeschützt, bis der Vorgang abgeschlossen ist. Stellen Sie sie wieder her, um dies abzubrechen und sie zurückzuholen.",
       "errors": {
         "fetch": "Archivierte Organisationen konnten nicht geladen werden"
       }

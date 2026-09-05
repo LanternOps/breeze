@@ -39,6 +39,12 @@ type ScriptExecutionModalProps = {
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
   ) => Promise<ScriptAdmissionResult>;
+  // #4885 "Run again" — pre-fill the picker/form from a past execution instead
+  // of opening blank. Both are read once at mount (the modal is remounted
+  // fresh on every open by every caller today), so a parent re-render with a
+  // new object identity does not fight the operator's in-progress edits.
+  initialDeviceIds?: string[];
+  initialParameters?: Record<string, string | number | boolean>;
 };
 
 type ExecutionState = 'idle' | 'submitting' | 'admitted' | 'partially_admitted' | 'rejected' | 'transport_error';
@@ -49,13 +55,17 @@ export default function ScriptExecutionModal({
   sites = [],
   isOpen,
   onClose,
-  onExecute
+  onExecute,
+  initialDeviceIds,
+  initialParameters
 }: ScriptExecutionModalProps) {
   const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('online');
-  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(
+    () => new Set(initialDeviceIds ?? [])
+  );
   const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({});
   const [runAs, setRunAs] = useState<'system' | 'user'>('system');
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
@@ -201,11 +211,20 @@ export default function ScriptExecutionModal({
   // a bound parameter is resolved per target device by the server, so it is
   // neither prompted for nor seeded — a value supplied for one is ignored and
   // reported in `ignoredParameters`.
+  //
+  // #4885 "Run again": `initialParameters` (the previous execution's runtime
+  // values) wins over the definition's own default when both are present for
+  // the same name. A key in `initialParameters` that no longer matches a
+  // runtime parameter (the script was edited since that run) is silently
+  // dropped rather than smuggled into the submitted payload.
   useEffect(() => {
     if (script.parameters) {
       const defaults: Record<string, string | number | boolean> = {};
       runtimeParameters(script.parameters).forEach(param => {
-        if (param.defaultValue !== undefined) {
+        const carriedOver = initialParameters?.[param.name];
+        if (carriedOver !== undefined) {
+          defaults[param.name] = carriedOver;
+        } else if (param.defaultValue !== undefined) {
           if (param.type === 'number') {
             defaults[param.name] = Number(param.defaultValue) || 0;
           } else if (param.type === 'boolean') {
@@ -219,6 +238,9 @@ export default function ScriptExecutionModal({
       });
       setParameters(defaults);
     }
+    // `initialParameters` is deliberately NOT a dep — it is read once at mount
+    // (see the prop doc comment) so a parent re-render never resets an
+    // in-progress edit. Only a script.parameters change re-derives defaults.
   }, [script.parameters]);
 
   useEffect(() => {

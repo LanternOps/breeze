@@ -415,6 +415,42 @@ moveOrgRoutes.post(
               WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // #3182 — a device that has LEFT org A cannot remain a member of org
+        // A's device group, and device_group_memberships_group_org_fk
+        // ((group_id, org_id) -> device_groups(id, org_id)) now says so
+        // structurally. Delete, never re-point: device_groups.org_id is NOT
+        // NULL with no partner axis, groups nest and can be site-bound, and
+        // there is no deterministic source-group -> target-group mapping.
+        // Dynamic groups in the TARGET org re-materialize on their own next
+        // evaluation.
+        //
+        // Placement is load-bearing, same class as the scope_ticket_id
+        // tombstone above: `device_group_memberships` IS returned by
+        // breeze_device_child_orgid_tables(), so the loop immediately below
+        // would otherwise re-stamp these rows' org_id to the target org while
+        // their group_id still names a SOURCE-org group — 23503, aborting the
+        // whole move.
+        //
+        // Ordering: breeze_cascade_device_org_id() is an AFTER ... FOR EACH ROW
+        // trigger on the devices UPDATE above, so it has ALREADY performed this
+        // same delete by the time this statement is sent — the route's copy
+        // normally matches nothing, exactly as for the tombstones beside it. It
+        // is kept so the route stays correct on its own if the trigger is ever
+        // absent, and placed here to mirror the trigger's internal order.
+        //
+        // Unfenced, unlike the trigger's merging-org check: an org merge never
+        // reaches this route, and repoints devices, device_groups and
+        // device_group_memberships together instead
+        // (services/orgMergeRegistry.ts).
+        //
+        // device_group_memberships deliberately STAYS in
+        // getDeviceOrgDenormalizedTables(): the loop's UPDATE below now matches
+        // nothing, and is retained as the backstop for any devices.org_id
+        // writer that somehow reaches the loop without this delete.
+        await tx.execute(
+          sql`DELETE FROM device_group_memberships WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
