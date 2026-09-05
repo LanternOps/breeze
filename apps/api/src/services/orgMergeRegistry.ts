@@ -395,6 +395,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
+  custom_field_definitions: { kind: 'custom', note:
+    'UNIQUE (org_id, field_key) (#3257 W02) makes a plain repoint raise 23505 when both orgs define the same key — for two orgs imported from one Datto tenant, that is every key. '
+    + "Re-homes the loser definition's values onto the survivor's identically-keyed definition, then drops the duplicate. "
+    + 'A blind repoint-dedupe DELETE would cascade-delete those values once device_custom_field_values lands (W05). '
+    + 'The collision predicate is org_id-equality on both sides, so partner-wide definitions (org_id NULL, #2135) are never touched by an org merge.' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
   // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
   // until P2-3 gave it its FIRST collidable unique index,
@@ -533,7 +538,8 @@ const REPOINT_TABLES: readonly string[] = [
   "contract_template_versions",
   "contract_templates",
   "contracts",
-  "custom_field_definitions",
+  // custom_field_definitions moved to SPECIAL (kind: 'custom') in #3257 W02 —
+  // custom_field_definitions_org_key_uq makes a plain repoint raise 23505.
   "customer_email_domains",
   "deployment_invites",
   "deployments",

@@ -575,7 +575,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // included below even though it has no DB-level CHECK: its own migration
 // (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
 // "mutually exclusive, so no composite FK applies" — same app-enforced-only
-// shape as custom_field_definitions and client_ai_prompt_templates.
+// shape as client_ai_prompt_templates. (custom_field_definitions used to be
+// the third example here; it gained custom_field_definitions_one_owner_chk in
+// 2026-10-10-100300 (#3257 W02), so it is now DB-enforced. Membership in this
+// set has never depended on having a CHECK — the set only drives the
+// partner-wide SELECT-branch assertions below — so nothing else changes.)
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
