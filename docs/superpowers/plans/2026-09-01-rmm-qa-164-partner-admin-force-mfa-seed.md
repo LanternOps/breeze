@@ -1392,3 +1392,53 @@ Recorded so the plan matches what shipped; the PR body carries the evidence.
    command-free `POST /scripts {}` 428 (`mfa_enrollment_required`, before any
    handler), stored template `t`.
 
+## September 5 continuation of PR #4491
+
+The branch was merged forward from `27a9677cb6` onto main `a52504b9ee` in
+`c6f5749682`, without textual conflicts or replayed rerere resolutions. Current
+main still omitted the stored flag from both role creation paths; #4491 was the
+only matching open implementation. The existing auth, seed, migration, compose,
+and CI changes were retained.
+
+The migration ordering guard failed because the unshipped October 1 reconcile
+sorted before main's `2026-10-09-000600-rls-scoped-replay-v0110.sql`. Commit
+`96c8ebbbbc` renames it to
+`2026-10-09-000700-partner-admin-force-mfa-reconcile.sql` and updates the replay
+test. The SQL bytes are unchanged. This filename supersedes earlier filenames in
+the historical instructions and execution records above. Active design and seed
+comments were updated in `f23f499998`.
+
+Verification on this continuation:
+
+- Full API battery: 1,864 files passed / 3 skipped; 34,591 tests passed /
+  21 skipped, exit 0 (617.48 seconds, two workers).
+- Focused unit battery: 10 files, 556 tests passed.
+- Real-Postgres battery: 8 files, 46 tests passed, including the explicit
+  NOSUPERUSER/NOBYPASSRLS migration replay and permission-epoch checks.
+- RLS coverage: 100 tests passed. API typecheck and lint passed.
+- Mutation controls discriminated the seed and tenant-role literals (two unit
+  failures), the actual registration role flag (one integration failure), and
+  transaction-local system scope (non-bypass replay failed with zero rows while
+  the superuser replay passed). Mutations were restored; the three affected
+  real-DB suites then passed all 14 tests.
+- A separate empty database applied every migration and then seeded roles. The
+  request-pool override was scrubbed so seed and migration targeted that same
+  database. The global Partner Admin row stored `force_mfa=true`.
+- The actual API booted against that fresh database with forced MFA enabled.
+  Seeded-admin login returned HTTP 200, `mfaEnrollmentRequired=true`, enrollment
+  URL `/auth/mfa/setup`, and access-token assurance `mfa=false`. A command-free
+  invalid write to `/api/v1/scripts/import/not-a-uuid` returned HTTP 428
+  `mfa_enrollment_required`, before parameter validation or a write handler.
+- Migration naming passed against current main; released migration immutability
+  passed against `v0.109.0` after fetching complete release ancestry. The ledger
+  drift check matched all 675 migration files. CI and compose YAML parsed.
+
+The first full API run crossed a confirmed 1,019-second host sleep and ended
+with timeout/configuration failures and a fork-start timeout. The three affected
+files passed all 13 tests unchanged on an immediate rerun. A clean full run
+passed with a child-scoped idle-sleep inhibitor; test timeouts remained unchanged.
+
+Independent review of the branch's auth, seed, migration, tests and CI changes
+found no blocking regressions. The API replay is branch-local acceptance; it is
+not composed release-candidate evidence or a deployment claim. No production
+state was changed.
