@@ -20,6 +20,19 @@ export interface ScriptWritableDefinition {
   scriptWrite: boolean;
 }
 
+export interface VisibleCustomFieldDefinition {
+  id: string;
+  fieldKey: string;
+  name: string;
+  type: 'text' | 'number' | 'boolean' | 'dropdown' | 'date';
+  options: unknown;
+  deviceTypes: string[] | null;
+  required: boolean;
+  scriptWrite: boolean;
+  orgId: string | null;
+  partnerId: string | null;
+}
+
 /** Ambient ORG context — `devices` is shape 1 and RLS is a real backstop here. */
 export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBackDevice | null> {
   const [row] = await db
@@ -54,9 +67,9 @@ export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBac
  * narrow, and the context is released immediately (it holds a second pooled
  * connection for its duration — #1105).
  */
-export async function loadScriptWritableDefinitions(
+export async function loadVisibleCustomFieldDefinitions(
   orgId: string,
-): Promise<ScriptWritableDefinition[]> {
+): Promise<VisibleCustomFieldDefinition[]> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [org] = await db
@@ -77,17 +90,31 @@ export async function loadScriptWritableDefinitions(
 
       return db
         .select({
+          id: customFieldDefinitions.id,
           fieldKey: customFieldDefinitions.fieldKey,
+          name: customFieldDefinitions.name,
           type: customFieldDefinitions.type,
           options: customFieldDefinitions.options,
           deviceTypes: customFieldDefinitions.deviceTypes,
+          required: customFieldDefinitions.required,
           scriptWrite: customFieldDefinitions.scriptWrite,
+          orgId: customFieldDefinitions.orgId,
+          partnerId: customFieldDefinitions.partnerId,
         })
         .from(customFieldDefinitions)
         .where(ownerCondition);
     }, 'customFields.scriptWriteBack.definitions'),
   );
 }
+
+/**
+ * The script write-back loader, kept as a named alias so callers that only
+ * care about script-writable fields keep reading as they did. The script_write
+ * gate itself stays where it is — applied per field by scriptWriteBack.ts, so
+ * a field that exists but is not writable is REJECTED with
+ * 'not_script_writable' rather than reported as 'unknown_field'.
+ */
+export const loadScriptWritableDefinitions = loadVisibleCustomFieldDefinitions;
 
 /**
  * Ambient ORG context. The org predicate is redundant under RLS but pins the
