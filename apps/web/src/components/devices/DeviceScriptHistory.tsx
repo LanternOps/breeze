@@ -224,7 +224,12 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string>();
   const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
-  const [selectedExecution, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  const [selectedExecutionSnapshot, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  // Follow refreshed results while details are open, retaining the last
+  // selected row if it falls outside the history endpoint's latest 50 runs.
+  const selectedExecution = selectedExecutionSnapshot && (
+    executions.find(item => item.id && item.id === selectedExecutionSnapshot.id) ?? selectedExecutionSnapshot
+  );
   // #4885 "Run again" — the fetched script definition (parameters, OS types,
   // runAs) needed to open ScriptExecutionModal, plus the loading/error state
   // for that fetch. Cleared on close so a stale script never lingers across

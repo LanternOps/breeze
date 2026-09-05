@@ -16,6 +16,7 @@ import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
 
@@ -113,9 +114,10 @@ function makeExistingHandler(
 
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
+    let verifiedContext: ToolExecutionContext | undefined;
 
     if (onPreToolUse) {
-      let check: { allowed: true } | { allowed: false; error: string };
+      let check: Awaited<ReturnType<PreToolUseCallback>>;
       try {
         check = await onPreToolUse(toolName, args, exposedToolName);
       } catch (err) {
@@ -131,6 +133,12 @@ function makeExistingHandler(
         }
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
+      // Carry the exact script/variable material verified for approval, as
+      // the Fleet AI handler does. Re-reading it would reopen the gap between
+      // verifying the approved digest and dispatching the script.
+      verifiedContext = check.intentId
+        ? { ...check.context, actionIntentId: check.intentId }
+        : check.context;
     }
 
     try {
@@ -152,7 +160,9 @@ function makeExistingHandler(
         runOutsideDbContext(() =>
           withDbAccessContext(
             dbAccessContextFromAuth(auth),
-            () => executeTool(toolName, args, auth),
+            () => verifiedContext
+              ? executeTool(toolName, args, auth, { context: verifiedContext })
+              : executeTool(toolName, args, auth),
           ),
         ),
         TOOL_EXECUTION_TIMEOUT_MS,

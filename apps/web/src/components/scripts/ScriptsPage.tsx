@@ -165,6 +165,9 @@ export default function ScriptsPage() {
       // already uses for anomalies), where the new execution is expanded live;
       // a multi-device run has no single "the" device, so it goes to the
       // script's execution-history list instead.
+      // Keep partial admission results visible so the operator can inspect
+      // blocked or suppressed targets before leaving the execute flow.
+      if (admittedTargets.length !== data.targets.length) return data;
       if (deviceIds.length === 1) {
         void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
       } else {
