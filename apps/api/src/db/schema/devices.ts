@@ -478,7 +478,7 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   // group_id and device_id are free to name a DIFFERENT org's group/device.
   // Together they pin the triangle: group.org_id = membership.org_id =
   // device.org_id. Created in SQL migration
-  // 2026-10-08-101100-device-group-memberships-composite-tenant-fks.sql, which
+  // 2026-10-09-000200-device-group-memberships-composite-tenant-fks.sql, which
   // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
   // foreignKey() builder has no deferrable option, so that detail lives in the
   // migration only) and adds the detach — to breeze_cascade_device_org_id(),

@@ -95,22 +95,43 @@ END $preflight$;
 -- action here would change no outcome while silently taking those deletions
 -- out of the cascade lists' hands.
 --
--- GROUP axis: DEFERRABLE INITIALLY IMMEDIATE, like the sibling composite
--- tenant FKs (action_intents_scope_ticket_org_fk,
--- contract_lines_device_group_org_fk). DEFERRABLE at all is mandatory --
--- orgLifecycleFoundations.integration.test.ts rejects any non-deferrable FK
--- referencing a parent org_id, because the org merge runs SET CONSTRAINTS ALL
--- DEFERRED and repoints devices, device_groups and device_group_memberships in
--- separate statements. IMMEDIATE is safe here because nothing this FK
--- references (device_groups) is written by a devices org-move: the detach
--- added to breeze_cascade_device_org_id() below removes the rows before the
--- generic loop can re-stamp them, so the constraint never observes a mismatch.
+-- GROUP axis: DEFERRABLE INITIALLY DEFERRED. An earlier version of this
+-- migration used INITIALLY IMMEDIATE (like the sibling composite tenant FKs
+-- action_intents_scope_ticket_org_fk, contract_lines_device_group_org_fk) on
+-- the reasoning that nothing writes device_groups during a devices org-move,
+-- so the detach below always empties this table before the generic re-stamp
+-- loop can reach it. That reasoning covers the detach's OWN statement, but
+-- not the loop's: the detach and the loop's
+-- `UPDATE public.device_group_memberships SET org_id = ...` are two SEPARATE
+-- statements within this one trigger invocation, hence two separate MVCC
+-- snapshots under READ COMMITTED, and CI caught the gap between them
+-- (job 100797126274, shard 2/4) — all three device-move-detaches-memberships
+-- cases 23503'd against this exact FK from inside the loop's own EXECUTE, no
+-- local reproduction found despite extensive ordering/isolation attempts.
+-- IMMEDIATE turns any row that lands in that gap into a hard abort of the
+-- entire device move, mid-statement, with no chance to self-correct.
+-- DEFERRABLE at all is mandatory regardless -- orgLifecycleFoundations.
+-- integration.test.ts rejects any non-deferrable FK referencing a parent
+-- org_id, because the org merge runs SET CONSTRAINTS ALL DEFERRED and
+-- repoints devices, device_groups and device_group_memberships in separate
+-- statements. Deferring THIS FK too costs only WHEN a genuine violation is
+-- reported (COMMIT instead of mid-statement), same as the device axis below
+-- -- and buys the second cleanup pass after the generic loop (also in this
+-- file, fenced the same way as the detach) room to self-correct anything
+-- that lands in the gap before COMMIT ever checks it. A lone
+-- `db.execute(...)` statement (no
+-- explicit surrounding transaction) still autocommits immediately after
+-- itself, so a direct forged INSERT/UPDATE against this table -- the shape
+-- covered by the two REJECTS tests in
+-- deviceGroupMembershipTenantFks.integration.test.ts -- is unaffected: its
+-- implicit one-statement transaction ends, and is checked, right where it
+-- always was.
 ALTER TABLE public.device_group_memberships
   DROP CONSTRAINT IF EXISTS device_group_memberships_group_org_fk;
 ALTER TABLE public.device_group_memberships
   ADD CONSTRAINT device_group_memberships_group_org_fk
   FOREIGN KEY (group_id, org_id) REFERENCES public.device_groups (id, org_id)
-  DEFERRABLE INITIALLY IMMEDIATE;
+  DEFERRABLE INITIALLY DEFERRED;
 
 -- DEVICE axis: INITIALLY DEFERRED, and this one is NOT stylistic. This FK
 -- references devices(id, org_id), so `UPDATE devices SET org_id` fires its RI
@@ -283,6 +304,36 @@ BEGIN
       child_table
     ) USING NEW.org_id, NEW.id;
   END LOOP;
+  -- #3182 safety net, same merge fence as the detach above. The generic loop
+  -- just above blindly re-stamped device_group_memberships.org_id to
+  -- NEW.org_id for every row naming this device -- normally none, since the
+  -- detach at the top of this function already deleted them all, but the
+  -- detach and this loop are two SEPARATE statements (two separate MVCC
+  -- snapshots under READ COMMITTED), so a row that gets inserted for this
+  -- device in the gap between them survives the detach and is instead
+  -- re-stamped by the loop into exactly the forged shape the composite FKs
+  -- exist to reject: org_id = NEW.org_id (target), group_id still naming a
+  -- group in a DIFFERENT org. device_group_memberships_group_org_fk is
+  -- DEFERRABLE INITIALLY DEFERRED (see the migration header) precisely so
+  -- that mid-statement re-stamp does not abort the move outright, and this
+  -- cleanup gets the chance to delete the row before COMMIT ever checks the
+  -- deferred constraint. Same fence as the detach: during a merge the loop's
+  -- re-stamp IS how this table's rows correctly follow the survivor (its
+  -- group is repointed to the same survivor by a separate REPOINT_TABLES
+  -- statement elsewhere in the merge transaction, not by this trigger), so
+  -- this cleanup must stay out of that transition exactly like the detach
+  -- does.
+  IF NOT EXISTS (
+    SELECT 1 FROM public.organizations o
+     WHERE o.id = OLD.org_id AND o.status::text = 'merging'
+  ) THEN
+    DELETE FROM public.device_group_memberships dgm
+     WHERE dgm.device_id = NEW.id
+       AND EXISTS (
+             SELECT 1 FROM public.device_groups g
+              WHERE g.id = dgm.group_id AND g.org_id <> dgm.org_id
+           );
+  END IF;
   -- device_vulnerabilities.ticket_id (#4645): must run AFTER the generic loop
   -- above, not before — see this migration's header for why the ordering is
   -- load-bearing here (it is not for any of the tombstones above, which all
