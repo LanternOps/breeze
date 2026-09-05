@@ -7,6 +7,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
 import { syncPax8Integration } from '../services/pax8SyncService';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const PAX8_QUEUE = 'pax8-sync';
 const PAX8_SYNC_CRON = jobSchedule('pax8-sync');
@@ -135,6 +136,7 @@ export async function schedulePax8SyncJobs(): Promise<void> {
 export async function initializePax8SyncWorkers(): Promise<void> {
   try {
     pax8Worker = createPax8SyncWorker();
+  attachWorkerObservability(pax8Worker, 'pax8SyncWorker');
     pax8Worker.on('error', (error) => {
       console.error('[Pax8SyncWorker] Worker error:', error);
       captureException(error);

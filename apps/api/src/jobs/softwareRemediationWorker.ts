@@ -8,6 +8,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { evaluateSoftwarePolicyArming, recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -620,6 +621,7 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
 
 export async function initializeSoftwareRemediationWorker(): Promise<void> {
   softwareRemediationWorker = createSoftwareRemediationWorker();
+  attachWorkerObservability(softwareRemediationWorker, 'softwareRemediationWorker');
 
   softwareRemediationWorker.on('error', (error) => {
     console.error('[SoftwareRemediationWorker] Worker error', { error });

@@ -6,6 +6,7 @@ import { alerts } from '../db/schema/alerts';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reaps `alerts` rows whose timed suppression has elapsed: `status='suppressed'`
@@ -156,6 +157,7 @@ async function scheduleRepeatableJob(): Promise<void> {
 export async function initializeSuppressionExpiryReaper(): Promise<void> {
   if (reaperWorker) return;
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'suppressionExpiryReaper');
   reaperWorker.on('error', (error) => {
     console.error('[SuppressionExpiryReaper] Worker error:', error);
     captureException(error);

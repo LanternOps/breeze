@@ -3,6 +3,7 @@ import { cleanupAuthBrowserTransitions } from '../services/authBrowserTransition
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'auth-browser-transition-cleanup';
 const JOB_NAME = 'auth-browser-transition-cleanup';
@@ -54,6 +55,7 @@ export async function scheduleAuthBrowserTransitionCleanup(
 export async function initializeAuthBrowserTransitionCleanupWorker(): Promise<void> {
   if (cleanupWorker) return;
   cleanupWorker = createAuthBrowserTransitionCleanupWorker();
+  attachWorkerObservability(cleanupWorker, 'authBrowserTransitionCleanup');
   cleanupWorker.on('error', (error) => {
     console.error('[AuthBrowserTransitionCleanup] Worker error:', error);
     captureException(error);

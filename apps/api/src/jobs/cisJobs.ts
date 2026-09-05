@@ -16,6 +16,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 
@@ -469,6 +470,7 @@ export async function initializeCisJobs(): Promise<void> {
   }
 
   cisWorker = createCisWorker();
+  attachWorkerObservability(cisWorker, 'cisJobs');
 
   cisWorker.on('error', (error) => {
     console.error('[CisJobs] Worker error:', error);

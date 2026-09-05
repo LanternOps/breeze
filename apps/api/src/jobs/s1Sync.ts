@@ -23,6 +23,7 @@ import {
   recordS1ActionPollTransition,
   recordS1SyncRun
 } from '../services/sentinelOne/metrics';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -1333,6 +1334,7 @@ export async function scheduleS1ActionPoll(): Promise<string> {
 
 export async function initializeS1SyncJob(): Promise<void> {
   s1SyncWorker = createS1SyncWorker();
+  attachWorkerObservability(s1SyncWorker, 's1SyncWorker');
 
   s1SyncWorker.on('error', (error) => {
     console.error('[S1SyncJob] Worker error:', error);

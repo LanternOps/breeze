@@ -199,6 +199,14 @@ import {
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
+import {
+  setWorkerReadinessTransitionHandler,
+  workerReadinessRegistry,
+} from './services/workerReadinessRegistry';
+import {
+  consumersForInitializer,
+  declareExpectedConsumers,
+} from './jobs/workerReadinessManifest';
 
 // Workers
 //
@@ -226,7 +234,9 @@ import {
   initializeAgentCommandRelayWorker,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
-import { breezeRole } from './config/env';
+import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { partnerTrustMode } from './config/partnerTrustMode';
+import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
@@ -250,11 +260,11 @@ import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/
 import { eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
-  computeWorkersHealthy,
   createReadinessEvaluator,
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -308,23 +318,12 @@ let workerInitPhase: WorkerInitPhase = 'pending';
  * amplification defence, and an over-large one would re-create #2974 in slow
  * motion by latching the answer for minutes.
  */
-const READINESS_CACHE_TTL_MAX_MS = 30_000;
-const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
-const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
-if (READINESS_CACHE_TTL_MS !== readinessTtlRaw) {
-  console.warn(
-    `[ready] READINESS_CACHE_TTL_MS=${readinessTtlRaw} out of range, clamped to ${READINESS_CACHE_TTL_MS}ms`
-  );
-}
-
-/**
- * Per-probe deadline. postgres.js has a connect timeout but no pool-acquire
- * timeout, so a saturated pool can leave `select 1` queued indefinitely.
- * Without a deadline that evaluation would never settle and the evaluator's
- * single-flight slot would never clear, silencing `/ready` for the rest of the
- * process. Kept well under a typical load-balancer probe timeout.
- */
-const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+const readinessTiming = resolveReadinessTiming(
+  process.env,
+  (name, requested, effective) => {
+    console.warn(`[ready] ${name}=${requested} clamped to ${effective}ms`);
+  },
+);
 
 /**
  * One-shot guard for the "Redis came back but boot never started the workers"
@@ -337,8 +336,9 @@ let warnedWorkersNeverStarted = false;
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
   checkRedis: () => checkRedisConnectivity(),
-  workersHealthy: (redisOk) => {
-    if (redisOk && workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
+  workerRegistry: workerReadinessRegistry,
+  workersInitialized: () => {
+    if (workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
       warnedWorkersNeverStarted = true;
       const message =
         'Redis is reachable again, but this process skipped worker startup because Redis was down at boot. ' +
@@ -347,22 +347,18 @@ const readiness = createReadinessEvaluator({
       captureException(new Error(`[ready] ${message}`));
     }
 
-    return computeWorkersHealthy({
-      phase: workerInitPhase,
-      workerStatus,
-      redisOk,
-      shuttingDown: shutdownInProgress
-    });
+    return workerInitPhase === 'started';
   },
   isShuttingDown: () => shutdownInProgress,
   requireRedis: REQUIRE_REDIS_ON_STARTUP,
-  ttlMs: READINESS_CACHE_TTL_MS,
-  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  ttlMs: readinessTiming.ttlMs,
+  probeTimeoutMs: readinessTiming.probeTimeoutMs,
   onProbeFailure: (probeName, error) => {
     console.error(`[ready] ${probeName} probe failed:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
 });
+setWorkerReadinessTransitionHandler(() => readiness.invalidate());
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -435,75 +431,17 @@ app.get('/health/live', (c) => {
   return c.json({ status: 'ok' });
 });
 
-// Full readiness check — live DB + Redis connectivity
-app.get('/health/ready', async (c) => {
-  const checks: Record<string, string> = {};
-  const isProd = process.env.NODE_ENV === 'production';
-
-  // Check database connectivity
-  try {
-    await runWithSystemDbAccess(async () => {
-      await db.execute(sql`select 1`);
-    });
-    checks.database = 'ok';
-  } catch (error) {
-    checks.database = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  // Check Redis connectivity
-  try {
-    const redis = getRedis();
-    if (!redis) {
-      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
-    } else {
-      await redis.ping();
-      checks.redis = 'ok';
-    }
-  } catch (error) {
-    checks.redis = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  const allOk = Object.values(checks).every((v) => v === 'ok');
-
-  // #3022 — event-loop lag is deliberately NOT reported here. This endpoint is
-  // unauthenticated (see HEALTH_CHECK_PATHS in middleware/security.ts), and the
-  // lag stats are a live load gradient plus the starvation threshold itself,
-  // which would let an unauthenticated prober measure whether its own load is
-  // starving the instance. What this endpoint already exposes is binary
-  // availability; a tunable pressure readout is a different thing.
-  //
-  // Nothing is lost by the omission: the same numbers are on the auth-gated
-  // /metrics as Prometheus gauges, and the starvation reporter logs to the
-  // console unconditionally. Load balancers — the actual consumers here — read
-  // the status code, not the body.
-  return c.json(
-    {
-      status: allOk ? 'ready' : 'not_ready',
-      checks
-    },
-    allOk ? 200 : 503
-  );
+// Both readiness paths are aliases of the same bounded, cached evaluator.
+// `/health` and `/health/live` above remain process-liveness probes.
+const readinessHandler = createReadinessHandler({
+  evaluator: readiness,
+  onEvaluationError: (error, c) => {
+    console.error('[ready] Readiness evaluation failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)), c);
+  },
 });
-
-// Legacy /ready alias (backward compatibility).
-//
-// Evaluated live on each request, TTL-cached and single-flighted — see
-// `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
-// actually moves; before #2974 it was frozen at the boot-time snapshot.
-app.get(
-  '/ready',
-  createReadinessHandler({
-    evaluator: readiness,
-    onEvaluationError: (error, c) => {
-      console.error('[ready] Readiness evaluation failed:', error);
-      captureException(error instanceof Error ? error : new Error(String(error)), c);
-    }
-  })
-);
+app.get('/ready', readinessHandler);
+app.get('/health/ready', readinessHandler);
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
@@ -1138,17 +1076,24 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
-// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
-// and, now that readiness is evaluated live, a second copy of the worker-health
-// rule could only drift from what `/ready` reports. Use `readiness.get()`.
-export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
-
 let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
 async function initializeWorkers(): Promise<void> {
-  if (!startupChecks.redisOk || !isRedisAvailable()) {
+  const redisAvailable = startupChecks.redisOk && isRedisAvailable();
+  declareExpectedConsumers({
+    role: breezeRole(),
+    redisAvailable,
+    abuseSignalsEnabled: abuseSignalsEnabled(),
+    partnerTrustEnabled: partnerTrustMode() !== 'off',
+    auditChainVerifyEnabled: auditChainVerifyEnabled(),
+    eventDispatchEnabled: eventDispatchMode() !== 'off',
+    aiAgentsEnabled: AI_AGENTS_ENABLED,
+    registry: workerReadinessRegistry,
+  });
+
+  if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
@@ -1172,6 +1117,13 @@ async function initializeWorkers(): Promise<void> {
         captureException(
           error instanceof Error ? error : new Error(String(error))
         );
+        // Track C: every queue consumer this entry owns is now permanently
+        // failed for readiness (what the deleted declared-worker-group helper did before
+        // the registry became the initializer seam). AFTER captureException:
+        // this loop throws on an undeclared name and allSettled would swallow it.
+        for (const consumer of consumersForInitializer(name)) {
+          workerReadinessRegistry.recordInitializationFailure(consumer, error);
+        }
       }
     },
   });
@@ -1203,6 +1155,9 @@ async function initializeWorkers(): Promise<void> {
       workerStatus['eventDispatch'] = false;
       console.error('[CRITICAL] Failed to initialize eventDispatch:', error);
       captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('eventDispatch')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
     }
   }
 
@@ -1219,6 +1174,9 @@ async function initializeWorkers(): Promise<void> {
       workerStatus['agentCommandRelay'] = false;
       console.error('[CRITICAL] Failed to initialize agentCommandRelay:', error);
       captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('agentCommandRelay')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
     }
   }
   readiness.invalidate();

@@ -68,6 +68,8 @@ const FX_IMPORT_ALLOWLIST: Record<string, string> = {
   'apps/api/src/routes/admin/index.ts': 'mounts the platform-admin manual-rate API (no money math)',
   'apps/api/src/routes/invoices/settings.ts': 'the read-only reporting-totals endpoint',
   'apps/api/src/db/schema/currency.ts': 'the table definition',
+  'apps/api/src/jobs/workerReadinessManifest.ts':
+    'readiness manifest — a list of worker initializer names; matches on the exchangeRateSync string literal, imports no FX module and does no arithmetic',
   'apps/api/src/services/workerRegistry.ts':
     'worker init/shutdown wiring only (wave 3.5d-b, #4086 — moved here from index.ts, which no longer imports job modules directly)',
   'packages/shared/src/validators/currency.ts':

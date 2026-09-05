@@ -434,6 +434,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // (Task 2 enforces this) but jsonb is always excludedOpen regardless —
   // an open container may embed capabilities even when today's contents
   // look harmless.
+  "offline_transition_effects": tablePolicy("org_id", {"included":["id","transition_id","org_id","device_id","kind","rule_id","cooldown_until","created_at","available_at","attempts","completed_at","last_error"],"reviewedIncluded":[],"excludedSensitive":["lease_token"],"excludedOpen":["payload","lease_until"]}),
   "ticket_outbox": tablePolicy("org_id", {"included":["id","org_id","ticket_id","event_type","created_at","published_at","publish_attempts"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "ticket_parts": tablePolicy("org_id", {"included":["id","ticket_id","org_id","description","part_number","vendor","quantity","unit_price","currency_code","cost_basis","is_billable","billing_status","added_by","catalog_item_id","notes","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // requester_contact_id (#3258 W03): the canonical requester PERSON — a

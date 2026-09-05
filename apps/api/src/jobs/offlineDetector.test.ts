@@ -1,18 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, closeMock } = vi.hoisted(() => ({
+const { getJobMock, addMock, closeMock, getRepeatableJobsMock, workerOptions } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   closeMock: vi.fn(),
+  getRepeatableJobsMock: vi.fn(async () => []),
+  workerOptions: [] as Array<Record<string, unknown>>,
 }));
+
+vi.mock('../services/offlineEffectsStore', () => ({
+  persistOfflineTransition: vi.fn(async () => ['effect-id']),
+  findDueOfflineEffects: vi.fn(async () => []),
+  pruneOfflineEffects: vi.fn(async () => 0),
+}));
+vi.mock('../services/offlineTransitionEffects', () => ({ processOfflineEffect: vi.fn() }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     getJob = getJobMock;
     add = addMock;
     close = closeMock;
+    getRepeatableJobs = getRepeatableJobsMock;
+    removeRepeatableByKey = vi.fn();
   },
   Worker: class {
+    constructor(_name: string, _processor: unknown, options: Record<string, unknown>) {
+      workerOptions.push(options);
+    }
     close = closeMock;
     on = vi.fn();
   },
@@ -54,7 +68,13 @@ vi.mock('../services/alertConditions', () => ({
   interpolateTemplate: vi.fn(),
 }));
 
-import { shutdownOfflineDetector, triggerOfflineDetection } from './offlineDetector';
+import {
+  createOfflineWorker,
+  resolveOfflineWorkerConcurrency,
+  scheduleOfflineJobs,
+  shutdownOfflineDetector,
+  triggerOfflineDetection,
+} from './offlineDetector';
 
 describe('triggerOfflineDetection', () => {
   beforeEach(async () => {
@@ -65,6 +85,8 @@ describe('triggerOfflineDetection', () => {
     closeMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queue-job-1' });
+    getRepeatableJobsMock.mockClear();
+    workerOptions.length = 0;
     await shutdownOfflineDetector();
   });
 
@@ -94,5 +116,51 @@ describe('triggerOfflineDetection', () => {
 
     expect(jobId).toBe('existing-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('offline detector scheduling and worker bounds', () => {
+  beforeEach(async () => {
+    addMock.mockClear();
+    getRepeatableJobsMock.mockClear();
+    workerOptions.length = 0;
+    delete process.env.OFFLINE_DETECTOR_WORKER_CONCURRENCY;
+    await shutdownOfflineDetector();
+  });
+
+  afterEach(() => {
+    delete process.env.OFFLINE_DETECTOR_WORKER_CONCURRENCY;
+  });
+
+  it('uses a fixed seven-second offset for the thirty-second root repeat', async () => {
+    await scheduleOfflineJobs();
+
+    expect(addMock).toHaveBeenCalledWith(
+      'detect-offline',
+      { type: 'detect-offline' },
+      expect.objectContaining({ repeat: { every: 30_000, offset: 7_000 } }),
+    );
+  });
+
+  it.each([
+    [undefined, 5],
+    ['', 5],
+    ['   ', 5],
+    ['1', 1],
+    ['20', 20],
+    ['0', 1],
+    ['-4', 1],
+    ['1.5', 5],
+    ['nope', 5],
+    ['21', 20],
+  ])('resolves worker concurrency %s to %i', (raw, expected) => {
+    expect(resolveOfflineWorkerConcurrency(raw)).toBe(expected);
+  });
+
+  it('passes bounded configured concurrency to BullMQ', () => {
+    process.env.OFFLINE_DETECTOR_WORKER_CONCURRENCY = '200';
+    createOfflineWorker();
+
+    expect(workerOptions.at(-1)).toEqual(expect.objectContaining({ concurrency: 20 }));
   });
 });

@@ -42,6 +42,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { softwareRemediationRequests } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'software-remediation-request-cleanup';
 const JOB_NAME = 'software-remediation-request-cleanup';
@@ -248,6 +249,7 @@ export async function scheduleSoftwareRemediationRequestCleanup(
 export async function initializeSoftwareRemediationRequestCleanupWorker(): Promise<void> {
   try {
     cleanupWorker = createSoftwareRemediationRequestCleanupWorker();
+  attachWorkerObservability(cleanupWorker, 'softwareRemediationRequestCleanup');
     cleanupWorker.on('error', (error) => {
       console.error('[SoftwareRemediationRequestCleanup] Worker error:', error);
       captureException(error);

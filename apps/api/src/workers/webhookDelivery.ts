@@ -1,4 +1,6 @@
 import { createHmac, randomUUID } from 'crypto';
+import { EventEmitter } from 'node:events';
+import type { Worker } from 'bullmq';
 import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
 import type Redis from 'ioredis';
 import type { BreezeEvent } from '../services/eventBus';
@@ -9,6 +11,7 @@ import { formatHttpFailure } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
+import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -259,8 +262,8 @@ function calculateRetryDelay(
 /**
  * WebhookDeliveryWorker - Processes webhook delivery jobs from Redis
  */
-class WebhookDeliveryWorker {
-  private isRunning = false;
+class WebhookDeliveryWorker extends EventEmitter {
+  private running = false;
   private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
   private onClaimDelivery?: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>;
   /**
@@ -270,6 +273,24 @@ class WebhookDeliveryWorker {
    * would churn a TCP connect + AUTH every 5 seconds forever.
    */
   private blockingRedis: Redis | null = null;
+
+  constructor() {
+    super();
+    // An EventEmitter with no `error` listener THROWS on emit('error'). The
+    // readiness registry installs its own listener only once this worker is
+    // started through initializeWebhookDelivery(); every other role reaches
+    // this instance via getWebhookWorker() without ever attaching, so the
+    // instance must be safe to emit on regardless of attach state.
+    this.on('error', () => {});
+  }
+
+  get client(): Promise<Redis> {
+    return Promise.resolve(this.getBlockingRedis());
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
 
   private getBlockingRedis(): Redis {
     if (!this.blockingRedis || this.blockingRedis.status === 'end') {
@@ -334,21 +355,25 @@ class WebhookDeliveryWorker {
    * Start processing webhook deliveries
    */
   async start(): Promise<void> {
-    if (this.isRunning) return;
-    this.isRunning = true;
+    if (this.running) return;
+    this.running = true;
+    this.emit('ready');
 
     console.log('[WebhookWorker] Starting webhook delivery worker');
 
-    while (this.isRunning) {
+    while (this.running) {
       await this.processNextJob();
     }
+    this.emit('closed');
   }
 
   /**
    * Stop the worker
    */
   stop(): void {
-    this.isRunning = false;
+    if (!this.running) return;
+    this.emit('closing');
+    this.running = false;
     console.log('[WebhookWorker] Stopping webhook delivery worker');
   }
 
@@ -366,6 +391,9 @@ class WebhookDeliveryWorker {
       // up to the full 5s block. Non-blocking commands below stay on the
       // shared connection.
       const result = await this.getBlockingRedis().brpop(WEBHOOK_QUEUE, 5);
+      // A successful blocking read (including a timeout with no job) proves
+      // the consumer connection recovered after any earlier disconnect.
+      this.emit('ready');
 
       if (!result) return; // Timeout, no jobs
 
@@ -479,6 +507,13 @@ class WebhookDeliveryWorker {
       await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
 
     } catch (err) {
+      if (this.blockingRedis?.status === 'ready') {
+        // Delivery/callback failures are job-level failures; the loop remains
+        // runnable and will take the next item.
+        this.emit('failed', undefined, err);
+      } else {
+        this.emit('error', err);
+      }
       // The job was already popped by BRPOP and is gone from Redis. When the
       // failure happened before the POST the delivery row is untouched and the
       // recovery sweep reclaims it; that is the designed path, but it is still
@@ -750,6 +785,15 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
  */
 export async function initializeWebhookDelivery(): Promise<void> {
   const worker = getWebhookWorker();
+
+  // Readiness attach lives HERE, not in getWebhookWorker(): the getter is
+  // reached in every role (the durable fan-out subscriber, routes/webhooks.ts,
+  // services/aiToolsIntegrations.ts, index.ts's shutdown preamble), but only
+  // the `webhookDelivery` registry entry — placement `global`, never started
+  // under BREEZE_ROLE=api — reaches this start path. Attaching at construction
+  // would auto-expect a REQUIRED consumer an api-role process never runs and
+  // pin it not-ready from the first webhook event (spec section 2, C2).
+  workerReadinessRegistry.attach('webhookDeliveryWorker', worker as unknown as Worker);
 
   void worker.start().catch((err) => {
     console.error('[WebhookDelivery] Worker failed:', err);

@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/node';
 import type { Job, Worker } from 'bullmq';
 import { captureException } from '../services/sentry';
+import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 
 /**
  * Attaches unified error + failed-job reporting to a BullMQ worker (#1379).
@@ -206,6 +207,7 @@ export function attachWorkerObservability(
   options?: WorkerObservabilityOptions,
 ): void {
   tagJobExecution(worker, name);
+  workerReadinessRegistry.attach(name, worker);
 
   worker.on('error', (e) => {
     console.error(`[${name}] worker error:`, e);

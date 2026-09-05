@@ -59,6 +59,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { softwareUploadSessions } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'software-upload-session-cleanup';
 const JOB_NAME = 'software-upload-session-cleanup';
@@ -218,6 +219,7 @@ export async function scheduleSoftwareUploadSessionCleanup(
 export async function initializeSoftwareUploadSessionCleanupWorker(): Promise<void> {
   try {
     cleanupWorker = createSoftwareUploadSessionCleanupWorker();
+  attachWorkerObservability(cleanupWorker, 'softwareUploadSessionCleanup');
     cleanupWorker.on('error', (error) => {
       console.error('[SoftwareUploadSessionCleanup] Worker error:', error);
       captureException(error);

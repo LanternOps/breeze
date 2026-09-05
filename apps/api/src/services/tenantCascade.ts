@@ -477,6 +477,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // position anyway). localeCompare sorts this BEFORE 'ticket_parts'
   // ('o' < 'p').
   'ticket_outbox',
+  'offline_transition_effects',
   'ticket_parts',
   'tickets',
   'time_entries',

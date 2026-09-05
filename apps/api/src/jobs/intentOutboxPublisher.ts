@@ -6,6 +6,7 @@ import { intentOutbox } from '../db/schema/actionIntents';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
@@ -347,6 +348,7 @@ export async function initializeIntentOutboxPublisher(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'intentOutboxPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[IntentOutboxPublisher] Worker error:', error);
     captureException(error);

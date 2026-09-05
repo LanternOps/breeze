@@ -16,6 +16,7 @@ import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 import {
   parsePositiveIntEnv,
   pruneInCtidBatches,
@@ -90,6 +91,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeChangeLogRetention(): Promise<void> {
   try {
     retentionWorker = createChangeLogRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'changeLogRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[ChangeLogRetention] Worker error:', error);
@@ -145,4 +147,3 @@ export const __testOnly = {
   BATCH_SIZE,
   MAX_BATCHES,
 };
-

@@ -4,6 +4,7 @@ import { getBullMQConnection } from '../services/redis';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { reconcileTelemetry, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
 import { markCollectorPoll, getCollectorOwnerDeviceId } from '../services/unifi/unifiCollectorService';
+import { attachWorkerObservability } from './workerObservability';
 
 export const UNIFI_TELEMETRY_QUEUE = 'unifi-telemetry';
 
@@ -84,6 +85,7 @@ export async function initializeUnifiTelemetryWorker(): Promise<void> {
     async (job: Job<TelemetryPayload>) => processIngest(job.data),
     { connection: getBullMQConnection(), concurrency: 4 },
   );
+  attachWorkerObservability(workerInstance, 'unifiTelemetryWorker');
   workerInstance.on('error', (e) => console.error('[UnifiTelemetryWorker] error:', e));
   workerInstance.on('failed', (job, e) => console.error(`[UnifiTelemetryWorker] job ${job?.id} failed:`, e));
   console.log('[UnifiTelemetryWorker] initialized');

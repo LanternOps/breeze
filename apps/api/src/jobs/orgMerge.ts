@@ -53,6 +53,7 @@ import { executeOrgMerge, type ExecuteOrgMergeInput, type OrgMergeResult } from 
 import { enqueueTenantErasure } from './tenantErasure';
 import { createAuditLog, type CreateAuditLogParams } from '../services/auditService';
 import { removeOrgFromPartnerOrder } from '../services/orgOrdering';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'org-merge';
 const JOB_NAME = 'org-merge';
@@ -197,6 +198,7 @@ export function createOrgMergeWorker(): Worker {
 export async function initializeOrgMergeWorker(): Promise<void> {
   try {
     mergeWorker = createOrgMergeWorker();
+    attachWorkerObservability(mergeWorker, 'orgMerge');
     mergeWorker.on('error', (error) => {
       console.error('[OrgMerge] Worker error:', error);
       captureException(error);

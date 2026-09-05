@@ -6,6 +6,7 @@ import { ticketOutbox, type TicketOutboxEvent } from '../db/schema/ticketOutbox'
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `ticket_outbox` transactional outbox (#3828 wave-6-3 task 2 —
@@ -314,6 +315,7 @@ export async function initializeTicketOutboxPublisher(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'ticketOutboxPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[TicketOutboxPublisher] Worker error:', error);
     captureException(error);

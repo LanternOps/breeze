@@ -31,6 +31,7 @@ import {
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 // Strict shape for patches.policyAutoApprove as stored in the job JSONB.
 // deferralDays must be a valid non-negative integer when present — a malformed
@@ -1415,7 +1416,9 @@ let deviceWorker: Worker | null = null;
 
 export async function initializePatchJobWorkers(): Promise<void> {
   jobWorker = createPatchJobWorker();
+  attachWorkerObservability(jobWorker, 'patchJobWorker');
   deviceWorker = createPatchJobDeviceWorker();
+  attachWorkerObservability(deviceWorker, 'patchJobDeviceWorker');
   console.log('[PatchJobExecutor] Workers initialized');
 }
 

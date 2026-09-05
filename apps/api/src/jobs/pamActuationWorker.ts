@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { buildPamActuationCommand } from './pamActuationCommandPayload';
+import { attachWorkerObservability } from './workerObservability';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../services/partnerTrust.commands';
 
 const PAM_QUEUE_NAME = 'pam-actuation';
@@ -144,6 +145,7 @@ export async function initializePamActuationWorker(): Promise<void> {
     async (job: Job<PamActuationJobData>) => processPamActuationEvent(job.data),
     { connection: getBullMQConnection(), concurrency: 4 },
   );
+  attachWorkerObservability(pamWorker, 'pamActuationWorker');
   pamWorker.on('error', captureException);
   pamWorker.on('failed', (_job, error) => captureException(error));
 }
