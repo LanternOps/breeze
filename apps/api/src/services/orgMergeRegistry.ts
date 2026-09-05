@@ -544,6 +544,13 @@ const REPOINT_TABLES: readonly string[] = [
   "device_connections",
   "device_disks",
   "device_event_logs",
+  // device_external_links: plain repoint, and the unique key was checked first.
+  // device_external_links_uniq is (partner_id, system, COALESCE(source_instance,
+  // ''), external_id) — PARTNER-scoped, with no org_id in it. An org merge keeps
+  // both orgs under the SAME partner, so two links that would collide after the
+  // merge were already forbidden before it; a repoint cannot manufacture a
+  // 23505. Nothing to dedupe.
+  "device_external_links",
   "device_filesystem_cleanup_runs",
   "device_filesystem_scan_state",
   "device_filesystem_snapshots",

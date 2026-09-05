@@ -231,6 +231,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'deployment_invites',
   'device_agent_health_latest', 'device_boot_metrics', 'device_change_log', 'device_config_state',
   'device_connections', 'device_disks', 'device_event_logs',
+  'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
@@ -400,6 +401,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
+  // Durable external-system identity (#3257 W06) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_external_links',
   // mTLS certificate history (Wave 5 Task 2, security remediation) — FK
   // device_id -> devices.id ON DELETE CASCADE (composite with org_id);
   // leaf table, no children.
