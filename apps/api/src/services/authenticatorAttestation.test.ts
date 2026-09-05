@@ -187,7 +187,7 @@ describe('verifyPlatformAttestation (W02 stub)', () => {
     });
   });
 
-  it('resolves unattested for Android — no verifier is wired until W04', async () => {
+  it('resolves unattested for Android when the chain does not verify', async () => {
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'android', certificateChain: ['a', 'b'] },
       transcript,

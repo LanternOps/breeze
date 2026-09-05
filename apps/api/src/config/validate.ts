@@ -9,6 +9,7 @@ import {
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
+import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -631,6 +632,29 @@ const envObjectSchema = z
     // approval bypass, so a typo must fail boot rather than leave an operator
     // guessing which way it resolved.
     BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: z.string().optional(),
+
+    // #1374 W04 — Google Cloud service account (JSON, or base64 of that JSON)
+    // with the Play Integrity API enabled, used to decode Android
+    // `decodeIntegrityToken` verdicts. OPTIONAL by design: Play Integrity only
+    // ever stamps `app_integrity_verified_at`, never the trust basis, so an
+    // unconfigured deploy degrades to Key-Attestation-only rather than refusing
+    // Android approver-device registrations.
+    //
+    // Format IS validated, unlike most optional strings here: the failure mode
+    // of a mangled paste (base64 truncated, `\n` un-escaped out of the PEM) is a
+    // module that quietly reports "not configured" forever, so every Android
+    // registration silently lands with a null app_integrity_verified_at and
+    // nobody notices. A typo should stop the boot instead.
+    PLAY_INTEGRITY_SERVICE_ACCOUNT: z
+      .string()
+      .optional()
+      .refine((v) => v === undefined || parsePlayIntegrityServiceAccount(v) !== null, {
+        message:
+          'PLAY_INTEGRITY_SERVICE_ACCOUNT must be a Google service-account JSON (raw or base64) carrying client_email and private_key',
+      })
+      .describe(
+        'Google service account (raw JSON or base64) used to decode Play Integrity verdicts on Android approver-device registration (#1374). Optional — absence degrades to Key-Attestation-only.',
+      ),
 
     // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
     // (default) = today's all-in-one process. Read at runtime by
