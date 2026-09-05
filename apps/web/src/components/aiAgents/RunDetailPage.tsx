@@ -9,6 +9,7 @@ import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
+import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES } from '@breeze/shared';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunLedgerEntryDto,
@@ -523,11 +524,23 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
  */
 const SWEEP_PROPOSAL_REASONS: readonly string[] = Object.keys(SWEEP_PROPOSAL_REASON_TOKENS);
 
+/**
+ * Checked before the dynamic `t()` so an unrecognized kind/severity (e.g. a
+ * newer sweeper build reporting a kind this build's registry doesn't know
+ * about yet) renders as the raw token rather than as an untranslated
+ * `aiAgentsPage.runs.sweep.kinds.<token>`/`...severities.<token>` key path —
+ * same contract as `SWEEP_PROPOSAL_REASONS` above.
+ */
+const SWEEP_KIND_TOKENS: readonly string[] = AI_SWEEP_KINDS;
+const SWEEP_SEVERITY_TOKENS: readonly string[] = AI_SWEEP_SEVERITIES;
+
 function sweepKindLabel(t: (key: string) => string, kind: AiSweepKind): string {
+  if (!SWEEP_KIND_TOKENS.includes(kind)) return kind;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.kinds.${kind}`);
 }
 
 function sweepSeverityLabel(t: (key: string) => string, severity: AiSweepSeverity): string {
+  if (!SWEEP_SEVERITY_TOKENS.includes(severity)) return severity;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.severities.${severity}`);
 }
 

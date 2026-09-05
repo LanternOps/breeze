@@ -249,6 +249,25 @@ describe('decideIntentApprovalBatch', () => {
     expect(toastMessages().filter((toast) => toast.type === 'success')).toHaveLength(1);
   });
 
+  // Paper cut from the pre-release sweep: this toast used to read the
+  // singular "Action denied"/"Action approved" no matter how many cards the
+  // batch decided.
+  it('deny: a fully successful batch of 3 toasts a message naming the count', async () => {
+    respond({
+      results: [
+        { id: 'ap-1', httpStatus: 200, body: {} },
+        { id: 'ap-2', httpStatus: 200, body: {} },
+        { id: 'ap-3', httpStatus: 200, body: {} },
+      ],
+    });
+
+    await decideIntentApprovalBatch(['ap-1', 'ap-2', 'ap-3'], 'deny', 'Wrong window');
+
+    const toasts = toastMessages().filter((toast) => toast.type === 'success');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('3');
+  });
+
   it('deny: no ceremony, and the group’s single trimmed reason rides along', async () => {
     respond({ results: [{ id: 'ap-1', httpStatus: 200, body: {} }] });
 

@@ -4,6 +4,7 @@ import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
+import { computeDurationSeconds, formatDuration } from './ExecutionHistory';
 import { executionDetailStatusConfig as statusConfig } from './executionStatus';
 import { RunContextChip } from '@/components/common/RunContext';
 
@@ -17,16 +18,6 @@ type ExecutionDetailsProps = {
   // where the host page has nowhere to send it.
   onRunAgain?: (execution: ScriptExecution) => void;
 };
-
-function formatDuration(seconds?: number): string {
-  if (seconds === undefined || seconds === null) return '-';
-  if (seconds < 1) return '<1s';
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  return `${hours}h ${mins}m`;
-}
 
 function formatDateTime(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -304,7 +295,9 @@ export default function ExecutionDetails({
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
               <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.startedAt')}</p>
-              <p className="text-sm font-medium mt-1">{formatDateTime(execution.startedAt, timezone)}</p>
+              <p className="text-sm font-medium mt-1">
+                {execution.startedAt ? formatDateTime(execution.startedAt, timezone) : '—'}
+              </p>
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
               <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.duration')}</p>
@@ -315,7 +308,7 @@ export default function ExecutionDetails({
                     {t('executionDetails.status.running')}
                   </span>
                 ) : (
-                  formatDuration(execution.duration)
+                  formatDuration(computeDurationSeconds(execution))
                 )}
               </p>
             </div>
