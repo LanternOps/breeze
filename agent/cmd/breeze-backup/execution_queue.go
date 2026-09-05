@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
 // Admission occurs in the IPC receive loop, preserving arrival order across goroutines.
@@ -20,9 +23,12 @@ type backupExecutionTicket struct {
 	once     sync.Once
 }
 
+// isBackupWorkload reports whether a command occupies the device execution
+// slot. The list lives in backupipc, shared with the agent forwarder.
 func isBackupWorkload(command string) bool {
-	return command == "backup_run" || command == "mssql_backup" || command == "hyperv_backup"
+	return backupipc.IsQueuedWorkload(command)
 }
+
 func newBackupExecutionQueue() *backupExecutionQueue {
 	ready := make(chan struct{})
 	close(ready)
@@ -32,6 +38,7 @@ func (q *backupExecutionQueue) enqueue(id string, canceller *activeCommandCancel
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, exists := q.entries[id]; exists {
+		slog.Warn("duplicate backup admission ignored", "commandId", id)
 		return nil
 	}
 	ctx, cleanup := canceller.track(id)
@@ -44,6 +51,7 @@ func (q *backupExecutionQueue) enqueue(id string, canceller *activeCommandCancel
 		delete(q.entries, id)
 	}
 	q.tail = ticket.done
+	slog.Info("backup workload admitted to execution queue", "commandId", id, "queued", len(q.entries)-1)
 	return ticket
 }
 func (t *backupExecutionTicket) wait(heartbeat func()) error {
@@ -52,6 +60,7 @@ func (t *backupExecutionTicket) wait(heartbeat func()) error {
 	for {
 		select {
 		case <-t.ctx.Done():
+			slog.Info("queued backup workload cancelled before execution", "error", t.ctx.Err().Error())
 			return t.ctx.Err()
 		case <-t.previous:
 			return t.ctx.Err()
@@ -64,6 +73,9 @@ func (t *backupExecutionTicket) release() {
 	t.once.Do(func() {
 		t.cleanup()
 		// Cancelling a waiter must not let its successor bypass the active command.
+		// The deferred close costs one parked goroutine per cancelled waiter until
+		// the active workload returns; native SQL/Hyper-V exports cannot be
+		// interrupted, so that can be minutes. Bounded by queue depth.
 		select {
 		case <-t.previous:
 			close(t.done)

@@ -39,9 +39,32 @@ type BackupCommandRequest struct {
 	// would otherwise parse the ack as a malformed terminal result.
 	Async bool `json:"async,omitempty"`
 	// QueueAsync requires backup_queue_async server capability. It extends async
-	// delivery to SQL/Hyper-V and acknowledges admission with {"queued":true};
-	// phase starting reports actual execution after acquiring the device slot.
+	// delivery to SQL/Hyper-V and acknowledges admission with {"queued":true}.
+	// The helper then emits a "queued" progress phase while waiting and a
+	// "starting" phase once it has acquired the device slot, immediately
+	// before execution begins. Without it the helper executes the command
+	// directly (pre-queue behaviour) so a non-queue-aware server's synchronous
+	// round trip never blocks behind another workload.
 	QueueAsync bool `json:"queueAsync,omitempty"`
+}
+
+// Queued workload command types. Only these occupy the per-device execution
+// slot; control/status commands (backup_stop, backup_list, ...) never wait.
+// Shared by the agent forwarder and the helper so the two lists cannot drift.
+const (
+	CommandBackupRun    = "backup_run"
+	CommandMSSQLBackup  = "mssql_backup"
+	CommandHypervBackup = "hyperv_backup"
+)
+
+// IsQueuedWorkload reports whether commandType is serialized through the
+// per-device backup execution queue.
+func IsQueuedWorkload(commandType string) bool {
+	switch commandType {
+	case CommandBackupRun, CommandMSSQLBackup, CommandHypervBackup:
+		return true
+	}
+	return false
 }
 
 // BackupCommandResult is sent from the backup helper to the agent.

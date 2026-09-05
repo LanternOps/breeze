@@ -128,8 +128,8 @@ func TestQueueAsyncAdmissionAndStartProtocol(t *testing.T) {
 	for _, command := range []string{"backup_run", "mssql_backup", "hyperv_backup"} {
 		t.Run(command, func(t *testing.T) {
 			agentSide, helperSide := net.Pipe()
-			defer agentSide.Close()
-			defer helperSide.Close()
+			defer func() { _ = agentSide.Close() }()
+			defer func() { _ = helperSide.Close() }()
 			conn := ipc.NewConn(helperSide)
 			envelopes := startEnvelopeReader(ipc.NewConn(agentSide))
 			req := backupipc.BackupCommandRequest{CommandID: command, CommandType: command, Async: true, QueueAsync: true, Payload: []byte(`{}`)}
@@ -249,4 +249,109 @@ func TestConfiguredBackupStopCancelsWaitersBeforeManagerUnwinds(t *testing.T) {
 		t.Fatal("Stop returned before the configured manager finished cleanup")
 	default:
 	}
+}
+
+func TestTargetedBackupStopDrainsCancelledWorkload(t *testing.T) {
+	canceller := newActiveCommandCanceller()
+	ctx, cleanup := canceller.track("job-a")
+	unwound := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		time.Sleep(20 * time.Millisecond) // simulate VSS teardown / upload flush
+		cleanup()
+		close(unwound)
+	}()
+	result := executeCommand(backupipc.BackupCommandRequest{CommandType: "backup_stop", Payload: []byte(`{"jobId":"job-a"}`)}, nil, nil, nil, canceller)
+	if !result.Success || result.Stdout != `{"stopped":true,"drained":true}` {
+		t.Fatalf("targeted stop did not join the unwind: %+v", result)
+	}
+	select {
+	case <-unwound:
+	default:
+		t.Fatal("stop replied before the workload unwound")
+	}
+	result = executeCommand(backupipc.BackupCommandRequest{CommandType: "backup_stop", Payload: []byte(`{"jobId":"job-a"}`)}, nil, nil, nil, canceller)
+	if result.Stdout != `{"stopped":false,"drained":true}` {
+		t.Fatalf("stop of finished job: %+v", result)
+	}
+}
+
+func TestCancellerWaitDoneTimesOutWhileNativeCallHolds(t *testing.T) {
+	canceller := newActiveCommandCanceller()
+	_, cleanup := canceller.track("native")
+	defer cleanup()
+	if canceller.cancel("native") != true {
+		t.Fatal("cancel of tracked command reported untracked")
+	}
+	if canceller.waitDone("native", 10*time.Millisecond) {
+		t.Fatal("waitDone reported drained while cleanup never ran")
+	}
+	if !canceller.waitDone("never-tracked", time.Millisecond) {
+		t.Fatal("untracked id must count as already done")
+	}
+}
+
+func TestCancellerRebindKeepsCancelPropagation(t *testing.T) {
+	canceller := newActiveCommandCanceller()
+	ctx, cleanup := canceller.track("job")
+	defer cleanup()
+	derived, release, err := backup.AcquireExecution(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	canceller.rebind("job", derived)
+	again, _ := canceller.track("job")
+	if again != derived {
+		t.Fatal("re-entrant track did not return the rebound context")
+	}
+	canceller.cancel("job")
+	if derived.Err() == nil {
+		t.Fatal("cancel did not propagate to the rebound context")
+	}
+	canceller.rebind("ghost", derived) // untracked: must not resurrect an entry
+	if _, tracked := canceller.contexts["ghost"]; tracked {
+		t.Fatal("rebind created an entry for an untracked id")
+	}
+}
+
+// A non-queue-aware dispatch (QueueAsync=false) must bypass the FIFO and run
+// immediately: two identical synchronous envelopes each get their own
+// terminal reply, and neither is answered with a queued admission ack.
+func TestSynchronousWorkloadBypassesExecutionQueue(t *testing.T) {
+	agentSide, helperSide := net.Pipe()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = helperSide.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		commandLoop(ctx, ipc.NewConn(helperSide), nil, nil, time.Hour)
+	}()
+	agentConn := ipc.NewConn(agentSide)
+	envelopes := startEnvelopeReader(agentConn)
+	req := backupipc.BackupCommandRequest{CommandID: "same-job", CommandType: "mssql_backup", Payload: []byte(`{}`)}
+	for _, id := range []string{"env-1", "env-2"} {
+		if err := agentConn.SendTyped(id, backupipc.TypeBackupCommand, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		env := nextBackupResult(t, envelopes)
+		var res backupipc.BackupCommandResult
+		if err := json.Unmarshal(env.Payload, &res); err != nil {
+			t.Fatal(err)
+		}
+		if res.Stdout == `{"queued":true}` {
+			t.Fatalf("synchronous workload was admitted to the queue: %+v", res)
+		}
+		seen[env.ID] = true
+	}
+	if !seen["env-1"] || !seen["env-2"] {
+		t.Fatalf("each synchronous envelope must get its own terminal reply, got %v", seen)
+	}
+	cancel()
+	<-loopDone
 }

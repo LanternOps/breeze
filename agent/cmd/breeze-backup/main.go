@@ -44,19 +44,33 @@ var rootCmd = &cobra.Command{
 
 var socketPath string
 
+// backupStopDrainTimeout bounds how long a targeted backup_stop waits for the
+// cancelled workload to unwind before replying. Kept under the agent's 30s
+// backup_stop forward timeout so the stop itself never times out.
+const backupStopDrainTimeout = 20 * time.Second
+
 type activeCommandCanceller struct {
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
 	contexts map[string]context.Context
+	// done is closed by the tracking cleanup once the command has fully
+	// unwound, so a targeted backup_stop can join the run instead of
+	// reporting "stopped" while VSS teardown or an upload is still in flight.
+	done map[string]chan struct{}
 }
 
 func newActiveCommandCanceller() *activeCommandCanceller {
 	return &activeCommandCanceller{
 		cancels:  make(map[string]context.CancelFunc),
 		contexts: make(map[string]context.Context),
+		done:     make(map[string]chan struct{}),
 	}
 }
 
+// track registers commandID and returns its cancellable context. Calling it
+// again for an id that is already tracked is intentional and re-entrant: the
+// existing context is returned with a no-op cleanup, so the first tracker
+// (the execution queue for queued workloads) keeps ownership of the lifetime.
 func (c *activeCommandCanceller) track(commandID string) (context.Context, func()) {
 	c.mu.Lock()
 	if ctx, exists := c.contexts[commandID]; exists {
@@ -64,16 +78,64 @@ func (c *activeCommandCanceller) track(commandID string) (context.Context, func(
 		return ctx, func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	c.contexts[commandID] = ctx
 	c.cancels[commandID] = cancel
+	c.done[commandID] = done
 	c.mu.Unlock()
 
 	return ctx, func() {
 		c.mu.Lock()
 		delete(c.cancels, commandID)
 		delete(c.contexts, commandID)
+		delete(c.done, commandID)
 		c.mu.Unlock()
 		cancel()
+		close(done)
+	}
+}
+
+// rebind replaces the context handed out for commandID with a derived one
+// (the execution-guard context). ctx MUST descend from the tracked context so
+// the registered cancel still propagates. Untracked ids are ignored.
+func (c *activeCommandCanceller) rebind(commandID string, ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, tracked := c.contexts[commandID]; !tracked {
+		return
+	}
+	c.contexts[commandID] = ctx
+}
+
+// cancel aborts one tracked command and returns whether it was tracked.
+func (c *activeCommandCanceller) cancel(commandID string) bool {
+	c.mu.Lock()
+	cancel := c.cancels[commandID]
+	c.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// waitDone blocks until commandID's cleanup has run or timeout elapses.
+// Returns true when the command fully unwound; false on timeout. An untracked
+// id is already done.
+func (c *activeCommandCanceller) waitDone(commandID string, timeout time.Duration) bool {
+	c.mu.Lock()
+	done := c.done[commandID]
+	c.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -476,17 +538,18 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 		case backupipc.TypeBackupCommand:
 			var req backupipc.BackupCommandRequest
 			var ticket *backupExecutionTicket
-			if json.Unmarshal(env.Payload, &req) == nil && isBackupWorkload(req.CommandType) {
+			// Only queue-aware dispatches (QueueAsync) enter the FIFO. A server
+			// without backup_queue_async sends SQL/Hyper-V synchronously with a
+			// bounded round trip; parking those behind another workload would
+			// time out the caller and then run the command anyway, orphaned.
+			if json.Unmarshal(env.Payload, &req) == nil && req.QueueAsync && isBackupWorkload(req.CommandType) {
 				ticket = queue.enqueue(req.CommandID, commandCanceller)
 				if ticket == nil {
 					// A retried envelope acknowledges the existing admission; it
 					// must not execute or settle that command a second time.
-					if req.Async {
-						stdout := `{"started":true}`
-						if req.QueueAsync {
-							stdout = `{"queued":true}`
-						}
-						_ = conn.SendTyped(env.ID, backupipc.TypeBackupResult, backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: stdout})
+					ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"queued":true}`}
+					if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, ack); err != nil {
+						slog.Warn("failed to re-acknowledge duplicate backup admission", "commandId", req.CommandID, "error", err.Error())
 					}
 					continue
 				}
@@ -509,13 +572,8 @@ func commandLoop(ctx context.Context, conn *ipc.Conn, mgr *backup.BackupManager,
 }
 
 func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupManager, vaultState *vaultManagerRef, commandCanceller *activeCommandCanceller, tickets ...*backupExecutionTicket) {
-	var req backupipc.BackupCommandRequest
-	if err := json.Unmarshal(env.Payload, &req); err != nil {
-		sendError(conn, env.ID, "invalid request payload: "+err.Error())
-		return
-	}
-
-	start := time.Now()
+	// Release before anything can return: a ticket that is never released
+	// wedges every later workload on this device.
 	var ticket *backupExecutionTicket
 	if len(tickets) > 0 {
 		ticket = tickets[0]
@@ -523,6 +581,14 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	if ticket != nil {
 		defer ticket.release()
 	}
+
+	var req backupipc.BackupCommandRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		sendError(conn, env.ID, "invalid request payload: "+err.Error())
+		return
+	}
+
+	start := time.Now()
 	run := func() backupipc.BackupCommandResult {
 		if req.QueueAsync {
 			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
@@ -536,22 +602,20 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 				return fail(err.Error())
 			}
 		}
-		if isBackupWorkload(req.CommandType) {
+		if ticket != nil {
+			// Queued workloads also take the process-wide guard so they never
+			// overlap a helper-local run that bypassed the queue.
 			ctx, cleanup := commandCanceller.track(req.CommandID)
 			defer cleanup()
 			ctx, release, err := backup.AcquireExecutionWithProgress(ctx, func() {
-				if req.QueueAsync {
-					sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
-				}
+				sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "queued"})
 			})
 			if err != nil {
 				return fail(err.Error())
 			}
 			defer release()
 			start = time.Now()
-			commandCanceller.mu.Lock()
-			commandCanceller.contexts[req.CommandID] = ctx
-			commandCanceller.mu.Unlock()
+			commandCanceller.rebind(req.CommandID, ctx)
 		}
 		if req.QueueAsync {
 			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "starting"})
@@ -640,13 +704,20 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return fail("invalid backup_stop payload")
 		}
 		if payload.JobID != "" {
-			commandCanceller.mu.Lock()
-			cancel := commandCanceller.cancels[payload.JobID]
-			if cancel != nil {
-				cancel()
+			// Join the run like the untargeted path's mgr.Stop() does, so the
+			// server does not mark the row terminal while VSS teardown or an
+			// in-flight upload is still writing. Native SQL/Hyper-V exports
+			// cannot be interrupted, so the join is bounded; "drained":false
+			// tells the caller the slot is still held.
+			stopped := commandCanceller.cancel(payload.JobID)
+			drained := true
+			if stopped {
+				drained = commandCanceller.waitDone(payload.JobID, backupStopDrainTimeout)
+				if !drained {
+					slog.Warn("backup_stop: workload still unwinding after drain timeout", "jobId", payload.JobID)
+				}
 			}
-			commandCanceller.mu.Unlock()
-			return ok(fmt.Sprintf(`{"stopped":%t}`, cancel != nil))
+			return ok(fmt.Sprintf(`{"stopped":%t,"drained":%t}`, stopped, drained))
 		}
 	}
 	if req.CommandType == "backup_run" {
