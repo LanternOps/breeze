@@ -248,6 +248,23 @@ func zenityPromptArgs(title, body string, actions []string, timeout time.Duratio
 	return append(args, "--timeout="+strconv.Itoa(dialogTimeoutSeconds(timeout)))
 }
 
+// recognisedExtraButton returns the postponement label this dialog offered when
+// the child printed exactly it, and "" otherwise.
+//
+// Only an exact match counts, so an unexpected line on stdout is read as no
+// decision rather than guessed at. Shared by zenityResult and the log decision
+// below: the WARN must never contradict the answer the manager acted on, which
+// is what happened when each of them applied its own reading of exit 1 (#4941).
+func recognisedExtraButton(stdout string, actions []string) string {
+	if len(actions) < 2 {
+		return ""
+	}
+	if printed := strings.TrimSpace(stdout); printed == actions[1] {
+		return actions[1]
+	}
+	return ""
+}
+
 // zenityResult maps one dialog run onto the PromptFunc contract.
 //
 // The two return values answer different questions and the manager branches on
@@ -277,13 +294,11 @@ func zenityResult(run desktopDialogRun, actions []string) (string, bool) {
 		return "", true
 	case zenityExitCancel:
 		// Cancel, ESC and the close box print nothing; an --extra-button prints
-		// its own label. Only an exact match counts, so an unexpected line is
-		// read as no decision rather than guessed at.
-		printed := strings.TrimSpace(run.stdout)
-		if len(actions) > 1 && printed == actions[1] {
+		// its own label.
+		if label := recognisedExtraButton(run.stdout, actions); label != "" {
 			// A button we offered came back. Nothing can print that but a
 			// rendered dialog, so this is positive proof of delivery.
-			return actions[1], true
+			return label, true
 		}
 		// Exit 1 with nothing on stdout is the ambiguous case: a dismissal and
 		// a display failure are indistinguishable on the exit code alone.
@@ -300,6 +315,59 @@ func zenityResult(run desktopDialogRun, actions []string) (string, bool) {
 		// manager still warns the user through the ordinary path.
 		return "", false
 	}
+}
+
+// dialogEndedInCleanDecision reports whether one dialog run ended in a decision
+// this code positively understood, which is the only case the "did not end in a
+// clean decision" WARN stays quiet about (#4941).
+//
+// Exit 1 is zenity's overloaded status: Cancel, the window's close box, ESC and
+// every --extra-button all report it, and only stdout tells them apart. Reading
+// the exit code alone as "not clean" logged a WARN for every postponement on
+// every Linux endpoint — "the dialog did not end in a clean decision" one line
+// above "reboot postponed by user", for a dialog that had just been read and
+// acted on.
+//
+// Everything else keeps warning, including every case where nothing reached a
+// person. That is deliberate and is why shown is an input rather than something
+// this function recomputes: a GTK failure to open the display exits 1 exactly
+// like a Cancel, and leaving a trace of it is the reason this log line exists at
+// all. zenity's own timeout (exit 5) also keeps warning — it ended with no
+// decision, which is what the message says.
+func dialogEndedInCleanDecision(run desktopDialogRun, actions []string, shown bool) bool {
+	if !run.started || run.timedOut || !shown {
+		return false
+	}
+	switch run.exitCode {
+	case zenityExitOK:
+		// "Restart now": unambiguous on the exit code alone.
+		return true
+	case zenityExitCancel:
+		// Ambiguous on the exit code; a recognised label on stdout is what turns
+		// it into the offer the manager then granted.
+		return recognisedExtraButton(run.stdout, actions) != ""
+	default:
+		return false
+	}
+}
+
+// logDialogOutcome leaves the one trace a dialog that did not end cleanly has
+// behind it: session, user, exit code, whether the agent killed it, how long it
+// lived and what the child complained about on stderr — the evidence that tells a
+// display failure apart from a dismissal.
+//
+// Untagged, with the decision it applies, so the rule is asserted by tests that
+// run on every platform; the linux seam that calls it is built only in the linux
+// job (#3019, #3046).
+func logDialogOutcome(sessionID, username string, run desktopDialogRun, actions []string, shown bool) {
+	if dialogEndedInCleanDecision(run, actions, shown) {
+		return
+	}
+	log.Warn("the reboot dialog did not end in a clean decision",
+		"session", sessionID, "user", username,
+		"exitCode", run.exitCode, "timedOut", run.timedOut,
+		"elapsedMs", run.elapsed.Milliseconds(), "shown", shown,
+		"stderr", run.stderr)
 }
 
 // notifySendUrgencies is the set notify-send accepts. Anything else makes it
