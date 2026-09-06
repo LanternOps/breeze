@@ -2787,6 +2787,8 @@
       "hint": "En mode Agir, « Exécuter un script » s'exécute sans approbation uniquement pour les scripts cochés ici. Tout le reste reste une demande d'approbation.",
       "ceilingHint": "Les scripts au niveau du partenaire sont un plafond : l'agent d'une organisation ne peut choisir que dans cette liste.",
       "runScriptRequired": "Ajoutez « Exécuter un script » dans « Ce qu'il fait » avant d'autoriser des scripts.",
+      "runScriptNotInBaseline": "Le référentiel du partenaire n'autorise pas « Exécuter un script » pour ce type d'agent : aucun script ne peut donc s'exécuter sans intervention.",
+      "ceilingUnavailable": "Impossible de charger le référentiel du partenaire : aucun script ne peut être autorisé pour le moment.",
       "loading": "Chargement des scripts…",
       "failed": "Impossible de charger les scripts ; l'autorisation de scripts sans intervention ne peut pas être modifiée pour le moment.",
       "empty": "Aucun script disponible.",

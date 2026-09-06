@@ -2787,6 +2787,8 @@
       "hint": "Im Handlungsmodus führt „Skript ausführen“ nur die hier angehakten Skripte ohne Genehmigung aus. Alles andere bleibt eine Genehmigungsanfrage.",
       "ceilingHint": "Skripte auf Partnerebene sind eine Obergrenze: der Agent einer Organisation kann nur aus dieser Liste wählen.",
       "runScriptRequired": "Fügen Sie unter „Was er tut“ zuerst „Skript ausführen“ hinzu, bevor Sie Skripte autorisieren.",
+      "runScriptNotInBaseline": "Die Partner-Baseline erlaubt „Skript ausführen“ für diesen Agententyp nicht, daher kann kein Skript unbeaufsichtigt laufen.",
+      "ceilingUnavailable": "Die Partner-Baseline konnte nicht geladen werden, daher können derzeit keine Skripte autorisiert werden.",
       "loading": "Skripte werden geladen…",
       "failed": "Skripte konnten nicht geladen werden, daher lässt sich die unbeaufsichtigte Skriptautorisierung gerade nicht ändern.",
       "empty": "Keine Skripte verfügbar.",

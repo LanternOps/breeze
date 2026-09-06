@@ -303,11 +303,13 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: () => undefined,
 }));
 
+const resolveOrgPartnerIdMock = vi.hoisted(() => vi.fn());
 vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
   resolveEffectiveAgentSystem: resolveEffectiveAgentSystemMock,
   loadPartnerBaselineKinds: loadPartnerBaselineKindsMock,
   loadPartnerBaselineCeiling: loadPartnerBaselineCeilingMock,
+  resolveOrgPartnerId: resolveOrgPartnerIdMock,
 }));
 
 vi.mock('../services/aiAgents/agentToolCatalog', () => ({
@@ -3775,10 +3777,32 @@ describe('POST /ai-agents/preview', () => {
     expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
   });
 
-  it('does not resolve a ceiling for a system-scope caller', async () => {
+  it('resolves the ceiling through the ORG\'s partner for a system-scope caller previewing an org-owned draft (#5089 review)', async () => {
+    // A system session carries no partnerId of its own; POST / (createAgent
+    // -> scriptAuthorization.ts) resolves the org's partner and enforces its
+    // baseline, so the preview must read the same ceiling or the review card
+    // promises an unattended run the create then 422s.
+    resolveOrgPartnerIdMock.mockResolvedValueOnce(PARTNER_ID);
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
+
     const res = await previewRequest(
-      buildApp(false, { scope: 'system', partnerId: PARTNER_ID, orgId: null }),
-      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+      buildApp(false, { scope: 'system', partnerId: null, orgId: null, canAccessOrg: () => true }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'], ownerScope: 'organization', orgId: ORG_ID },
+    );
+
+    expect(res.status).toBe(200);
+    expect(resolveOrgPartnerIdMock).toHaveBeenCalledWith(ORG_ID);
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+    const body = (await res.json()) as { data: { operations: Array<{ withinCeiling: boolean }> } };
+    expect(body.data.operations[0]!.withinCeiling).toBe(false);
+  });
+
+  it('does not resolve a ceiling for a system-scope caller previewing an org draft whose org has no partner', async () => {
+    resolveOrgPartnerIdMock.mockResolvedValueOnce(null);
+
+    const res = await previewRequest(
+      buildApp(false, { scope: 'system', partnerId: null, orgId: null, canAccessOrg: () => true }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization', orgId: ORG_ID },
     );
 
     expect(res.status).toBe(200);

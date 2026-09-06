@@ -366,6 +366,25 @@ export async function loadPartnerBaselineKinds(
 }
 
 /**
+ * The partner an organization belongs to, for a caller that carries no
+ * partnerId of its own but needs that org's partner-wide ceiling — a
+ * system-scope session previewing an org-owned draft (#5089 review: POST
+ * /preview used to hand such a caller no ceiling at all, so the review card
+ * promised an unattended run the create then 422'd through
+ * scriptAuthorization.ts, which resolves the partner the same way). Plain
+ * org read under the caller's own db context; `null` when the org is
+ * unknown to it or has no partner.
+ */
+export async function resolveOrgPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
+
+/**
  * The partner-wide baseline's tool ceiling for ONE kind, projected for an
  * org-scoped caller that cannot read the partner row itself. Same
  * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two

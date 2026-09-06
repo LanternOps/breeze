@@ -19,6 +19,11 @@ export interface UseAgentToolCatalogResult {
    *  baseline", and a caller must not treat the draft as unconstrained
    *  (#5063 review: the drawer over-reported authorized scripts otherwise). */
   ceilingResolved: boolean;
+  /** True when an org draft's ceiling fetch settled in FAILURE. `ceiling`
+   *  is `null` then, which must read as "unknown", never as "no baseline":
+   *  a caller offering an unrestricted choice on it would let the operator
+   *  build a save the server 422s (#5089 review). */
+  ceilingFailed: boolean;
 }
 
 /**
@@ -34,6 +39,25 @@ export interface UseAgentToolCatalogResult {
  * degrades to `error: true` and a `null` value for that piece — this hook
  * never throws, so the form is never obligated to catch it.
  */
+/**
+ * `null` for an explicit "no baseline" body, the projection for a
+ * well-formed one, `undefined` for anything else — an unrecognised body is
+ * a FAILED fetch, never a ceiling (#5089 review: reading `.toolAllowlist`
+ * off an arbitrary payload crashed the drawer). `supervisedActionKeys` and
+ * `scriptIds` default to empty for an older API build that omits them.
+ */
+function parseCeilingBody(data: unknown): AgentCeilingDto | null | undefined {
+  if (data === null || data === undefined) return null;
+  if (typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const body = data as Partial<AgentCeilingDto>;
+  if (!Array.isArray(body.toolAllowlist)) return undefined;
+  return {
+    toolAllowlist: body.toolAllowlist,
+    supervisedActionKeys: Array.isArray(body.supervisedActionKeys) ? body.supervisedActionKeys : [],
+    scriptIds: Array.isArray(body.scriptIds) ? body.scriptIds : [],
+  };
+}
+
 export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOptions): UseAgentToolCatalogResult {
   const [catalog, setCatalog] = useState<AgentToolCatalogDto | null>(null);
   const [catalogError, setCatalogError] = useState(false);
@@ -68,20 +92,27 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
       setCeilingSettled(true);
       return;
     }
+    // Nothing carries over between kinds: the previous kind's ceiling must
+    // not stand in for this one while the fetch is in flight (#5089 review).
+    setCeiling(null);
+    setCeilingError(false);
     setCeilingSettled(false);
     let cancelled = false;
     void (async () => {
       try {
         const response = await fetchWithAuth(`/ai/agents/ceiling?kind=${kind}`);
         if (!response.ok) throw new Error(`GET /ai/agents/ceiling ${response.status}`);
-        const body = (await response.json()) as { data?: AgentCeilingDto | null };
+        const body = (await response.json()) as { data?: unknown };
         if (cancelled) return;
-        setCeiling(body.data ?? null);
+        const parsed = parseCeilingBody(body.data);
+        if (parsed === undefined) throw new Error('GET /ai/agents/ceiling returned an unrecognized body');
+        setCeiling(parsed);
         setCeilingError(false);
         setCeilingSettled(true);
       } catch (err) {
         console.error('[useAgentToolCatalog] could not load agent ceiling', err);
         if (!cancelled) {
+          setCeiling(null);
           setCeilingError(true);
           setCeilingSettled(true);
         }
@@ -98,5 +129,6 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
     error: catalogError || ceilingError,
     loading: catalog === null && !catalogError,
     ceilingResolved: ceilingSettled,
+    ceilingFailed: ceilingError,
   };
 }

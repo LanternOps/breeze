@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { AgentCeilingDto } from '@breeze/shared';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
+import { isWithinCeiling } from './capabilityModel';
 import { badgeClass } from '../../aiAgents/statusBadge';
 import { ScopeBadge } from '../../shared/ScopeBadge';
 
@@ -19,6 +20,10 @@ export interface ScriptAuthorizationPickerProps {
   ownerScope: OwnerScope;
   /** The partner baseline's projection for an org draft; `null` for a partner draft or when no baseline exists. */
   ceiling: AgentCeilingDto | null;
+  /** The ceiling could not be loaded (org drafts only): `ceiling === null`
+   *  then means "unknown", so nothing new may be ticked — an unrestricted
+   *  choice here is a save the server 422s (#5089 review). */
+  ceilingUnavailable?: boolean;
   /** Whether the draft's tool allowlist admits `run_script` — scripts can be
    *  ticked only once it does. Never auto-added here: that would silently
    *  widen a separate control (#5065 quorum). */
@@ -45,6 +50,7 @@ const SEARCH_THRESHOLD = 8;
 export default function ScriptAuthorizationPicker({
   ownerScope,
   ceiling,
+  ceilingUnavailable = false,
   runScriptAllowed,
   selectedIds,
   onChange,
@@ -74,6 +80,11 @@ export default function ScriptAuthorizationPicker({
   }, [loadScripts]);
 
   const withinCeiling = (id: string) => ceiling === null || ceiling.scriptIds.includes(id);
+  // Effective policy intersects the ALLOWLISTS first, so a baseline that
+  // bars run_script itself leaves every script here inert whatever the
+  // draft's own allowlist says (#5089 review) — read off the ceiling here
+  // rather than handed in, so no caller can forget it.
+  const runScriptInCeiling = isWithinCeiling('run_script', ceiling);
   const searchLower = search.trim().toLowerCase();
   const visible = useMemo(
     () => (scripts ?? []).filter((script) => !searchLower || script.name.toLowerCase().includes(searchLower)),
@@ -98,6 +109,16 @@ export default function ScriptAuthorizationPicker({
       {!runScriptAllowed && (
         <p className="text-xs text-warning-strong" data-testid="ai-agent-scripts-run-script-required">
           {t('aiAgentsPage.scripts.runScriptRequired')}
+        </p>
+      )}
+      {!runScriptInCeiling && (
+        <p className="text-xs text-warning-strong" data-testid="ai-agent-scripts-run-script-not-in-ceiling">
+          {t('aiAgentsPage.scripts.runScriptNotInBaseline')}
+        </p>
+      )}
+      {ceilingUnavailable && (
+        <p className="text-sm text-destructive" data-testid="ai-agent-scripts-ceiling-unavailable">
+          {t('aiAgentsPage.scripts.ceilingUnavailable')}
         </p>
       )}
 
@@ -136,8 +157,11 @@ export default function ScriptAuthorizationPicker({
               const checked = selectedIds.includes(script.id);
               const inCeiling = withinCeiling(script.id);
               // Same rule as OperationRow: a stale selection outside the
-              // ceiling stays enabled only so it can be unticked.
-              const disabled = !runScriptAllowed ? !checked : !inCeiling && !checked;
+              // ceiling stays enabled only so it can be unticked. Locked
+              // outright (nothing new ticks) while the draft or the baseline
+              // bars run_script, or the baseline is unknown.
+              const locked = !runScriptAllowed || !runScriptInCeiling || ceilingUnavailable;
+              const disabled = locked ? !checked : !inCeiling && !checked;
               return (
                 <li key={script.id}>
                   <label className="flex flex-wrap items-center gap-2 text-sm">

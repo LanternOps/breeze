@@ -63,6 +63,7 @@ import {
   loadPartnerBaselineKinds,
   resolveEffectiveAgent,
   resolveEffectiveAgentSystem,
+  resolveOrgPartnerId,
 } from '../services/aiAgents/effectivePolicy';
 import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
 import { demoteSupervisedKey } from '../services/aiAgents/supervisedKeyDemote';
@@ -469,8 +470,12 @@ aiAgentsRoutes.get(
  * caller previewing an org-owned draft (e.g. creating a new org-scoped
  * agent for one of its orgs) — that caller can read its own partner row
  * directly, so projecting the ceiling exposes nothing new and just saves it
- * a round trip, same rationale as `/ceiling`'s own docstring above. `null`
- * for a system-scope session or a caller with no `partnerId` (self-hosted).
+ * a round trip, same rationale as `/ceiling`'s own docstring above. A
+ * system-scope session carries no partnerId of its own, so its ceiling comes
+ * from the ORG the draft names (`resolveOrgPartnerId`, #5089 review) — the
+ * same partner `POST /` resolves when it validates the draft's script ids,
+ * so preview and create can never disagree on the baseline. `null` for a
+ * caller with no `partnerId` at all (self-hosted) or an org without one.
  */
 aiAgentsRoutes.post(
   '/preview',
@@ -480,12 +485,22 @@ aiAgentsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const ceiling = auth.scope !== 'system' && auth.partnerId && body.ownerScope !== 'partner'
-      ? await loadPartnerBaselineCeiling(auth.partnerId, body.kind)
-      : null;
+    const ceilingPartnerId = body.ownerScope !== 'partner' ? await previewCeilingPartnerId(auth, body.orgId) : null;
+    const ceiling = ceilingPartnerId ? await loadPartnerBaselineCeiling(ceilingPartnerId, body.kind) : null;
     return c.json({ data: buildAgentPreview(body, ceiling, buildAgentToolCatalog()) });
   },
 );
+
+/** The partner whose baseline narrows an org-owned draft for this caller — see POST /preview's docstring. */
+async function previewCeilingPartnerId(
+  auth: Parameters<typeof resolveOrgId>[0],
+  requestedOrgId: string | undefined,
+): Promise<string | null> {
+  if (auth.scope !== 'system') return auth.partnerId ?? null;
+  const orgResult = resolveOrgId(auth, requestedOrgId, true);
+  if ('error' in orgResult || !orgResult.orgId) return null;
+  return resolveOrgPartnerId(orgResult.orgId);
+}
 
 /**
  * Orgs per system-context transaction in the `byOrg` fan-out of

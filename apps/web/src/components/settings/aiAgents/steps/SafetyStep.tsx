@@ -24,6 +24,10 @@ export interface SafetyStepProps {
    *  `null` for a partner draft or when no baseline exists. Narrows which
    *  scripts an org row may authorize (#5065). */
   ceiling: AgentCeilingDto | null;
+  /** An org draft's ceiling fetch failed, so `ceiling === null` is "unknown",
+   *  not "no baseline" — the script picker locks rather than offering an
+   *  unrestricted choice the server would 422 (#5089 review). */
+  ceilingFailed?: boolean;
   roles: RoleOption[];
   rolesFailed: boolean;
   policyKeys: PolicyDecidableKeyOption[];
@@ -64,6 +68,7 @@ export default function SafetyStep({
   draft,
   patch,
   ceiling,
+  ceilingFailed = false,
   roles,
   rolesFailed,
   policyKeys,
@@ -183,6 +188,7 @@ export default function SafetyStep({
         <ScriptAuthorizationPicker
           ownerScope={draft.ownerScope}
           ceiling={ceiling}
+          ceilingUnavailable={draft.ownerScope === 'organization' && ceilingFailed}
           runScriptAllowed={allowsRunScript(draft.toolAllowlist)}
           selectedIds={draft.scriptIds}
           onChange={(scriptIds) => patch({ scriptIds })}

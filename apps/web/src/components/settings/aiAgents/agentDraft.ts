@@ -1,12 +1,14 @@
 import {
+  type AgentCeilingDto,
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
-  ALERT_SEVERITIES,
   type AiAgentDto,
   type AiAgentKind,
   type AiAgentMode,
+  ALERT_SEVERITIES,
 } from '@breeze/shared';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { isWithinCeiling } from './capabilityModel';
 
 /**
  * Task 13 (#5051), Order-of-work step 1: extracted from `AiAgentForm.tsx` so
@@ -163,6 +165,22 @@ export function draftFrom(
  *  by the picker: that would silently widen a separate control. */
 export function allowsRunScript(toolAllowlist: string): boolean {
   return lines(toolAllowlist).some((entry) => entry === 'run_script' || entry.startsWith('run_script:'));
+}
+
+/**
+ * How many of a draft's `scriptIds` `run_script` may actually execute
+ * unattended — the web twin of `agentPreview.ts`'s `authorizedScriptIds`
+ * (#5089 review), so the picker's live badge and the server's review card
+ * read the same number. Effective policy is `partner ∩ org` with the
+ * allowlists intersected FIRST: a ceiling that bars `run_script` itself
+ * authorizes nothing, whatever both lists share. Deduped, like the schema.
+ * A caller must still gate this on the ceiling being KNOWN
+ * (`useAgentToolCatalog`'s `ceilingResolved`/`ceilingFailed`) — `null`
+ * here means "no baseline", not "not loaded".
+ */
+export function authorizedScriptCountFor(scriptIds: readonly string[], ceiling: AgentCeilingDto | null): number {
+  if (!isWithinCeiling('run_script', ceiling)) return 0;
+  return [...new Set(scriptIds)].filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
 }
 
 /**

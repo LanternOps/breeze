@@ -97,10 +97,15 @@ export function buildAgentPreview(
   // preview truthfully shows an approval request, with the reason attached.
   // Intersected with the ceiling the same way `effectivePolicy.ts` narrows
   // `scriptIds` (partner ∩ org) — an org row listing a script the baseline
-  // does not is still only ever proposed.
-  const authorizedScriptIds = ceiling
-    ? input.actAssets.scriptIds.filter((id) => ceiling.scriptIds.includes(id))
-    : input.actAssets.scriptIds;
+  // does not is still only ever proposed. The allowlists intersect first
+  // there, so a ceiling that bars `run_script` itself leaves NO script
+  // authorized however many both lists share (#5089 review — the same write
+  // scriptAuthorization.ts rejects as run_script_not_allowed). Deduped: the
+  // schema admits a repeated id, and one script is one authorization.
+  const ceilingAdmitsRunScript = !ceiling || isToolAllowlisted(ceiling.toolAllowlist, 'run_script', null);
+  const authorizedScriptIds = !ceilingAdmitsRunScript
+    ? []
+    : [...new Set(input.actAssets.scriptIds)].filter((id) => !ceiling || ceiling.scriptIds.includes(id));
   const outcomeContext = { authorizedScriptCount: authorizedScriptIds.length };
 
   const operations = [...opsByKey.values()].map((op) => {

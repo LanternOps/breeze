@@ -10,7 +10,7 @@ import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import SetupStepper from '../../setup/SetupStepper';
 import { useAgentToolCatalog } from './useAgentToolCatalog';
 import { useAgentFormLists } from './useAgentFormLists';
-import { ALERT_SEVERITY_KINDS, buildAgentSaveBody, draftFrom, firstFreeKind, freeKinds, type Draft } from './agentDraft';
+import { ALERT_SEVERITY_KINDS, authorizedScriptCountFor, buildAgentSaveBody, type Draft, draftFrom, firstFreeKind, freeKinds } from './agentDraft';
 import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './agentErrors';
 import PurposeStep from './steps/PurposeStep';
 import WhatItDoesStep from './steps/WhatItDoesStep';
@@ -101,7 +101,7 @@ export default function AgentCreateFlow({
   // the server would 409 on `agent_kind_exists` anyway.
   const kindsExhausted = freeKinds(agents, draft.ownerScope, orgScope.orgId).length === 0;
 
-  const { catalog: fetchedCatalog, ceiling, loading: catalogLoading } = useAgentToolCatalog({
+  const { catalog: fetchedCatalog, ceiling, ceilingResolved, ceilingFailed, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
     ownerScope: draft.ownerScope,
   });
@@ -265,8 +265,11 @@ export default function AgentCreateFlow({
               ceiling={ceiling}
               catalogLoading={catalogLoading}
               // #5065: scripts ticked on the Safety step drive run_script's
-              // outcome here (partner ∩ org, like effectivePolicy.ts).
-              authorizedScriptCount={draft.scriptIds.filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length}
+              // outcome here (partner ∩ org, like effectivePolicy.ts). Nothing
+              // counts until an org draft's ceiling is actually KNOWN — an
+              // in-flight or failed fetch must not read as "no baseline"
+              // (#5089 review).
+              authorizedScriptCount={!ceilingResolved || ceilingFailed ? 0 : authorizedScriptCountFor(draft.scriptIds, ceiling)}
             />
           )}
           {step === 2 && (
@@ -274,6 +277,7 @@ export default function AgentCreateFlow({
               draft={draft}
               patch={patch}
               ceiling={ceiling}
+              ceilingFailed={ceilingFailed}
               roles={roles}
               rolesFailed={rolesFailed}
               policyKeys={policyKeys}

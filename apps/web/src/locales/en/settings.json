@@ -2787,6 +2787,8 @@
       "hint": "In act mode, Run a script executes without approval only for the scripts ticked here. Everything else stays an approval request.",
       "ceilingHint": "Partner-level scripts are a ceiling: an organization's agent can only pick from this list.",
       "runScriptRequired": "Add \"Run a script\" under What it does before authorizing scripts.",
+      "runScriptNotInBaseline": "The partner baseline doesn't allow \"Run a script\" for this kind of agent, so no script can run unattended.",
+      "ceilingUnavailable": "Couldn't load the partner baseline, so scripts can't be authorized right now.",
       "loading": "Loading scripts…",
       "failed": "Couldn't load scripts, so unattended script authorization can't be changed right now.",
       "empty": "No scripts available.",

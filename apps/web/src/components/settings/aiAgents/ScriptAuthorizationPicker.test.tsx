@@ -87,4 +87,26 @@ describe('ScriptAuthorizationPicker', () => {
     );
     expect(await screen.findByTestId('ai-agent-scripts-failed')).toBeInTheDocument();
   });
+
+  it('on an org draft whose ceiling could not be loaded, disables every unticked script and says why, keeping a ticked one removable (#5089 review)', async () => {
+    renderPicker({ ownerScope: 'organization', ceiling: null, ceilingUnavailable: true, selectedIds: [S_ORG] });
+    await screen.findByTestId(`ai-agent-script-${S_PARTNER}`);
+    expect(screen.getByTestId('ai-agent-scripts-ceiling-unavailable')).toBeInTheDocument();
+    expect(screen.getByTestId(`ai-agent-script-${S_PARTNER}`)).toBeDisabled();
+    expect(screen.getByTestId(`ai-agent-script-${S_SYSTEM}`)).toBeDisabled();
+    expect(screen.getByTestId(`ai-agent-script-${S_ORG}`)).not.toBeDisabled();
+  });
+
+  it('on an org draft whose partner baseline bars run_script, disables every unticked script and names the baseline, not the draft, as the reason (#5089 review)', async () => {
+    renderPicker({
+      ownerScope: 'organization',
+      ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [S_PARTNER] },
+      runScriptAllowed: true,
+      selectedIds: [],
+    });
+    await screen.findByTestId(`ai-agent-script-${S_PARTNER}`);
+    expect(screen.getByTestId('ai-agent-scripts-run-script-not-in-ceiling')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-scripts-run-script-required')).toBeNull();
+    expect(screen.getByTestId(`ai-agent-script-${S_PARTNER}`)).toBeDisabled();
+  });
 });

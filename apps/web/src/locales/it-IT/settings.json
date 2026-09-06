@@ -2787,6 +2787,8 @@
       "hint": "In modalità Agire, \"Esegui uno script\" viene eseguito senza approvazione solo per gli script selezionati qui. Tutto il resto resta una richiesta di approvazione.",
       "ceilingHint": "Gli script a livello partner sono un limite: l'agente di un'organizzazione può scegliere solo da questo elenco.",
       "runScriptRequired": "Aggiungi \"Esegui uno script\" in \"Cosa fa\" prima di autorizzare gli script.",
+      "runScriptNotInBaseline": "La baseline del partner non consente \"Esegui uno script\" per questo tipo di agente, quindi nessuno script può essere eseguito senza supervisione.",
+      "ceilingUnavailable": "Impossibile caricare la baseline del partner, quindi al momento non è possibile autorizzare script.",
       "loading": "Caricamento degli script…",
       "failed": "Impossibile caricare gli script, quindi l'autorizzazione degli script senza supervisione non può essere modificata al momento.",
       "empty": "Nessuno script disponibile.",

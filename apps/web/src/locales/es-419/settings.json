@@ -2787,6 +2787,8 @@
       "hint": "En el modo Actuar, \"Ejecutar un script\" se ejecuta sin aprobación solo para los scripts marcados aquí. Todo lo demás sigue siendo una solicitud de aprobación.",
       "ceilingHint": "Los scripts a nivel de partner son un límite: el agente de una organización solo puede elegir de esta lista.",
       "runScriptRequired": "Agregue \"Ejecutar un script\" en \"Qué hace\" antes de autorizar scripts.",
+      "runScriptNotInBaseline": "La línea base del partner no permite \"Ejecutar un script\" para este tipo de agente, así que ningún script puede ejecutarse sin supervisión.",
+      "ceilingUnavailable": "No se pudo cargar la línea base del partner, así que por ahora no se pueden autorizar scripts.",
       "loading": "Cargando scripts…",
       "failed": "No se pudieron cargar los scripts, por lo que la autorización de scripts sin supervisión no se puede cambiar ahora.",
       "empty": "No hay scripts disponibles.",

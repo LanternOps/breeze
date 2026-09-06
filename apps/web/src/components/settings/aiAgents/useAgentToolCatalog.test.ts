@@ -157,4 +157,54 @@ describe('useAgentToolCatalog', () => {
     await waitFor(() => expect(result.current.error).toBe(true));
     expect(result.current.loading).toBe(false);
   });
+
+  it('a failed org ceiling fetch reports ceilingFailed with a null ceiling, and a kind switch drops the previous kind\'s ceiling while the new fetch is in flight (#5089 review)', async () => {
+    let resolvePatch: (value: Response) => void = () => {};
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url === '/ai/agents/ceiling?kind=triage') return Promise.resolve(json({ data: CEILING }));
+      if (url === '/ai/agents/ceiling?kind=patch') return new Promise<Response>((resolve) => { resolvePatch = resolve; });
+      return Promise.resolve(json({ error: 'boom' }, false, 500));
+    });
+    const { result, rerender } = renderHook(
+      ({ kind }: { kind: 'triage' | 'patch' | 'helpdesk' }) => useAgentToolCatalog({ kind, ownerScope: 'organization' }),
+      { initialProps: { kind: 'triage' as 'triage' | 'patch' | 'helpdesk' } },
+    );
+    await waitFor(() => expect(result.current.ceiling).toEqual(CEILING));
+    expect(result.current.ceilingFailed).toBe(false);
+
+    // Switching kind must not leave triage's ceiling standing in for patch's.
+    rerender({ kind: 'patch' });
+    await waitFor(() => expect(result.current.ceilingResolved).toBe(false));
+    expect(result.current.ceiling).toBeNull();
+    resolvePatch(json({ data: null }));
+    await waitFor(() => expect(result.current.ceilingResolved).toBe(true));
+    expect(result.current.ceilingFailed).toBe(false);
+
+    // A 500 settles the question as "unknown", never as "no ceiling".
+    rerender({ kind: 'helpdesk' });
+    await waitFor(() => expect(result.current.ceilingFailed).toBe(true));
+    expect(result.current.ceilingResolved).toBe(true);
+    expect(result.current.ceiling).toBeNull();
+  });
+
+  it('treats an unrecognised ceiling body as a failed fetch, and fills in the lists an older API build omits (#5089 review)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url === '/ai/agents/ceiling?kind=triage') return Promise.resolve(json({ data: [{ id: 'not-a-ceiling' }] }));
+      if (url === '/ai/agents/ceiling?kind=patch') return Promise.resolve(json({ data: { toolAllowlist: ['run_script'] } }));
+      return Promise.resolve(json({ data: null }));
+    });
+    const { result, rerender } = renderHook(
+      ({ kind }: { kind: 'triage' | 'patch' }) => useAgentToolCatalog({ kind, ownerScope: 'organization' }),
+      { initialProps: { kind: 'triage' as 'triage' | 'patch' } },
+    );
+    await waitFor(() => expect(result.current.ceilingResolved).toBe(true));
+    expect(result.current.ceilingFailed).toBe(true);
+    expect(result.current.ceiling).toBeNull();
+
+    rerender({ kind: 'patch' });
+    await waitFor(() => expect(result.current.ceiling).toEqual({ toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] }));
+    expect(result.current.ceilingFailed).toBe(false);
+  });
 });

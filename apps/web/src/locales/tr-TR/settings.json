@@ -2787,6 +2787,8 @@
       "hint": "Uygula modunda \"Betik çalıştır\" yalnızca burada işaretlenen betikler için onaysız çalışır. Diğer her şey onay isteği olarak kalır.",
       "ceilingHint": "Partner düzeyindeki betikler bir üst sınırdır: bir kuruluşun aracısı yalnızca bu listeden seçim yapabilir.",
       "runScriptRequired": "Betikleri yetkilendirmeden önce \"Ne yapar\" altında \"Betik çalıştır\" seçeneğini ekleyin.",
+      "runScriptNotInBaseline": "Partner taban çizgisi bu aracı türü için \"Betik çalıştır\" seçeneğine izin vermiyor, bu nedenle hiçbir betik gözetimsiz çalışamaz.",
+      "ceilingUnavailable": "Partner taban çizgisi yüklenemedi, bu nedenle şu anda betikler yetkilendirilemiyor.",
       "loading": "Betikler yükleniyor…",
       "failed": "Betikler yüklenemedi, bu nedenle gözetimsiz betik yetkilendirmesi şu anda değiştirilemez.",
       "empty": "Kullanılabilir betik yok.",

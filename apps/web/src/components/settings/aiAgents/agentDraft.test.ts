@@ -3,6 +3,7 @@ import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   ALERT_SEVERITY_KINDS,
   allowsRunScript,
+  authorizedScriptCountFor,
   buildAgentSaveBody,
   draftFrom,
   firstFreeKind,
@@ -182,5 +183,22 @@ describe('buildAgentSaveBody', () => {
     expect(allowsRunScript('run_script:execute')).toBe(true);
     expect(allowsRunScript('manage_services:restart\nrun_playbook')).toBe(false);
     expect(allowsRunScript('')).toBe(false);
+  });
+});
+
+describe('authorizedScriptCountFor (#5089 review)', () => {
+  const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const b = 'aaaaaaaa-0000-4000-8000-000000000002';
+
+  it('with no ceiling counts each distinct id once', () => {
+    expect(authorizedScriptCountFor([a, a, b], null)).toBe(2);
+  });
+
+  it('with a ceiling counts only the ids the baseline also lists (partner ∩ org)', () => {
+    expect(authorizedScriptCountFor([a, b], { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [b] })).toBe(1);
+  });
+
+  it('counts nothing when the ceiling bars run_script itself, whatever it lists', () => {
+    expect(authorizedScriptCountFor([a], { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [a] })).toBe(0);
   });
 });
