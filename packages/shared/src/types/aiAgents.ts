@@ -611,6 +611,55 @@ export interface AgentCeilingDto {
 }
 
 /**
+ * `POST /ai/agents/preview` response body's `data` (Task 11, #5051; spec
+ * §4.6 step 4). Evaluates a DRAFT agent policy through the SAME
+ * `AgentToolCatalogDto` and `AgentCeilingDto` the picker and run loop use, so
+ * the guided create flow's review card can never drift from what
+ * create/update would actually enforce. Built by
+ * `apps/api/src/services/aiAgents/agentPreview.ts`'s `buildAgentPreview` —
+ * pure, no DB read beyond the ceiling the route already resolved.
+ */
+export interface AgentPreviewDto {
+  mode: AiAgentMode;
+  kind: AiAgentKind;
+  /** `catalog.tools.filter(t => t.readOnly).length` — the "always on" reads, independent of `operations` below. */
+  readOnlyToolCount: number;
+  /**
+   * One entry per resolved MUTATING operation the draft's `toolAllowlist`
+   * admits, deduplicated by `key`. A bare entry on a multi-operation tool
+   * expands to every one of that tool's non-read-only operations (its
+   * always-on reads are already counted in `readOnlyToolCount`, not listed
+   * here); an entry the catalog cannot resolve — unknown tool, unreachable
+   * tool, or an action the tool does not have — contributes to
+   * `unrecognised` instead of an operation here.
+   */
+  operations: Array<{
+    key: string;
+    capability: string;
+    /**
+     * `mode === 'act' && op.actEligible` -> `'unattended'`; else tier 3 ->
+     * `'approval_request'`; else (tier 1/2, never selected alone but
+     * reachable via a bare multi-op expansion) -> `'logged_proposal'`.
+     */
+    outcome: 'approval_request' | 'logged_proposal' | 'unattended';
+    /** `key` is inside the intersection of the ceiling's and the draft's own `supervisedActionKeys` (or just the draft's own, on a partner draft with no ceiling). */
+    preauthorized: boolean;
+    /** `true` unconditionally when there is no ceiling (a partner draft, or an org draft with no live partner baseline yet). */
+    withinCeiling: boolean;
+  }>;
+  /** Raw `toolAllowlist` entries the catalog could not resolve, verbatim (never rewritten). */
+  unrecognised: string[];
+  triggers: {
+    alertSeverities: AiAgentTriggers['alertSeverities'];
+    respectMaintenanceWindows: boolean;
+    ticketAutonomousWrites: boolean;
+  };
+  protectedResources: AiAgentProtectedResources;
+  limits: AiAgentLimits;
+  recipients: AiAgentRecipients;
+}
+
+/**
  * Wave 4 Part B — act mode verdicts.
  *
  * `execution` reports the tool dispatch outcome for a manifest-matched call

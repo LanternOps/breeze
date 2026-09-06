@@ -21,6 +21,7 @@ import {
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
@@ -55,6 +56,7 @@ import {
   InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
+import { buildAgentPreview } from '../services/aiAgents/agentPreview';
 import {
   loadPartnerBaselineCeiling,
   loadPartnerBaselineKinds,
@@ -441,6 +443,34 @@ aiAgentsRoutes.get(
     if (auth.scope === 'system' || !auth.partnerId) return c.json({ data: null });
     const { kind } = c.req.valid('query');
     return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
+  },
+);
+
+/**
+ * Task 11 (#5051), spec §4.6 step 4 — the guided create flow's review step
+ * evaluates a DRAFT policy server-side, through the same catalog/ceiling
+ * helpers `/tool-catalog` and `/ceiling` already expose, so the review card
+ * can never drift from what `POST /` would actually enforce. `body` is
+ * `previewAiAgentSchema` — `createAiAgentSchema` with `name` optional, since
+ * the review step can run before Step 1's name is finalised. No row is
+ * created or read; this never touches the database beyond the SAME
+ * partner-axis ceiling projection `/ceiling` performs, and only for an
+ * org-scoped caller previewing an ORG-owned draft (`ownerScope !==
+ * 'partner'`) — a partner-scope caller, or an org-scope caller previewing a
+ * partner-wide draft, has no ceiling to project (its own row IS the ceiling).
+ */
+aiAgentsRoutes.post(
+  '/preview',
+  scopes,
+  requireAiRead,
+  zValidator('json', previewAiAgentSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const ceiling = auth.scope === 'organization' && body.ownerScope !== 'partner'
+      ? await loadPartnerBaselineCeiling(auth.partnerId, body.kind)
+      : null;
+    return c.json({ data: buildAgentPreview(body, ceiling, buildAgentToolCatalog()) });
   },
 );
 
