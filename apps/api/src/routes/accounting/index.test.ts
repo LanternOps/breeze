@@ -62,6 +62,9 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // factory below) so individual tests can set what the "update" reports
       // back, same idiom as `updateHomeCurrency` above.
       dbUpdateReturning: vi.fn(async () => [] as Record<string, unknown>[]),
+      // Captures the UPDATE's `set` payload so a test can assert what the route
+      // actually writes, not just what it echoes back.
+      dbUpdateSet: vi.fn(),
     },
     AccountingConnectionErrorClass,
   };
@@ -70,11 +73,14 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
 vi.mock('../../db', () => ({
   db: {
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: mocks.dbUpdateReturning,
-        })),
-      })),
+      set: vi.fn((patch: Record<string, unknown>) => {
+        mocks.dbUpdateSet(patch);
+        return {
+          where: vi.fn(() => ({
+            returning: mocks.dbUpdateReturning,
+          })),
+        };
+      }),
     })),
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
@@ -154,6 +160,8 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
   })),
 }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -875,6 +883,37 @@ describe('accounting routes', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ pushPayments: false });
+    });
+
+    it('RESTARTS the push horizon when pushPayments is switched back ON', async () => {
+      // Review wave 2, finding 2: a deliberate pause must not later flush a
+      // backlog. Decided in the UPDATE, so the SET list reads the row's OLD
+      // `push_payments` and the flip is detected without a read-modify-write.
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pushPayments: true,
+      }]);
+
+      const res = await patchSettings({ pushPayments: true });
+
+      expect(res.status).toBe(200);
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      const compiled = new PgDialect().sqlToQuery(patch.pushPaymentsSince as SQL).sql;
+      expect(compiled.toLowerCase()).toContain('"push_payments" = false then now()');
+      // ...and it must be a no-op when the switch was already on.
+      expect(compiled.toLowerCase()).toContain('else "accounting_connections"."push_payments_since"');
+    });
+
+    it('leaves the push horizon ALONE when pushPayments is switched OFF', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pushPayments: false,
+      }]);
+
+      await patchSettings({ pushPayments: false });
+
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      expect(patch).not.toHaveProperty('pushPaymentsSince');
     });
 
     it('rejects flipping pushPayments without invoices:write, like pushMode and pullPayments (403, finding D)', async () => {

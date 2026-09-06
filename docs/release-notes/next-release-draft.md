@@ -30,6 +30,14 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   required to switch it on, and no per-realm opt-in. Set it to `false` first
   (Integrations → QuickBooks → "Push payments to QuickBooks") on any realm whose
   books you are not ready to have Breeze write into.
+- **Only payments recorded AFTER the switch became active are pushed — history
+  is never back-filled.** The migration stamps every existing connection's new
+  `push_payments_since` with the deploy time, and turning the switch off and
+  back on re-stamps it, so a pause never later flushes a backlog. Without this,
+  re-pushing an old invoice would have created a QuickBooks Payment for every
+  receipt on it — including the ones a bookkeeper had already entered in
+  QuickBooks by hand — as duplicate cash against the same invoice. There is no
+  supported way to push a payment recorded before the horizon.
 - Deleting a payment propagates regardless of BOTH `push_mode` and
   `push_payments`: once Breeze created a Payment in QuickBooks it owns its
   removal, so switching the feature off cannot strand money in the books.

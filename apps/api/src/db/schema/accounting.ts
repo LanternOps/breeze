@@ -52,6 +52,15 @@ export const accountingConnections = pgTable('accounting_connections', {
   // matching pullPayments: a connected realm should push the payments it is
   // already pulling, rather than silently opting every partner out.
   pushPayments: boolean('push_payments').notNull().default(true),
+  // The horizon this feature pushes FROM. `push_payments` defaults on, so
+  // without it the invoice fan-out would create QuickBooks Payments for every
+  // pre-existing `invoice_payments` row of a re-pushed invoice — duplicating
+  // receipts a bookkeeper already entered by hand. Stamped `now()` at migration
+  // time for existing rows, at insert for new connections, and again whenever
+  // the operator flips `push_payments` off and back on. NULL means "no horizon"
+  // and is read as "push everything" — only reachable on a row written outside
+  // both writers.
+  pushPaymentsSince: timestamp('push_payments_since', { withTimezone: true }),
   // Stamped only after a CDC reconcile run in which no item failed (Phase D).
   lastReconcileAt: timestamp('last_reconcile_at', { withTimezone: true }),
   status: varchar('status', { length: 20 }).notNull().default('connected'),

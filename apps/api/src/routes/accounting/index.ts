@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, invoices } from '../../db/schema';
 import {
@@ -710,6 +710,17 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
       ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
+      // Turning the switch back ON restarts the horizon, so a deliberate pause
+      // never later flushes a backlog of payments the operator recorded while it
+      // was off (review wave 2, finding 2). Decided IN the UPDATE: the SET list
+      // sees the row's OLD `push_payments`, so the flip is detected atomically
+      // without a read-modify-write, and turning it ON when it was already on
+      // leaves the horizon exactly where it was.
+      ...(body.pushPayments === true
+        ? {
+          pushPaymentsSince: sql`CASE WHEN ${accountingConnections.pushPayments} = false THEN now() ELSE ${accountingConnections.pushPaymentsSince} END`,
+        }
+        : {}),
       updatedAt: new Date(),
     })
     .where(and(

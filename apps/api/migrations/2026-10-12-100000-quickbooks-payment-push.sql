@@ -138,3 +138,35 @@ BEGIN
     RAISE WARNING 'stamped pending_since on % accounting mappings that already owed work', stamped;
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Review wave 2, finding 2: the horizon that keeps this feature off HISTORY.
+--
+-- `push_payments` defaults to true, so at deploy every connected realm starts
+-- pushing. Without a horizon the invoice fan-out would create a QuickBooks
+-- Payment for EVERY unmapped `invoice_payments` row of any invoice that is
+-- re-pushed — including receipts the partner's bookkeeper had already entered
+-- in QuickBooks by hand for years, which arrive as duplicate cash against the
+-- same invoice. Nothing about the mapping tables can tell those apart: they have
+-- no mapping precisely because they predate the feature.
+--
+-- So Breeze only pushes payments RECORDED AFTER the switch became active.
+-- Existing connections are stamped `now()` at migration time; new ones are
+-- stamped at insert; and the settings route re-stamps it whenever the operator
+-- flips `push_payments` off and back on, so a deliberate pause does not later
+-- flush a backlog nobody expected.
+ALTER TABLE accounting_connections
+  ADD COLUMN IF NOT EXISTS push_payments_since timestamptz;
+
+DO $$
+DECLARE
+  stamped integer;
+BEGIN
+  UPDATE accounting_connections
+     SET push_payments_since = now()
+   WHERE push_payments_since IS NULL;
+  GET DIAGNOSTICS stamped = ROW_COUNT;
+  IF stamped > 0 THEN
+    RAISE WARNING 'stamped push_payments_since=now() on % accounting connections (payments recorded before this are never pushed)', stamped;
+  END IF;
+END $$;

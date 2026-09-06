@@ -53,7 +53,7 @@
  * the runner returns.
  */
 
-import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
@@ -374,15 +374,42 @@ async function loadTypedMapping(
 
 /** The partner's connected QuickBooks connection, or null. Read through the
  *  CALLER's handle so it participates in the caller's transaction. */
+/**
+ * Was this payment recorded after the connection started pushing?
+ *
+ * A NULL horizon means "no horizon" and pushes everything — only reachable on a
+ * connection row written outside both writers (the migration stamps every
+ * existing row, `upsertConnection` stamps every new one). A missing payment row
+ * is not this function's business: the caller runs inside the transaction that
+ * just inserted it, so `false` there would silently drop a legitimate push;
+ * `true` lets the ordinary path handle it.
+ */
+async function paymentIsWithinPushHorizon(
+  tx: PaymentMappingExecutor,
+  invoicePaymentId: string,
+  pushPaymentsSince: Date | null,
+): Promise<boolean> {
+  if (!pushPaymentsSince) return true;
+  const rows = await tx
+    .select({ createdAt: invoicePayments.createdAt })
+    .from(invoicePayments)
+    .where(eq(invoicePayments.id, invoicePaymentId))
+    .limit(1);
+  const createdAt = (rows as Array<{ createdAt: Date }>)[0]?.createdAt;
+  if (!createdAt) return true;
+  return createdAt.getTime() >= pushPaymentsSince.getTime();
+}
+
 async function loadConnectedConnection(
   tx: PaymentMappingExecutor,
   partnerId: string,
-): Promise<{ id: string; pushMode: string; pushPayments: boolean } | null> {
+): Promise<{ id: string; pushMode: string; pushPayments: boolean; pushPaymentsSince: Date | null } | null> {
   const rows = await tx
     .select({
       id: accountingConnections.id,
       pushMode: accountingConnections.pushMode,
       pushPayments: accountingConnections.pushPayments,
+      pushPaymentsSince: accountingConnections.pushPaymentsSince,
     })
     .from(accountingConnections)
     .where(and(
@@ -504,6 +531,10 @@ export async function requestPaymentPush(
   const invoiceMapping = await loadTypedMapping(tx, conn.id, params.partnerId, 'invoice', params.invoiceId);
   if (!invoiceMapping?.remoteEntityId) return null;
   if (!SYNCED_INVOICE_STATUSES.has(invoiceMapping.syncStatus)) return null;
+  // The horizon (`push_payments_since`). Cheap here — one indexed PK read — and
+  // it belongs on BOTH readers: this one covers a payment recorded against an
+  // already-synced historical invoice, the fan-out covers a re-push of one.
+  if (!await paymentIsWithinPushHorizon(tx, params.invoicePaymentId, conn.pushPaymentsSince)) return null;
 
   return insertPendingPushMapping(tx, conn.id, params.partnerId, params.invoicePaymentId);
 }
@@ -1131,10 +1162,16 @@ export async function fanOutOwedPayments(
     if (!invoiceMapping?.remoteEntityId) return [];
     if (!SYNCED_INVOICE_STATUSES.has(invoiceMapping.syncStatus)) return [];
 
+    // `created_at >= push_payments_since` is the WHOLE point of this filter: a
+    // re-push of a historical invoice must not mint QuickBooks Payments for
+    // receipts that were entered there by hand long before Breeze could push.
     const payments = await db
       .select({ id: invoicePayments.id })
       .from(invoicePayments)
-      .where(eq(invoicePayments.invoiceId, invoiceId));
+      .where(and(
+        eq(invoicePayments.invoiceId, invoiceId),
+        ...(conn.pushPaymentsSince ? [gte(invoicePayments.createdAt, conn.pushPaymentsSince)] : []),
+      ));
     if (payments.length === 0) return [];
 
     const claimed = await db

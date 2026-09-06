@@ -147,10 +147,14 @@ const boundTo = (whereArg: unknown, value: unknown): boolean => paramsOf(whereAr
 
 interface ConnRow {
   id: string; partnerId: string; provider: string; status: string;
-  pushMode: string; pushPayments: boolean; homeCurrency: string | null; multiCurrencyEnabled: boolean | null;
+  pushMode: string; pushPayments: boolean; pushPaymentsSince: Date | null;
+  homeCurrency: string | null; multiCurrencyEnabled: boolean | null;
 }
 interface InvRow { id: string; partnerId: string; orgId: string; status: string; currencyCode: string }
-interface PayRow { id: string; invoiceId: string; orgId: string; amount: string; reference: string | null; receivedAt: string }
+interface PayRow {
+  id: string; invoiceId: string; orgId: string; amount: string; reference: string | null;
+  receivedAt: string; createdAt: Date;
+}
 interface MapRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
   remoteEntityType: string; remoteEntityId: string | null; remoteSyncToken: string | null;
@@ -227,14 +231,18 @@ const runCtx = async <T>(fn: () => Promise<T>): Promise<T> => {
 function connRow(o: Partial<ConnRow> = {}): ConnRow {
   return {
     id: CONN_ID, partnerId: PARTNER, provider: 'quickbooks', status: 'connected',
-    pushMode: 'auto', pushPayments: true, homeCurrency: 'USD', multiCurrencyEnabled: false, ...o,
+    pushMode: 'auto', pushPayments: true, pushPaymentsSince: ago(365 * 24 * 60 * MINUTE),
+    homeCurrency: 'USD', multiCurrencyEnabled: false, ...o,
   };
 }
 function invRow(o: Partial<InvRow> = {}): InvRow {
   return { id: INVOICE, partnerId: PARTNER, orgId: ORG, status: 'partially_paid', currencyCode: 'USD', ...o };
 }
 function payRow(o: Partial<PayRow> = {}): PayRow {
-  return { id: PAYMENT, invoiceId: INVOICE, orgId: ORG, amount: '107.00', reference: 'ch_123', receivedAt: '2026-09-02', ...o };
+  return {
+    id: PAYMENT, invoiceId: INVOICE, orgId: ORG, amount: '107.00', reference: 'ch_123',
+    receivedAt: '2026-09-02', createdAt: ago(10 * MINUTE), ...o,
+  };
 }
 function mapRowBase(o: Partial<MapRow>): MapRow {
   return {
@@ -263,6 +271,15 @@ function paymentMapRow(o: Partial<MapRow> = {}): MapRow {
     breezeOrigin: true, pendingOp: 'push', pendingSince: ago(30 * MINUTE),
     linkStatus: 'create_new', syncStatus: 'pending', ...o,
   });
+}
+
+/** The bound Date on `"<table>"."<col>" >= $n`, read out of the compiled params. */
+function lowerBoundFor(text: string, params: unknown[], table: string, col: string): Date | null {
+  const match = new RegExp(`"${table}"\\."${col}" >= \\$(\\d+)`).exec(text);
+  if (!match) return null;
+  const raw = params[Number(match[1]) - 1];
+  if (raw instanceof Date) return raw;
+  return typeof raw === 'string' ? new Date(raw) : null;
 }
 
 /** The bound Date on `"<table>"."<col>" < $n`, read out of the compiled params. */
@@ -323,9 +340,15 @@ function matchedRows(table: unknown, cond: unknown): unknown[] {
     return currentInvoices.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId));
   }
   if (table === invoicePayments) {
-    return compiledSql(cond).includes('"invoice_payments"."invoice_id"')
+    const text = compiledSql(cond);
+    const rows = text.includes('"invoice_payments"."invoice_id"')
       ? currentPayments.filter((r) => boundTo(cond, r.invoiceId))
       : currentPayments.filter((r) => boundTo(cond, r.id));
+    // The push horizon (`created_at >= push_payments_since`) is EVALUATED, not
+    // ignored: without this the fan-out filter would pass vacuously against a
+    // mock that returns every payment regardless of its where clause.
+    const since = lowerBoundFor(text, paramsOf(cond), 'invoice_payments', 'created_at');
+    return since ? rows.filter((r) => r.createdAt >= since) : rows;
   }
   if (table === accountingEntityMappings) {
     return currentMappings.filter((r) => mappingMatches(r, cond));
@@ -573,6 +596,32 @@ describe('requestPaymentPush gating (spec decision 10)', () => {
 
     await expect(runCtx(request)).resolves.toBeNull();
     expect(stmtsOf('insert', 'accounting_entity_mappings')).toHaveLength(0);
+  });
+
+  it('returns null for a payment recorded BEFORE push_payments_since', async () => {
+    // push_payments defaults ON at deploy, so without a horizon every payment a
+    // bookkeeper had already entered in QuickBooks by hand would be pushed again
+    // as a duplicate receipt the first time its invoice was touched.
+    currentConns = [connRow({ pushPaymentsSince: ago(5 * MINUTE) })];
+    currentPayments = [payRow({ createdAt: ago(60 * MINUTE) })];
+    // No payment mapping in the fixture, so a push WOULD insert one — without
+    // this the null could come from the unique-conflict path instead.
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await expect(runCtx(() => requestPaymentPush(db, {
+      invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
+    }))).resolves.toBeNull();
+    expect(currentMappings.filter((m) => m.breezeEntityType === 'payment')).toHaveLength(0);
+  });
+
+  it('pushes a payment recorded AFTER push_payments_since', async () => {
+    currentConns = [connRow({ pushPaymentsSince: ago(60 * MINUTE) })];
+    currentPayments = [payRow({ createdAt: ago(5 * MINUTE) })];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await expect(runCtx(() => requestPaymentPush(db, {
+      invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
+    }))).resolves.toBe('map-new-1');
   });
 
   it('returns null when there is no connected QuickBooks connection at all', async () => {
@@ -1866,6 +1915,22 @@ describe('fanOutOwedPayments', () => {
     currentMappings = [invoiceMapRow(), orgMapRow()];
 
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toHaveLength(1);
+  });
+
+  it('never fans out a payment recorded BEFORE push_payments_since', async () => {
+    // The historical-invoice case: re-pushing an old invoice must not create
+    // QuickBooks Payments for receipts a bookkeeper already entered by hand.
+    currentConns = [connRow({ pushPaymentsSince: ago(30 * MINUTE) })];
+    currentPayments = [
+      payRow({ id: 'pay-old', createdAt: ago(90 * MINUTE) }),
+      payRow({ id: 'pay-new', createdAt: ago(5 * MINUTE) }),
+    ];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual(['map-new-1']);
+    const created = currentMappings.filter((m) => m.breezeEntityType === 'payment');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ breezeEntityId: 'pay-new' });
   });
 
   it('returns nothing when the invoice itself is not synced', async () => {

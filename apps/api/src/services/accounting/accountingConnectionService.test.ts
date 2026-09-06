@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
@@ -804,6 +806,41 @@ describe('accountingConnectionService', () => {
 
       expect(captured.updateSet.pushPayments).toBe(false);
     }, 20_000);
+
+    it('upsertConnection stamps the push horizon on INSERT only', async () => {
+      // Review wave 2, finding 2. `push_payments_since` is the horizon this
+      // connection pushes payments FROM; a token-only reconnect (the OAuth
+      // callback) must NOT move it, or the whole history the horizon excludes
+      // would be re-opened.
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect(captured.insertValues.pushPaymentsSince).toBeInstanceOf(Date);
+      expect('pushPaymentsSince' in captured.updateSet).toBe(false);
+    }, 20_000);
+
+    it('the branch migration adds the horizon column idempotently and backfills existing rows', () => {
+      // The backfill is the half that cannot be unit-tested through the service:
+      // every connection that already exists at deploy must be stamped `now()`,
+      // or `push_payments` (default true) would push a partner's entire payment
+      // history the first time an old invoice is re-pushed.
+      const sqlText = readFileSync(
+        fileURLToPath(new URL('../../../migrations/2026-10-12-100000-quickbooks-payment-push.sql', import.meta.url)),
+        'utf-8',
+      );
+      expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS push_payments_since timestamptz');
+      expect(sqlText).toMatch(/UPDATE accounting_connections\s+SET push_payments_since = now\(\)\s+WHERE push_payments_since IS NULL/);
+      // RLS: accounting_connections is FORCE'd and the migration role is not a
+      // superuser on managed Postgres, so an unscoped UPDATE matches zero rows
+      // in production while CI (superuser) reports success.
+      expect(sqlText.indexOf("set_config('breeze.scope', 'system', true)"))
+        .toBeLessThan(sqlText.indexOf('SET push_payments_since = now()'));
+      // And it must report what it touched, per the migration authoring rules.
+      expect(sqlText).toContain('stamped push_payments_since=now() on %');
+    });
 
     it('mapConnection surfaces pushPayments', async () => {
       const captured: { row?: any; insertValues?: any; updateSet?: any } = {};

@@ -193,6 +193,12 @@ export async function upsertConnection(
     pullPayments: fields.pullPayments ?? true,
     // Same rationale as pullPayments above (Phase D2).
     pushPayments: fields.pushPayments ?? true,
+    // INSERT ONLY, deliberately absent from `updateSet` below. It is the horizon
+    // this connection pushes payments FROM, so a token-only reconnect (the OAuth
+    // callback) must not move it — that would re-open the whole history the
+    // horizon exists to exclude. The settings route re-stamps it when the
+    // operator turns `push_payments` back on.
+    pushPaymentsSince: now,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
