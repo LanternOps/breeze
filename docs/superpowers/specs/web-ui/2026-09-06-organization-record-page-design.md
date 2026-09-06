@@ -4,8 +4,8 @@ Status: **approved by Todd 2026-09-06** (open questions resolved, see below).
 Advisor quorum complete: Fable, codex gpt-5.6-sol xhigh and codex gpt-6-astra
 xhigh agree on D1, D2, D3 and D5; D4 (column vs table) split 2:1 for the
 column, GPT-6 casting the tie-break. See "Quorum record".
-Tracking: registered via feature-lifecycle once the implementation plan exists
-(multi-wave).
+Tracking: LanternOps/breeze#5075 (waves #5076 W01, #5077 W02, #5078 W03, #5079 W04).
+Plan: `docs/superpowers/plans/2026-09-06-organization-record-page.md`.
 
 ## Problem
 
@@ -116,8 +116,10 @@ RMM-only partners, and should the sidebar be regrouped into workflow trees.
   `devices:read`, `alerts:read`, `audit:read`); a tab the user cannot read is
   not rendered. Sidebar visibility for Part 1 is unchanged (Organizations stays
   under Settings until Part 2).
-- Org-scoped tokens: the API already 404s `GET /orgs/organizations/:id` for a
-  foreign org, so an org user can open only their own record. No new checks.
+- Org-scoped tokens: `GET /orgs/organizations/:id` is `requireScope('partner',
+  'system')`, so org users get 403. The record is a partner/system surface; an
+  org-scoped JWT renders a "not available in this workspace" state linking to
+  `/`. The API is not widened (plan note 2).
 
 ### 1.2 URL-pinned fetching
 
@@ -194,8 +196,11 @@ Returns:
 }
 ```
 
-Sections the caller lacks permission for are omitted (not zeroed) so the Overview
-can hide the tile. All queries run inside the request's `withDbAccessContext`;
+The shape above is illustrative; the binding shape is `OrgSummary` in the plan
+(`docs/superpowers/plans/2026-09-06-organization-record-page.md`, Task 1.4),
+which drops fields the schema cannot answer cheaply (`tickets.overdue`,
+`devices.stale`). Sections the caller lacks permission for are omitted (not
+zeroed) so the Overview can hide the tile. All queries run inside the request's `withDbAccessContext`;
 no system context, no new tables. Counts are cheap `COUNT` per table keyed on
 `org_id` indexes that already exist; if any proves slow at 10k devices, cache
 per org for 60s in Redis (follow-up, not in wave 1).
@@ -214,7 +219,7 @@ Each tab lazy-loads on first activation.
 | Tickets | `TicketQueueList` fed by `GET /tickets?orgId=` + status filter; "New ticket" preselects the org | Parent loader only; `TicketQueueList` is presentational (`tickets[]`, `onSelect`) |
 | Contracts & Billing | `ContractsList({lockedOrgId})`; invoices and quotes tables filtered by `orgId` (extract `InvoiceTable`/`QuoteTable` presentational pieces from the pages or add `lockedOrgId` to the pages) | `lockedOrgId` prop on `InvoicesPage`/`QuotesPage` following `ContractsList` |
 | Activity | `AuditLogViewer` pinned to the org | Add an `orgId?: string` prop (today it takes only `timezone` and reads global scope) |
-| Settings | Link-out to `/settings/organizations/<id>` (not embedded) | None |
+| Settings | Not a tab: a header action linking to `/settings/organizations/<id>` (plan Task 1.5) | None |
 
 Legacy hashes: `/settings/organizations/<id>#contacts` redirects to
 `/organizations/<id>#contacts`; `#contracts` likewise. `#billing` and
