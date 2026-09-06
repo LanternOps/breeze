@@ -134,11 +134,27 @@ export default function DeviceLifecycleTab({
                 "policies:configurationPolicies.featureTabs.deviceLifecycleTab.permanentlyDeleteRemovedDevices",
               )}
             </p>
-            <p className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.deviceLifecycleTab.offKeepRemovedDevicesUntilDeletedManually",
-              )}
-            </p>
+            {/* The hint follows the TOGGLE, not the saved link: it used to be
+                hard-coded to the Off sentence, so a policy purging after 30
+                days still read "Off — keep removed devices until someone
+                deletes them manually" directly above the window it was about
+                to enforce. While the typed window is invalid neither sentence
+                is true, so the field's own inline error is the message. */}
+            {(!enabled || daysValid) && (
+              <p
+                data-testid="device-lifecycle-tab-mode-hint"
+                className="text-xs text-muted-foreground"
+              >
+                {enabled
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.deviceLifecycleTab.removedDevicesArePermanentlyDeletedAfterDays",
+                      { days: parsedDays },
+                    )
+                  : i18n.t(
+                      "policies:configurationPolicies.featureTabs.deviceLifecycleTab.offKeepRemovedDevicesUntilDeletedManually",
+                    )}
+              </p>
+            )}
           </div>
           <button
             type="button"

@@ -194,6 +194,11 @@
         "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
         "confirm": "Entfernen"
       },
+      "permanentDelete": {
+        "title": "{{hostname}} endgültig löschen?",
+        "message": "Damit wird der gesamte Verlauf dieses Geräts gelöscht — Tickets, Alarme, Patch- und Backup-Datensätze. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Endgültig löschen"
+      },
       "clearSessions": {
         "title": "Sitzungen beenden",
         "message": "Alle aktiven Remote-Sitzungen für {{hostname}} beenden? Dadurch werden alle derzeit über Terminal, Desktop oder Dateiübertragung verbundenen Benutzer getrennt.",

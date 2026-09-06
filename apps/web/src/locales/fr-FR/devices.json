@@ -194,6 +194,11 @@
         "message": "Retirer {{hostname}} ? Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
         "confirm": "Retirer"
       },
+      "permanentDelete": {
+        "title": "Supprimer {{hostname}} définitivement ?",
+        "message": "Cela supprime tout l’historique de cet appareil : tickets, alertes, enregistrements de correctifs et de sauvegardes. Cette action est irréversible.",
+        "confirm": "Supprimer définitivement"
+      },
       "clearSessions": {
         "title": "Effacer les sessions",
         "message": "Mettre fin à toutes les séances à distance actives pour {{hostname}} ? Cela déconnectera tous les utilisateurs actuellement connectés via terminal, bureau ou transfert de fichiers.",

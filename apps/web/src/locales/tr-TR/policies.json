@@ -669,6 +669,7 @@
       "deviceLifecycleTab": {
         "permanentlyDeleteRemovedDevices": "Kaldırılan cihazları kalıcı olarak sil",
         "offKeepRemovedDevicesUntilDeletedManually": "Kapalı — kaldırılan cihazlar biri onları elle silene kadar saklanır.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Çıkarılan cihazlar, çıkarılmalarından {{days}} gün sonra kalıcı olarak silinir.",
         "permanentlyDeleteRemovedDevicesAfter": "Kaldırılan cihazları şu süreden sonra kalıcı olarak sil:",
         "days": "gün",
         "enterAWholeNumberOfDaysBetween": "1 ile 3650 arasında tam sayı olarak gün girin.",

@@ -669,6 +669,7 @@
       "deviceLifecycleTab": {
         "permanentlyDeleteRemovedDevices": "Supprimer définitivement les appareils retirés",
         "offKeepRemovedDevicesUntilDeletedManually": "Désactivé — les appareils retirés sont conservés jusqu'à leur suppression manuelle.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Les appareils retirés sont supprimés définitivement {{days}} jours après leur retrait.",
         "permanentlyDeleteRemovedDevicesAfter": "Supprimer définitivement les appareils retirés après",
         "days": "jours",
         "enterAWholeNumberOfDaysBetween": "Saisissez un nombre entier de jours compris entre 1 et 3650.",
