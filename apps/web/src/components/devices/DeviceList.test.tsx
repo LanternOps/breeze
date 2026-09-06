@@ -453,6 +453,19 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     }
   });
 
+  it('hides the Organization column when forceSingleOrg even in fleet scope (#5075 W02)', () => {
+    // Fleet scope (allOrgs) — the ambient condition that would normally show
+    // the column — is left in place. The organization record's Devices tab
+    // sets forceSingleOrg regardless of what the OrgSwitcher currently points
+    // at, so every row belonging to the same org must never grow a redundant
+    // Organization column just because the switcher happens to be on "All
+    // organizations" or a different org than the record's.
+    expect(orgScopeState.allOrgs).toBe(true);
+    render(<DeviceList devices={[baseDevice]} forceSingleOrg />);
+    expect(screen.queryByTitle('Sort by organization')).toBeNull();
+    expect(screen.queryByText('Acme')).toBeNull();
+  });
+
   it('sorts devices with numeric collation (host-2 before host-10)', () => {
     const devices: Device[] = [
       { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000001', hostname: 'host-10' },

@@ -23,7 +23,6 @@ import {
   Ticket,
   Archive
 } from 'lucide-react';
-import ContactsCard from './ContactsCard';
 import ContractsList from '../contracts/ContractsList';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
@@ -299,6 +298,19 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
+
+  // #contacts now lives on the organization record (#5075 W02) — the nav
+  // entry stays (so it's still a discoverable destination from this page),
+  // but activating it hands off to the record instead of rendering
+  // ContactsCard here. Covers BOTH activation paths: a direct `#contacts`
+  // deep link (the mount/hashchange effect above sets `activeTab`) and a
+  // click on the nav item (`switchTab` sets it too) — both funnel through
+  // this same `activeTab` state, so one effect covers both.
+  useEffect(() => {
+    if (activeTab === 'contacts' && effectiveOrgId) {
+      void navigateTo(`/organizations/${effectiveOrgId}#contacts`);
+    }
+  }, [activeTab, effectiveOrgId]);
 
   const fetchOrgDetails = useCallback(async () => {
     if (!effectiveOrgId) {
@@ -622,13 +634,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           />
         ) : null;
       case 'contacts':
-        // No onDirty: the card persists every change through its own request,
-        // so this tab never holds unsaved draft state.
-        return effectiveOrgId ? (
-          <div data-testid="org-tab-contacts">
-            <ContactsCard orgId={effectiveOrgId} />
-          </div>
-        ) : null;
+        // Redirected to the organization record's Contacts tab by the effect
+        // above — this case never actually renders ContactsCard here anymore.
+        return null;
       case 'contracts':
         return effectiveOrgId ? (
           <div data-testid="org-tab-contracts">

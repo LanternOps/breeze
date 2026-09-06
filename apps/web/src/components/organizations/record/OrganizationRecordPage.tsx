@@ -24,8 +24,12 @@ import { usePermissions } from '@/lib/permissions';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
+import ContactsCard from '@/components/settings/ContactsCard';
+import OrgActivityTab from './OrgActivityTab';
+import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import OrgSitesTab from './OrgSitesTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
 import { tabFromHash, visibleTabs, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
 
@@ -287,10 +291,15 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
-      {effectiveTab === 'overview' ? (
+      {effectiveTab === 'overview' && (
         <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} />
-      ) : (
-        // W02/W03 replace these with the real tabs; the ids are already routable
+      )}
+      {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
+      {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
+      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}
+      {(effectiveTab === 'tickets' || effectiveTab === 'billing') && (
+        // W03 replaces these with the real tabs; the ids are already routable
         // so a deep link saved today keeps working when they land.
         <div
           data-testid={`org-record-tab-placeholder-${effectiveTab}`}

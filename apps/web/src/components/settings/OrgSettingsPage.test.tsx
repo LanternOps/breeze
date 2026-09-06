@@ -6,6 +6,7 @@ import OrgSettingsPage, { runOrgNameSave } from './OrgSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -55,6 +56,7 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
+const navigateToMock = vi.mocked(navigateTo);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -409,16 +411,29 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
-  it('deep-links #contacts to the Contacts tab and hands it the tab organization (#3258 W04)', async () => {
+  it('deep-links #contacts to the organization record instead of rendering it here (#5075 W02)', async () => {
     window.location.hash = '#contacts';
     render(<OrgSettingsPage orgId="org-1" />);
 
+    // The nav entry is still there and still marks itself active...
     const link = await screen.findByRole('link', { name: /^contacts$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
-    // The card fetches for the org whose settings are open, NOT the globally
-    // selected one — the two differ whenever an admin opens one tenant while
-    // another is selected in the header.
-    expect(screen.getByTestId('contacts-card')).toHaveTextContent('org-1');
+    // ...but activating it hands off to the record for the org whose
+    // settings are open, NOT the globally selected one — the two differ
+    // whenever an admin opens one tenant while another is selected in the
+    // header — and ContactsCard never mounts on this page anymore.
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts'));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('redirects a Contacts nav click the same way as the #contacts deep link (#5075 W02)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    await userEvent.click(screen.getByRole('link', { name: /^contacts$/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts'));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
   });
 
   it('offers the compact section select for narrow viewports', async () => {
