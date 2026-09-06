@@ -318,7 +318,7 @@ export default function AiAgentForm({
       // Surfaces exactly what the server named as unmet/rejected, not just
       // the generic toast — same mapping the guided create flow's `create()`
       // uses, so the two can never read a 422 differently.
-      const fieldIssues = agentSaveIssuesFromError(err, t);
+      const fieldIssues = agentSaveIssuesFromError(err, t, { recipientsSelected: draft.roleIds.length > 0 });
       if (fieldIssues) setIssues(fieldIssues);
     } finally {
       setSaving(false);
@@ -733,6 +733,7 @@ export default function AiAgentForm({
                 mode={draft.mode}
                 entries={lines(draft.toolAllowlist)}
                 onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+                authorizedScriptCount={agent.actAssets?.scriptIds?.length ?? 0}
               />
             ) : catalogLoading ? (
               <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">

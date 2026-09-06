@@ -6,15 +6,15 @@ const catalog: AgentToolCatalogDto = {
   capabilities: [{ id: 'services_startup', tone: 'standard' }, { id: 'scripts_commands', tone: 'standard' }],
   tools: [
     { name: 'manage_services', capability: 'services_startup', tier: 3, readOnly: false, operations: [
-      { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false },
-      { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
-      { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+      { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
+      { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false },
+      { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
     ] },
     { name: 'run_script', capability: 'scripts_commands', tier: 3, readOnly: false, operations: [
-      { key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true },
+      { key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true },
     ] },
     { name: 'query_devices', capability: 'scripts_commands', tier: 1, readOnly: true, operations: [
-      { key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false },
+      { key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
     ] },
   ],
   presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
@@ -68,9 +68,9 @@ describe('capabilityModel', () => {
       capabilities: [{ id: 'services_startup', tone: 'standard' }],
       tools: [{
         name: 'manage_services', capability: 'services_startup', tier: 3, readOnly: false, operations: [
-          { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
-          { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
-          { key: 'manage_services:start', action: 'start', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+          { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false },
+          { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
+          { key: 'manage_services:start', action: 'start', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
         ],
       }],
       presets: { triage: [], patch: [], helpdesk: [] },
@@ -108,7 +108,7 @@ describe('capabilityModel', () => {
     if (!restart || !list) throw new Error('fixture missing operations');
     expect(outcomeFor(restart, 'shadow')).toBe('approval_request');
     expect(outcomeFor(restart, 'act')).toBe('unattended');
-    expect(outcomeFor({ ...restart, actEligible: false }, 'act')).toBe('approval_request');
+    expect(outcomeFor({ ...restart, actEligible: false, actRequiresAuthorizedScripts: false }, 'act')).toBe('approval_request');
     // `outcomeFor`'s shared signature (packages/shared/src/utils/agentOutcome.ts)
     // narrows its `op` parameter to just `{ tier, actEligible }`, so a fresh
     // object literal carrying `readOnly` (a field outside that shape) trips
@@ -128,5 +128,14 @@ describe('capabilityModel', () => {
   it('summarises counts for the footer sentence', () => {
     expect(summarise(new Set(['manage_services:restart', 'run_script']), catalog, 'shadow'))
       .toEqual({ operations: 2, capabilities: 2, approvalRequests: 2, loggedProposals: 0, unattended: [], readOnlyToolCount: 1 });
+  });
+
+  it('act mode: counts a script-gated run_script as an approval request until a script is authorized (#5048 QA)', () => {
+    const selected = new Set(['manage_services:restart', 'run_script']);
+    expect(summarise(selected, catalog, 'act')).toMatchObject({ approvalRequests: 1, unattended: ['manage_services:restart'] });
+    expect(summarise(selected, catalog, 'act', { authorizedScriptCount: 1 })).toMatchObject({
+      approvalRequests: 0,
+      unattended: ['manage_services:restart', 'run_script'],
+    });
   });
 });

@@ -121,6 +121,19 @@ describe('agentToolCatalog contract', () => {
     expect(byDiskAction.execute).toMatchObject({ actEligible: true });
   });
 
+  it('flags run_script — and only run_script — as needing an authorized script before it runs unattended (#5048 QA)', () => {
+    // Mirrors agentService.ts's hasActEligibleSurface and
+    // remediationActResolver.ts: run_script is in ACT_MANIFEST but is never
+    // dispatched unattended for a script absent from actAssets.scriptIds.
+    const catalog = buildAgentToolCatalog();
+    const gated = catalog.tools.flatMap((t) => t.operations).filter((op) => op.actRequiresAuthorizedScripts);
+    expect(gated.map((op) => op.key)).toEqual(['run_script']);
+    expect(gated[0]).toMatchObject({ actEligible: true });
+    for (const tool of catalog.tools) for (const op of tool.operations) {
+      expect(typeof op.actRequiresAuthorizedScripts).toBe('boolean');
+    }
+  });
+
   it('every catalog tool has at least one operation and a single-operation tool uses the bare key', () => {
     for (const tool of buildAgentToolCatalog().tools) {
       expect(tool.operations.length).toBeGreaterThan(0);

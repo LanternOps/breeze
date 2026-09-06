@@ -399,7 +399,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         operations: [
           {
             key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false,
-            policyDecidable: true, actEligible: true,
+            policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false,
           },
         ],
       },
@@ -3710,7 +3710,7 @@ describe('POST /ai-agents/preview', () => {
       capability: 'services_startup',
       outcome: 'approval_request',
       preauthorized: false,
-      withinCeiling: true,
+      withinCeiling: true, unattendedBlockedBy: null,
     }]);
     expect(body.data.readOnlyToolCount).toBe(0);
   });

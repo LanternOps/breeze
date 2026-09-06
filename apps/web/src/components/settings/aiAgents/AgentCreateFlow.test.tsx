@@ -38,8 +38,8 @@ const CATALOG: AgentToolCatalogDto = {
       tier: 3,
       readOnly: false,
       operations: [
-        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
-        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false },
+        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
       ],
     },
     {
@@ -47,7 +47,7 @@ const CATALOG: AgentToolCatalogDto = {
       capability: 'scripts_commands',
       tier: 3,
       readOnly: false,
-      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true }],
+      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
   ],
   presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
@@ -87,7 +87,7 @@ function makeAgents(): AiAgentDto[] {
 
 function mockEndpoints(overrides: {
   registry?: Array<{ key: string; toolName: string; action: string | null; note: string }>;
-  roles?: Array<{ id: string; name: string; scope?: 'partner' | 'organization' }>;
+  roles?: Array<{ id: string; name: string; scope?: 'partner' | 'organization'; userCount?: number }>;
   rolesStatus?: number;
   preview?: unknown;
   createStatus?: number;
@@ -206,6 +206,99 @@ describe('AgentCreateFlow — step navigation persists state', () => {
     renderFlow();
     expect(screen.getByTestId('setup-stepper-step-1')).toBeDisabled();
   });
+
+  it('after an Edit link from Review, every already-visited step stays reachable from the stepper (#5048 QA)', async () => {
+    mockEndpoints();
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Triage bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('agent-summary-card');
+
+    fireEvent.click(screen.getByTestId('agent-summary-title-edit')); // back to Purpose
+    await screen.findByTestId('ai-agent-name');
+    expect(screen.getByTestId('setup-stepper-step-3')).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('setup-stepper-step-3'));
+    expect(await screen.findByTestId('agent-create-flow-start-enabled')).toBeInTheDocument();
+  });
+
+  it('a forward jump from the stepper still runs the current step\'s validation gate', async () => {
+    mockEndpoints();
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Triage bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('setup-stepper-step-0'));
+    await screen.findByTestId('ai-agent-name');
+
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('setup-stepper-step-1'));
+
+    expect(await screen.findByTestId('ai-agent-issues')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-permissions')).toBeNull();
+  });
+});
+
+describe('AgentCreateFlow — default owner scope (#5048 QA)', () => {
+  it('defaults a partner-scope draft to partner-wide when no baseline exists for the kind, even with an org focused', async () => {
+    // Org-only overrides a baseline; with none, the org-only default the hook
+    // chose for a focused org would produce an agent that does nothing.
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    mockEndpoints();
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set() });
+
+    expect(screen.getByTestId('ai-agent-owner-partner')).toBeChecked();
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+  });
+
+  it('keeps the org-only default once a partner baseline exists for the kind', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    mockEndpoints();
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
+
+    expect(screen.getByTestId('ai-agent-owner-org')).toBeChecked();
+  });
+});
+
+describe('AgentCreateFlow — recipients (#5048 QA)', () => {
+  async function advanceToSafety() {
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Act bot' } });
+    fireEvent.click(screen.getByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+  }
+
+  it('marks a role with no active members so the operator is not steered into an unreachable recipient', async () => {
+    mockEndpoints({ roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', userCount: 0 }, { id: 'r-1', name: 'Partner Admin', scope: 'partner', userCount: 1 }] });
+    renderFlow();
+    await advanceToSafety();
+    expect(screen.getByTestId('ai-agent-role-r-empty-no-members')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-role-r-1-no-members')).toBeNull();
+  });
+
+  it('explains a recipient 422 as "no active members" when a role WAS selected, and carries it to Safety via Edit', async () => {
+    mockEndpoints({
+      roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', userCount: 0 }],
+      createStatus: 422,
+      createBody: { error: 'act_prerequisites_not_met: recipient', code: 'act_prerequisites_not_met', missing: ['recipient'] },
+    });
+    renderFlow();
+    await advanceToSafety();
+    fireEvent.click(screen.getByTestId('ai-agent-role-r-empty'));
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    fireEvent.click(await screen.findByTestId('agent-create-flow-create'));
+
+    const issues = await screen.findByTestId('ai-agent-issues');
+    expect(issues.textContent).toMatch(/no active members/i);
+    expect(issues.textContent).not.toMatch(/Add at least one/i);
+  });
 });
 
 describe('AgentCreateFlow — validation gates', () => {
@@ -254,7 +347,9 @@ describe('AgentCreateFlow — kind cards and owner scope (moved from AiAgentsPag
     // `patch` is taken on the ORG axis.
     orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
     mockEndpoints();
-    renderFlow({ defaultOwnerScope: 'organization' });
+    // A triage baseline exists, so the org-owned default holds (#5048 QA
+    // flips it to partner-wide only when there is no baseline for the kind).
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
 
     expect(screen.getByTestId('ai-agent-kind-card-patch')).toBeDisabled();
     expect(screen.getByTestId('ai-agent-kind-card-triage')).not.toBeDisabled();
@@ -267,6 +362,10 @@ describe('AgentCreateFlow — kind cards and owner scope (moved from AiAgentsPag
   it('shows the no-baseline hint for an org draft of a kind with no partner-wide baseline', async () => {
     mockEndpoints();
     renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set() });
+    // With no baseline the flow starts partner-wide (#5048 QA); the hint
+    // appears once the operator explicitly picks "This organization only".
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+    fireEvent.click(screen.getByTestId('ai-agent-owner-org'));
     expect(screen.getByTestId('ai-agent-no-baseline-hint')).toBeInTheDocument();
   });
 
@@ -295,7 +394,7 @@ describe('AgentCreateFlow — kind cards and owner scope (moved from AiAgentsPag
       kind,
     }));
     mockEndpoints();
-    renderFlow({ defaultOwnerScope: 'organization', agents: allKindsTaken });
+    renderFlow({ defaultOwnerScope: 'organization', agents: allKindsTaken, partnerBaselineKinds: new Set(AI_AGENT_KINDS) });
 
     expect(screen.getByTestId('ai-agent-kinds-exhausted')).toBeInTheDocument();
     expect(screen.getByTestId('agent-create-flow-next')).toBeDisabled();

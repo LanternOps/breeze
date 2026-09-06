@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AgentPreviewDto } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import AgentSummaryCard from '../AgentSummaryCard';
 import { buildAgentSaveBody, type Draft } from '../agentDraft';
+import type { RoleOption } from '../agentFields';
 
 /** Debounced re-fetch delay for a draft change while this step is mounted —
  *  spec §4.6 step 4: "on entry (and whenever the draft changes while on this
@@ -18,6 +19,9 @@ export interface ReviewStepProps {
   patch: (values: Partial<Draft>) => void;
   orgId: string | null;
   orgName: string | null;
+  /** The same GET /roles list Safety rendered, so the card can name the
+   *  chosen approver roles instead of only counting them (#5048 QA). */
+  roles: RoleOption[];
   onEdit: (section: 'purpose' | 'does' | 'safety') => void;
 }
 
@@ -30,8 +34,9 @@ export interface ReviewStepProps {
  * blocks Create — the footer's Create button lives in `AgentCreateFlow.tsx`
  * and does not depend on this component's fetch succeeding.
  */
-export default function ReviewStep({ draft, patch, orgId, orgName, onEdit }: ReviewStepProps) {
+export default function ReviewStep({ draft, patch, orgId, orgName, roles, onEdit }: ReviewStepProps) {
   const { t } = useTranslation('settings');
+  const recipientRoleNames = useMemo(() => new Map(roles.map((role) => [role.id, role.name])), [roles]);
   const [preview, setPreview] = useState<AgentPreviewDto | null>(null);
   const [previewError, setPreviewError] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(true);
@@ -89,7 +94,14 @@ export default function ReviewStep({ draft, patch, orgId, orgName, onEdit }: Rev
         </p>
       )}
       {preview && (
-        <AgentSummaryCard preview={preview} name={draft.name} orgName={orgName} enabled={draft.enabled} onEdit={onEdit} />
+        <AgentSummaryCard
+          preview={preview}
+          name={draft.name}
+          orgName={orgName}
+          enabled={draft.enabled}
+          recipientRoleNames={recipientRoleNames}
+          onEdit={onEdit}
+        />
       )}
 
       <label className="flex items-center gap-2 text-sm" data-testid="agent-create-flow-start-enabled-field">

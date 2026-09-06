@@ -14,7 +14,7 @@ import type {
   AgentToolOperationDto,
 } from '@breeze/shared/types/aiAgents';
 import type { PreviewAiAgentInput } from '@breeze/shared/validators/aiAgents';
-import { outcomeFor } from '@breeze/shared';
+import { outcomeFor, unattendedBlockedBy } from '@breeze/shared';
 import { intersectToolRefs, isToolAllowlisted } from './toolAllowlist';
 
 /** `'manage_services:restart'` -> `{ tool: 'manage_services', action: 'restart' }`; a bare entry -> `action: null`. */
@@ -91,12 +91,19 @@ export function buildAgentPreview(
     ? intersectToolRefs(ceiling.supervisedActionKeys, input.actAssets.supervisedActionKeys)
     : input.actAssets.supervisedActionKeys;
 
+  // The same asset gate the run loop applies (`remediationActResolver.ts`):
+  // an act-eligible `run_script` is only unattended for a script in
+  // `actAssets.scriptIds`. The guided create flow never sets it, so its
+  // preview truthfully shows an approval request, with the reason attached.
+  const outcomeContext = { authorizedScriptCount: input.actAssets.scriptIds.length };
+
   const operations = [...opsByKey.values()].map((op) => {
     const { tool, action } = splitEntry(op.key);
     return {
       key: op.key,
       capability: toolsByName.get(tool)!.capability,
-      outcome: outcomeFor(op, input.mode),
+      outcome: outcomeFor(op, input.mode, outcomeContext),
+      unattendedBlockedBy: unattendedBlockedBy(op, input.mode, outcomeContext),
       preauthorized: isToolAllowlisted(supervisedCeiling, tool, action),
       withinCeiling: ceiling ? isToolAllowlisted(ceiling.toolAllowlist, tool, action) : true,
     };

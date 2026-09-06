@@ -10,14 +10,14 @@ import AgentSummaryCard from './AgentSummaryCard';
  * `aiAgentsPage.catalog.tools/actions` translations staying stable.
  */
 const baseOperations: AgentPreviewDto['operations'] = [
-  { key: 'fake_tool_a:restart', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_b:stop', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_c:approve', capability: 'patching_software', outcome: 'approval_request', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_d:install', capability: 'patching_software', outcome: 'approval_request', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_e:list', capability: 'files_disk', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_f', capability: 'files_disk', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_g:scan', capability: 'security_response', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true },
-  { key: 'fake_tool_h:cleanup', capability: 'security_response', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true },
+  { key: 'fake_tool_a:restart', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_b:stop', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_c:approve', capability: 'patching_software', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_d:install', capability: 'patching_software', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_e:list', capability: 'files_disk', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_f', capability: 'files_disk', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_g:scan', capability: 'security_response', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+  { key: 'fake_tool_h:cleanup', capability: 'security_response', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
 ];
 
 function buildPreview(overrides: Partial<AgentPreviewDto> = {}): AgentPreviewDto {
@@ -77,8 +77,8 @@ describe('AgentSummaryCard', () => {
       mode: 'act',
       operations: [
         ...baseOperations.slice(0, 6),
-        { key: 'fake_tool_i:restart', capability: 'services_startup', outcome: 'unattended', preauthorized: true, withinCeiling: true },
-        { key: 'fake_tool_j:cleanup', capability: 'files_disk', outcome: 'unattended', preauthorized: false, withinCeiling: true },
+        { key: 'fake_tool_i:restart', capability: 'services_startup', outcome: 'unattended', preauthorized: true, withinCeiling: true, unattendedBlockedBy: null },
+        { key: 'fake_tool_j:cleanup', capability: 'files_disk', outcome: 'unattended', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
       ],
     });
     render(<AgentSummaryCard preview={preview} name="Act bot" orgName="Acme" />);
@@ -94,7 +94,7 @@ describe('AgentSummaryCard', () => {
 
   it('flags an operation outside the partner ceiling with the not-in-ceiling badge', () => {
     const preview = buildPreview({
-      operations: [...baseOperations.slice(0, 7), { key: 'fake_tool_k:stop', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: false }],
+      operations: [...baseOperations.slice(0, 7), { key: 'fake_tool_k:stop', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: false, unattendedBlockedBy: null }],
     });
     render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
     expect(screen.getByTestId('agent-summary-chip-fake_tool_k:stop')).toHaveTextContent('Not in partner baseline');
@@ -150,6 +150,76 @@ describe('AgentSummaryCard', () => {
     const preview = buildPreview({ recipients: { userIds: [], roleIds: [] } });
     rerender(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
     expect(screen.getByTestId('agent-summary-row-approvers').textContent).not.toContain('0 roles');
+  });
+
+  it('names the approver roles when the caller knows them, singular and plural (#5048 QA)', () => {
+    const one = buildPreview({ recipients: { userIds: [], roleIds: ['role-1'] } });
+    const { rerender } = render(
+      <AgentSummaryCard preview={one} name="Bot" orgName="Acme" recipientRoleNames={new Map([['role-1', 'Partner Admin']])} />,
+    );
+    const row = () => screen.getByTestId('agent-summary-row-approvers');
+    expect(row()).toHaveTextContent('Partner Admin is asked');
+    expect(row().textContent).not.toMatch(/1 roles/);
+
+    rerender(
+      <AgentSummaryCard
+        preview={buildPreview()}
+        name="Bot"
+        orgName="Acme"
+        recipientRoleNames={new Map([['role-1', 'Partner Admin'], ['role-2', 'Org Admin']])}
+      />,
+    );
+    expect(row()).toHaveTextContent('Partner Admin and Org Admin are asked');
+
+    // A role id the caller cannot name (deleted since) falls back to the count.
+    rerender(<AgentSummaryCard preview={one} name="Bot" orgName="Acme" recipientRoleNames={new Map()} />);
+    expect(row()).toHaveTextContent('1 role is asked');
+  });
+
+  it('pluralises the limits sentence for a single device / run / minute (#5048 QA)', () => {
+    const preview = buildPreview({
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxDevicesPerRun: 1, maxRunsPerHour: 1, wallClockSeconds: 60 },
+      cooldownSeconds: 60,
+    });
+    render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
+    const text = screen.getByTestId('agent-summary-row-limits').textContent ?? '';
+    expect(text).toContain('Up to 1 device per run');
+    expect(text).toContain('1 run per hour');
+    expect(text).toContain('1 minute per run');
+    expect(text).toContain('1 minute between runs');
+    expect(text).not.toMatch(/1 (devices|runs|minutes)/);
+  });
+
+  it('act mode: the "May propose" breakdown accounts for every listed operation, including the unattended ones (#5048 QA)', () => {
+    const preview = buildPreview({
+      mode: 'act',
+      operations: [
+        { key: 'fake_tool_a:restart', capability: 'services_startup', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+        { key: 'fake_tool_e:list', capability: 'files_disk', outcome: 'logged_proposal', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+        { key: 'fake_tool_i:restart', capability: 'services_startup', outcome: 'unattended', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+        { key: 'fake_tool_j:cleanup', capability: 'files_disk', outcome: 'unattended', preauthorized: false, withinCeiling: true, unattendedBlockedBy: null },
+      ],
+    });
+    render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
+    const text = screen.getByTestId('agent-summary-row-mayPropose').textContent ?? '';
+    expect(text).toContain('4 operations across 2 capabilities');
+    expect(text).toContain('1 raises an approval request');
+    expect(text).toContain('1 is logged as a proposal');
+    expect(text).toContain('2 run unattended');
+  });
+
+  it('act mode: explains a script-gated operation that stays an approval request until a script is authorized (#5048 QA)', () => {
+    const preview = buildPreview({
+      mode: 'act',
+      operations: [
+        { key: 'fake_run_script', capability: 'scripts_commands', outcome: 'approval_request', preauthorized: false, withinCeiling: true, unattendedBlockedBy: 'authorized_scripts' },
+      ],
+    });
+    render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
+    const row = screen.getByTestId('agent-summary-row-executesUnattended');
+    expect(row).toHaveTextContent('Nothing yet');
+    expect(screen.getByTestId('agent-summary-script-gate')).toHaveTextContent('Fake run script');
+    expect(screen.getByTestId('agent-summary-script-gate').textContent).toMatch(/script is authorized/i);
   });
 
   it('calls onEdit with the section id for the title and each row, and omits Edit links when onEdit is absent', () => {

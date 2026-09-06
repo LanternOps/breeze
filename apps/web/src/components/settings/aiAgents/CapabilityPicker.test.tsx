@@ -17,9 +17,9 @@ const catalog: AgentToolCatalogDto = {
       tier: 3,
       readOnly: false,
       operations: [
-        { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false },
-        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
-        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+        { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
+        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false },
+        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
       ],
     },
     {
@@ -27,14 +27,14 @@ const catalog: AgentToolCatalogDto = {
       capability: 'scripts_commands',
       tier: 3,
       readOnly: false,
-      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true }],
+      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
     {
       name: 'query_devices',
       capability: 'scripts_commands',
       tier: 1,
       readOnly: true,
-      operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false }],
+      operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
   presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [] },
@@ -148,6 +148,46 @@ describe('CapabilityPicker', () => {
     expect(summary).toHaveTextContent('1 operation across 1 capability');
     expect(summary).not.toHaveTextContent('1 operations');
     expect(summary).not.toHaveTextContent('1 capabilities');
+    // The breakdown inside the parentheses pluralises too (#5048 QA).
+    expect(summary).toHaveTextContent('1 approval request,');
+    expect(summary).not.toHaveTextContent('1 approval requests');
+  });
+
+  it('search narrows to the matching operations, not the whole capability (#5048 QA)', () => {
+    renderPicker();
+
+    fireEvent.change(screen.getByTestId('capability-picker-search'), { target: { value: 'restart' } });
+
+    expect(screen.getByTestId('operation-row-manage_services:restart')).toBeInTheDocument();
+    expect(screen.queryByTestId('operation-row-manage_services:stop')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('capability-row-scripts_commands')).not.toBeInTheDocument();
+  });
+
+  it('search on the capability label keeps every operation in that capability visible', () => {
+    renderPicker();
+
+    fireEvent.change(screen.getByTestId('capability-picker-search'), { target: { value: 'Services and startup' } });
+
+    expect(screen.getByTestId('operation-row-manage_services:restart')).toBeInTheDocument();
+    expect(screen.getByTestId('operation-row-manage_services:stop')).toBeInTheDocument();
+  });
+
+  it('act mode: a script-gated run_script reads as an approval request with the script-gate note until a script is authorized (#5048 QA)', () => {
+    const { rerender } = render(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="patch" mode="act" entries={['run_script']} onChange={vi.fn()} />,
+    );
+    const row = screen.getByTestId('operation-row-run_script');
+    expect(row).toHaveTextContent('Approval request');
+    expect(row).not.toHaveTextContent('Executes unattended');
+    expect(screen.getByTestId('operation-note-run_script')).toBeInTheDocument();
+    expect(screen.getByTestId('capability-picker-summary')).toHaveTextContent('1 approval request');
+
+    rerender(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="patch" mode="act" entries={['run_script']} onChange={vi.fn()} authorizedScriptCount={1} />,
+    );
+    expect(screen.getByTestId('operation-row-run_script')).toHaveTextContent('Executes unattended');
+    expect(screen.queryByTestId('operation-note-run_script')).not.toBeInTheDocument();
+    expect(screen.getByTestId('capability-picker-summary')).toHaveTextContent('1 unattended');
   });
 
   it('pluralises the always-on read-only tools count', () => {

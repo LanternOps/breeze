@@ -1616,7 +1616,8 @@
       "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode.",
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
-      "notDisabled": "That agent is already live."
+      "notDisabled": "That agent is already live.",
+      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode."
     },
     "actions": {
       "add": "New agent",
@@ -1724,7 +1725,8 @@
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
-      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode."
+      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
+      "recipientRoleNoMembers": "no active members"
     },
     "policyKeys": {
       "tools": {
@@ -2644,12 +2646,12 @@
       "capabilityCount_one": "{{count}} capability",
       "capabilityCount_other": "{{count}} capabilities",
       "summary": {
-        "shadow_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes nothing unattended.",
-        "shadow_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes nothing unattended.",
-        "act_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes eligible operations unattended.",
-        "act_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes eligible operations unattended.",
-        "off_one": "Off: this agent does not run. Turned on, it would touch {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals).",
-        "off_other": "Off: this agent does not run. Turned on, it would touch {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals)."
+        "shadow_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}); executes nothing unattended.",
+        "shadow_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{breakdown}}); executes nothing unattended.",
+        "act_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}); executes eligible operations unattended.",
+        "act_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{breakdown}}); executes eligible operations unattended.",
+        "off_one": "Off: this agent does not run. Turned on, it would touch {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}).",
+        "off_other": "Off: this agent does not run. Turned on, it would touch {{operations}} operations across {{capabilityPhrase}} ({{breakdown}})."
       },
       "modeLine": {
         "shadow": "Shadow mode: nothing below runs on its own. Approval requests go to a technician; low-risk changes are logged as proposals and never executed.",
@@ -2657,7 +2659,14 @@
         "off": "Off: this agent does not run, so nothing below has any effect yet."
       },
       "catalogUnavailable": "Could not load the tool catalog. You can still edit the permissions list directly below.",
-      "loading": "Loading capabilities…"
+      "loading": "Loading capabilities…",
+      "approvalRequestCount_one": "{{count}} approval request",
+      "approvalRequestCount_other": "{{count}} approval requests",
+      "loggedProposalCount_one": "{{count}} logged proposal",
+      "loggedProposalCount_other": "{{count}} logged proposals",
+      "unattendedCount_one": "{{count}} unattended",
+      "unattendedCount_other": "{{count}} unattended",
+      "scriptGateNote": "Stays an approval request until a script is authorized for this agent."
     },
     "summary": {
       "edit": "Edit",
@@ -2682,7 +2691,6 @@
         "ticketWrites": "Writes ticket updates without waiting for a technician."
       },
       "canRead": "Device, alert and fleet data for {{scope}}: inventory, metrics, logs, patches, backups, tickets and audit history ({{count}} read-only tools, always on).",
-      "mayPropose": "{{operations}} operations across {{capabilities}} capabilities: {{approvalRequests}} raise an approval request that a technician decides, and {{loggedProposals}} are logged as proposals and never executed.",
       "mayProposeNone": "This agent does not propose any operations yet.",
       "unrecognisedLabel": "Not recognized by the current tool catalog:",
       "executesUnattendedNone": "Nothing. Shadow mode observes and proposes; nothing runs without a technician's approval.",
@@ -2690,9 +2698,27 @@
       "executesUnattendedList": "Executes {{list}} without a technician's approval.",
       "preauthorizedNote": "Some of these are pre-authorized operations, granted ahead of time through the four-eyes review process.",
       "neverTouchesEmpty": "Nothing is protected yet.",
-      "limits": "Up to {{devices}} devices per run, {{runsPerHour}} runs per hour, {{minutes}} minutes per run, a daily budget of {{budget}}, no more than {{fleetPercent}} of the fleet touched per day, and {{cooldown}} minutes between runs on the same device.",
-      "approvers": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
-      "approversNone": "No roles are configured yet, so nothing will be notified."
+      "limits": "Up to {{devices}} per run, {{runs}}, {{minutes}} per run, a daily budget of {{budget}}, no more than {{fleetPercent}} of the fleet touched per day, and {{cooldown}} between runs on the same device.",
+      "approversNone": "No roles are configured yet, so nothing will be notified.",
+      "mayPropose_one": "{{count}} operation across {{capabilityPhrase}}: {{breakdown}}.",
+      "mayPropose_other": "{{count}} operations across {{capabilityPhrase}}: {{breakdown}}.",
+      "approvalCount_one": "{{count}} raises an approval request that a technician decides",
+      "approvalCount_other": "{{count}} raise an approval request that a technician decides",
+      "loggedCount_one": "{{count}} is logged as a proposal and never executed",
+      "loggedCount_other": "{{count}} are logged as proposals and never executed",
+      "unattendedCount_one": "{{count}} runs unattended",
+      "unattendedCount_other": "{{count}} run unattended",
+      "deviceCount_one": "{{count}} device",
+      "deviceCount_other": "{{count}} devices",
+      "runsPerHourCount_one": "{{count}} run per hour",
+      "runsPerHourCount_other": "{{count}} runs per hour",
+      "minuteCount_one": "{{count}} minute",
+      "minuteCount_other": "{{count}} minutes",
+      "approvers_one": "{{roles}} is asked, via inbox, chat and mobile push. First decision wins.",
+      "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
+      "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
+      "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
+      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request."
     },
     "flow": {
       "title": "New agent",

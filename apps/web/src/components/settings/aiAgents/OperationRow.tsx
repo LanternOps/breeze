@@ -29,6 +29,10 @@ export interface OperationRowProps {
   showKey: boolean;
   policyDecidableTitle: string;
   notInCeilingLabel: string;
+  /** Why `outcome` is not `unattended` even though the operation is
+   *  act-eligible in act mode (#5048 QA: `run_script` until a script is
+   *  authorized). Rendered under the label; omitted when nothing blocks it. */
+  note?: string;
   onToggle: (key: string) => void;
 }
 
@@ -42,6 +46,7 @@ export default function OperationRow({
   showKey,
   policyDecidableTitle,
   notInCeilingLabel,
+  note,
   onToggle,
 }: OperationRowProps) {
   return (
@@ -70,6 +75,11 @@ export default function OperationRow({
           />
         )}
         {!withinCeiling && <span className={badgeClass('muted', { size: 'sm' })}>{notInCeilingLabel}</span>}
+        {note && (
+          <span className="basis-full text-xs text-muted-foreground" data-testid={`operation-note-${op.key}`}>
+            {note}
+          </span>
+        )}
       </span>
     </li>
   );

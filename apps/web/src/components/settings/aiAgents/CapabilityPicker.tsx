@@ -10,6 +10,7 @@ import {
   outcomeFor,
   selectionToEntries,
   summarise,
+  unattendedBlockedBy,
   type AgentModeLike,
 } from './capabilityModel';
 import OperationRow from './OperationRow';
@@ -24,6 +25,11 @@ export interface CapabilityPickerProps {
   onChange: (entries: string[]) => void;
   /** Seeds the initially-uncontrolled "Show tool names" switch; the switch always manages its own state after mount. */
   showToolNames?: boolean;
+  /** `actAssets.scriptIds.length` of the row being edited. Defaults to 0 —
+   *  the guided create flow cannot authorize scripts — which keeps a
+   *  script-gated `run_script` shown as the approval request the run loop
+   *  would actually produce, not an unattended run it never would (#5048 QA). */
+  authorizedScriptCount?: number;
 }
 
 /** `manage_startup_items` -> "Manage startup items". Last-resort label for a
@@ -67,9 +73,11 @@ export default function CapabilityPicker({
   entries,
   onChange,
   showToolNames,
+  authorizedScriptCount = 0,
 }: CapabilityPickerProps) {
   const { t } = useTranslation('settings');
   const [search, setSearch] = useState('');
+  const outcomeContext = useMemo(() => ({ authorizedScriptCount }), [authorizedScriptCount]);
   // Uncontrolled: `showToolNames` only seeds the initial value. There is no
   // callback prop to report changes back up, by design — this is a per-viewer
   // display preference, not part of the persisted selection.
@@ -165,20 +173,27 @@ export default function CapabilityPicker({
   };
 
   const searchLower = search.trim().toLowerCase();
-  const capabilityMatchesSearch = (capabilityId: string): boolean => {
-    if (!searchLower) return true;
-    if (capabilityLabel(capabilityId).toLowerCase().includes(searchLower)) return true;
-    for (const tool of catalog.tools) {
-      if (tool.capability !== capabilityId) continue;
-      if (tool.name.toLowerCase().includes(searchLower)) return true;
-      if (toolLabel(tool.name).toLowerCase().includes(searchLower)) return true;
-      for (const op of tool.operations) {
-        if (op.key.toLowerCase().includes(searchLower)) return true;
-        if (actionLabel(tool.name, op.action).toLowerCase().includes(searchLower)) return true;
-      }
-    }
-    return false;
-  };
+  const textMatches = (text: string) => text.toLowerCase().includes(searchLower);
+  type CatalogTool = AgentToolCatalogDto['tools'][number];
+  type CatalogOperation = CatalogTool['operations'][number];
+  const operationMatchesSearch = (tool: CatalogTool, op: CatalogOperation): boolean =>
+    textMatches(tool.name)
+    || textMatches(toolLabel(tool.name))
+    || textMatches(op.key)
+    || textMatches(actionLabel(tool.name, op.action));
+  // A search narrows each capability to the operations that match it; only
+  // when NO operation matches but the capability's own label/description
+  // does are all of its operations shown (#5048 QA — "isolate" used to
+  // surface all twelve security operations because the capability blurb
+  // mentions isolating devices, burying the one matching row).
+  const capabilityItselfMatches = (capabilityId: string): boolean =>
+    textMatches(capabilityLabel(capabilityId)) || textMatches(capabilityDescription(capabilityId));
+  const anyOperationMatches = (capabilityId: string): boolean =>
+    catalog.tools.some(
+      (tool) => tool.capability === capabilityId && tool.operations.some((op) => !op.readOnly && operationMatchesSearch(tool, op)),
+    );
+  const capabilityMatchesSearch = (capabilityId: string): boolean =>
+    !searchLower || anyOperationMatches(capabilityId) || capabilityItselfMatches(capabilityId);
 
   const readOnlyTools = catalog.tools.filter((tool) => tool.readOnly);
   const withOperations = catalog.capabilities.filter((cap) => mutatingOpsFor(cap.id).length > 0);
@@ -186,7 +201,16 @@ export default function CapabilityPicker({
   const primaryCapabilities = searchLower ? visible : visible.filter((cap) => touchedIds.has(cap.id));
   const moreCapabilities = searchLower ? [] : visible.filter((cap) => !touchedIds.has(cap.id));
 
-  const summary = summarise(selected, catalog, mode);
+  const summary = summarise(selected, catalog, mode, outcomeContext);
+  // Each count pluralises on its own (#5048 QA: "1 approval requests"), so the
+  // parenthetical is assembled from pre-pluralised phrases and interpolated
+  // as one `breakdown` string — i18next drives a key's plural form off a
+  // single `count`, which the sentence already spends on the operations.
+  const breakdown = [
+    t('aiAgentsPage.catalog.approvalRequestCount', { count: summary.approvalRequests }),
+    t('aiAgentsPage.catalog.loggedProposalCount', { count: summary.loggedProposals }),
+    ...(mode === 'act' ? [t('aiAgentsPage.catalog.unattendedCount', { count: summary.unattended.length })] : []),
+  ].join(', ');
   const searchInputId = useId();
   const showNamesLabelId = useId();
 
@@ -198,6 +222,7 @@ export default function CapabilityPicker({
     const enabledOps = mutatingOpsFor(capabilityId);
     const capDisabled = enabledOps.length > 0 && enabledOps.every((op) => !isWithinCeiling(op.key, ceiling));
     const capTools = catalog.tools.filter((tool) => tool.capability === capabilityId && tool.operations.some((op) => !op.readOnly));
+    const showAllOps = !searchLower || !anyOperationMatches(capabilityId);
 
     return (
       <li key={capabilityId} data-testid={`capability-row-${capabilityId}`}>
@@ -253,13 +278,19 @@ export default function CapabilityPicker({
         {isOpen && (
           <div className="space-y-2 border-t bg-muted/20 px-3 py-2">
             {capTools.map((tool) => {
-              const mutating = tool.operations.filter((op) => !op.readOnly);
+              const allMutating = tool.operations.filter((op) => !op.readOnly);
+              const mutating = showAllOps ? allMutating : allMutating.filter((op) => operationMatchesSearch(tool, op));
+              if (mutating.length === 0) return null;
               return (
                 <div key={tool.name}>
-                  {mutating.length > 1 && <p className="pl-6 text-xs font-semibold text-muted-foreground">{toolLabel(tool.name)}</p>}
+                  {/* The tool heading keys off the tool's FULL operation count, so a
+                      search that narrows a multi-op tool to one row still says
+                      which tool that row belongs to. */}
+                  {allMutating.length > 1 && <p className="pl-6 text-xs font-semibold text-muted-foreground">{toolLabel(tool.name)}</p>}
                   <ul>
                     {mutating.map((op) => {
-                      const outcome = outcomeFor(op, mode);
+                      const outcome = outcomeFor(op, mode, outcomeContext);
+                      const blockedBy = unattendedBlockedBy(op, mode, outcomeContext);
                       return (
                         <OperationRow
                           key={op.key}
@@ -272,6 +303,7 @@ export default function CapabilityPicker({
                           showKey={showNames}
                           policyDecidableTitle={t('aiAgentsPage.catalog.preauthorizable')}
                           notInCeilingLabel={t('aiAgentsPage.catalog.notInCeiling')}
+                          note={blockedBy === 'authorized_scripts' ? t('aiAgentsPage.catalog.scriptGateNote') : undefined}
                           onToggle={toggleOperation}
                         />
                       );
@@ -419,8 +451,7 @@ export default function CapabilityPicker({
           // pluralising "capabilities" inside the summary string itself.
           count: summary.operations,
           capabilityPhrase: t('aiAgentsPage.catalog.capabilityCount', { count: summary.capabilities }),
-          approvalRequests: summary.approvalRequests,
-          loggedProposals: summary.loggedProposals,
+          breakdown,
         })}
       </p>
     </div>

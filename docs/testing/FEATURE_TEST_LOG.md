@@ -4,6 +4,46 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## AI agent builder — capability picker + four-step create flow (#5048 W01–W03) — 2026-09-06
+
+**Branch:** `ai-agent-refinement` (== `main`)
+**Commit:** `c52846222`
+**Tested by:** Claude (Playwright MCP against a `pnpm wt-stack` stack, `BREEZE_AI_AGENTS_ENABLED=true`, `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED=true`)
+**Result:** PASS with findings (1 truthfulness defect, 3 UX, several copy/a11y nits)
+
+### What was tested
+- [x] UI: Settings → AI agents empty state → "Create your first agent" opens the full-width four-step flow; empty-name validation (summary list + inline + aria-invalid); mode/kind/owner-scope/name/instructions on step 1.
+- [x] UI: Step 2 picker — "Use recommended" preset (6 ops / 4 capabilities), tri-state parent checkbox (indeterminate → all → none), search, "Show tool names" switch, "60 read-only tools" disclosure, "More capabilities (10)", live summary line.
+- [x] UI: Act mode acknowledgement gates Next; outcomes re-evaluate per mode (Approval request / Logged proposal / Executes unattended) with selections preserved.
+- [x] UI: Step 3 protected resources, ceiling keys (partner draft), limits, notify roles; state survives Edit round-trips.
+- [x] UI: Step 4 review card from `POST /ai/agents/preview` (one debounced call), seven rows, Edit links land on the right step and carry the server error onto it; "Start enabled" flips the pill Created disabled → Enabled.
+- [x] UI: Create partner-wide act agent (disabled) and org-only shadow agent (enabled); success toast + highlighted row; "Running"/"Not running" states.
+- [x] UI: Edit drawer round-trips the saved allowlist (6 checked, ceiling key kept); injected `totally_unknown_tool`, bare `manage_startup_items`, `get_device` render under "Unrecognised or unreachable entries" with Remove; bare entry shows as wildcard (both startup ops checked) and is retained on save, not widened or dropped.
+- [x] UI: Org draft — `GET /ai/agents/ceiling?kind=triage` disables 31 ops "Not in partner baseline"; preset only selects ops inside the ceiling; no unattended-keys section for org rows.
+- [x] UI: 390px viewport — no horizontal overflow, stepper stacks vertically.
+- [x] API: saved rows verified — partner row `mode=act enabled=false toolAllowlist=[disk_cleanup:execute, manage_alerts:acknowledge, manage_alerts:resolve, manage_services:restart, manage_startup_items:disable, run_script] supervisedActionKeys=[manage_services:restart]`; org row `mode=shadow enabled=true orgId set partnerId null keys=[]`; list returns `partnerBaselineKinds=["triage"]`.
+- [x] API: `GET /ai/agents/tool-catalog` → 103 tools (60 read-only), 87 unreachable pinned; `run_script` `actEligible=true`.
+- [ ] Agent: n/a (no agent-side change).
+
+### Evidence
+- Network: `tool-catalog` fetched once per flow open, `ceiling?kind=` once per kind, `preview` once per step-4 entry (debounced), `POST /ai/agents` 422 then 201.
+- Console: only the pre-existing sidebar-tour hydration mismatch and the two expected 422s; no feature JS errors.
+- DB: `partner_users` — only Partner Admin has an active member in the seed.
+
+### Issues Found
+1. **Truthfulness (P1):** in act mode the picker and the review card say "Run a script — Executes unattended", but `remediationActResolver.ts:173` refuses unattended `run_script` unless the script is in `actAssets.scriptIds`, and `hasActEligibleSurface` (agentService.ts) only counts `run_script` when `scriptIds` is non-empty. The builder never sets `scriptIds` (agentDraft.ts deliberately omits it), so every agent built here shows an outcome that cannot happen. Preview/picker should report `run_script` as "Approval request until a script is authorized" (or the catalog should expose `actEligible` conditional on assets).
+2. **Misleading 422 (P2):** with Partner Technician selected as recipient, create in act mode returned `act_prerequisites_not_met: recipient` and the flow showed "Add at least one notification recipient before enabling act mode." The server (`recipients.ts` `hasResolvableAgentRecipient`) requires the role to have at least one *active member*; the role was empty in this stack. Copy should say the chosen roles have no active members, and step 3 could show member counts / disable empty roles.
+3. **Stepper (P2):** after any Edit link from Review, steps 2–4 are disabled again; returning to Review takes three Next clicks. Visited steps should stay reachable (validation gates already protect each step).
+4. **Search (P2):** filters at capability level only — "isolate" shows the whole 12-op Security response group, not the one matching op.
+5. **Copy (P3):** "Up to 1 devices per run", "1 roles are asked", "1 approval requests"; in act mode "May propose: 6 operations … 1 raise an approval request … 2 are logged" omits the 3 unattended ones; approvers row does not name the role(s).
+6. **A11y (P3):** completed stepper step buttons (check icon) lose their accessible name; the mode-change `role=status` region stays empty.
+7. **Default owner scope (P3):** with no partner baseline, step 1 defaults to "This organization only" and then warns the agent has no effect until a baseline exists; default to "All organizations" when no baseline exists.
+8. Retracted: `get_device — This tool no longer exists` is correct (not a registered tool).
+
+### Notes
+- #5059 (stale "no partner-wide baseline" notice) did not reproduce on the list after the partner triage agent was created.
+- Stack: `pnpm wt-stack up` on the worktree; `.env` copied from `fix-3750` + AI flags appended.
+
 ## Auth browser/native transition Phase 1 foundation (#3852) — 2026-08-23
 
 **Branch:** `feat/3852-auth-browser-transition`

@@ -1,10 +1,19 @@
-import { outcomeFor, type AgentCeilingDto, type AgentToolCatalogDto } from '@breeze/shared';
+import {
+  outcomeFor,
+  unattendedBlockedBy,
+  type AgentCeilingDto,
+  type AgentOutcomeContext,
+  type AgentToolCatalogDto,
+} from '@breeze/shared';
 
 // Task 13 (#5051 review) — the ONE outcome rule: this used to be a local
 // copy byte-identical to `agentPreview.ts`'s server-side `resolveOutcome`.
 // Re-exported so `CapabilityPicker.tsx` and this module's own test suite
-// keep importing it from here unchanged.
-export { outcomeFor };
+// keep importing it from here unchanged. `unattendedBlockedBy` (#5048 QA)
+// names the prerequisite an act-eligible operation is still missing — today
+// only `run_script` without an authorized script — so the picker can say so.
+export { outcomeFor, unattendedBlockedBy };
+export type { AgentOutcomeContext };
 
 export type OperationOutcome = 'approval_request' | 'logged_proposal' | 'unattended';
 export type AgentModeLike = 'off' | 'shadow' | 'act';
@@ -103,7 +112,11 @@ export function isWithinCeiling(opKey: string, ceiling: AgentCeilingDto | null):
 export function summarise(
   selected: Set<string>,
   catalog: AgentToolCatalogDto,
-  mode: AgentModeLike
+  mode: AgentModeLike,
+  /** `actAssets.scriptIds.length` for the row being edited; the guided create
+   *  flow never sets it, so its default (no authorized scripts) keeps a
+   *  script-gated `run_script` counted as an approval request (#5048 QA). */
+  context?: AgentOutcomeContext
 ): {
   operations: number;
   capabilities: number;
@@ -120,7 +133,7 @@ export function summarise(
     for (const op of tool.operations) {
       if (!selected.has(op.key) || op.readOnly) continue;
       caps.add(tool.capability);
-      const outcome = outcomeFor(op, mode);
+      const outcome = outcomeFor(op, mode, context);
       if (outcome === 'approval_request') approvalRequests++;
       else if (outcome === 'logged_proposal') loggedProposals++;
       else unattended.push(op.key);

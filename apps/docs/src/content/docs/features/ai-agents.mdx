@@ -178,7 +178,7 @@ Every mutating operation carries one outcome badge, for the agent's current mode
 |---|---|
 | **Approval request** | Tier 3. Recorded as a proposal; a technician decides in Approvals. |
 | **Logged proposal** | Tier 2. Recorded in the run's outcome and never executed. |
-| **Executes unattended** | Act mode only, and only for the fixed, act-eligible operations described in [Act mode](#act-mode). |
+| **Executes unattended** | Act mode only, and only for the fixed, act-eligible operations described in [Act mode](#act-mode). **Run a script** is the one exception: it stays an approval request until at least one script is authorized for the agent, and the picker and review card say so rather than promising an unattended run. |
 
 A green dot marks an operation that **can be pre-authorized** — eligible, on a clean enough record, to graduate out of the approval queue (see [Graduation](#graduation-feedback-loop)). The dot means eligible, not authorized: nothing is pre-authorized until a second person promotes it. On an organization's agent, an operation its partner-wide baseline hasn't granted is marked **Not in partner baseline** and its checkbox is disabled — unless it's already selected, in which case it stays enabled just long enough to be unchecked, so a grant made before the baseline narrowed can still be removed. The partner row is a ceiling on what the organization may be granted, not a starting grant of its own. Pre-authorized operations can no longer be added to an organization's agent directly in this form: its own supervised-keys section is a read-only list of what it already holds, not a checkbox — a key becomes eligible only by promoting an Eligible row in Graduation or the four-eyes request it raises, never by an operator's checkbox.
 

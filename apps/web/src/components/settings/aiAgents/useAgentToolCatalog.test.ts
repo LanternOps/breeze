@@ -19,7 +19,7 @@ const CATALOG = {
       capability: 'services_startup',
       tier: 3,
       readOnly: false,
-      operations: [{ key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true }],
+      operations: [{ key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false }],
     },
   ],
   presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },

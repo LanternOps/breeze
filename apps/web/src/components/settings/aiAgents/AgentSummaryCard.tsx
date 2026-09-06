@@ -12,6 +12,10 @@ export interface AgentSummaryCardProps {
   /** Whether the agent will be created/saved enabled. Defaults to false — the
    *  guided create flow always creates disabled (spec §4.6 step 1's footer). */
   enabled?: boolean;
+  /** Role id -> display name for the caller's GET /roles list. When every
+   *  recipient role resolves, the approvers row names them; otherwise (no
+   *  map, or a role deleted since) it falls back to the count (#5048 QA). */
+  recipientRoleNames?: ReadonlyMap<string, string>;
   onEdit?: (section: 'purpose' | 'does' | 'safety') => void;
 }
 
@@ -110,7 +114,14 @@ function SummaryRow({
  * through separately (agentPreview.ts) so this card can render it alongside
  * the other five without reaching into a differently-shaped policy row.
  */
-export default function AgentSummaryCard({ preview, name, orgName, enabled = false, onEdit }: AgentSummaryCardProps) {
+export default function AgentSummaryCard({
+  preview,
+  name,
+  orgName,
+  enabled = false,
+  recipientRoleNames,
+  onEdit,
+}: AgentSummaryCardProps) {
   const { t } = useTranslation('settings');
 
   const toolLabel = (toolName: string) =>
@@ -163,24 +174,36 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
   const capabilitiesTouched = new Set(mutatingOps.map((op) => op.capability)).size;
   const approvalRequests = mutatingOps.filter((op) => op.outcome === 'approval_request').length;
   const loggedProposals = mutatingOps.filter((op) => op.outcome === 'logged_proposal').length;
+  const unattendedOps = mutatingOps.filter((op) => op.outcome === 'unattended');
+  // Every listed operation lands in exactly one of the three phrases — the
+  // sentence used to skip the unattended ones, so "6 operations: 1 … and 2 …"
+  // left three unaccounted for (#5048 QA). Each count pluralises on its own,
+  // so the parts are pre-pluralised and joined as one `breakdown`.
+  const breakdownParts: string[] = [];
+  if (approvalRequests > 0) breakdownParts.push(t('aiAgentsPage.summary.approvalCount', { count: approvalRequests }));
+  if (loggedProposals > 0) breakdownParts.push(t('aiAgentsPage.summary.loggedCount', { count: loggedProposals }));
+  if (unattendedOps.length > 0) breakdownParts.push(t('aiAgentsPage.summary.unattendedCount', { count: unattendedOps.length }));
   const mayProposeText =
     mutatingOps.length === 0
       ? t('aiAgentsPage.summary.mayProposeNone')
       : t('aiAgentsPage.summary.mayPropose', {
-          operations: mutatingOps.length,
-          capabilities: capabilitiesTouched,
-          approvalRequests,
-          loggedProposals,
+          count: mutatingOps.length,
+          capabilityPhrase: t('aiAgentsPage.catalog.capabilityCount', { count: capabilitiesTouched }),
+          breakdown: listFormat(breakdownParts),
         });
 
   // --- Executes unattended ---
-  const unattendedOps = mutatingOps.filter((op) => op.outcome === 'unattended');
   const anyPreauthorized = mutatingOps.some((op) => op.preauthorized);
   let executesUnattendedText: string;
   if (preview.mode !== 'act') executesUnattendedText = t('aiAgentsPage.summary.executesUnattendedNone');
   else if (unattendedOps.length === 0) executesUnattendedText = t('aiAgentsPage.summary.executesUnattendedNoneAct');
   else executesUnattendedText = t('aiAgentsPage.summary.executesUnattendedList', { list: listFormat(unattendedOps.map((op) => opLabel(op.key))) });
   if (anyPreauthorized) executesUnattendedText = `${executesUnattendedText} ${t('aiAgentsPage.summary.preauthorizedNote')}`;
+  // Act-eligible but held back by a missing prerequisite (`run_script` with
+  // no authorized script): the server already downgraded the outcome to an
+  // approval request; this says why, so the card never reads as if the
+  // operation were simply ineligible (#5048 QA).
+  const scriptGatedOps = mutatingOps.filter((op) => op.unattendedBlockedBy === 'authorized_scripts');
 
   // --- Never touches ---
   // Tagged with which list each entry came from: the three protected-resource
@@ -199,18 +222,26 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
   const dailyBudget = formatCurrency(preview.limits.maxBudgetCentsPerDay / 100);
   const fleetPercent = formatPercent(preview.limits.maxFleetPercentPerDay / 100);
   const cooldownMinutes = Math.round(preview.cooldownSeconds / 60);
+  // Four of the six numbers carry their own noun, so each is pre-pluralised
+  // ("1 device", "2 minutes") before the sentence is assembled (#5048 QA:
+  // "Up to 1 devices per run").
   const limitsText = t('aiAgentsPage.summary.limits', {
-    devices: preview.limits.maxDevicesPerRun,
-    runsPerHour: preview.limits.maxRunsPerHour,
-    minutes: minutesPerRun,
+    devices: t('aiAgentsPage.summary.deviceCount', { count: preview.limits.maxDevicesPerRun }),
+    runs: t('aiAgentsPage.summary.runsPerHourCount', { count: preview.limits.maxRunsPerHour }),
+    minutes: t('aiAgentsPage.summary.minuteCount', { count: minutesPerRun }),
     budget: dailyBudget,
     fleetPercent,
-    cooldown: cooldownMinutes,
+    cooldown: t('aiAgentsPage.summary.minuteCount', { count: cooldownMinutes }),
   });
 
   // --- Approvers ---
-  const approverCount = preview.recipients.roleIds.length;
-  const approversText = approverCount > 0 ? t('aiAgentsPage.summary.approvers', { count: approverCount }) : t('aiAgentsPage.summary.approversNone');
+  const approverRoleIds = preview.recipients.roleIds;
+  const approverNames = approverRoleIds.map((id) => recipientRoleNames?.get(id)).filter((name): name is string => !!name);
+  let approversText: string;
+  if (approverRoleIds.length === 0) approversText = t('aiAgentsPage.summary.approversNone');
+  else if (approverNames.length === approverRoleIds.length) {
+    approversText = t('aiAgentsPage.summary.approvers', { count: approverNames.length, roles: listFormat(approverNames) });
+  } else approversText = t('aiAgentsPage.summary.approversCount', { count: approverRoleIds.length });
 
   return (
     <div className="rounded-lg border bg-card p-4" data-testid="agent-summary-card">
@@ -284,7 +315,12 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
           onEdit={onEdit}
           editLabel={editLabel}
         >
-          {executesUnattendedText}
+          <p>{executesUnattendedText}</p>
+          {scriptGatedOps.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="agent-summary-script-gate">
+              {t('aiAgentsPage.summary.scriptGateNote', { list: listFormat(scriptGatedOps.map((op) => opLabel(op.key))) })}
+            </p>
+          )}
         </SummaryRow>
 
         <SummaryRow id="neverTouches" label={t('aiAgentsPage.summary.rowLabels.neverTouches')} section={ROW_SECTION.neverTouches} onEdit={onEdit} editLabel={editLabel}>
