@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
@@ -79,6 +79,7 @@ import {
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
+import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
 
@@ -233,7 +234,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'cis_baseline_results', 'cis_remediation_actions',
   'deployment_invites',
   'device_agent_health_latest', 'device_boot_metrics', 'device_change_log', 'device_config_state',
-  'device_connections', 'device_disks', 'device_event_logs',
+  'device_connections', 'device_custom_field_values', 'device_disks', 'device_event_logs',
   'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
@@ -464,6 +465,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // device_id -> devices.id ON DELETE CASCADE (composite with org_id);
   // leaf table, no children.
   'device_mtls_certificates',
+  // custom-field values (#3257 W05) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_custom_field_values',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
@@ -1607,6 +1611,7 @@ coreRoutes.patch(
     // /devices/:id/custom-fields) for why this must hold on both write paths.
     // All-or-nothing per request; nothing else in this PATCH is written when
     // a custom field fails (#3257 W04).
+    let customFieldWrites: CustomFieldValueWrite[] = [];
     if (data.customFields !== undefined) {
       const validation = await validateCustomFieldMap(device.orgId, device.osType, data.customFields);
       if (!validation.ok) {
@@ -1620,6 +1625,19 @@ coreRoutes.patch(
         );
       }
       data.customFields = validation.values;
+      customFieldWrites = validation.writes;
+    }
+
+    // Values go to `device_custom_field_values`; `devices.custom_fields` is a
+    // trigger-maintained projection of that table now (#3257 W05), so this
+    // PATCH must NOT put `customFields` in its own `updates` set — the write
+    // would be reverted by the projection on the next value write and would
+    // bypass the composite device/org FK and the coherence trigger. Written
+    // BEFORE the devices UPDATE below so that statement's RETURNING already
+    // carries the rebuilt projection; the whole handler runs inside the
+    // request transaction, so a later failure rolls both back together.
+    if (customFieldWrites.length > 0) {
+      await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -1630,15 +1648,10 @@ coreRoutes.patch(
       updates.deviceRole = data.deviceRole;
       updates.deviceRoleSource = 'manual';
     }
-    if (data.customFields !== undefined) {
-      // Merge with existing (coerced) custom fields rather than replacing
-      const raw = device.customFields;
-      const existing: Record<string, unknown> =
-        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-          ? (raw as Record<string, unknown>)
-          : {};
-      updates.customFields = { ...existing, ...data.customFields };
-    }
+    // NOTE: no `updates.customFields` branch. Custom-field values were written
+    // to `device_custom_field_values` above; the merge-with-existing semantics
+    // this used to implement are now the upsert's, keyed on
+    // (device_id, definition_id) so only the requested keys are touched.
 
     // When the PATCH changes the device's site, the denormalized `site_id`
     // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in
@@ -1998,8 +2011,43 @@ coreRoutes.delete(
     //     worse than telling the operator to wait. The response therefore
     //     drops `agentUninstallSent`/`warning`: there is nothing best-effort
     //     left to report.
+    // #5023 wave 05 — the cascade runs in a SYSTEM db context, matching
+    // `jobs/deviceBulkPurge.ts`'s `purgeOne`. Before this wave, the cascade ran
+    // under the CALLER's tenant-scoped context (the one `withDbAccessContext`
+    // opened for this request), and `services/deviceDeletion.ts` documents that
+    // at least one cascade table (`abuse_endpoint_fingerprints`) is
+    // deliberately invisible under tenant RLS policy — so this single-device
+    // path could strand rows that bulk purge (which has always run in a system
+    // context) removes cleanly.
+    //
+    // Authorisation is unaffected and stays exactly where it is: both the
+    // `getDeviceWithOrgAndSiteCheck` chokepoint above and the decommissioned
+    // pre-check just above run BEFORE this escalation, entirely inside the
+    // ordinary tenant-scoped request context. A caller who fails either check
+    // never reaches a system-scoped connection.
+    //
+    // `runOutsideDbContext` MUST wrap `withSystemDbAccessContext`, not the
+    // other way around: this route is already inside the request's
+    // `withDbAccessContext` transaction (the auth middleware opens one for
+    // every request — #1105), and opening a second nested context without
+    // first exiting the first would pin two pooled connections for the
+    // duration of this call instead of one (CLAUDE.md's DB context helpers
+    // contract).
+    //
+    // `purgeRemovedDevice`'s own `SELECT ... devices FOR UPDATE` + status
+    // re-check still runs, now strictly BETTER than before: under system
+    // context the devices row is fully visible, so that lock actually holds. In
+    // the old tenant-scoped path, an RLS-filtered row would have silently
+    // locked nothing (see the `deviceDeletion.ts` comment on
+    // `deleteDeviceCascade`'s parent lock) — a hazard this escalation closes as
+    // a side effect, not just for the invisible child table it targets.
     try {
-      const purge = await db.transaction((tx) => purgeRemovedDevice(tx, deviceId));
+      const purge = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(
+          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId)),
+          'devices.permanentDelete',
+        ),
+      );
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
     } catch (err: unknown) {

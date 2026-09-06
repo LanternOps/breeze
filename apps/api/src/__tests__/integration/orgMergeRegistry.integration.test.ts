@@ -252,6 +252,15 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // migration's deploy-abort is ever weakened, this moves to BLOCKING.
   'custom_field_definitions.custom_field_definitions_no_shadow':
     'cross-axis field_key namespace check against the DESTINATION org\'s partner; a merge is same-partner, so the repoint cannot change the namespace being checked',
+  // BEFORE INSERT/UPDATE coherence check (#3257 W05,
+  // 2026-10-11-160000-device-custom-field-values.sql) carries an explicit merge
+  // fence: it permits the org_id repoint when the value's definition is still
+  // owned by an org that is actively status='merging' under the SAME partner as
+  // the row's new org, so the merge's early devices repoint (which restamps this
+  // table via breeze_cascade_device_org_id's generic loop while the definition
+  // is still loser-owned) does not abort.
+  'device_custom_field_values.device_custom_field_values_coherent':
+    'merge fence: permits the repoint while the definition is still loser-owned, gated on same-partner status=\'merging\'',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',

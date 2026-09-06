@@ -217,6 +217,10 @@ moveOrgRoutes.post(
     // derived state (correlation members / groups, AI alert verdicts) to carry
     // over. See AlertChildOrgRewriteCounts.
     let alertChildRewrite: AlertChildOrgRewriteCounts | null = null;
+    // #3257 W05 — how many custom-field values were re-pointed onto the target
+    // org's definitions, and how many had no counterpart there and were dropped.
+    // Recorded in the audit so a dropped value is traceable to this move.
+    let customFieldRehome: { rehomed: number; dropped: number } = { rehomed: 0, dropped: 0 };
     try {
       await db.transaction(async (tx) => {
         // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
@@ -258,6 +262,37 @@ moveOrgRoutes.post(
         await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
+
+        // #3257 W05 — custom-field values must be re-homed BEFORE the org flip.
+        //
+        // A device carries its values, but an ORG-OWNED definition does not
+        // travel with it. The instant devices.org_id flips,
+        // breeze_cascade_device_org_id's generic loop restamps
+        // device_custom_field_values.org_id, and that table's coherence trigger
+        // then correctly refuses the row because it still names the SOURCE org's
+        // definition — a raw P0001 aborting the whole move. So: re-point each
+        // value onto the TARGET org's identically-keyed VISIBLE definition, and
+        // drop the ones with no counterpart, reporting both counts into the move
+        // audit rather than losing data silently.
+        //
+        // The work is a DB function, not inline SQL, for two reasons it cannot
+        // do from here: it reads custom_field_definitions across the org/partner
+        // axis (an org-scoped request context cannot see partner-wide rows,
+        // #4944), and it must pre-acquire BOTH orgs' partner-export locks in
+        // ascending UUID order before the projection trigger requests one — the
+        // same reason breeze_cascade_device_org_id pre-acquires them.
+        // Values under PARTNER-WIDE definitions need no re-home while the move
+        // stays inside one partner; a cross-partner move (system scope only)
+        // loses that visibility too and drops them by the same rule.
+        const [customFieldMove] = await tx.execute<{ rehomed: number; dropped: number }>(
+          sql`SELECT rehomed, dropped
+                FROM public.breeze_rehome_device_custom_field_values(
+                  ${deviceId}::uuid, ${targetOrgId}::uuid)`,
+        );
+        customFieldRehome = {
+          rehomed: Number(customFieldMove?.rehomed ?? 0),
+          dropped: Number(customFieldMove?.dropped ?? 0),
+        };
 
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
@@ -931,6 +966,14 @@ moveOrgRoutes.post(
       // and how many correlation groups were held back on purpose. Omitted
       // entirely for a device with no alerts, so a quiet move adds no noise.
       ...(alertChildCounts ? { alertChildRewrite: alertChildCounts } : {}),
+      // #3257 W05 — custom-field values re-pointed onto the target org's
+      // identically-keyed definitions, and values DROPPED because the target org
+      // defines no such key. A dropped value is unrecoverable, so the count is
+      // on the record even though the operator was not prompted. Omitted for a
+      // device with no values, so a quiet move adds no noise.
+      ...(customFieldRehome.rehomed > 0 || customFieldRehome.dropped > 0
+        ? { customFieldValues: customFieldRehome }
+        : {}),
     } as const;
 
     writeRouteAudit(c, {
