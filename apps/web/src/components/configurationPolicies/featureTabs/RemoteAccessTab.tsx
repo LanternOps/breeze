@@ -172,6 +172,10 @@ export default function RemoteAccessTab({
       saving={saving}
       error={error}
       onSave={handleSave}
+      // Gated on THIS FEATURE's own parentLink, not the policy-level
+      // linkedPolicyId the older inline tabs use — see SecurityTab.tsx for the
+      // rationale (a policy-level gate would show "Revert to Parent" when the
+      // parent has no link for this feature, reverting to nothing).
       onRemove={!parentLink ? handleRemove : undefined}
       isInherited={isInherited}
       onOverride={isInherited ? handleSave : undefined}

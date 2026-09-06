@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import SecurityTab from './SecurityTab';
 import type { FeatureLink, FeatureTabProps } from './types';
 
@@ -88,6 +88,9 @@ describe('SecurityTab inheritance (#5080)', () => {
     fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
 
     expect(removeMock).toHaveBeenCalledWith('link-own');
+    // The detail page's own featureLinks state must be told the override is
+    // gone (#5080) — otherwise it stays stale after a successful revert.
+    await waitFor(() => expect(onLinkChanged).toHaveBeenCalledWith(null, 'security'));
   });
 
   it('sends featurePolicyId: null on a plain (non-inherited) save', () => {

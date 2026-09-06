@@ -387,4 +387,26 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
     openFeatureTab('Backup');
     expect(screen.queryByText(/Inheriting from/i)).not.toBeInTheDocument();
   });
+
+  // Regression guard for #5023: the pre-persistence flow set inheritance state
+  // from a `?linked=` query param, which a reload/bookmark/list-page visit lost
+  // entirely. That param is no longer read at all — only policy.parentPolicy
+  // matters — so a leftover `?linked=` from an old bookmark must be inert.
+  it('ignores a leftover ?linked= query param — only policy.parentPolicy drives the banner', async () => {
+    const originalSearch = window.location.search;
+    window.history.replaceState(null, '', '?linked=some-other-policy-id');
+    try {
+      mockPolicy({ orgId: 'org-1', partnerId: null }); // parentPolicyId: null (mockPolicy default)
+      render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+      await screen.findByRole('heading', { name: 'Test Policy' });
+      openFeatureTab('Backup');
+      expect(screen.queryByText(/Inheriting from/i)).not.toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/some-other-policy-id')
+      ).toBe(false);
+    } finally {
+      window.history.replaceState(null, '', originalSearch);
+    }
+  });
 });

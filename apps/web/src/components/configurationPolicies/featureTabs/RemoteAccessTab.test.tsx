@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import RemoteAccessTab from './RemoteAccessTab';
 
 // useFeatureLink wraps the save/remove API calls; stub it so we can assert the
@@ -132,7 +132,7 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     expect(payload.inlineSettings).toMatchObject({ maxConcurrentTunnels: 12 });
   });
 
-  it('Revert to Parent removes the override', () => {
+  it('Revert to Parent removes the override', async () => {
     const existingLink = {
       id: 'link-own',
       featureType: 'remote_access' as const,
@@ -150,5 +150,8 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
 
     expect(removeMock).toHaveBeenCalledWith('link-own');
+    // The detail page's own featureLinks state must be told the override is
+    // gone (#5080) — otherwise it stays stale after a successful revert.
+    await waitFor(() => expect(onLinkChanged).toHaveBeenCalledWith(null, 'remote_access'));
   });
 });
