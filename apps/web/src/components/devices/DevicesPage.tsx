@@ -971,19 +971,10 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (pdCancelled) return;
             try {
-              const result = await permanentDeleteDevice(device.id);
-              showToast(
-                result.warning
-                  ? {
-                      type: 'warning',
-                      message: t('devicesPage.toasts.permanentlyDeletedWithWarning', {
-                        hostname: device.hostname,
-                        warning: result.warning,
-                      }),
-                      duration: 10000,
-                    }
-                  : { type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) }
-              );
+              await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
+              showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
               await fetchDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });

@@ -2156,13 +2156,15 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
   });
 });
 
-// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the
-// agent could not be reached for remote uninstall (decommission force-closes
-// the WS handshake, so this is the common case, not a rare race — see the
-// issue). The row/grid path must branch the toast on it instead of always
-// showing a green success, or the operator believes the endpoint is clean
-// when the agent is still installed and running.
-describe('DevicesPage — permanent delete surfaces the API warning (#4368)', () => {
+// #4368 was "surface the API's `warning` when the agent could not be reached
+// for remote uninstall". #2787 DELETED that warning: the best-effort WS
+// uninstall it described is gone, and permanent delete now REFUSES
+// (409 UNINSTALL_PENDING) while a durable agent uninstall is still
+// collectable, rather than deleting the device and hoping. So there is no
+// warning to surface any more, and the toast is unconditionally the success
+// one. What is pinned here is that the branch really is gone — not that it
+// happens not to fire for the bodies the API sends today.
+describe('DevicesPage — permanent delete toasts success, with no warning branch (#2787, was #4368)', () => {
   beforeEach(() => {
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
@@ -2188,38 +2190,39 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
     }
   }
 
-  it('shows a warning toast (not success) when the agent could not be reached', async () => {
+  it('shows a success toast for the plain { success: true } body the API now returns', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
-      success: true,
-      agentUninstallSent: false,
-      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-    } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(
-      expect.objectContaining({
-        type: 'warning',
-        message: expect.stringContaining('host-alpha'),
-      }),
+      expect.objectContaining({ type: 'success', message: expect.stringContaining('host-alpha') }),
     );
-    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
-    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
 
-  it('still shows a success toast when there is no warning', async () => {
+  /**
+   * The DISCRIMINATING half. Feeding a body that still carries the retired
+   * `warning` field proves the branch was removed rather than merely being
+   * unreachable with today's payloads — a dead `if` would resurrect the
+   * warning toast here and claim an uninstall attempt that no longer exists.
+   */
+  it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      warning: 'The agent could not be reached for remote uninstall.',
+    } as never);
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
-    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
   });
 
   // Paper cut: the undo toast shown the instant the delete is triggered never

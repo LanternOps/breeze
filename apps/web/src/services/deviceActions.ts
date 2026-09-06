@@ -478,9 +478,20 @@ export async function restoreDevice(deviceId: string): Promise<{ success: boolea
   return data.data ?? data;
 }
 
+/**
+ * Permanently delete a REMOVED device.
+ *
+ * The body is `{ success: true }` and nothing else. It used to carry
+ * `agentUninstallSent` / `warning` describing a best-effort WS uninstall the
+ * API fired after the cascade; #2787 deleted that dispatch — permanent delete
+ * now REFUSES (409 `UNINSTALL_PENDING`) while a durable agent uninstall is
+ * still collectable, instead of destroying it and reporting a warning. There
+ * is nothing best-effort left to report, so the fields are gone rather than
+ * left declared-but-never-populated.
+ */
 export async function permanentDeleteDevice(
   deviceId: string
-): Promise<{ success: boolean; agentUninstallSent?: boolean; warning?: string }> {
+): Promise<{ success: boolean }> {
   const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
     method: 'DELETE'
   });
