@@ -129,6 +129,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // columns (neither is in SENSITIVE_DEVICE_FIELDS).
         linkGroupId: data.linkGroupId ?? null,
         linkGroupRole: data.linkGroupRole ?? null,
+        // What became of the agent-uninstall a Remove queued (#3987 item 7) —
+        // the ONLY input to UninstallStateBadge, and the same dropped-field
+        // mode as the three fields above: the badge's `undefined` guard means
+        // omitting it here renders nothing at all, silently.
+        //
+        // `?? null` rather than a passthrough is load-bearing. On THIS payload
+        // an absent field means "this Remove queued no uninstall", which the
+        // badge reports as "left installed"; `undefined` means "this payload
+        // does not carry the field" (a device-list row) and says nothing. The
+        // detail endpoint always knows, so it must never hand the badge the
+        // list row's answer. See the component doc on UninstallStateBadge.
+        uninstall: data.uninstall ?? null,
         // RDS per-session helper mode (Task 12) — gates the session pickers
         // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
         // detail endpoint's full-row spread already includes it.
