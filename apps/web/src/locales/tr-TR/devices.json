@@ -2128,6 +2128,8 @@
     "notConfigured": "Yapılandırılmadı",
     "notLinked": "Bağlantılı değil",
     "openWebUi": "Web kullanıcı arayüzünü aç",
+    "proxyPort": "Bağlantı noktası",
+    "proxyPortInvalid": "1 ile 65535 arasında bir bağlantı noktası girin",
     "proxyErrors": {
       "disabled": "Bu hedef proxy erişimi için devre dışı bırakıldı. Bağlanabilmeniz için yöneticinin bunu Ayarlar'da yeniden etkinleştirmesi gerekir.",
       "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir; bunu profilinizde etkinleştirin.",

@@ -2128,6 +2128,8 @@
     "notConfigured": "Nicht konfiguriert",
     "notLinked": "Nicht verlinkt",
     "openWebUi": "Web-UI öffnen",
+    "proxyPort": "Port",
+    "proxyPortInvalid": "Geben Sie einen Port zwischen 1 und 65535 ein",
     "proxyErrors": {
       "disabled": "Dieses Ziel wurde für den Proxy-Zugriff deaktiviert. Ein Administrator muss es in den Einstellungen wieder aktivieren, bevor Sie sich verbinden können.",
       "mfaRequired": "Für den Fernzugriff ist eine Zwei-Faktor-Authentifizierung erforderlich – aktivieren Sie sie in Ihrem Profil.",

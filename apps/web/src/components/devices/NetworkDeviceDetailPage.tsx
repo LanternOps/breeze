@@ -126,10 +126,11 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 function ProxyConnectPopover({
   assetId,
   assetIp,
-  port,
+  port: initialPort,
   service,
   suggestedBridgeDeviceId,
   devices,
+  variant = 'pill',
 }: {
   assetId: string;
   assetIp: string;
@@ -137,9 +138,19 @@ function ProxyConnectPopover({
   service?: string;
   suggestedBridgeDeviceId: string | null;
   devices: DeviceOption[];
+  // 'pill' — icon-only trigger on an open-port chip, port fixed.
+  // 'header' — labeled page-level action, port editable. This is the entry
+  // point that survives when the scan recorded no (web) ports at all.
+  variant?: 'pill' | 'header';
 }) {
   const { t } = useTranslation('devices');
   const [open, setOpen] = useState(false);
+  const [port, setPort] = useState(initialPort);
+  const [portText, setPortText] = useState(String(initialPort));
+  useEffect(() => {
+    setPort(initialPort);
+    setPortText(String(initialPort));
+  }, [initialPort]);
   const containerRef = useRef<HTMLDivElement>(null);
   useClickOutside(open, containerRef, () => setOpen(false));
   useEscapeClose(open, () => setOpen(false));
@@ -163,12 +174,19 @@ function ProxyConnectPopover({
   }, [defaultDeviceId]);
 
   const [scheme, setScheme] = useState<'http' | 'https'>(() => defaultSchemeForPort(port, service));
+  useEffect(() => {
+    // The scanned service label only describes the scanned port; once the
+    // operator types a different port, derive the scheme from the number alone.
+    setScheme(defaultSchemeForPort(port, port === initialPort ? service : undefined));
+  }, [port, initialPort, service]);
   const [skipTlsVerify, setSkipTlsVerify] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [inlineError, setInlineError] = useState<string>();
 
+  const portValid = Number.isInteger(port) && port >= 1 && port <= 65535;
+
   const handleConnect = useCallback(async () => {
-    if (!deviceId) return;
+    if (!deviceId || !portValid) return;
     setConnecting(true);
     setInlineError(undefined);
     try {
@@ -205,30 +223,73 @@ function ProxyConnectPopover({
     } finally {
       setConnecting(false);
     }
-  }, [deviceId, assetId, assetIp, port, scheme, skipTlsVerify, t]);
+  }, [deviceId, assetId, assetIp, port, portValid, scheme, skipTlsVerify, t]);
 
   return (
     <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        data-testid={`network-detail-port-proxy-${port}`}
-        aria-label={t('networkDeviceDetailPage.openWebUi')}
-        title={t('networkDeviceDetailPage.openWebUi')}
-        onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center text-muted-foreground hover:text-foreground"
-      >
-        <ExternalLink className="h-3 w-3" />
-      </button>
+      {variant === 'header' ? (
+        <button
+          type="button"
+          data-testid="network-detail-open-web-ui"
+          onClick={() => setOpen((o) => !o)}
+          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+        >
+          <Globe className="h-3.5 w-3.5" />
+          {t('networkDeviceDetailPage.openWebUi')}
+        </button>
+      ) : (
+        <button
+          type="button"
+          data-testid={`network-detail-port-proxy-${port}`}
+          aria-label={t('networkDeviceDetailPage.openWebUi')}
+          title={t('networkDeviceDetailPage.openWebUi')}
+          onClick={() => setOpen((o) => !o)}
+          className="inline-flex items-center text-muted-foreground hover:text-foreground"
+        >
+          <ExternalLink className="h-3 w-3" />
+        </button>
+      )}
 
       {open && (
         <div
-          className="absolute left-0 top-6 z-30 w-72 rounded-md border bg-popover p-3 text-left shadow-lg"
+          className={`absolute top-full z-30 mt-1 w-72 rounded-md border bg-popover p-3 text-left shadow-lg ${
+            variant === 'header' ? 'right-0' : 'left-0'
+          }`}
           role="dialog"
-          data-testid={`network-detail-proxy-popover-${port}`}
+          data-testid={variant === 'header' ? 'network-detail-proxy-popover' : `network-detail-proxy-popover-${port}`}
         >
           <div className="mb-2 text-sm font-semibold">
-            {t('discovery:proxyConnect.title', { target: `${assetIp}:${port}` })}
+            {t('discovery:proxyConnect.title', { target: `${assetIp}:${portValid ? port : '…'}` })}
           </div>
+
+          {variant === 'header' && (
+            <div className="mb-2">
+              <label htmlFor={`proxy-port-${assetId}`} className="text-xs font-medium text-muted-foreground">
+                {t('networkDeviceDetailPage.proxyPort')}
+              </label>
+              <input
+                id={`proxy-port-${assetId}`}
+                type="number"
+                min={1}
+                max={65535}
+                inputMode="numeric"
+                data-testid="proxy-popover-port"
+                value={portText}
+                aria-invalid={!portValid}
+                aria-describedby={portValid ? undefined : `proxy-port-error-${assetId}`}
+                onChange={(e) => {
+                  setPortText(e.target.value);
+                  setPort(Number(e.target.value));
+                }}
+                className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
+              />
+              {!portValid && (
+                <p id={`proxy-port-error-${assetId}`} className="mt-1 text-xs text-destructive" data-testid="proxy-popover-port-error">
+                  {t('networkDeviceDetailPage.proxyPortInvalid')}
+                </p>
+              )}
+            </div>
+          )}
 
           {onlineDevices.length === 0 ? (
             <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -284,7 +345,7 @@ function ProxyConnectPopover({
                 type="button"
                 data-testid="proxy-popover-connect"
                 onClick={() => void handleConnect()}
-                disabled={connecting || !deviceId}
+                disabled={connecting || !deviceId || !portValid}
                 className="mt-1 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
               >
                 {connecting ? t('networkDeviceDetailPage.connecting') : t('discovery:proxyConnect.connect')}
@@ -636,6 +697,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
   const displayName = asset.label || asset.hostname || asset.ip;
   const openPorts = asset.openPorts ?? [];
+  // Page-level proxy entry point: default to the first scanned web-ish port,
+  // else 443 — so the action exists even when the scan recorded no ports.
+  const defaultWebPort = openPorts.find((p) => isWebPort(p.port, p.service));
   const snmpData = asset.snmpData ?? {};
   const tags = asset.tags ?? [];
   const discoveryMethods = asset.discoveryMethods ?? [];
@@ -697,14 +761,25 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         {/* Approve / reclassify remain in Discovery until slice 3 of #1424
             brings them inline; unlink for manual links is available inline on
             the Monitoring tab. Other actions link out for now. */}
-        <a
-          href={`/discovery?asset=${asset.id}#assets`}
-          data-testid="network-detail-manage-discovery"
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-        >
-          {t('networkDeviceDetailPage.manageInDiscovery')}
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        <div className="flex items-center gap-2">
+          <ProxyConnectPopover
+            variant="header"
+            assetId={asset.id}
+            assetIp={asset.ip}
+            port={defaultWebPort?.port ?? 443}
+            service={defaultWebPort?.service}
+            suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+            devices={devices}
+          />
+          <a
+            href={`/discovery?asset=${asset.id}#assets`}
+            data-testid="network-detail-manage-discovery"
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            {t('networkDeviceDetailPage.manageInDiscovery')}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
       </div>
 
       {/* Tabs */}

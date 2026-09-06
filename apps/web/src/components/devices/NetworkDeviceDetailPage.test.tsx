@@ -636,6 +636,76 @@ describe('NetworkDeviceDetailPage', () => {
       openSpy.mockRestore();
     });
 
+    it('always renders a header "Open Web UI" action, even when no open ports were scanned (#proxy-entry)', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, openPorts: [] } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(screen.queryByTestId('network-detail-port-proxy-443')).toBeNull();
+      fireEvent.click(screen.getByTestId('network-detail-open-web-ui'));
+      const portInput = (await screen.findByTestId('proxy-popover-port')) as HTMLInputElement;
+      // No scanned web port → sensible default.
+      expect(portInput.value).toBe('443');
+    });
+
+    it('header action flags an out-of-range port and disables Connect', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, openPorts: [] } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-open-web-ui'));
+      const portInput = (await screen.findByTestId('proxy-popover-port')) as HTMLInputElement;
+      await screen.findByTestId('proxy-popover-bridge-select');
+
+      expect(screen.queryByTestId('proxy-popover-port-error')).toBeNull();
+      fireEvent.change(portInput, { target: { value: '70000' } });
+      expect(screen.getByTestId('proxy-popover-port-error')).toBeTruthy();
+      expect(portInput.getAttribute('aria-invalid')).toBe('true');
+      expect((screen.getByTestId('proxy-popover-connect') as HTMLButtonElement).disabled).toBe(true);
+      expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/tunnels/proxy-connect')).toBe(false);
+    });
+
+    it('header action defaults to the first scanned web port and lets the operator override it', async () => {
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-42' } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]))
+        .mockResolvedValueOnce(makeJsonResponse({ tunnel: { id: 'tunnel-2' } }, true, 201));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-open-web-ui'));
+      const portInput = (await screen.findByTestId('proxy-popover-port')) as HTMLInputElement;
+      expect(portInput.value).toBe('443');
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+
+      fireEvent.change(portInput, { target: { value: '8080' } });
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/tunnels/proxy-connect', expect.objectContaining({ method: 'POST' })),
+      );
+      const call = fetchWithAuthMock.mock.calls.find(([url]) => url === '/tunnels/proxy-connect');
+      const body = JSON.parse((call![1] as RequestInit).body as string);
+      expect(body).toEqual({
+        deviceId: 'dev-42',
+        discoveredAssetId: ASSET_ID,
+        port: 8080,
+        scheme: 'http',
+        skipTlsVerify: false,
+      });
+      await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+      expect((openSpy.mock.calls[0] as [string])[0]).toContain(`target=${encodeURIComponent('10.0.0.2:8080')}`);
+      openSpy.mockRestore();
+    });
+
     it('shows an inline message and does not open a tab when the target is disabled for proxy access', async () => {
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
 

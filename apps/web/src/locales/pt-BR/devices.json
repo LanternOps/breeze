@@ -2128,6 +2128,8 @@
     "notConfigured": "Não configurado",
     "notLinked": "Não vinculado",
     "openWebUi": "Abrir interface web",
+    "proxyPort": "Porta",
+    "proxyPortInvalid": "Informe uma porta entre 1 e 65535",
     "proxyErrors": {
       "disabled": "Este destino foi desativado para acesso por proxy. Um administrador precisa reativá-lo em Configurações antes que você possa se conectar.",
       "mfaRequired": "O acesso remoto requer autenticação de dois fatores — ative-a no seu perfil.",

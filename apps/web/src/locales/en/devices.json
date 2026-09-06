@@ -2128,6 +2128,8 @@
     "notConfigured": "Not configured",
     "notLinked": "Not linked",
     "openWebUi": "Open Web UI",
+    "proxyPort": "Port",
+    "proxyPortInvalid": "Enter a port between 1 and 65535",
     "proxyErrors": {
       "disabled": "This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.",
       "mfaRequired": "Remote access requires two-factor authentication — enable it in your profile.",
