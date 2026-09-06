@@ -14,10 +14,14 @@ The current schema differs from the brief: threats and actions have their own nu
 
 The sibling SentinelOne threats route currently retains NULL device rows even for an empty allowlist. Align this restricted list with the same direct-device scope predicate, preserving explicit denied-device rejection. Remove exactly the two relevant ratchet exemptions. No migration or external SentinelOne access is required.
 
+Real-database positive controls also exposed that organization status returns `integration: null` because direct partner-axis metadata queries are hidden by RLS. Reuse `getActiveS1IntegrationForOrg`: it first authorizes the organization under caller RLS, reads only non-secret metadata with a narrow system context, and requires the integration's organization mapping. All counts stay in caller context. An unmapped organization gets no integration metadata. The organization response uses this helper's minimal metadata shape (no management URL or credential material).
+
+The selected-partner system status also needs an explicit organization-partner fence on actions: unlike agents/threats, actions have no integration ID, and system `orgCondition` is intentionally unrestricted. This keeps every summary component within the selected partner.
+
 ## Executable verification plan
 
 1. Create a private stack with `pnpm test-stack up`; use Node from `.node-version` and verify the request pool is `breeze_app` with neither superuser nor BYPASSRLS.
 2. Add real-database mounted-route acceptance using real auth and custom roles. Seed allowed/denied sites, another organization/partner, NULL-mapped security rows, multiple software policies and statuses. Prove denied-site additions cannot change any summary, restricted-empty returns zeros and empty threats, and allowed rows remain visible. Exercise missing permission, cross-org selection, live site changes, unrestricted organization, partner and system roles.
-3. Run `caffeinate -i pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/siteAggregateScope.integration.test.ts` against the private stack, plus site-scope and relevant RLS contracts. Confirm regression failures before handler edits.
+3. Run `caffeinate -i pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/siteAggregateScope.integration.test.ts` against the private stack, plus relevant RLS contracts. Run the static ratchet separately with `pnpm --filter @breeze/api test:site-scope-coverage` (the database config intentionally excludes it). Confirm regression failures before handler edits.
 4. Run affected route unit suites, API typecheck and the required full API unit suite with at most two workers, coordinating heavy work with the other implementation worker.
 5. Obtain independent review of the exact commit, address findings, publish one draft PR and monitor exact-head CI. Stop at an open reviewed PR; no merge, deployment or finding closure.

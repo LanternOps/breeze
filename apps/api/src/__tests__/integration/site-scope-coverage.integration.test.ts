@@ -225,8 +225,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // predicate to every aggregate and GET /trends denies site-restricted
   // callers outright, so the ratchet correctly demands these entries go.
   'routes/huntress.ts:GET /status',
-  'routes/sentinelOne.ts:GET /status',
-  'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
   // Org-scoped compliance list, identical posture to its sibling routes
   // (/firewall, /trends) which resolve rows through the same org-scoped
