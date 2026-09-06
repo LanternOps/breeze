@@ -15,8 +15,12 @@ import { Drawer } from '../shared/Drawer';
 import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
+import AgentCreateFlow from './aiAgents/AgentCreateFlow';
 
-type Editing = { agent: AiAgentDto | null } | null;
+// Task 13 (#5051): create no longer opens this drawer at all — it opens the
+// full-width `AgentCreateFlow` in place of the list instead (see `creating`
+// below) — so an open editor always names a real, persisted agent.
+type Editing = { agent: AiAgentDto } | null;
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -64,6 +68,14 @@ export default function AiAgentsPage() {
    *  further state change — opening or closing the editor — rather than a
    *  timer, so it never lingers past the moment it stops being news. */
   const [justReenabledId, setJustReenabledId] = useState<string | null>(null);
+  /** Task 13 (#5051): "New agent" opens the four-step guided flow FULL WIDTH
+   *  in place of the list, rather than the drawer. Mutually exclusive with
+   *  `editing` (Edit still opens the drawer) — nothing opens both. */
+  const [creating, setCreating] = useState(false);
+  /** The agent `AgentCreateFlow` just created, so its row can be called out
+   *  once the list reloads and the flow closes — same "cleared by any
+   *  further state change" rule as `justReenabledId` above. */
+  const [highlightedAgentId, setHighlightedAgentId] = useState<string | null>(null);
   /** First row's Re-enable button in the Disabled section — the target the
    *  all-disabled empty state's primary CTA focuses (Finding 4). */
   const firstDisabledReenableRef = useRef<HTMLButtonElement | null>(null);
@@ -163,12 +175,22 @@ export default function AiAgentsPage() {
    * editor. Both the latch and the fragment are cleared here, together: the
    * latch alone would let the effect re-fire on the hash still in the URL.
    */
-  /** Opens the editor for an existing agent or a new one. The one place that
-   *  starts an edit, so it is also the one place that dismisses a still-open
-   *  re-enable note — opening the editor is unambiguously a "state change". */
+  /** Opens the editor for an existing agent. The one place that starts an
+   *  edit, so it is also the one place that dismisses a still-open re-enable
+   *  note and any create-flow highlight — opening the editor is unambiguously
+   *  a "state change". */
   const openEditor = useCallback((next: Editing) => {
     setJustReenabledId(null);
+    setHighlightedAgentId(null);
     setEditing(next);
+  }, []);
+
+  /** "New agent" — opens `AgentCreateFlow` full-width in place of the list
+   *  (Task 13, #5051), replacing what used to be `openEditor({ agent: null })`. */
+  const startCreate = useCallback(() => {
+    setJustReenabledId(null);
+    setHighlightedAgentId(null);
+    setCreating(true);
   }, []);
 
   const closeEditor = useCallback(() => {
@@ -284,7 +306,7 @@ export default function AiAgentsPage() {
   const createButton = (testId: string) => (
     <button
       type="button"
-      onClick={() => openEditor({ agent: null })}
+      onClick={startCreate}
       className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
       data-testid={testId}
     >
@@ -302,14 +324,34 @@ export default function AiAgentsPage() {
         description={t('aiAgentsPage.description')}
         // One create affordance at a time: while the first-run panel is on
         // screen it owns the call to action, and a second identical button in
-        // the header just competes with it.
-        actions={!showFirstRun && !showAllDisabled ? createButton('ai-agent-create-button') : undefined}
+        // the header just competes with it. Hidden entirely while the guided
+        // create flow is open (Task 13, #5051) — it has its own Cancel.
+        actions={!showFirstRun && !showAllDisabled && !creating ? createButton('ai-agent-create-button') : undefined}
       />
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {t('aiAgentsPage.errors.load')}
         </div>
+      )}
+
+      {/* Task 13 (#5051): the guided create flow replaces the list ENTIRELY
+          while open — full width, its own header/footer — rather than
+          opening in the drawer. Edit is unaffected: it still opens
+          AiAgentForm in the Drawer below. */}
+      {creating && (
+        <AgentCreateFlow
+          agents={agents}
+          partnerBaselineKinds={partnerBaselineKinds}
+          showOwnerScope={isPartnerScope}
+          defaultOwnerScope={defaultOwnerScope}
+          onCancel={() => setCreating(false)}
+          onCreated={(agent) => {
+            setCreating(false);
+            setHighlightedAgentId(agent.id);
+            void load();
+          }}
+        />
       )}
 
       {/* The editor used to render INLINE, above the list, which pushed every
@@ -352,6 +394,11 @@ export default function AiAgentsPage() {
         )}
       </Drawer>
 
+      {/* The list, first-run panel and disabled section all yield to the
+          create flow above while it is open (Task 13, #5051) — this is not
+          "hidden AND rendered underneath", it never mounts while creating. */}
+      {!creating && (
+      <>
       {loading && !loaded && (
         <p className="text-sm text-muted-foreground" data-testid="ai-agents-loading">
           {t('aiAgentsPage.loading')}
@@ -394,7 +441,7 @@ export default function AiAgentsPage() {
           action={
             <button
               type="button"
-              onClick={() => openEditor({ agent: null })}
+              onClick={startCreate}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
               data-testid="ai-agents-empty-create"
             >
@@ -438,7 +485,7 @@ export default function AiAgentsPage() {
           secondary={
             <button
               type="button"
-              onClick={() => openEditor({ agent: null })}
+              onClick={startCreate}
               className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted"
               data-testid="ai-agents-all-disabled-create"
             >
@@ -455,7 +502,13 @@ export default function AiAgentsPage() {
         <span id={inertHintId} className="sr-only">{t('aiAgentsPage.inertBadge.hint')}</span>
         <ul className="divide-y rounded-lg border" data-testid="ai-agents-list">
           {live.map((agent) => (
-            <li key={agent.id} className="flex flex-wrap items-center gap-3 p-3" data-testid={`ai-agent-row-${agent.id}`}>
+            <li
+              key={agent.id}
+              className={`flex flex-wrap items-center gap-3 p-3 ${
+                highlightedAgentId === agent.id ? 'bg-primary/5 ring-1 ring-inset ring-primary/40' : ''
+              }`}
+              data-testid={`ai-agent-row-${agent.id}`}
+            >
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{agent.name}</span>
@@ -635,6 +688,8 @@ export default function AiAgentsPage() {
             ))}
           </ul>
         </details>
+      )}
+      </>
       )}
     </div>
   );

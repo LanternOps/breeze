@@ -2690,9 +2690,62 @@
       "executesUnattendedList": "Führt {{list}} aus, ohne auf die Genehmigung eines Technikers zu warten.",
       "preauthorizedNote": "Einige davon sind vorautorisierte Operationen, die im Voraus durch das Vier-Augen-Prüfverfahren gewährt wurden.",
       "neverTouchesEmpty": "Noch nichts geschützt.",
-      "limits": "Bis zu {{devices}} Geräte pro Lauf, {{runsPerHour}} Läufe pro Stunde, {{minutes}} Minuten pro Lauf, ein Tagesbudget von {{budget}} und höchstens {{fleetPercent}} der Flotte pro Tag.",
+      "limits": "Bis zu {{devices}} Geräte pro Lauf, {{runsPerHour}} Läufe pro Stunde, {{minutes}} Minuten pro Lauf, ein Tagesbudget von {{budget}}, höchstens {{fleetPercent}} der Flotte pro Tag und {{cooldown}} Minuten zwischen zwei Läufen auf demselben Gerät.",
       "approvers": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
       "approversNone": "Es sind noch keine Rollen konfiguriert, daher wird niemand benachrichtigt."
+    },
+    "flow": {
+      "title": "Neuer Agent",
+      "stepperAriaLabel": "Schritte für neuen Agenten",
+      "back": "Zurück",
+      "next": "Weiter: {{step}}",
+      "createAgent": "Agent erstellen",
+      "createdDisabledNote": "Neue Agenten werden deaktiviert erstellt. Du entscheidest im letzten Schritt, nachdem du alles überprüft hast, ob er aktiv laufen soll.",
+      "startEnabled": "Aktiviert starten",
+      "startEnabledHint": "Aus ist die sichere Standardeinstellung. Prüfe die Zusammenfassung oben und schalte dies erst ein, wenn der Agent laufen soll.",
+      "previewFailed": "Eine Live-Vorschau der Richtlinie dieses Agenten konnte nicht geladen werden. Du kannst ihn trotzdem erstellen — prüfe deine Auswahl vorher sorgfältig.",
+      "previewLoading": "Vorschau wird geladen…",
+      "protectedResourcesLegend": "Geschützte Ressourcen",
+      "steps": {
+        "purpose": {
+          "label": "Zweck und Haltung",
+          "description": "Modus, Art, Zuordnung und Name"
+        },
+        "does": {
+          "label": "Was er tut",
+          "description": "Auslöser und Fähigkeiten"
+        },
+        "safety": {
+          "label": "Sicherheit und Aufsicht",
+          "description": "Geschützte Ressourcen, Limits und Genehmiger"
+        },
+        "review": {
+          "label": "Überprüfen und erstellen",
+          "description": "Bestätige, was dieser Agent tun wird"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Beobachtet Warnungen und schlägt Lösungen für die wichtigen vor.",
+          "runsWhen": "eine neue Warnung einen der von dir gewählten Schweregrade erreicht",
+          "recommended": "hängende Dienste neu starten und Speicherplatz freigeben"
+        },
+        "patch": {
+          "blurb": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
+          "runsWhen": "sein Zeitplan ausgelöst wird oder du ihn manuell startest",
+          "recommended": "Patches genehmigen und installieren und dann betroffene Dienste neu starten"
+        },
+        "helpdesk": {
+          "blurb": "Bearbeitet Tickets, sobald sie erstellt, beantwortet oder gelöst werden.",
+          "runsWhen": "ein Ticket erstellt wird, seine erste Antwort erhält oder als gelöst markiert wird",
+          "recommended": "Dienste neu starten und Speicherplatz freigeben, um häufige Anfragen zu lösen"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Läuft, wenn:",
+        "recommendedPrefix": "Empfohlen:",
+        "taken": "Für diesen Eigentümer bereits vergeben"
+      }
     }
   },
   "apiKeyForm": {

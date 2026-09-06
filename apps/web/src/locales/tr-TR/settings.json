@@ -2690,9 +2690,62 @@
       "executesUnattendedList": "Bir teknisyenin onayını beklemeden {{list}} çalıştırır.",
       "preauthorizedNote": "Bunlardan bazıları, dört göz inceleme süreciyle önceden verilmiş ön yetkilendirilmiş işlemlerdir.",
       "neverTouchesEmpty": "Henüz hiçbir şey korunmuyor.",
-      "limits": "Çalıştırma başına en fazla {{devices}} cihaz, saatte {{runsPerHour}} çalıştırma, çalıştırma başına {{minutes}} dakika, günlük {{budget}} bütçe ve günde filonun en fazla {{fleetPercent}}'i.",
+      "limits": "Çalıştırma başına en fazla {{devices}} cihaz, saatte {{runsPerHour}} çalıştırma, çalıştırma başına {{minutes}} dakika, günlük {{budget}} bütçe, günde filonun en fazla {{fleetPercent}}'i ve aynı cihazda çalıştırmalar arasında {{cooldown}} dakika.",
       "approvers": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
       "approversNone": "Henüz hiçbir rol yapılandırılmadı, bu yüzden kimseye bildirim gönderilmeyecek."
+    },
+    "flow": {
+      "title": "Yeni ajan",
+      "stepperAriaLabel": "Yeni ajan adımları",
+      "back": "Geri",
+      "next": "İleri: {{step}}",
+      "createAgent": "Ajan oluştur",
+      "createdDisabledNote": "Yeni ajanlar kapalı olarak oluşturulur. Her şeyi gözden geçirdikten sonra son adımda çalışmaya başlayıp başlamayacağına karar vereceksin.",
+      "startEnabled": "Etkin başlat",
+      "startEnabledHint": "Kapalı, güvenli varsayılan seçenektir. Yukarıdaki özeti incele, ardından ajanının çalışmaya başlamasını istediğinde bunu aç.",
+      "previewFailed": "Bu ajanın politikasının canlı önizlemesi yüklenemedi. Yine de oluşturabilirsin — önce seçimlerini dikkatle gözden geçir.",
+      "previewLoading": "Önizleme yükleniyor…",
+      "protectedResourcesLegend": "Korunan kaynaklar",
+      "steps": {
+        "purpose": {
+          "label": "Amaç ve duruş",
+          "description": "Mod, tür, sahiplik ve ad"
+        },
+        "does": {
+          "label": "Ne yapar",
+          "description": "Tetikleyiciler ve yetenekler"
+        },
+        "safety": {
+          "label": "Güvenlik ve gözetim",
+          "description": "Korunan kaynaklar, sınırlar ve onaylayanlar"
+        },
+        "review": {
+          "label": "Gözden geçir ve oluştur",
+          "description": "Bu ajanın ne yapacağını onayla"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Uyarıları izler ve önemli olanlar için çözüm önerir.",
+          "runsWhen": "seçtiğin önem derecelerinden birine ulaşan yeni bir uyarı olduğunda",
+          "recommended": "takılı kalan hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        },
+        "patch": {
+          "blurb": "Eksik yamaları gözden geçirir ve neyin kurulacağını önerir.",
+          "runsWhen": "zamanlaması tetiklendiğinde veya onu manuel olarak çalıştırdığında",
+          "recommended": "yamaları onaylayıp kurmak, ardından etkilenen hizmetleri yeniden başlatmak"
+        },
+        "helpdesk": {
+          "blurb": "Talepler oluşturuldukca, ilk yanıtı aldıkça veya çözüldükçe onlar üzerinde çalışır.",
+          "runsWhen": "bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde",
+          "recommended": "yaygın talepleri çözmek için hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Çalıştığı zaman:",
+        "recommendedPrefix": "Önerilen:",
+        "taken": "Bu sahip için zaten kullanımda"
+      }
     }
   },
   "apiKeyForm": {

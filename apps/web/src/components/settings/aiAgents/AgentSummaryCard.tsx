@@ -103,14 +103,12 @@ function SummaryRow({
  * the entire point of evaluating the draft server-side rather than
  * re-deriving it from the picker's own client-side model).
  *
- * Deviation from the plan's literal "six exposed limits" list: `preview.limits`
- * is `AiAgentLimits`, which has no `cooldownSeconds` field — cooldown is a
- * sibling field on the agent's policy row (`AiAgentPolicy.cooldownSeconds`),
- * never threaded through `buildAgentPreview` (agentPreview.ts). Task 12 is
- * scoped to this file plus locales only, so the limits row below renders the
- * five limits `AgentPreviewDto` actually carries; adding cooldown here would
- * require widening `AgentPreviewDto`/`buildAgentPreview` in Task 11's files,
- * which is out of scope for this task.
+ * The six exposed limits (spec §4.6 step 4): the five fields of
+ * `preview.limits` (`AiAgentLimits`) plus `preview.cooldownSeconds`, a sibling
+ * field on the agent's policy row (`AiAgentPolicy.cooldownSeconds`) rather
+ * than one of `AiAgentLimits`'s own fields — `buildAgentPreview` carries it
+ * through separately (agentPreview.ts) so this card can render it alongside
+ * the other five without reaching into a differently-shaped policy row.
  */
 export default function AgentSummaryCard({ preview, name, orgName, enabled = false, onEdit }: AgentSummaryCardProps) {
   const { t } = useTranslation('settings');
@@ -191,16 +189,18 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
     ...preview.protectedResources.registryKeys,
   ];
 
-  // --- Limits (deviation: cooldown omitted — see the docstring above) ---
+  // --- Limits (six exposed limits: the five in `limits` plus the sibling `cooldownSeconds`) ---
   const minutesPerRun = Math.round(preview.limits.wallClockSeconds / 60);
   const dailyBudget = formatCurrency(preview.limits.maxBudgetCentsPerDay / 100);
   const fleetPercent = formatPercent(preview.limits.maxFleetPercentPerDay / 100);
+  const cooldownMinutes = Math.round(preview.cooldownSeconds / 60);
   const limitsText = t('aiAgentsPage.summary.limits', {
     devices: preview.limits.maxDevicesPerRun,
     runsPerHour: preview.limits.maxRunsPerHour,
     minutes: minutesPerRun,
     budget: dailyBudget,
     fleetPercent,
+    cooldown: cooldownMinutes,
   });
 
   // --- Approvers ---

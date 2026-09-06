@@ -30,6 +30,7 @@ function buildPreview(overrides: Partial<AgentPreviewDto> = {}): AgentPreviewDto
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true, ticketAutonomousWrites: false },
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
+    cooldownSeconds: 900,
     recipients: { userIds: [], roleIds: ['role-1', 'role-2'] },
     ...overrides,
   };
@@ -117,14 +118,16 @@ describe('AgentSummaryCard', () => {
     expect(screen.getByTestId('agent-summary-never-touches-chip-C:\\Windows')).toBeInTheDocument();
   });
 
-  it('reads the six-limit sentence from preview.limits with currency and percent formatting', () => {
-    render(<AgentSummaryCard preview={buildPreview()} name="Bot" orgName="Acme" />);
+  it('reads the six-limit sentence from preview.limits plus the sibling cooldownSeconds, with currency and percent formatting', () => {
+    render(<AgentSummaryCard preview={buildPreview({ cooldownSeconds: 1800 })} name="Bot" orgName="Acme" />);
     const row = screen.getByTestId('agent-summary-row-limits');
     expect(row.textContent).toContain(String(AI_AGENT_LIMIT_DEFAULTS.maxDevicesPerRun));
     expect(row.textContent).toContain(String(AI_AGENT_LIMIT_DEFAULTS.maxRunsPerHour));
     expect(row.textContent).toContain(String(Math.round(AI_AGENT_LIMIT_DEFAULTS.wallClockSeconds / 60)));
     expect(row.textContent).toContain('$10.00');
     expect(row.textContent).toContain('5%');
+    // cooldownSeconds: 1800 -> 30 minutes between runs on the same device.
+    expect(row.textContent).toContain('30');
   });
 
   it('counts approver roles, or says none are configured', () => {

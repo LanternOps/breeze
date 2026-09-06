@@ -2690,9 +2690,62 @@
       "executesUnattendedList": "Executes {{list}} without a technician's approval.",
       "preauthorizedNote": "Some of these are pre-authorized operations, granted ahead of time through the four-eyes review process.",
       "neverTouchesEmpty": "Nothing is protected yet.",
-      "limits": "Up to {{devices}} devices per run, {{runsPerHour}} runs per hour, {{minutes}} minutes per run, a daily budget of {{budget}}, and no more than {{fleetPercent}} of the fleet touched per day.",
+      "limits": "Up to {{devices}} devices per run, {{runsPerHour}} runs per hour, {{minutes}} minutes per run, a daily budget of {{budget}}, no more than {{fleetPercent}} of the fleet touched per day, and {{cooldown}} minutes between runs on the same device.",
       "approvers": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
       "approversNone": "No roles are configured yet, so nothing will be notified."
+    },
+    "flow": {
+      "title": "New agent",
+      "stepperAriaLabel": "New agent steps",
+      "back": "Back",
+      "next": "Next: {{step}}",
+      "createAgent": "Create agent",
+      "createdDisabledNote": "New agents are created switched off. You'll decide whether to start it running on the last step, after reviewing everything.",
+      "startEnabled": "Start enabled",
+      "startEnabledHint": "Off is the safe default. Review the summary above, then switch this on when you want the agent to start running.",
+      "previewFailed": "Could not load a live preview of this agent's policy. You can still create it — review your choices carefully first.",
+      "previewLoading": "Loading preview…",
+      "protectedResourcesLegend": "Protected resources",
+      "steps": {
+        "purpose": {
+          "label": "Purpose and posture",
+          "description": "Mode, kind, ownership and name"
+        },
+        "does": {
+          "label": "What it does",
+          "description": "Triggers and capabilities"
+        },
+        "safety": {
+          "label": "Safety and oversight",
+          "description": "Protected resources, limits and approvers"
+        },
+        "review": {
+          "label": "Review and create",
+          "description": "Confirm what this agent will do"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Watches alerts and proposes fixes for the ones that matter.",
+          "runsWhen": "a new alert crosses the severities you choose",
+          "recommended": "restarting stuck services and clearing disk space"
+        },
+        "patch": {
+          "blurb": "Reviews missing patches and proposes what to install.",
+          "runsWhen": "its schedule fires, or you trigger it manually",
+          "recommended": "approving and installing patches, then restarting affected services"
+        },
+        "helpdesk": {
+          "blurb": "Works tickets as they're created, replied to, or resolved.",
+          "runsWhen": "a ticket is created, gets its first reply, or is marked resolved",
+          "recommended": "restarting services and clearing disk space to resolve common requests"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Runs when:",
+        "recommendedPrefix": "Recommended:",
+        "taken": "Already in use for this owner"
+      }
     }
   },
   "apiKeyForm": {

@@ -2690,9 +2690,62 @@
       "executesUnattendedList": "Exécute {{list}} sans attendre l'approbation d'un technicien.",
       "preauthorizedNote": "Certaines sont des opérations préautorisées, accordées à l'avance via le processus de contrôle à quatre yeux.",
       "neverTouchesEmpty": "Rien n'est encore protégé.",
-      "limits": "Jusqu'à {{devices}} appareils par exécution, {{runsPerHour}} exécutions par heure, {{minutes}} minutes par exécution, un budget quotidien de {{budget}}, et pas plus de {{fleetPercent}} du parc par jour.",
+      "limits": "Jusqu'à {{devices}} appareils par exécution, {{runsPerHour}} exécutions par heure, {{minutes}} minutes par exécution, un budget quotidien de {{budget}}, pas plus de {{fleetPercent}} du parc par jour, et {{cooldown}} minutes entre deux exécutions sur le même appareil.",
       "approvers": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
       "approversNone": "Aucun rôle n'est encore configuré, donc personne ne sera notifié."
+    },
+    "flow": {
+      "title": "Nouvel agent",
+      "stepperAriaLabel": "Étapes du nouvel agent",
+      "back": "Retour",
+      "next": "Suivant : {{step}}",
+      "createAgent": "Créer l'agent",
+      "createdDisabledNote": "Les nouveaux agents sont créés désactivés. Vous déciderez de le démarrer à la dernière étape, après avoir tout vérifié.",
+      "startEnabled": "Démarrer activé",
+      "startEnabledHint": "Désactivé est le choix sûr par défaut. Vérifiez le résumé ci-dessus, puis activez ceci lorsque vous voulez que l'agent commence à fonctionner.",
+      "previewFailed": "Impossible de charger un aperçu en direct de la politique de cet agent. Vous pouvez tout de même le créer — vérifiez vos choix attentivement au préalable.",
+      "previewLoading": "Chargement de l'aperçu…",
+      "protectedResourcesLegend": "Ressources protégées",
+      "steps": {
+        "purpose": {
+          "label": "Objectif et posture",
+          "description": "Mode, type, propriété et nom"
+        },
+        "does": {
+          "label": "Ce qu'il fait",
+          "description": "Déclencheurs et capacités"
+        },
+        "safety": {
+          "label": "Sécurité et supervision",
+          "description": "Ressources protégées, limites et approbateurs"
+        },
+        "review": {
+          "label": "Vérifier et créer",
+          "description": "Confirmez ce que cet agent va faire"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Surveille les alertes et propose des correctifs pour celles qui comptent.",
+          "runsWhen": "une nouvelle alerte atteint les gravités que vous choisissez",
+          "recommended": "redémarrer les services bloqués et libérer de l'espace disque"
+        },
+        "patch": {
+          "blurb": "Examine les correctifs manquants et propose lesquels installer.",
+          "runsWhen": "son horaire se déclenche, ou vous le déclenchez manuellement",
+          "recommended": "approuver et installer les correctifs, puis redémarrer les services concernés"
+        },
+        "helpdesk": {
+          "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
+          "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
+          "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "S'exécute quand :",
+        "recommendedPrefix": "Recommandé :",
+        "taken": "Déjà utilisé pour ce propriétaire"
+      }
     }
   },
   "apiKeyForm": {
