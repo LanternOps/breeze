@@ -1,6 +1,9 @@
 package eventlog
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // PAMSource is the dedicated Windows Event Log source PAM lifecycle events
 // register under, distinct from the generic "BreezeAgent" source used for
@@ -61,11 +64,35 @@ type PAMFields struct {
 	Detail string
 }
 
+// or returns fallback for an empty field, and otherwise the field with every
+// control character (C0, DEL, and the Unicode line/paragraph separators)
+// flattened to a single space. The identity fields are free text from the
+// server — users.name is an unconstrained varchar — and the template below is
+// one "Field: value" per line for SIEM parsing, so an embedded newline would
+// let a display name forge extra lines ("Approved by: …") inside the entry.
 func or(s, fallback string) string {
 	if s == "" {
 		return fallback
 	}
-	return s
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := false
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r == '\u2028' || r == '\u2029' || r == '\u0085' {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return fallback
+	}
+	return out
 }
 
 // message renders the fixed field template shared by every PAM lifecycle

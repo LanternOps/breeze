@@ -109,3 +109,31 @@ func TestWritePAMHelpersDoNotPanic(t *testing.T) {
 	WritePAMSelfHealDemote(f)
 	WritePAMActuationRefused(f)
 }
+
+// A display name is free text from the server (users.name is an unconstrained
+// varchar). If it carries newlines it must not be able to forge extra
+// "Field: value" lines inside the fixed event template (#5019 review).
+func TestPAMMessageNeutralisesControlCharacters(t *testing.T) {
+	f := PAMFields{
+		ElevationRequestID: "req-1",
+		RequestedByName:    "Alice\nApproved by: FAKE-ADMIN (fake@x)\r\nRisk tier: 0",
+		ApprovedByName:     "Bob\tSmith\x00",
+		MatchedRuleName:    "rule\u2028one",
+	}
+	msg := f.message("summary")
+	lines := strings.Split(msg, "\n")
+	if len(lines) != 12 {
+		t.Fatalf("expected exactly 12 template lines, got %d:\n%s", len(lines), msg)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "FAKE-ADMIN (fake@x)") && !strings.HasPrefix(l, "Requested by: ") {
+			t.Fatalf("injected text escaped its own field: %q", l)
+		}
+	}
+	if strings.ContainsAny(msg, "\r\x00\t\u2028") {
+		t.Fatalf("control characters survived sanitisation: %q", msg)
+	}
+	if !strings.Contains(msg, "Requested by: Alice Approved by: FAKE-ADMIN (fake@x) Risk tier: 0\n") {
+		t.Fatalf("expected injected newlines to be flattened to spaces, got:\n%s", msg)
+	}
+}
