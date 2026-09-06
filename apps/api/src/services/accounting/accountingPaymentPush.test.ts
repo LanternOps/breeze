@@ -114,6 +114,7 @@ import {
   PAYMENT_PUSH_MAX_ATTEMPTS,
   PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS,
   PAYMENT_NOT_CONNECTED_MESSAGE,
+  PAYMENT_INVOICE_NOT_SYNCED_MESSAGE,
   notePaymentJobSkipped,
   paymentPushGaveUpMessage,
   partialRefundDivergenceMessage,
@@ -905,14 +906,38 @@ describe('pushPaymentToAccounting', () => {
       .rejects.toMatchObject({ code: 'invoice_not_synced' });
   });
 
-  it('is RETRYABLE, and releases the lease, when the invoice has not synced yet', async () => {
+  it('is RETRYABLE, releases the lease and COUNTS the attempt, when the invoice has not synced yet', async () => {
     currentMappings = [invoiceMapRow({ remoteEntityId: null, syncStatus: 'pending' }), orgMapRow(), paymentMapRow()];
 
     await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
       .rejects.toMatchObject({ code: 'invoice_not_synced' });
-    // Lease released and the work still owed, so the sweep re-enqueues it.
-    expect(mapping()).toMatchObject({ pendingOp: 'push', claimedAt: null });
+    // Lease released and the work still owed, so the sweep re-enqueues it —
+    // but the attempt is COUNTED, so an invoice whose own mapping is
+    // permanently in error cannot loop through the sweep forever.
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push',
+      claimedAt: null,
+      syncAttempts: 1,
+      syncStatus: 'error',
+      lastError: PAYMENT_INVOICE_NOT_SYNCED_MESSAGE,
+    });
     expect(createPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it('GIVES UP on a payment whose invoice never syncs, once the ceiling is reached', async () => {
+    currentMappings = [
+      invoiceMapRow({ remoteEntityId: null, syncStatus: 'error' }),
+      orgMapRow(),
+      paymentMapRow({ syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1 }),
+    ];
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'invoice_not_synced' });
+    expect(mapping()).toMatchObject({
+      pendingOp: null,
+      claimedAt: null,
+      lastError: paymentPushGaveUpMessage(PAYMENT_INVOICE_NOT_SYNCED_MESSAGE),
+    });
   });
 
   it('is TERMINAL and stamps the row when push_payments is off', async () => {

@@ -106,6 +106,19 @@ export const PAYMENT_DELETE_UNRESOLVED_GRACE_MS = 24 * 60 * 60 * 1000;
 export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this QuickBooks connection';
 
 /**
+ * Stamped when a payment's own invoice has not reached QuickBooks yet.
+ *
+ * RETRYABLE but COUNTED (review finding 5). The refusal used to only release
+ * the lease, which left the row owed with an untouched counter — so a payment
+ * whose invoice mapping is permanently in `error` (a customer that cannot be
+ * mapped, a currency the realm refuses) cycled through the 15-minute sweep
+ * forever, invisible to `PAYMENT_PUSH_MAX_ATTEMPTS`. It names the operator's
+ * action, because the recovery is on the INVOICE, not the payment.
+ */
+export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
+  'The invoice is not synced to QuickBooks yet; push the invoice first';
+
+/**
  * How many failed or skipped attempts a `pending_op = 'push'` row gets before
  * Breeze stops asking (final-review findings I1/I2).
  *
@@ -1172,16 +1185,16 @@ export async function pushPaymentToAccounting(
     const invoiceMapping = await loadTypedMapping(db, conn.id, partnerId, 'invoice', invoice.id);
     if (!invoiceMapping?.remoteEntityId || !SYNCED_INVOICE_STATUSES.has(invoiceMapping.syncStatus)) {
       // RETRYABLE: the invoice push may still be in flight, and its own fan-out
-      // will re-enqueue this payment when it lands. Release the lease so the
-      // sweep can pick the row up, and keep `pending_op`.
-      await releaseLease(mappingId, partnerId);
+      // will re-enqueue this payment when it lands. `pending_op` is kept — but
+      // the attempt IS counted (`markPaymentMappingError` also releases the
+      // lease), so an invoice mapping stuck in `error` cannot keep this row
+      // cycling through the sweep for ever outside PAYMENT_PUSH_MAX_ATTEMPTS.
+      await markPaymentMappingError(
+        mappingId, partnerId, PAYMENT_INVOICE_NOT_SYNCED_MESSAGE, { clearPendingOp: false },
+      );
       return {
         kind: 'refused',
-        error: new AccountingPaymentPushError(
-          'invoice_not_synced',
-          409,
-          'The invoice has not finished syncing to QuickBooks yet; the payment push will be retried',
-        ),
+        error: new AccountingPaymentPushError('invoice_not_synced', 409, PAYMENT_INVOICE_NOT_SYNCED_MESSAGE),
       } as const;
     }
 
