@@ -454,7 +454,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(124); // sanity: the source-parsing regex itself must find all 124
+    expect(entries.length).toBe(125); // sanity: the source-parsing regex itself must find all 125
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);
