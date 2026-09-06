@@ -246,16 +246,19 @@ BEGIN
       -- The loser org keeps status='merging' as a terminal shell after the
       -- merge, which is why the first two conditions carry the weight rather
       -- than the status alone.
-      SELECT TG_OP = 'UPDATE'
-         AND OLD.org_id = def_org
-         AND EXISTS (
-           SELECT 1 FROM public.organizations lo
-            WHERE lo.id = def_org
-              AND lo.status::text = 'merging'
-              AND row_partner IS NOT NULL
-              AND lo.partner_id = row_partner
-         )
-        INTO merging_ok;
+      -- The TG_OP guard is an explicit IF, not a conjunct of the query below.
+      -- `OLD` is unassigned in an INSERT trigger, and SQL's AND is not
+      -- guaranteed to short-circuit left to right; keeping the reference out of
+      -- the query entirely means this cannot depend on that.
+      IF TG_OP = 'UPDATE' AND OLD.org_id = def_org THEN
+        SELECT EXISTS (
+          SELECT 1 FROM public.organizations lo
+           WHERE lo.id = def_org
+             AND lo.status::text = 'merging'
+             AND row_partner IS NOT NULL
+             AND lo.partner_id = row_partner
+        ) INTO merging_ok;
+      END IF;
       IF NOT merging_ok THEN
         RAISE EXCEPTION 'custom field definition % belongs to a different organization', NEW.definition_id
           USING ERRCODE = 'P0001',

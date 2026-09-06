@@ -1121,12 +1121,21 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements[0]).toBe(
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
       );
-      expect(statements.slice(1, 5)).toEqual([
+      expect(statements.slice(1, 4)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
         'SELECT organizations FOR share (after 0 updates)',
         'PAM guard',
-        'UPDATE devices',
       ]);
+      // #3257 W05 — the custom-field re-home sits between the PAM guard and the
+      // device UPDATE, and its position is load-bearing in BOTH directions:
+      // after the org SHARE locks (it takes both orgs' partner-export locks and
+      // must not invert that hierarchy), and strictly BEFORE the org flip, since
+      // the flip's own trigger restamps the value rows and the coherence trigger
+      // would refuse them while they still name the source org's definition.
+      expect(collapseStmt(statements[4]!)).toContain(
+        'breeze_rehome_device_custom_field_values',
+      );
+      expect(statements[5]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

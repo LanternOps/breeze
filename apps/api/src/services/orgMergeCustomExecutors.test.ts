@@ -199,21 +199,45 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
     executeMock.mockReset();
   });
 
+  it('re-homes stored values onto the survivor definition BEFORE deleting the loser (#3257 W05)', async () => {
+    // The single most important ordering in this executor. `definition_id` is
+    // `ON DELETE CASCADE`, so a dedupe DELETE that ran first would destroy every
+    // value stored under the loser's definition. W05 registered
+    // device_custom_field_values in CUSTOM_FIELD_DEFINITION_CHILDREN precisely
+    // so `rehomeChildrenThenDelete` moves them first.
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 4 })  // child re-home UPDATE
+      .mockResolvedValueOnce({ rowCount: 1 })  // dedupe DELETE
+      .mockResolvedValueOnce({ rowCount: 2 }); // buildRepoint UPDATE
+
+    const outcome = await mergeCustomFieldDefinitions(L, S);
+
+    const rehomeSql = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql;
+    expect(rehomeSql).toMatch(/update "?device_custom_field_values"?/i);
+    expect(rehomeSql).toMatch(/"?definition_id"?\s*=\s*s\."?id"?/i);
+    const deleteSqlOrder = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql;
+    expect(deleteSqlOrder).toMatch(/delete from "?custom_field_definitions"?/i);
+
+    expect(outcome.notes.join('\n')).toMatch(/re-homed its stored values/);
+    expect(outcome.notes.join('\n')).toMatch(/device_custom_field_values: 4/);
+  });
+
   it('drops a loser definition whose field_key already exists under the survivor, and repoints the rest', async () => {
     executeMock
+      .mockResolvedValueOnce({ rowCount: 0 })  // child re-home UPDATE (#3257 W05)
       .mockResolvedValueOnce({ rowCount: 1 })  // dedupe DELETE
       .mockResolvedValueOnce({ rowCount: 2 }); // buildRepoint UPDATE
 
     const outcome = await mergeCustomFieldDefinitions(L, S);
 
     expect(outcome).toMatchObject({ moved: 2, dropped: 1 });
-    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock).toHaveBeenCalledTimes(3);
 
-    const deleteSql = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql;
+    const deleteSql = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql;
     expect(deleteSql).toMatch(/delete from "?custom_field_definitions"?/i);
     expect(deleteSql).toMatch(/field_key/i);
 
-    const repointSql = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql;
+    const repointSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql;
     expect(repointSql).toMatch(/update "?custom_field_definitions"?/i);
 
     expect(outcome.notes.join('\n')).toMatch(/custom_field_definitions: dropped 1 duplicate/);
@@ -221,6 +245,7 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
 
   it('produces no note when the two orgs share no field_key', async () => {
     executeMock
+      .mockResolvedValueOnce({ rowCount: 0 }) // child re-home — nothing to move
       .mockResolvedValueOnce({ rowCount: 0 }) // nothing collides
       .mockResolvedValueOnce({ rowCount: 3 });
 
@@ -239,12 +264,13 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
    */
   it('never targets partner-wide rows — the collision predicate is org_id-equality on both sides', async () => {
     executeMock
+      .mockResolvedValueOnce({ rowCount: 0 }) // child re-home (#3257 W05)
       .mockResolvedValueOnce({ rowCount: 0 })
       .mockResolvedValueOnce({ rowCount: 0 });
 
     await mergeCustomFieldDefinitions(L, S);
 
-    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL);
     expect(compiled.sql).toMatch(/t\.org_id\s*=\s*\$\d+::uuid/i);
     expect(compiled.sql).toMatch(/s\.org_id\s*=\s*\$\d+::uuid/i);
     expect(compiled.sql).not.toMatch(/org_id\s+is\s+null/i);
@@ -261,12 +287,13 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
    */
   it('dedupes on field_key alone, not on type or name', async () => {
     executeMock
+      .mockResolvedValueOnce({ rowCount: 0 }) // child re-home (#3257 W05)
       .mockResolvedValueOnce({ rowCount: 0 })
       .mockResolvedValueOnce({ rowCount: 0 });
 
     await mergeCustomFieldDefinitions(L, S);
 
-    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL);
     expect(compiled.sql).toMatch(/s\.field_key\s*=\s*t\.field_key/i);
     expect(compiled.sql).not.toMatch(/\btype\b/i);
     expect(compiled.sql).not.toMatch(/s\.name\s*=\s*t\.name/i);

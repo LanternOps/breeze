@@ -21,7 +21,6 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
-    update: vi.fn(),
   },
 }));
 
@@ -125,14 +124,23 @@ vi.mock('../../services/auditService', () => ({
 // definition lookup BEFORE merging. Mocked at the module boundary rather than
 // standing up the two-select db.select chain it drives internally (see
 // services/customFields/queries.test.ts for that).
+//
+// #3257 W05: the actual write is `persistDeviceCustomFieldValues`, which
+// upserts into `device_custom_field_values` (a real Drizzle
+// onConflictDoUpdate) — mocked here too, same reasoning. The route no longer
+// calls `db.update` at all; after the write it RE-READS the
+// trigger-maintained `devices.custom_fields` projection via `db.select`, so
+// `db.select` is now called TWICE per successful PATCH (device lookup, then
+// projection re-read) — see `rigDeviceLookup` / `rigProjectionRead` below.
 vi.mock('../../services/customFields/queries', () => ({
   loadVisibleCustomFieldDefinitions: vi.fn(),
+  persistDeviceCustomFieldValues: vi.fn(),
 }));
 
 import { customFieldValuesRoutes } from './customFieldValues';
 import { db } from '../../db';
 import { createAuditLog } from '../../services/auditService';
-import { loadVisibleCustomFieldDefinitions } from '../../services/customFields/queries';
+import { loadVisibleCustomFieldDefinitions, persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 import type { VisibleCustomFieldDefinition } from '../../services/customFields/queries';
 
 const ORG_A_ID = ORG_A;
@@ -165,19 +173,30 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// `db.select` is called once per request for the device lookup
+// (`getDeviceWithOrgCheck`, in helpers.ts) and — for a PATCH that reaches the
+// write — a SECOND time for the post-write projection re-read. Each rig
+// queues exactly one `mockReturnValueOnce`, so call order = registration
+// order: register `rigDeviceLookup` first, then `rigProjectionRead` (when the
+// flow is expected to reach it) for every test.
 function rigDeviceLookup(device: unknown) {
   const limit = vi.fn().mockResolvedValue(device ? [device] : []);
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
-  vi.mocked(db.select).mockReturnValue({ from } as never);
+  vi.mocked(db.select).mockReturnValueOnce({ from } as never);
 }
 
-function rigUpdate(updatedRow: unknown) {
-  const returning = vi.fn().mockResolvedValue(updatedRow ? [updatedRow] : []);
-  const where = vi.fn().mockReturnValue({ returning });
-  const set = vi.fn().mockReturnValue({ where });
-  vi.mocked(db.update).mockReturnValue({ set } as never);
-  return { set, where, returning };
+// The re-read of `devices.custom_fields` (the trigger-maintained projection)
+// that now follows `persistDeviceCustomFieldValues` — replaces the old
+// `db.update(...).returning()` rig. `updatedRow` is a bare
+// `{ customFields: ... }` shape, matching the route's
+// `db.select({ customFields: devices.customFields })`.
+function rigProjectionRead(updatedRow: { customFields: unknown } | null) {
+  const limit = vi.fn().mockResolvedValue(updatedRow ? [updatedRow] : []);
+  const where = vi.fn().mockReturnValue({ limit });
+  const from = vi.fn().mockReturnValue({ where });
+  vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+  return { from, where, limit };
 }
 
 describe('device custom-field value routes (#2066)', () => {
@@ -192,12 +211,15 @@ describe('device custom-field value routes (#2066)', () => {
     // definition, so those tests keep asserting the merge/audit/isolation
     // behaviour they were written for rather than becoming validation tests.
     mockVisibleDefinitions([{ fieldKey: 'bitlocker_recovery_key' }, { fieldKey: 'note' }]);
+    // Return value is never read by the route (it re-reads the projection
+    // instead), but must resolve rather than throw.
+    vi.mocked(persistDeviceCustomFieldValues).mockResolvedValue([]);
   });
 
   describe('API-key write path', () => {
     it('writes a custom-field value with a devices:write API key', async () => {
       rigDeviceLookup(makeDevice());
-      rigUpdate(makeDevice({ customFields: { existing_field: 'keep-me', bitlocker_recovery_key: 'ABC-123' } }));
+      rigProjectionRead({ customFields: { existing_field: 'keep-me', bitlocker_recovery_key: 'ABC-123' } });
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -212,8 +234,18 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      // Merge semantics: existing values are preserved alongside the new one.
+      // Merge semantics: existing values are preserved alongside the new one
+      // (now the upsert only touching the requested key, echoed back via the
+      // re-read projection rather than an app-layer merged object).
       expect(body.customFields).toEqual({ existing_field: 'keep-me', bitlocker_recovery_key: 'ABC-123' });
+      // The write itself goes to `device_custom_field_values`, source 'api'
+      // for an API-key caller (#3257 W05).
+      expect(vi.mocked(persistDeviceCustomFieldValues)).toHaveBeenCalledWith(
+        DEVICE_ID,
+        ORG_A,
+        [{ definitionId: 'def-bitlocker_recovery_key', fieldKey: 'bitlocker_recovery_key', type: 'text', value: 'ABC-123' }],
+        'api',
+      );
       // Audited synchronously as an api_key actor (not anonymous, not a user).
       expect(vi.mocked(createAuditLog)).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -228,9 +260,6 @@ describe('device custom-field value routes (#2066)', () => {
     });
 
     it('rejects an API key that lacks the devices:write scope (403)', async () => {
-      rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
-
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
         headers: {
@@ -243,14 +272,13 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('does not let a key write a custom field on a device in another org (404)', async () => {
       // Device belongs to ORG_B; key is scoped to ORG_A. The org-scoped lookup
       // denies access, so the write never happens (cross-tenant isolation).
       rigDeviceLookup(makeDevice({ orgId: ORG_B }));
-      const updateSpy = rigUpdate(makeDevice({ orgId: ORG_B }));
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -264,14 +292,11 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(404);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
       expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
     it('rejects an empty field map (400)', async () => {
-      rigDeviceLookup(makeDevice());
-      rigUpdate(makeDevice());
-
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
         headers: {
@@ -287,9 +312,6 @@ describe('device custom-field value routes (#2066)', () => {
     });
 
     it('rejects a non-scalar field value (400)', async () => {
-      rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
-
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
         headers: {
@@ -303,15 +325,18 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(400);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
-    it('fails closed if the UPDATE writes zero rows (404, not a false 200)', async () => {
-      // The device passes the org-scoped lookup, but the UPDATE returns no row —
-      // the RLS-silent-zero-row-write failure mode. The handler must 404, not
-      // report success.
+    it('fails closed if the projection re-read finds no row (404, not a false 200)', async () => {
+      // The device passes the org-scoped lookup and the write happens, but the
+      // post-write re-read of `devices.custom_fields` returns no row — the
+      // RLS-silent-zero-row failure mode. The handler must 404, not report
+      // success. (#3257 W05: the write itself is now an upsert into
+      // `device_custom_field_values`, which has no "matched zero rows" outcome
+      // of its own — this is the re-read's failure mode instead.)
       rigDeviceLookup(makeDevice());
-      rigUpdate(null);
+      rigProjectionRead(null);
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -336,7 +361,6 @@ describe('device custom-field value routes (#2066)', () => {
 
     it('rejects a PATCH when the device site is outside the allowlist (403, no write)', async () => {
       rigDeviceLookup(makeDevice({ siteId: SITE_OUT }));
-      const updateSpy = rigUpdate(makeDevice({ siteId: SITE_OUT }));
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -349,7 +373,7 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
       expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
@@ -369,7 +393,6 @@ describe('device custom-field value routes (#2066)', () => {
       // with no permissions context must be denied, never silently skip the site
       // check — only org-scoped API keys legitimately carry no permissions.
       rigDeviceLookup(makeDevice({ siteId: SITE_OUT }));
-      const updateSpy = rigUpdate(makeDevice({ siteId: SITE_OUT }));
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -382,13 +405,13 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
       expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
     it('allows a PATCH when the device site is inside the allowlist', async () => {
       rigDeviceLookup(makeDevice({ siteId: SITE_IN }));
-      rigUpdate(makeDevice({ siteId: SITE_IN, customFields: { existing_field: 'keep-me', note: 'hi' } }));
+      rigProjectionRead({ customFields: { existing_field: 'keep-me', note: 'hi' } });
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -422,7 +445,7 @@ describe('device custom-field value routes (#2066)', () => {
   describe('JWT session path', () => {
     it('writes a custom-field value with a Bearer session token', async () => {
       rigDeviceLookup(makeDevice());
-      rigUpdate(makeDevice({ customFields: { existing_field: 'keep-me', note: 'hi' } }));
+      rigProjectionRead({ customFields: { existing_field: 'keep-me', note: 'hi' } });
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -451,7 +474,6 @@ describe('device custom-field value routes (#2066)', () => {
     it('rejects a value whose type does not match its definition', async () => {
       mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -464,13 +486,12 @@ describe('device custom-field value routes (#2066)', () => {
         code: 'invalid-custom-field-value',
         fields: [{ fieldKey: 'rack_units', reason: 'invalid_type' }],
       });
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('rejects a key with no visible definition', async () => {
       mockVisibleDefinitions([]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -480,7 +501,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).fields).toEqual([{ fieldKey: 'nope', reason: 'unknown_field' }]);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('rejects a dropdown value outside options.choices', async () => {
@@ -488,7 +509,6 @@ describe('device custom-field value routes (#2066)', () => {
         { fieldKey: 'tier', type: 'dropdown', options: { choices: [{ label: 'Gold', value: 'gold' }] } },
       ]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -497,13 +517,12 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect((await res.json()).fields).toEqual([{ fieldKey: 'tier', reason: 'not_a_choice' }]);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('rejects an out-of-range number', async () => {
       mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number', options: { min: 0, max: 8 } }]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -513,7 +532,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'out_of_range' }]);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('is all-or-nothing on a MIXED valid+invalid payload: one bad key rejects the whole PATCH', async () => {
@@ -525,7 +544,6 @@ describe('device custom-field value routes (#2066)', () => {
         { fieldKey: 'notes', type: 'text' },
       ]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -536,13 +554,12 @@ describe('device custom-field value routes (#2066)', () => {
       expect(res.status).toBe(400);
       expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'invalid_type' }]);
       // The valid `notes` key must not be written even though it validated fine.
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('rejects a value for a definition scoped to a device type the device is not', async () => {
       mockVisibleDefinitions([{ fieldKey: 'rustdesk_id', type: 'text', deviceTypes: ['windows'] }]);
       rigDeviceLookup(makeDevice({ osType: 'macos' }));
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -552,14 +569,14 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).fields).toEqual([{ fieldKey: 'rustdesk_id', reason: 'not_applicable_to_device' }]);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
 
     it('treats an empty string as a clear for a dropdown field, not a rejection', async () => {
       // Regression: the device-edit UI's <select> reports a clear as ''.
       mockVisibleDefinitions([{ fieldKey: 'tier', type: 'dropdown', options: { choices: ['gold'] } }]);
       rigDeviceLookup(makeDevice());
-      rigUpdate(makeDevice({ customFields: { existing_field: 'keep-me', tier: null } }));
+      rigProjectionRead({ customFields: { existing_field: 'keep-me', tier: null } });
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -571,15 +588,13 @@ describe('device custom-field value routes (#2066)', () => {
     });
 
     it('stores the COERCED value, not the raw string', async () => {
+      // #3257 W05: there is no `db.update` call to inspect anymore — the
+      // coerced value is what `validateCustomFieldMap` resolves into
+      // `CustomFieldValueWrite.value`, captured here via the
+      // `persistDeviceCustomFieldValues` mock instead.
       mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
       rigDeviceLookup(makeDevice());
-      let written: { customFields?: Record<string, unknown> } | undefined;
-      vi.mocked(db.update).mockReturnValue({
-        set: (v: { customFields: Record<string, unknown> }) => {
-          written = v;
-          return { where: () => ({ returning: async () => [{ customFields: v.customFields }] }) };
-        },
-      } as never);
+      rigProjectionRead({ customFields: { rack_units: 4 } });
 
       await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -587,7 +602,12 @@ describe('device custom-field value routes (#2066)', () => {
         body: JSON.stringify({ rack_units: '4' }),
       });
 
-      expect(written?.customFields?.rack_units).toBe(4);
+      expect(vi.mocked(persistDeviceCustomFieldValues)).toHaveBeenCalledWith(
+        DEVICE_ID,
+        ORG_A,
+        [{ definitionId: 'def-rack_units', fieldKey: 'rack_units', type: 'number', value: 4 }],
+        'manual',
+      );
     });
 
     it('rejects an API-key write that fails validation, same as a session write', async () => {
@@ -595,7 +615,6 @@ describe('device custom-field value routes (#2066)', () => {
       // the JWT branch would leave the interesting path open.
       mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
       rigDeviceLookup(makeDevice());
-      const updateSpy = rigUpdate(makeDevice());
 
       const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
         method: 'PATCH',
@@ -609,7 +628,7 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(400);
-      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
     });
   });
 });
