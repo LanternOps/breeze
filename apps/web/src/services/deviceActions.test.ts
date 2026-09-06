@@ -111,3 +111,47 @@ describe('linkDevicesVmHost wire shape (#2308)', () => {
     );
   });
 });
+
+describe('decommissionDevice — agent choice is sent to the API', () => {
+  it('sends { uninstallAgent: true } as the JSON body', async () => {
+    const { decommissionDevice } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ success: true, uninstallQueued: true }));
+    await decommissionDevice('dev-1', { uninstallAgent: true });
+    const [path, init] = fetchMock.mock.calls[0]!;
+    expect(path).toBe('/devices/dev-1');
+    expect(init?.method).toBe('DELETE');
+    expect(JSON.parse(String(init?.body))).toEqual({ uninstallAgent: true });
+    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('sends { uninstallAgent: false } when the user chose to leave the agent', async () => {
+    const { decommissionDevice } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ success: true, uninstallQueued: false }));
+    await decommissionDevice('dev-1', { uninstallAgent: false });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({ uninstallAgent: false });
+  });
+});
+
+describe('bulkDecommissionDevices — one body per device, same choice', () => {
+  it('forwards the same uninstallAgent to every DELETE', async () => {
+    const { bulkDecommissionDevices } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ success: true }));
+    const result = await bulkDecommissionDevices(
+      [{ id: 'a', hostname: 'A' }, { id: 'b', hostname: 'B' }],
+      { uninstallAgent: true },
+    );
+    expect(result).toEqual({ succeeded: 2, failed: [] });
+    for (const call of fetchMock.mock.calls) {
+      expect(JSON.parse(String(call[1]?.body))).toEqual({ uninstallAgent: true });
+    }
+  });
+});
+
+describe('fetchRemovalConfig', () => {
+  it('returns the drain window from GET /devices/removal-config', async () => {
+    const { fetchRemovalConfig } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ uninstallDrainWindowHours: 48 }));
+    expect(await fetchRemovalConfig()).toEqual({ uninstallDrainWindowHours: 48 });
+    expect(fetchMock.mock.calls[0]![0]).toBe('/devices/removal-config');
+  });
+});
