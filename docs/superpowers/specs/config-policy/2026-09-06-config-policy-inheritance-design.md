@@ -100,7 +100,10 @@ Enforced twice:
    enforces immutability: any UPDATE where `parent_policy_id IS DISTINCT FROM` the old value is
    rejected, including `NULL → value`, so an existing baseline can never acquire a parent later.
    It reads the other rows as the invoking role, so under FORCE RLS a parent the caller cannot see
-   is treated as not found. Because it is a constraint trigger, org merge's
+   is treated as not found. Any UPDATE that changes `org_id` or `partner_id` is rejected outright
+   unless `breeze_current_scope() = 'system'`: the HTTP API never changes ownership, org merge
+   runs in system context, and this closes the blind spot where a partner-scoped invoker could
+   move a baseline while RLS hides some of its children from the incoming-edge check. Because it is a constraint trigger, org merge's
    `SET CONSTRAINTS ALL DEFERRED` postpones it to commit, by which time parent and child have both
    moved to the target org and the rule holds again; no `org_id` exclusion is needed. A matching
    constraint trigger on `organizations` for `UPDATE OF partner_id` re-validates that org's
@@ -228,13 +231,15 @@ so this is documented on the registry entry, not handled.
 - `GET /configuration-policies` (list): adds `parentPolicyId` per row so the list can badge
   children. The create page uses the eligible-parents endpoint, not the list.
 - **MFA gate follows effectiveness, not the verb.** Today POST/PATCH of a `patch` or
-  `maintenance` link requires a satisfied-MFA session and DELETE does not, because removing a
-  link ends suppression (`featureLinks.ts` L66-80). With inheritance a DELETE of a child's
-  override can *restore* the parent's suppression, and creating a child of a parent that has such
-  a link *enables* it. Rule: any transition that makes an MFA-gated feature type effective on a
-  policy requires the same session-MFA check: POST/PATCH of that type (unchanged), DELETE of an
-  override whose parent has a link of that type, and `POST /configuration-policies` with a
-  `parentPolicyId` whose parent has a link of that type.
+  `maintenance` link requires a satisfied-MFA session; DELETE of a `patch` link is gated
+  unconditionally (`featureLinks.ts` L483) and DELETE of a `maintenance` link is deliberately
+  exempt because removal ends suppression (`featureLinks.ts` L66-80). With inheritance a DELETE
+  of a child's maintenance override can *restore* the parent's suppression, and creating a child
+  of a parent that has a gated link *enables* it. Rule: every existing gate stays exactly as it
+  is (patch DELETE remains unconditional), and two transitions are added: DELETE of a
+  `maintenance` override whose parent has a `maintenance` link, and `POST /configuration-policies`
+  with a `parentPolicyId` whose parent has a link of any `MFA_GATED_FEATURE_TYPES` type. Both use
+  `hasSatisfiedMfa` (session-claim strength, matching the adjacent gates).
 - `GET /configuration-policies/effective/:deviceId` and the diff preview: each resolved feature
   adds `inheritedFromPolicyId: string | null` and `inheritedFromPolicyName: string | null`.
 - `DELETE /configuration-policies/:id`: `409 POLICY_HAS_CHILDREN` as above.
@@ -296,9 +301,18 @@ travels with the link id.** Resolver results already return `configPolicyId`
 (`ResolvedPatchConfigDetails`); patch job creation consumes that instead of the reverse map.
 Automation schedule grouping keys on `(automation id, assigned policy id)`, the job payload
 carries `configPolicyId`, and the run-time clamp re-reads ownership from `configuration_policies`
-by that id and verifies the link is effective for that policy through the view. Integration test:
-one partner-wide parent with an automation link, two children in two orgs, one scheduled tick →
-two runs, each scoped to its own org's devices.
+by that id and verifies the link is effective for that policy through the view. Both BullMQ job
+ids gain the assigned policy id as well
+(`cp-automation-schedule-<automation>-<policy>-<slot>`, `cp-automation-run:<automation>:<policy>:<slot>`;
+`automationWorker.ts` L421 and L862 key on automation + slot today, which would collapse the
+children's dispatches onto one job). Splitting dispatches per assigned policy can then run the
+same inherited automation twice for a device covered by two assigned policies (parent assigned at
+org level, child at site level): each dispatch keeps only the devices whose **winning** automation
+assignment, per the existing hierarchy resolution, is the dispatch's assigned policy, so it is one
+execution per device per tick. Integration tests: one partner-wide parent with an automation
+link, two children in two orgs, one scheduled tick → two runs, each scoped to its own org's
+devices, distinct job ids through both queue stages, replay-deduplicated; and an overlapping
+parent/child assignment → the device runs once.
 
 Readers that keep the base table (they edit or report a policy's **own** links):
 `configurationPolicy.ts` link CRUD (`addFeatureLink`, `updateFeatureLink`, `removeFeatureLink`,
@@ -338,10 +352,15 @@ that adds its own resolver against the base table goes red in **Test API**, not 
   and owner-compatible with the chosen owner scope (same org, or partner-wide; partner-wide child
   → partner-wide parents only), excluding the policy being created. Server validation is the
   authority; the filter is a courtesy.
-- **Detail page**: `linkedPolicyId` comes from `policy.parentPolicyId`; the parent name from
-  `policy.parentPolicy`. The existing second fetch of the parent's feature links stays (RLS lets
-  an org user read a partner-wide parent). The `?linked=` initializer is deleted. New: a
-  "Inherited by N policies" line with links on a parent's Overview tab.
+- **Detail page**: `linkedPolicyId`, the parent name, and `parentFeatureLinks` all come from
+  `policy.parentPolicyId` / `policy.parentPolicy` (with its assembled `featureLinks`). The
+  existing direct fetch of `/configuration-policies/<parent>` is **removed**: for an org-scoped
+  caller of a partner-wide parent it 404s under `policyAccessCondition` and today's code swallows
+  that failure silently. The `?linked=` initializer is deleted. The banner links to the parent
+  page only when the caller can open it (partner scope, or same-org parent); otherwise it shows
+  the name with a "managed by your MSP" hint. New: an "Inherited by N policies" line with links
+  on a parent's Overview tab. Test: an org caller viewing a child of a partner-wide parent sees
+  inherited tabs populated with no extra request.
 - **List page**: a small "inherits ← <parent>" badge on child rows. Delete of a parent shows the
   409 children list in the confirm modal's error state.
 - **Feature tabs**: the plan carries a per-tab payload matrix (18 rows: what `featurePolicyId`
@@ -408,6 +427,13 @@ Each wave: TDD, `tsc`, targeted tests, then the contract suites that a live DB n
   maintenance-link removal is MFA-exempt on a premise inheritance breaks (API); partner export
   selects through assignments and its clocks already fan out (API); Software Policy and Peripheral
   Control tabs initialise before parent links load (Web).
+- 2026-09-06 second pass on the amended sections (gpt-6-astra xhigh): approve with changes, all
+  folded in: BullMQ job ids for both automation queue stages must carry the assigned policy id;
+  ownership changes are system-context only (closes the partner-scope incoming-edge blind spot);
+  per-policy dispatch must keep one execution per device per tick; the web must use the embedded
+  parent instead of the direct fetch; the unconditional patch-DELETE gate stays. Confirmed sound:
+  merge timing vs. the deferred constraint trigger, parent-read isolation, `hasSatisfiedMfa`,
+  run-record and idempotency identities once the assigned policy id reaches the runtime.
 
 ## Release notes
 
