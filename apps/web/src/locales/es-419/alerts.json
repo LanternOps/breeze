@@ -533,7 +533,7 @@
     "confidence": "{{pct}}% de confianza",
     "feedbackUp": "Este veredicto fue útil",
     "feedbackDown": "Este veredicto no fue útil",
-    "feedbackThanks": "Gracias por tu comentario",
+    "feedbackThanks": "Gracias por su comentario",
     "feedbackTaken": "Alguien ya dejó comentarios sobre este veredicto",
     "feedbackFailed": "No se pudo registrar el comentario",
     "feedbackBy": "Comentario de {{name}}",

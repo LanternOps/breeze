@@ -533,7 +533,7 @@
     "confidence": "{{pct}} % Konfidenz",
     "feedbackUp": "Diese Einschätzung war hilfreich",
     "feedbackDown": "Diese Einschätzung war nicht hilfreich",
-    "feedbackThanks": "Danke für dein Feedback",
+    "feedbackThanks": "Danke für Ihr Feedback",
     "feedbackTaken": "Für diese Einschätzung wurde bereits Feedback abgegeben",
     "feedbackFailed": "Feedback konnte nicht gespeichert werden",
     "feedbackBy": "Feedback von {{name}}",
