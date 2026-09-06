@@ -147,4 +147,37 @@ describe('DeviceLifecycleTab', () => {
     expect((screen.getByTestId('device-lifecycle-tab-days') as HTMLInputElement).value).toBe('90');
     expect(screen.getByTestId('device-lifecycle-tab-enabled-toggle').getAttribute('aria-checked')).toBe('true');
   });
+
+  // Paper cut (#5023): the hint under the toggle was hard-coded to the OFF
+  // sentence, so a policy that purges after 30 days still read "Off — keep
+  // removed devices until someone deletes them manually" directly above the
+  // window it was about to enforce. The hint has to follow the toggle.
+  describe('the hint under the toggle describes the state actually selected', () => {
+    it('says nothing is deleted while purging is off', () => {
+      render(<DeviceLifecycleTab {...baseProps} />);
+
+      const hint = screen.getByTestId('device-lifecycle-tab-mode-hint').textContent ?? '';
+      expect(hint).toMatch(/^Off/);
+      expect(hint).toMatch(/until someone deletes them manually/i);
+    });
+
+    it('states the configured window once purging is on', () => {
+      render(<DeviceLifecycleTab {...baseProps} existingLink={{ ...link(45), id: 'link-own' }} />);
+
+      const hint = screen.getByTestId('device-lifecycle-tab-mode-hint').textContent ?? '';
+      expect(hint).toMatch(/permanently deleted 45 days after removal/i);
+      // The discriminating half: the OFF sentence must be GONE, not merely
+      // joined by the new one.
+      expect(hint).not.toMatch(/until someone deletes them manually/i);
+    });
+
+    it('follows the toggle rather than the saved link', () => {
+      render(<DeviceLifecycleTab {...baseProps} existingLink={{ ...link(45), id: 'link-own' }} />);
+      fireEvent.click(screen.getByTestId('device-lifecycle-tab-enabled-toggle'));
+
+      const hint = screen.getByTestId('device-lifecycle-tab-mode-hint').textContent ?? '';
+      expect(hint).toMatch(/until someone deletes them manually/i);
+      expect(hint).not.toMatch(/45 days/);
+    });
+  });
 });

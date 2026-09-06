@@ -669,6 +669,7 @@
       "deviceLifecycleTab": {
         "permanentlyDeleteRemovedDevices": "Excluir permanentemente os dispositivos removidos",
         "offKeepRemovedDevicesUntilDeletedManually": "Desativado: os dispositivos removidos são mantidos até que alguém os exclua manualmente.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Os dispositivos removidos são excluídos permanentemente {{days}} dias após a remoção.",
         "permanentlyDeleteRemovedDevicesAfter": "Excluir permanentemente os dispositivos removidos após",
         "days": "dias",
         "enterAWholeNumberOfDaysBetween": "Informe um número inteiro de dias entre 1 e 3650.",

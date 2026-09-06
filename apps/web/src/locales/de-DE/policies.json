@@ -669,6 +669,7 @@
       "deviceLifecycleTab": {
         "permanentlyDeleteRemovedDevices": "Entfernte Geräte endgültig löschen",
         "offKeepRemovedDevicesUntilDeletedManually": "Aus — entfernte Geräte bleiben erhalten, bis sie manuell gelöscht werden.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Entfernte Geräte werden {{days}} Tage nach dem Entfernen endgültig gelöscht.",
         "permanentlyDeleteRemovedDevicesAfter": "Entfernte Geräte endgültig löschen nach",
         "days": "Tagen",
         "enterAWholeNumberOfDaysBetween": "Geben Sie eine ganze Anzahl von Tagen zwischen 1 und 3650 ein.",

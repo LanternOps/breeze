@@ -669,6 +669,7 @@
       "deviceLifecycleTab": {
         "permanentlyDeleteRemovedDevices": "Permanently delete removed devices",
         "offKeepRemovedDevicesUntilDeletedManually": "Off — keep removed devices until someone deletes them manually.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Removed devices are permanently deleted {{days}} days after removal.",
         "permanentlyDeleteRemovedDevicesAfter": "Permanently delete removed devices after",
         "days": "days",
         "enterAWholeNumberOfDaysBetween": "Enter a whole number of days between 1 and 3650.",
