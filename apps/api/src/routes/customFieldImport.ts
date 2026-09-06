@@ -74,8 +74,7 @@ const ORG_SCOPE_NEEDS_ORG_ID = 'organizationId is required when ownerScope is "o
 const ALREADY_EXISTS_NEEDS_PIN =
   'expectedDefinitionId is required when expectedAnnotation is "already-exists"';
 
-/** The base object is kept unrefined so the commit variant can extend it. */
-const definitionImportRowFields = z.object({
+const definitionImportCommonFields = {
   fieldKey: z
     .string()
     .min(1)
@@ -86,20 +85,41 @@ const definitionImportRowFields = z.object({
   options: customFieldOptionsSchema.nullish(),
   required: z.boolean().optional(),
   deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullish(),
-  ownerScope: z.enum(['partner', 'organization']),
-  organizationId: z.string().guid().optional(),
   /** e.g. `udf7` — preserved in the audit, never stored. */
   sourceLabel: z.string().min(1).max(120).optional(),
-});
+};
 
-function requiresOrganizationId(value: { ownerScope: string; organizationId?: string }): boolean {
-  return value.ownerScope !== 'organization' || value.organizationId !== undefined;
-}
+const commitAcknowledgementFields = {
+  expectedAnnotation: z
+    .enum(['create', 'already-exists', 'type-conflict', 'key-shadowed', 'org-not-found', 'partner-wide-denied'])
+    .optional(),
+  expectedDefinitionId: z.string().guid().optional(),
+};
 
-const definitionImportRowSchema = definitionImportRowFields.refine(requiresOrganizationId, {
-  message: ORG_SCOPE_NEEDS_ORG_ID,
-  path: ['organizationId'],
-});
+/**
+ * A DISCRIMINATED UNION on `ownerScope`, not a flat object plus a `.refine`.
+ *
+ * The parsed output then matches `CustomFieldDefinitionImportRow`'s own union
+ * exactly, so "an organization row always has an organizationId" is carried by
+ * the type all the way to the insert instead of being re-checked (and, worse,
+ * non-null-asserted) downstream. Ownership is org XOR partner in the database
+ * too — `custom_field_definitions_one_owner_chk`, W02.
+ */
+const ownerArms = <T extends z.ZodRawShape>(extra: T) =>
+  [
+    z.object({
+      ...definitionImportCommonFields,
+      ...extra,
+      ownerScope: z.literal('organization'),
+      // `error` covers the MISSING case too, not just a malformed uuid — zod's
+      // default there is "expected string, received undefined", which does not
+      // tell a tech what to put in the column.
+      organizationId: z.string({ error: ORG_SCOPE_NEEDS_ORG_ID }).guid(ORG_SCOPE_NEEDS_ORG_ID),
+    }),
+    z.object({ ...definitionImportCommonFields, ...extra, ownerScope: z.literal('partner'), organizationId: z.undefined().optional() }),
+  ] as const;
+
+const definitionImportRowSchema = z.discriminatedUnion('ownerScope', ownerArms({}));
 
 /**
  * A row as submitted to a COMMIT. Both acknowledgements are checked against
@@ -108,16 +128,11 @@ const definitionImportRowSchema = definitionImportRowFields.refine(requiresOrgan
  * `expectedDefinitionId` is REQUIRED for `already-exists`: without it the
  * acknowledgement says "this row is already that field" without saying WHICH
  * field, so an approval given for definition A would be honoured against
- * definition B if the key changed hands between preview and commit.
+ * definition B if the key changed hands between preview and commit. Refined on
+ * the union rather than per arm, because it is orthogonal to the owner axis.
  */
-const commitDefinitionImportRowSchema = definitionImportRowFields
-  .extend({
-    expectedAnnotation: z
-      .enum(['create', 'already-exists', 'type-conflict', 'key-shadowed', 'org-not-found', 'partner-wide-denied'])
-      .optional(),
-    expectedDefinitionId: z.string().guid().optional(),
-  })
-  .refine(requiresOrganizationId, { message: ORG_SCOPE_NEEDS_ORG_ID, path: ['organizationId'] })
+const commitDefinitionImportRowSchema = z
+  .discriminatedUnion('ownerScope', ownerArms(commitAcknowledgementFields))
   .refine(
     (value) => value.expectedAnnotation !== 'already-exists' || value.expectedDefinitionId !== undefined,
     { message: ALREADY_EXISTS_NEEDS_PIN, path: ['expectedDefinitionId'] },
@@ -215,11 +230,27 @@ customFieldImportRoutes.post(
 
     // The service has no Hono context, so every route that commits an import
     // must write the audit events here.
-    writeCustomFieldDefinitionImportAudits(c, {
-      summary,
-      rows: body.rows,
-      externalSystem: body.externalSystem,
-    });
+    //
+    // Guarded, unlike a plain CRUD route's single `writeRouteAudit`: the rows
+    // are ALREADY COMMITTED by this point, and `writeAuditEventAsync` does its
+    // payload sanitisation synchronously on this stack. A throw from that
+    // prelude would escape the handler as a 500 describing a request that in
+    // fact succeeded — the exact "hide the rows that DID import" failure the
+    // always-200 contract below exists to prevent. Losing an audit event is
+    // bad; misreporting a successful import as a total failure is worse, and
+    // the loss is loud in the log either way.
+    try {
+      writeCustomFieldDefinitionImportAudits(c, {
+        summary,
+        rows: body.rows,
+        externalSystem: body.externalSystem,
+      });
+    } catch (err) {
+      console.error('[custom-field-definition-import] audit write failed', {
+        created: summary.created.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     // Always 200, including a partial success: the web caller consumes this
     // through runAction, which reads a failure body as a hard failure and would

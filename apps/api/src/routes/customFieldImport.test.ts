@@ -18,6 +18,7 @@ const {
       orgId: null as string | null,
       accessibleOrgIds: null as string[] | null,
       user: { id: 'u-1', email: 'admin@example.com' },
+      token: { mfa: true } as { mfa: boolean },
     },
   },
   permissionDenied: { current: false },
@@ -52,8 +53,15 @@ vi.mock('../middleware/auth', () => ({
       await next();
     };
   },
-  requireMfa: () => async (_c: any, next: any) => {
+  // Reproduces production's rule (`hasSatisfiedMfa`: reject unless
+  // `auth.token.mfa === true`) rather than always calling next(). A stub that
+  // always allows through would let a regression that DROPS `requireMfa()`
+  // from a route pass every test in this file.
+  requireMfa: () => async (c: any, next: any) => {
     requireMfaSpy();
+    if (authRef.current.token?.mfa !== true) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
     await next();
   },
 }));
@@ -113,6 +121,7 @@ function setPartnerAuth(partnerOrgAccess: 'all' | 'selected') {
     orgId: null,
     accessibleOrgIds: [ORG],
     user: { id: 'u-1', email: 'admin@example.com' },
+    token: { mfa: true },
   };
 }
 
@@ -124,6 +133,20 @@ function setOrgAuth() {
     orgId: ORG,
     accessibleOrgIds: [ORG],
     user: { id: 'u-2', email: 'org-admin@example.com' },
+    token: { mfa: true },
+  };
+}
+
+/** System scope: no org allowlist at all, and partner-wide is always permitted. */
+function setSystemAuth() {
+  authRef.current = {
+    scope: 'system',
+    partnerId: PARTNER,
+    partnerOrgAccess: null,
+    orgId: null,
+    accessibleOrgIds: null,
+    user: { id: 'u-3', email: 'platform@example.com' },
+    token: { mfa: true },
   };
 }
 
@@ -162,11 +185,16 @@ describe('custom-field definition import routes', () => {
     expect(commitMock).not.toHaveBeenCalled();
   });
 
-  it('requires MFA on both routes', async () => {
+  it('403s a caller whose token has not satisfied MFA, on both routes', async () => {
+    authRef.current.token = { mfa: false };
     for (const path of BOTH) {
-      await post(path, { rows: [partnerRow()] });
+      const res = await post(path, { rows: [partnerRow()] });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
     }
     expect(requireMfaSpy).toHaveBeenCalledTimes(2);
+    expect(previewMock).not.toHaveBeenCalled();
+    expect(commitMock).not.toHaveBeenCalled();
   });
 
   it('403s an org token naming another partner in the body', async () => {
@@ -252,6 +280,25 @@ describe('custom-field definition import routes', () => {
         accessibleOrgIds: [ORG],
         canManagePartnerWide: true,
       });
+    });
+
+    it('admits system scope with an unrestricted (null) org reach', async () => {
+      // `requireScope` lists system, so it must actually work: `null` reach is
+      // "every org under the partner", NOT an empty allowlist.
+      setSystemAuth();
+      const res = await post(PREVIEW, { rows: [partnerRow()] });
+      expect(res.status).toBe(200);
+      expect(previewMock.mock.calls[0]![1]).toEqual({
+        partnerId: PARTNER,
+        accessibleOrgIds: null,
+        canManagePartnerWide: true,
+      });
+    });
+
+    it('lets system scope target another partner by naming it in the body', async () => {
+      setSystemAuth();
+      await post(PREVIEW, { partnerId: OTHER_PARTNER, rows: [partnerRow()] });
+      expect(previewMock.mock.calls[0]![1]).toMatchObject({ partnerId: OTHER_PARTNER });
     });
   });
 

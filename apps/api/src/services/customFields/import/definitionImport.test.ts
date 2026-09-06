@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { selectQueue, insertImpl, transactionSpy } = vi.hoisted(() => ({
+const { selectQueue, insertImpl, transactionSpy, insertedValues } = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
   insertImpl: { current: null as null | ((values: Record<string, unknown>) => unknown) },
   transactionSpy: vi.fn(),
+  /** Every payload handed to `tx.insert(...).values(...)`, in order. */
+  insertedValues: [] as Array<Record<string, unknown>>,
 }));
 
 /**
@@ -28,12 +30,15 @@ vi.mock('../../../db', () => ({
       transactionSpy();
       const tx = {
         insert: () => ({
-          values: (values: Record<string, unknown>) => ({
-            returning: async () => {
-              if (!insertImpl.current) throw new Error('no insert impl queued');
-              return insertImpl.current(values);
-            },
-          }),
+          values: (values: Record<string, unknown>) => {
+            insertedValues.push(values);
+            return {
+              returning: async () => {
+                if (!insertImpl.current) throw new Error('no insert impl queued');
+                return insertImpl.current(values);
+              },
+            };
+          },
         }),
       };
       return cb(tx);
@@ -104,12 +109,26 @@ function orgDefinition(
   return { id, orgId, partnerId: null, fieldKey, type };
 }
 
-function row(overrides: Partial<CustomFieldDefinitionImportRow> = {}): CustomFieldDefinitionImportRow {
-  return { fieldKey: 'udf7', name: 'Warranty Expiry', type: 'date', ownerScope: 'partner', ...overrides };
+/**
+ * Cast on purpose. `CustomFieldDefinitionImportRow` is a discriminated union on
+ * `ownerScope`, so a partial-override helper cannot be expressed in it — and
+ * several tests below deliberately build rows the union forbids (an
+ * `organization` row with no `organizationId`) to prove the SERVICE still fails
+ * closed for a direct caller that bypassed the route's zod schema.
+ */
+function row(overrides: Record<string, unknown> = {}): CustomFieldDefinitionImportRow {
+  return {
+    fieldKey: 'udf7',
+    name: 'Warranty Expiry',
+    type: 'date',
+    ownerScope: 'partner',
+    ...overrides,
+  } as CustomFieldDefinitionImportRow;
 }
 
 beforeEach(() => {
   selectQueue.length = 0;
+  insertedValues.length = 0;
   insertImpl.current = (values) => [{ id: NEW_ID, ...values }];
   transactionSpy.mockClear();
 });
@@ -166,11 +185,11 @@ describe('previewCustomFieldDefinitionImport', () => {
   });
 
   it('reports an organization row with no organizationId as org-not-found', async () => {
+    // The route's zod schema makes this unrepresentable, and so does the type.
+    // The service is reachable directly (AI tools, W08, a future worker), so it
+    // must still fail closed rather than write a row with a null owner.
     seed([]);
-    const [r] = await previewCustomFieldDefinitionImport(
-      [{ fieldKey: 'a', name: 'A', type: 'text', ownerScope: 'organization' }],
-      ctx,
-    );
+    const [r] = await previewCustomFieldDefinitionImport([row({ fieldKey: 'a', name: 'A', type: 'text', ownerScope: 'organization' })], ctx);
     expect(r!.annotation).toBe('org-not-found');
   });
 
@@ -192,6 +211,43 @@ describe('previewCustomFieldDefinitionImport', () => {
       ctx,
     );
     expect(rows[1]!.annotation).toBe('key-shadowed');
+  });
+
+  describe('organization reach bounding', () => {
+    it('system scope (accessibleOrgIds null) resolves any org under the partner', async () => {
+      // `null` means "unrestricted within this partner" — the org query runs
+      // with no id filter and the returned orgs are the whole reach.
+      seed([], [ORG, FOREIGN_ORG]);
+      const rows = await previewCustomFieldDefinitionImport(
+        [
+          row({ fieldKey: 'a', name: 'A', type: 'text', ownerScope: 'organization', organizationId: ORG }),
+          row({ fieldKey: 'b', name: 'B', type: 'text', ownerScope: 'organization', organizationId: FOREIGN_ORG }),
+        ],
+        { ...ctx, accessibleOrgIds: null },
+      );
+      expect(rows.map((r) => r.annotation)).toEqual(['create', 'create']);
+    });
+
+    it('an EMPTY accessibleOrgIds array reaches zero orgs — it must not degrade into "no filter"', async () => {
+      // Only ONE result is queued (the definitions query): a caller who can
+      // reach nothing must not issue the org query at all. If the code ever
+      // stopped short-circuiting, it would consume this queue entry as the org
+      // list and the row below would annotate `create`.
+      selectQueue.length = 0;
+      selectQueue.push([partnerDefinition('udf7', 'date')]);
+      const [r] = await previewCustomFieldDefinitionImport(
+        [row({ fieldKey: 'a', name: 'A', type: 'text', ownerScope: 'organization', organizationId: ORG })],
+        { ...ctx, accessibleOrgIds: [] },
+      );
+      expect(r!.annotation).toBe('org-not-found');
+    });
+
+    it('an EMPTY accessibleOrgIds array can still see its own partner-wide rows', async () => {
+      selectQueue.length = 0;
+      selectQueue.push([partnerDefinition('udf7', 'date')]);
+      const [r] = await previewCustomFieldDefinitionImport([row()], { ...ctx, accessibleOrgIds: [] });
+      expect(r!.annotation).toBe('already-exists');
+    });
   });
 
   it('never resolves a row against an organization outside the caller reach', async () => {
@@ -317,6 +373,108 @@ describe('commitCustomFieldDefinitionImport', () => {
     expect(JSON.stringify(s)).not.toMatch(/boom/);
     // …but the original error is still reachable in-process for error tracking.
     expect((s.errors[0] as { cause?: unknown }).cause).toBeInstanceOf(Error);
+  });
+
+  it('writes the owner axis and the column defaults the single-create route writes', async () => {
+    // Asserted from the INSERT payload, not from the summary: the summary is
+    // built from variables computed BEFORE the write, so it would still look
+    // right if orgId/partnerId were swapped in the statement itself.
+    seed([], [ORG]);
+    await commitCustomFieldDefinitionImport(
+      [
+        { ...row(), expectedAnnotation: 'create' },
+        {
+          ...row({ fieldKey: 'udf8', name: 'Asset tag', type: 'text', ownerScope: 'organization', organizationId: ORG }),
+          expectedAnnotation: 'create',
+        },
+      ],
+      ctx,
+      actor,
+    );
+    expect(insertedValues[0]).toMatchObject({
+      orgId: null,
+      partnerId: PARTNER,
+      fieldKey: 'udf7',
+      type: 'date',
+      required: false,
+      options: null,
+      deviceTypes: null,
+    });
+    expect(insertedValues[1]).toMatchObject({ orgId: ORG, partnerId: null, fieldKey: 'udf8' });
+  });
+
+  it('reports an unmapped SQLSTATE with the generic copy, never as a success', async () => {
+    seed([]);
+    insertImpl.current = () => {
+      throw Object.assign(new Error('out of shared memory'), { code: '53200' });
+    };
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    expect(s.created).toHaveLength(0);
+    expect(s.errors[0]).toMatchObject({ code: 'write-failed' });
+    expect(s.errors[0]!.error).toMatch(/check the server log/i);
+  });
+
+  it('reports a non-Postgres throw with the generic copy too', async () => {
+    seed([]);
+    insertImpl.current = () => {
+      throw new TypeError('something in the driver blew up');
+    };
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    expect(s.errors[0]).toMatchObject({ code: 'write-failed' });
+    expect(JSON.stringify(s)).not.toMatch(/blew up/);
+  });
+
+  it('maps an RLS refusal (42501) to copy about access, not to a mystery', async () => {
+    seed([]);
+    insertImpl.current = () => {
+      throw Object.assign(new Error('new row violates row-level security policy'), { code: '42501' });
+    };
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    expect(s.errors[0]!.error).toMatch(/do not have access/i);
+  });
+
+  it('never serializes `cause` onto the wire, on any error entry', async () => {
+    seed([]);
+    insertImpl.current = () => {
+      throw Object.assign(new Error('secret query text'), { code: '23503' });
+    };
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    // The property exists in-process…
+    expect((s.errors[0] as { cause?: unknown }).cause).toBeInstanceOf(Error);
+    // …and is invisible to every serialization path a route could take.
+    expect(JSON.stringify(s.errors[0])).not.toMatch(/cause/);
+    expect(Object.keys(s.errors[0]!)).not.toContain('cause');
+  });
+
+  it('treats an insert that returns no row as a failure, never a silent success', async () => {
+    seed([]);
+    insertImpl.current = () => [];
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    expect(s.created).toHaveLength(0);
+    expect(s.errors[0]).toMatchObject({ code: 'write-failed' });
+  });
+
+  it('continues the batch after a row fails at the write', async () => {
+    seed([]);
+    let call = 0;
+    insertImpl.current = (values) => {
+      call += 1;
+      if (call === 1) throw Object.assign(new Error('boom'), { code: '23505' });
+      return [{ id: NEW_ID, ...values }];
+    };
+    const s = await commitCustomFieldDefinitionImport(
+      [
+        { ...row(), expectedAnnotation: 'create' },
+        { ...row({ fieldKey: 'udf8', name: 'B', type: 'text' }), expectedAnnotation: 'create' },
+      ],
+      ctx,
+      actor,
+    );
+    expect(s.errors.map((e) => e.index)).toEqual([0]);
+    expect(s.created.map((e) => e.index)).toEqual([1]);
+    // Each row opened its own nested transaction — that is what makes the
+    // second write reachable at all inside one request transaction.
+    expect(transactionSpy).toHaveBeenCalledTimes(2);
   });
 
   it('never lets a row land in more than one of created / skipped / errors', async () => {

@@ -402,15 +402,24 @@ function writeFailure(err: unknown, fieldKey: string): ExpectationProblem {
   return { error: (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE, code: 'write-failed' };
 }
 
-/** Annotations that can never be acknowledged into a write. */
-const REFUSED_ANNOTATIONS: Record<string, DefinitionImportErrorCode> = {
+/**
+ * Annotations that can never be acknowledged into a write.
+ *
+ * Keyed by `DefinitionAnnotation` rather than `string` so the deliberate
+ * 4-of-6 overlap between the annotation vocabulary and the error-code
+ * vocabulary is checked by the compiler. Typed as `Record<string, …>` these
+ * four entries would be held together by coincidentally matching string
+ * literals, and renaming an annotation would silently fall through to the
+ * generic copy instead of failing the build.
+ */
+const REFUSED_ANNOTATIONS: Partial<Record<DefinitionAnnotation, DefinitionImportErrorCode>> = {
   'partner-wide-denied': 'partner-wide-denied',
   'org-not-found': 'org-not-found',
   'type-conflict': 'type-conflict',
   'key-shadowed': 'key-shadowed',
 };
 
-const REFUSAL_COPY: Record<string, string> = {
+const REFUSAL_COPY: Partial<Record<DefinitionAnnotation, string>> = {
   'partner-wide-denied': PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   'org-not-found': 'That organization was not found',
   'type-conflict': 'This custom field conflicts with one that already exists',
@@ -458,7 +467,9 @@ export async function commitCustomFieldDefinitionImport(
       continue;
     }
 
-    const orgId = row.ownerScope === 'organization' ? row.organizationId! : null;
+    // No non-null assertion: `CustomFieldDefinitionImportRow` is discriminated
+    // on `ownerScope`, so narrowing gives `organizationId` as a plain string.
+    const orgId = row.ownerScope === 'organization' ? row.organizationId : null;
     const partnerId = row.ownerScope === 'partner' ? ctx.partnerId : null;
 
     try {

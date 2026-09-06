@@ -198,17 +198,29 @@ export interface CustomFieldImportOptions {
   placeholder?: string;
 }
 
+/**
+ * Which axis owns the definition, as a DISCRIMINATED UNION rather than a
+ * `ownerScope` field plus an optional `organizationId` and a comment.
+ *
+ * `custom_field_definitions_one_owner_chk` (W02) makes ownership org XOR
+ * partner at the database level, and the type says the same thing: an
+ * `organization` row cannot be constructed without its `organizationId`, so
+ * neither the commit path nor a future caller can reach the insert with a
+ * missing one. Same reasoning as W06's `DeviceResolution` above, and the JSON
+ * shape is unchanged — every arm is literals and strings.
+ */
+export type DefinitionOwner =
+  | { ownerScope: 'organization'; organizationId: string }
+  | { ownerScope: 'partner'; organizationId?: undefined };
+
 /** One submitted row of the DEFINITIONS importer. */
-export interface CustomFieldDefinitionImportRow {
+export type CustomFieldDefinitionImportRow = DefinitionOwner & {
   fieldKey: string;
   name: string;
   type: CustomFieldType;
   options?: CustomFieldImportOptions | null;
   required?: boolean;
   deviceTypes?: Array<'windows' | 'macos' | 'linux'> | null;
-  /** Which axis owns the definition. `organizationId` is required for `organization`. */
-  ownerScope: 'partner' | 'organization';
-  organizationId?: string;
   /**
    * The incumbent's own name for the field, e.g. `udf7`. Preserved in the audit
    * trail so a post-migration "where did this field come from" is answerable,
@@ -217,7 +229,7 @@ export interface CustomFieldDefinitionImportRow {
    * part of the table's shape.
    */
   sourceLabel?: string;
-}
+};
 
 /**
  * What preview says about a row, and what commit re-derives before writing it.
@@ -249,21 +261,36 @@ export type DefinitionAnnotation =
   | 'org-not-found'
   | 'partner-wide-denied';
 
-export interface AnnotatedDefinitionRow extends CustomFieldDefinitionImportRow {
+/**
+ * Deliberately NOT discriminated on `annotation`, unlike `DeviceResolution`.
+ * `existingId`/`existingType` do not correlate 1:1 with the annotation:
+ * `type-conflict` arises both with an existing definition (same axis, different
+ * type) and without one (the key appears twice in the submitted file). Modelling
+ * that faithfully would mean inventing wire-visible annotation variants purely
+ * to carry an internal batch-vs-database distinction, widening the vocabulary
+ * every client's `expectedAnnotation` has to track. Every consumer gates on
+ * `annotation` before reading these fields.
+ */
+export type AnnotatedDefinitionRow = CustomFieldDefinitionImportRow & {
   index: number;
   annotation: DefinitionAnnotation;
   /** The existing definition this row matched, for the preview UI. */
   existingId: string | null;
   existingType: CustomFieldType | null;
   conflictReason?: string;
-}
+};
 
-export interface CommitDefinitionRowInput extends CustomFieldDefinitionImportRow {
+export type CommitDefinitionRowInput = CustomFieldDefinitionImportRow & {
   /** Commit re-derives and refuses any row whose annotation moved. */
   expectedAnnotation?: DefinitionAnnotation;
-  /** Identity pin for `already-exists`. */
+  /**
+   * Identity pin, required for `already-exists`. Not folded into the union with
+   * `expectedAnnotation`: a row may legitimately carry NO acknowledgement at all
+   * (a caller that never previewed), so a clean two-arm split does not exist.
+   * Enforced at the wire by the route schema and again by `checkExpectation`.
+   */
   expectedDefinitionId?: string;
-}
+};
 
 export type DefinitionImportErrorCode =
   | 'org-not-found'

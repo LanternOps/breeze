@@ -19,8 +19,11 @@
  *
  * Extracted from `routes/customFields.ts` when the definitions importer (W07)
  * needed the identical mapping per row. Two copies would drift, and the codes
- * (`field-key-shadowed`, `field-key-duplicate`) are part of the wire contract
- * the web client branches on.
+ * (`field-key-shadowed`, `field-key-duplicate`) are the stable, machine-readable
+ * half of the 409 body — reserved for the web client, which does not branch on
+ * them yet (the import wizard is W09). Treat them as a published contract
+ * regardless: they are already asserted by
+ * `routes/customFields_create_update_delete.test.ts`.
  */
 
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';

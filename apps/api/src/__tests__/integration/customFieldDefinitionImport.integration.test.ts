@@ -47,7 +47,13 @@ import {
   createUser,
   grantRolePermissions,
 } from './db-utils';
+import { buildDbAccessContext } from '../../middleware/auth';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import {
+  commitCustomFieldDefinitionImport,
+  previewCustomFieldDefinitionImport,
+  type DefinitionImportContext,
+} from '../../services/customFields/import/definitionImport';
 import { customFieldImportRoutes } from '../../routes/customFieldImport';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 
@@ -131,14 +137,22 @@ async function orgAuth(partnerId: string, orgId: string): Promise<FakeAuth> {
   };
 }
 
+/**
+ * Built with the CANONICAL helper, not by hand. `buildDbAccessContext` derives
+ * `accessiblePartnerIds` from scope+partnerId and sets `currentPartnerId` —
+ * a hand-rolled copy would drift from the request path (and `currentPartnerId`
+ * becomes load-bearing for this table the day #4944 adds its partner-wide
+ * SELECT branch, at which point a harness that omitted it would quietly stop
+ * proving anything about that path).
+ */
 function dbContextFor(auth: FakeAuth): DbAccessContext {
-  return {
+  return buildDbAccessContext({
     scope: auth.scope,
     orgId: auth.orgId,
     accessibleOrgIds: auth.accessibleOrgIds,
-    accessiblePartnerIds: auth.scope === 'partner' && auth.partnerId ? [auth.partnerId] : [],
-    userId: auth.user?.id ?? null,
-  };
+    partnerId: auth.partnerId,
+    userId: auth.user.id,
+  });
 }
 
 /**
@@ -405,17 +419,93 @@ describe('custom-field definition import (integration)', () => {
     expect(await definitionCount(goodKey, org.id, null)).toBe(1);
   });
 
-  runDb('never leaks the driver message for a failed write', async () => {
+  runDb('isolates a REAL write-time database refusal from a good row in the same batch', async () => {
+    // Every other refusal in this suite is caught by the snapshot BEFORE any
+    // insert is attempted, so none of them exercises the per-row nested
+    // transaction under an actual failing statement. This one does.
+    //
+    // The setup is the one legitimate way the snapshot can be blind: an
+    // org-owned definition lives under an organization the caller cannot
+    // reach, so `loadSnapshot` skips it, `annotateRows` says `create` for a
+    // partner-wide row with that key — and W03's trigger refuses the INSERT.
     const partner = await createPartner();
-    const org = await createOrganization({ partnerId: partner.id });
-    const auth = await partnerAuth(partner.id, [org.id], 'all');
-    const fieldKey = uniqueKey('udf_leak');
-    await seedDefinition({ orgId: null, partnerId: partner.id }, fieldKey, 'text');
+    const mine = await createOrganization({ partnerId: partner.id });
+    const unreachable = await createOrganization({ partnerId: partner.id });
+    const shadowed = uniqueKey('udf_race');
+    const good = uniqueKey('udf_good');
+    await seedDefinition({ orgId: unreachable.id, partnerId: null }, shadowed, 'text');
+
+    // The service is called directly: the route derives the caller's reach from
+    // the token, and this scenario is precisely "reach that excludes a row the
+    // database still enforces against".
+    const ctx: DefinitionImportContext = {
+      partnerId: partner.id,
+      accessibleOrgIds: [mine.id],
+      canManagePartnerWide: true,
+    };
+    const auth = await partnerAuth(partner.id, [mine.id], 'all');
+
+    const summary = await withDbAccessContext(dbContextFor(auth), async () => {
+      const preview = await previewCustomFieldDefinitionImport(
+        [{ fieldKey: shadowed, name: 'Shadowed', type: 'text', ownerScope: 'partner' }],
+        ctx,
+      );
+      // Preview genuinely could not see it — this is what makes the write real.
+      expect(preview[0]!.annotation).toBe('create');
+
+      return commitCustomFieldDefinitionImport(
+        [
+          { fieldKey: shadowed, name: 'Shadowed', type: 'text', ownerScope: 'partner', expectedAnnotation: 'create' },
+          { fieldKey: good, name: 'Good', type: 'text', ownerScope: 'partner', expectedAnnotation: 'create' },
+        ],
+        ctx,
+        { userId: auth.user.id },
+      );
+    });
+
+    // Row 0 failed at the INSERT and was mapped from the trigger's P0001.
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'key-shadowed' });
+    // Row 1 still landed: the failure rolled back to row 0's SAVEPOINT and left
+    // the request transaction healthy. Without the nested transaction this
+    // would be a 25P02 instead.
+    expect(summary.created).toHaveLength(1);
+    expect(summary.created[0]).toMatchObject({ index: 1, fieldKey: good });
+    createdDefinitions.push(summary.created[0]!.definitionId);
+    expect(await definitionCount(shadowed, null, partner.id)).toBe(0);
+
+    // …and the driver's own text never reaches the wire.
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toMatch(/DETAIL|insert into|Failed query|params:/i);
+    expect(serialized).not.toMatch(/cause/);
+  });
+
+  runDb('treats a soft-deleted organization as out of reach', async () => {
+    // `loadSnapshot` filters on `isNull(organizations.deletedAt)`. The mocked
+    // unit tests cannot see that predicate at all — only a real query can.
+    const partner = await createPartner();
+    const live = await createOrganization({ partnerId: partner.id });
+    const deleted = await createOrganization({ partnerId: partner.id, deletedAt: new Date() });
+    const auth = await partnerAuth(partner.id, [live.id, deleted.id], 'all');
+    const fieldKey = uniqueKey('udf_soft');
+
+    const preview = await post(auth, PREVIEW, {
+      rows: [{ fieldKey, name: 'Asset tag', type: 'text', ownerScope: 'organization', organizationId: deleted.id }],
+    });
+    expect(preview.body.rows[0].annotation).toBe('org-not-found');
 
     const commit = await post(auth, COMMIT, {
-      rows: [{ fieldKey, name: 'X', type: 'text', ownerScope: 'organization', organizationId: org.id, expectedAnnotation: 'create' }],
+      rows: [{
+        fieldKey,
+        name: 'Asset tag',
+        type: 'text',
+        ownerScope: 'organization',
+        organizationId: deleted.id,
+        expectedAnnotation: 'create',
+      }],
     });
-    const serialized = JSON.stringify(commit.body);
-    expect(serialized).not.toMatch(/DETAIL|insert into|select .* from/i);
+    expect(commit.body.created).toHaveLength(0);
+    expect(commit.body.errors[0].code).toBe('org-not-found');
+    expect(await definitionCount(fieldKey, deleted.id, null)).toBe(0);
   });
 });
