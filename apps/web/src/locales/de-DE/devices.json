@@ -205,6 +205,22 @@
         "confirm": "Homebrew installieren"
       }
     },
+    "removeDialog": {
+      "titleOne": "{{hostname}} entfernen?",
+      "titleMany": "{{count}} Geräte entfernen?",
+      "bodyOne": "Es wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
+      "bodyMany": "Sie werden aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können sie später wiederherstellen.",
+      "summary": "{{online}} online, {{notOnline}} derzeit nicht online.",
+      "legend": "Was soll mit dem Breeze-Agenten geschehen?",
+      "uninstall": "Den Breeze-Agenten deinstallieren",
+      "uninstallOnline": "Jetzt eingereiht — ein Online-Agent holt den Befehl in wenigen Augenblicken ab.",
+      "uninstallQueuedWithWindow": "Eingereiht — wird ausgeführt, sobald sich das Gerät das nächste Mal meldet. Wird abgebrochen, wenn das nicht innerhalb von {{hours}} Stunden geschieht.",
+      "uninstallQueued": "Eingereiht — wird ausgeführt, sobald sich das Gerät das nächste Mal meldet.",
+      "uninstallMixed": "Online-Geräte holen den Befehl in wenigen Augenblicken ab; die übrigen führen ihn bei der nächsten Meldung aus.",
+      "leave": "Den Agenten installiert lassen",
+      "leaveHint": "Auf dem Rechner läuft der Agent weiter, er kann aber nicht verwaltet werden.",
+      "confirm": "Entfernen"
+    },
     "runScript": "Skript ausführen",
     "remoteTools": "Remote-Tools",
     "reRunAgentInventoryCollectorsSo": "Bestandsdatenerfassung des Agents erneut ausführen, damit die Benutzeroberfläche aktuelle Hardware-, Software- und Netzwerkdaten erhält, ohne auf den nächsten Heartbeat-Zyklus zu warten",

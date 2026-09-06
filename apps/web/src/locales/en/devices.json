@@ -205,6 +205,22 @@
         "confirm": "Install Homebrew"
       }
     },
+    "removeDialog": {
+      "titleOne": "Remove {{hostname}}?",
+      "titleMany": "Remove {{count}} devices?",
+      "bodyOne": "It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
+      "bodyMany": "They will be taken out of your active fleet and stop being monitored. History is kept and you can restore them later.",
+      "summary": "{{online}} online, {{notOnline}} not currently online.",
+      "legend": "What should happen to the Breeze agent?",
+      "uninstall": "Uninstall the Breeze agent",
+      "uninstallOnline": "Queued now — an online agent collects it within moments.",
+      "uninstallQueuedWithWindow": "Queued — runs the next time the device checks in. Cancelled if it hasn't after {{hours}} hours.",
+      "uninstallQueued": "Queued — runs the next time the device checks in.",
+      "uninstallMixed": "Online devices collect it within moments; the rest run it on their next check-in.",
+      "leave": "Leave the agent installed",
+      "leaveHint": "The machine keeps running the agent but can't be managed.",
+      "confirm": "Remove"
+    },
     "runScript": "Run Script",
     "remoteTools": "Remote Tools",
     "reRunAgentInventoryCollectorsSo": "Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle",

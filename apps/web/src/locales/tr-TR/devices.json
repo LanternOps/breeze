@@ -205,6 +205,22 @@
         "confirm": "Homebrew'u yükle"
       }
     },
+    "removeDialog": {
+      "titleOne": "{{hostname}} çıkarılsın mı?",
+      "titleMany": "{{count}} cihaz çıkarılsın mı?",
+      "bodyOne": "Etkin filonuzdan çıkarılacak ve izlenmeyecek. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "bodyMany": "Etkin filonuzdan çıkarılacak ve izlenmeyecekler. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "summary": "{{online}} çevrimiçi, {{notOnline}} şu anda çevrimiçi değil.",
+      "legend": "Breeze aracısına ne olsun?",
+      "uninstall": "Breeze aracısını kaldır",
+      "uninstallOnline": "Şimdi sıraya alındı — çevrimiçi bir aracı komutu birkaç saniye içinde alır.",
+      "uninstallQueuedWithWindow": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır. {{hours}} saat içinde bağlanmazsa iptal edilir.",
+      "uninstallQueued": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır.",
+      "uninstallMixed": "Çevrimiçi cihazlar komutu birkaç saniye içinde alır; diğerleri bir sonraki bağlantılarında çalıştırır.",
+      "leave": "Aracıyı yüklü bırak",
+      "leaveHint": "Makine aracıyı çalıştırmaya devam eder ancak yönetilemez.",
+      "confirm": "Çıkar"
+    },
     "runScript": "Komut Dosyasını Çalıştır",
     "remoteTools": "Uzaktan Araçlar",
     "reRunAgentInventoryCollectorsSo": "Kullanıcı arayüzünün bir sonraki kalp atışı döngüsünü beklemeden yeni donanım/yazılım/ağ verilerini görmesi için aracı envanter toplayıcılarını yeniden çalıştırın",
