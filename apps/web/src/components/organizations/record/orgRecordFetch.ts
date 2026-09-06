@@ -56,7 +56,9 @@ export interface OrgSummary {
     primary: { id: string; name: string; email: string | null; phone: string | null } | null;
   };
   portalUsers?: { count: number };
-  lastActivityAt: string | null;
+  /** Omitted without `audit:read` — the same omission rule as the sections
+   *  above, since it is derived from the audit log. */
+  lastActivityAt?: string | null;
 }
 
 /**

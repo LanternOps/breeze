@@ -1,5 +1,5 @@
 /**
- * Organization record page summary (#5075 W02, wave-5076).
+ * Organization record page summary (#5075 W01, wave-5076).
  *
  * A single aggregate endpoint backing the org detail page's overview cards.
  * Mounted separately under `/orgs`, mirroring the sibling-router pattern
@@ -15,6 +15,9 @@
  * (packages/shared/src/constants/permissions.ts) — portal_users are a
  * customer-facing kind of org user, so `portalUsers` is gated on the same
  * `users:read` grant search.ts already uses to gate a users-list result.
+ * `lastActivityAt` is gated on `audit:read`, mirroring `GET /audit-logs/logs`
+ * (routes/auditLogs.ts) — it is derived straight from `audit_logs.timestamp`,
+ * so it carries the same visibility requirement as the audit trail itself.
  */
 import { Hono } from 'hono';
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -49,7 +52,7 @@ export interface OrgSummary {
     primary: { id: string; name: string; email: string | null; phone: string | null } | null;
   };
   portalUsers?: { count: number };
-  lastActivityAt: string | null;
+  lastActivityAt?: string | null;
 }
 
 export const orgSummaryRoutes = new Hono();
@@ -74,9 +77,28 @@ const invoiceOpenStatusesSql = sql.join(
   sql`, `,
 );
 
+// Matches a trailing UTC 'Z'/'z' or an explicit +HH:MM / +HHMM offset.
+const HAS_TZ_OFFSET = /[Zz]$|[+-]\d\d:?\d\d$/;
+
 function toIsoOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const date = value instanceof Date ? value : new Date(value as string);
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  // Every raw `sql` aggregate above (MIN/MAX FILTER) skips Drizzle's own
+  // column-type mapping, so Postgres hands back plain, offset-less text for
+  // both `timestamp` and `date` columns — e.g. "2026-08-15 12:00:00" for
+  // auditLogs.timestamp, "2027-06-01" for contracts.endDate /
+  // invoices.dueDate. A bare DATE string is parsed as UTC midnight by the
+  // JS spec, but a bare DATE-TIME string (one with a time component and no
+  // offset) is parsed as the HOST's LOCAL time — an ECMA-262 quirk that
+  // silently shifts `lastActivityAt` by the server's UTC offset. Every
+  // timestamp/date column here is written and read as UTC, so a naive
+  // date-time string is normalized to carry an explicit 'Z' before parsing;
+  // a bare date is left alone (it is already unambiguous).
+  const raw = String(value);
+  const needsUtcSuffix = !HAS_TZ_OFFSET.test(raw) && raw.includes(':');
+  const date = new Date(needsUtcSuffix ? `${raw.replace(' ', 'T')}Z` : raw);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
@@ -128,7 +150,6 @@ orgSummaryRoutes.get(
     const summary: OrgSummary = {
       orgId: id,
       sites: { count: 0 },
-      lastActivityAt: null,
     };
 
     if (can(PERMISSIONS.DEVICES_READ)) {
@@ -255,11 +276,13 @@ orgSummaryRoutes.get(
       summary.portalUsers = { count: toCount(row?.count) };
     }
 
-    const [activityRow] = await db
-      .select({ lastActivityAt: sql<string | null>`MAX(${auditLogs.timestamp})` })
-      .from(auditLogs)
-      .where(eq(auditLogs.orgId, id));
-    summary.lastActivityAt = toIsoOrNull(activityRow?.lastActivityAt);
+    if (can(PERMISSIONS.AUDIT_READ)) {
+      const [activityRow] = await db
+        .select({ lastActivityAt: sql<string | null>`MAX(${auditLogs.timestamp})` })
+        .from(auditLogs)
+        .where(eq(auditLogs.orgId, id));
+      summary.lastActivityAt = toIsoOrNull(activityRow?.lastActivityAt);
+    }
 
     return c.json(summary);
   },
