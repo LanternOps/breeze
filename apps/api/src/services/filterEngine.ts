@@ -184,11 +184,20 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
     // shape is identical text, so every operator in `applyOperator` behaves as
     // it did.
     //
-    // LIMIT 1 is belt-and-braces, not load-bearing: (device_id, definition_id)
-    // is unique, and W03 forbids two VISIBLE definitions sharing one field_key
-    // for a device's org, so (device_id, field_key) is single-valued. It is kept
-    // so a future regression in either guard degrades to a wrong-ish match
-    // rather than a subquery cardinality error mid-evaluation.
+    // LIMIT 1 is belt-and-braces, not load-bearing. (device_id, definition_id)
+    // is unique; W02's two partial unique indexes and W03's anti-shadow trigger
+    // together mean at most ONE definition with a given field_key is visible to
+    // any org; and the coherence trigger enforces visibility on every write. So
+    // (device_id, field_key) is single-valued and the subquery returns one row.
+    //
+    // It is kept because those guards can be disarmed (the test suite does it to
+    // forge legacy shapes). Degrading to an arbitrary pick among duplicates is
+    // strictly better here than a "more than one row returned by a subquery"
+    // error, which would abort every smart-group evaluation, deployment-target
+    // resolution and dynamic-group recompute that touches the affected org —
+    // a fleet-wide outage from one corrupt row. An ORDER BY would make the pick
+    // deterministic but no more correct, at the cost of implying the duplicate
+    // state is expected.
     //
     // No org predicate here on purpose: the outer query already pins
     // devices.org_id, the correlation is on devices.id, and this expression is

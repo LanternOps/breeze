@@ -474,10 +474,29 @@ BEGIN
   );
 
   -- 1. Re-point onto the target org's identically-keyed VISIBLE definition.
-  --    W03 guarantees at most one such definition per key per org, so the
-  --    lateral is single-valued and (device_id, definition_id) cannot collide:
-  --    the device could not already hold a value under a definition its SOURCE
-  --    org could not see.
+  --
+  --    WHY (device_id, definition_id) CANNOT COLLIDE HERE, stated as the real
+  --    invariant rather than the weaker "the source org could not see it".
+  --    W02's two partial unique indexes forbid two org-owned definitions with
+  --    one key under one org, and two partner-wide ones under one partner; W03
+  --    forbids the remaining cross-axis pair. Together: AT MOST ONE definition
+  --    with a given field_key is visible to any org. The coherence trigger
+  --    enforces visibility on every write, so a device holds at most one value
+  --    row per field_key — in the source org and in the target org alike — and
+  --    the lateral below is therefore single-valued.
+  --
+  --    THE NOT EXISTS GUARD IS DEFENCE IN DEPTH, not redundancy. That invariant
+  --    is enforced by two migrations' worth of indexes and a trigger, all of
+  --    which can be disabled (the test suite does exactly that to forge legacy
+  --    shapes, and a DBA can too). If a device ever DID hold two rows under one
+  --    key, the re-point would target a (device_id, definition_id) pair the
+  --    other row already occupies and raise 23505 from inside this SECURITY
+  --    DEFINER function — aborting the operator's whole device move with an
+  --    unactionable error. With the guard, the redundant row instead falls
+  --    through to step 2 and is DROPPED AND COUNTED, which is both survivable
+  --    and auditable. Trading a hard abort for a counted drop is the right way
+  --    round here: the move is the operator's intent, and the duplicate row is
+  --    corrupt data that no longer has a definition it can legally point at.
   WITH candidate AS (
     SELECT v.id AS value_id, tgt.id AS target_definition_id
       FROM public.device_custom_field_values v
@@ -491,6 +510,10 @@ BEGIN
       ) tgt
      WHERE v.device_id = p_device_id
        AND tgt.id <> v.definition_id
+       AND NOT EXISTS (
+         SELECT 1 FROM public.device_custom_field_values occupied
+          WHERE occupied.device_id = p_device_id
+            AND occupied.definition_id = tgt.id)
   ), moved AS (
     UPDATE public.device_custom_field_values v
        SET definition_id = candidate.target_definition_id,
@@ -535,25 +558,50 @@ GRANT EXECUTE ON FUNCTION public.breeze_rehome_device_custom_field_values(uuid, 
 -- data.
 -- ---------------------------------------------------------------------------
 
--- 1. Mint an org-owned text definition for every stored key that has no visible
+-- 1. Mint an org-owned definition for every stored key that has no visible
 --    definition and CAN be created (the enforced ^[a-z][a-z0-9_]*$ pattern).
 --    Not doing this would strand those values: the FK needs a definition_id. A
 --    camelCase key cannot be minted (the pattern is enforced on every create
 --    path) and is instead PRESERVED by the projection trigger's unmanaged
 --    branch — counted below so it is on the record either way.
+--
+--    THE MINTED `type` IS INFERRED, NOT HARDCODED TO 'text'. The jsonb records
+--    a real JSON type per value, so `{"seat_count": 4}` is a NUMBER and
+--    `{"encrypted": true}` is a BOOLEAN. Minting every orphan key as 'text'
+--    would discard that permanently and silently: the copy step's CASE ladder
+--    keys off `f.type`, so the value would land in `value_text`, the field would
+--    lose typed input and typed comparisons in the UI forever, and no warning
+--    would tell an operator which fields to re-type by hand.
+--
+--    The inference is deliberately CONSERVATIVE — a type is only claimed when
+--    EVERY stored value for that (org, key) agrees on it. One device holding
+--    `"4"` while another holds `4` mints 'text', which is the safe reading. Even
+--    if the inference were wrong, nothing is lost: a value that does not parse
+--    for its declared type falls back to `value_text` in the copy step below.
+--    Dates are deliberately NOT inferred — a date is a STRING in jsonb and
+--    guessing at one from its shape would mistype any string that happens to
+--    start with a date, which is not a trade worth making unattended.
 DO $$
-DECLARE n bigint;
+DECLARE n_text bigint; n_number bigint; n_boolean bigint;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
   WITH stored AS (
-    SELECT DISTINCT d.org_id, o.partner_id, e.k AS field_key
+    SELECT d.org_id, o.partner_id, e.k AS field_key,
+           -- 'number'/'boolean' only when every stored value agrees; else text.
+           CASE
+             WHEN bool_and(jsonb_typeof(e.v) = 'number') THEN 'number'
+             WHEN bool_and(jsonb_typeof(e.v) = 'boolean') THEN 'boolean'
+             ELSE 'text'
+           END AS inferred_type
       FROM public.devices d
       JOIN public.organizations o ON o.id = d.org_id
       CROSS JOIN LATERAL jsonb_each(COALESCE(d.custom_fields, '{}'::jsonb)) e(k, v)
      WHERE d.custom_fields IS NOT NULL AND d.custom_fields <> '{}'::jsonb
+     GROUP BY d.org_id, o.partner_id, e.k
   ), minted AS (
     INSERT INTO public.custom_field_definitions (org_id, name, field_key, type)
-    SELECT s.org_id, s.field_key, s.field_key, 'text'
+    -- `type` is the custom_field_type ENUM, not text — the cast is required.
+    SELECT s.org_id, s.field_key, s.field_key, s.inferred_type::public.custom_field_type
       FROM stored s
      WHERE s.field_key ~ '^[a-z][a-z0-9_]*$'
        AND NOT EXISTS (
@@ -561,10 +609,15 @@ BEGIN
           WHERE f.field_key = s.field_key
             AND (f.org_id = s.org_id
                  OR (f.org_id IS NULL AND f.partner_id = s.partner_id)))
-    RETURNING 1
+    RETURNING type
   )
-  SELECT count(*) INTO n FROM minted;
-  RAISE WARNING 'device_custom_field_values backfill: minted % definition(s) for previously undefined keys', n;
+  SELECT count(*) FILTER (WHERE type = 'text'),
+         count(*) FILTER (WHERE type = 'number'),
+         count(*) FILTER (WHERE type = 'boolean')
+    INTO n_text, n_number, n_boolean
+    FROM minted;
+  RAISE WARNING 'device_custom_field_values backfill: minted % definition(s) for previously undefined keys (text=%, number=%, boolean=%)',
+    n_text + n_number + n_boolean, n_text, n_number, n_boolean;
 END $$;
 
 DO $$

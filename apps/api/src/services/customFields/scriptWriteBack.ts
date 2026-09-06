@@ -140,11 +140,27 @@ export async function applyScriptCustomFieldWrites(
   // takes an EXCLUSIVE per-org advisory lock held to COMMIT — the difference
   // between a fleet-wide script being cheap and being a per-org serialisation
   // point. Do not re-add a compare here; it would be a second, drifting copy.
+  //
+  // ONE BEHAVIOUR NARROWED HERE, deliberately. This used to read a boolean
+  // "the UPDATE matched no row" and turn it into a typed
+  // `{ key: '(device)', reason: 'device_not_found' }` rejection, persisted on
+  // `script_executions.custom_field_result` and visible on
+  // GET /scripts/executions/:id. An upsert has no such signal. If the device is
+  // deleted between `loadDeviceForWriteBack` above and this write, the composite
+  // (device_id, org_id) FK now raises 23503 instead — which
+  // commandResultHandlers.ts catches: it console.errors, reports to Sentry, and
+  // discards the whole summary rather than persisting a half-built one. The
+  // failure stays LOUD to engineering; what the OPERATOR sees narrows from a
+  // typed per-field rejection to "a run with no write-back". Accepted for a race
+  // that needs a device delete inside this window. To type it again, catch 23503
+  // here and re-raise it as `device_not_found` — do not reintroduce a
+  // pre-flight existence check, which would only move the race.
   await persistDeviceCustomFieldValues(device.id, device.orgId, writes, 'script');
 
-  // Audited even when the write was a no-op merge: the script asserted these
-  // values and that assertion is the auditable event. Keys only — a value can
-  // be anything the script computed and must never enter the audit payload.
+  // Audited even when every upsert was skipped as unchanged: the script
+  // asserted these values and that assertion is the auditable event. Keys only —
+  // a value can be anything the script computed and must never enter the audit
+  // payload.
   await writeAuditEventAsync(AUDIT_REQUEST, {
     orgId: device.orgId,
     actorType: 'agent',

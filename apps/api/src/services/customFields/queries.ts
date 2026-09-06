@@ -193,6 +193,14 @@ export function valueColumnsFor(
  * would serialise every device in the org behind it. `setWhere` makes Postgres
  * skip the UPDATE entirely (no RETURNING row, no WAL, no trigger) rather than
  * making us read-then-write.
+ *
+ * `source` is deliberately NOT part of that predicate, so re-asserting the same
+ * value from a different writer leaves the original `source` in place. That is a
+ * conscious trade: adding it would make provenance track the last writer, but it
+ * would also mean a fleet-wide script re-asserting unchanged values updates
+ * every row again — WAL and a row lock per device — which is the exact cost this
+ * comparison exists to avoid. Provenance is informational; the write amplification
+ * is not. Do not "fix" this without that trade in front of you.
  */
 export async function persistDeviceCustomFieldValues(
   deviceId: string,

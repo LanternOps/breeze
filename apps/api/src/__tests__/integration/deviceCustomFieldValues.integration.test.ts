@@ -506,10 +506,99 @@ describe('device_custom_field_values — backfill', () => {
       SELECT count(*)::int AS n FROM public.device_custom_field_values
        WHERE device_id = ${legacyDeviceId}::uuid`));
     expect(rows[0]!.n).toBe(3);
-    const defs = await sys(() => db.execute<{ n: number }>(sql`
+    const mintedDefs = await sys(() => db.execute<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM public.custom_field_definitions
        WHERE field_key = 'orphan_key' AND org_id = ${org!.id}::uuid`));
-    expect(defs[0]!.n).toBe(1);
+    expect(mintedDefs[0]!.n).toBe(1);
+  });
+
+  /**
+   * The backfill's CASE ladder is RAW SQL in the migration and is a DIFFERENT
+   * code path from the app-layer `valueColumnsFor`, which the unit tests cover.
+   * It is also the part of the migration that deviates most from the plan's
+   * sketch, so it gets its own replay against every declared type — in BOTH
+   * directions, because the fallback is the half that loses data if it is wrong:
+   * a value that does not parse for its declared type must land in `value_text`,
+   * never be dropped.
+   */
+  runDb('backfills every declared type, and falls back to value_text when a value does not parse', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner!.id });
+    const site = await createSite({ orgId: org!.id });
+    await createDefinition({ orgId: org!.id, fieldKey: 'rack_no', type: 'number' });
+    await createDefinition({ orgId: org!.id, fieldKey: 'is_vm', type: 'boolean' });
+    await createDefinition({ orgId: org!.id, fieldKey: 'bought_on', type: 'date' });
+    await createDefinition({ orgId: org!.id, fieldKey: 'bad_no', type: 'number' });
+    await createDefinition({ orgId: org!.id, fieldKey: 'bad_bool', type: 'boolean' });
+    await createDefinition({ orgId: org!.id, fieldKey: 'bad_date', type: 'date' });
+    const deviceId = await createDevice(org!.id, site!.id, 'dcfv-types');
+    await sys(() => db.execute(sql`
+      DELETE FROM public.device_custom_field_values WHERE device_id = ${deviceId}::uuid`));
+    await sys(() => db.execute(sql`
+      UPDATE public.devices SET custom_fields = '{
+        "rack_no": "12", "is_vm": "true", "bought_on": "2026-01-31",
+        "bad_no": "not-a-number", "bad_bool": "maybe", "bad_date": "31/01/2026",
+        "seat_count": 4, "encrypted": true, "mixed_key": "4"
+      }'::jsonb WHERE id = ${deviceId}::uuid`));
+
+    await getTestDb().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
+
+    // The three keys with NO definition are minted, and their type is INFERRED
+    // from the stored JSON type rather than hardcoded to 'text'. Minting a JSON
+    // number as text would permanently and silently strip the field of typed
+    // input and typed comparison, with nothing to tell an operator which fields
+    // to re-type. `mixed_key` holds a JSON *string* "4", so it stays text — the
+    // inference only claims a type when every stored value agrees.
+    const minted = await sys(() => db.execute<{ fieldKey: string; type: string }>(sql`
+      SELECT field_key AS "fieldKey", type FROM public.custom_field_definitions
+       WHERE org_id = ${org!.id}::uuid
+         AND field_key IN ('seat_count', 'encrypted', 'mixed_key')
+       ORDER BY field_key`));
+    expect(minted).toEqual([
+      { fieldKey: 'encrypted', type: 'boolean' },
+      { fieldKey: 'mixed_key', type: 'text' },
+      { fieldKey: 'seat_count', type: 'number' },
+    ]);
+    const inferredValues = await sys(() => db.execute<{
+      fieldKey: string; valueText: string | null; valueNumber: number | null; valueBool: boolean | null;
+    }>(sql`
+      SELECT field_key AS "fieldKey", value_text AS "valueText",
+             value_number AS "valueNumber", value_bool AS "valueBool"
+        FROM public.device_custom_field_values
+       WHERE device_id = ${deviceId}::uuid
+         AND field_key IN ('seat_count', 'encrypted', 'mixed_key')
+       ORDER BY field_key`));
+    expect(inferredValues).toEqual([
+      { fieldKey: 'encrypted', valueText: null, valueNumber: null, valueBool: true },
+      { fieldKey: 'mixed_key', valueText: '4', valueNumber: null, valueBool: null },
+      { fieldKey: 'seat_count', valueText: null, valueNumber: 4, valueBool: null },
+    ]);
+
+    const rows = await sys(() => db.execute<{
+      fieldKey: string; valueText: string | null; valueNumber: number | null;
+      valueBool: boolean | null; valueDate: string | null;
+    }>(sql`
+      SELECT field_key AS "fieldKey", value_text AS "valueText", value_number AS "valueNumber",
+             value_bool AS "valueBool", value_date::text AS "valueDate"
+        FROM public.device_custom_field_values
+       WHERE device_id = ${deviceId}::uuid
+         AND field_key NOT IN ('seat_count', 'encrypted', 'mixed_key')
+       ORDER BY field_key`));
+    expect(rows).toEqual([
+      // Parse FAILURES fall back to value_text — never dropped.
+      { fieldKey: 'bad_bool', valueText: 'maybe', valueNumber: null, valueBool: null, valueDate: null },
+      { fieldKey: 'bad_date', valueText: '31/01/2026', valueNumber: null, valueBool: null, valueDate: null },
+      { fieldKey: 'bad_no', valueText: 'not-a-number', valueNumber: null, valueBool: null, valueDate: null },
+      // Parse SUCCESSES land in their own typed column, and only that one.
+      { fieldKey: 'bought_on', valueText: null, valueNumber: null, valueBool: null, valueDate: '2026-01-31' },
+      { fieldKey: 'is_vm', valueText: null, valueNumber: null, valueBool: true, valueDate: null },
+      { fieldKey: 'rack_no', valueText: null, valueNumber: 12, valueBool: null, valueDate: null },
+    ]);
+    // Every original datum still reachable through the projection, unchanged.
+    expect(await readProjection(deviceId)).toMatchObject({
+      rack_no: 12, is_vm: true, bought_on: '2026-01-31',
+      bad_no: 'not-a-number', bad_bool: 'maybe', bad_date: '31/01/2026',
+    });
   });
 });
 
@@ -545,6 +634,41 @@ describe('persistDeviceCustomFieldValues', () => {
     // values would serialise the whole org.
     expect(changed).toEqual([]);
     expect(await readExportStamp(f.deviceId)).toEqual(before);
+  });
+
+  runDb('leaves a sibling value row untouched when only one key changes', async () => {
+    // The upsert targets (device_id, definition_id), so a second key on the same
+    // device must not be rewritten — a rewrite would bump its updated_at, re-fire
+    // the coherence trigger for it, and (via the projection) take the per-org
+    // export lock for a value nobody asked to change.
+    const f = await seedFixture();
+    const rackDef = await createDefinition({ orgId: f.orgA, fieldKey: 'rack_slot' });
+    await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
+      persistDeviceCustomFieldValues(f.deviceId, f.orgA, [
+        { definitionId: f.assetTagDef, fieldKey: 'asset_tag', type: 'text', value: 'AB-1' },
+        { definitionId: rackDef, fieldKey: 'rack_slot', type: 'text', value: 'SLOT-9' },
+      ], 'manual'));
+    const [siblingBefore] = await sys(() => db.execute<{ updatedAt: string }>(sql`
+      SELECT updated_at::text AS "updatedAt" FROM public.device_custom_field_values
+       WHERE device_id = ${f.deviceId}::uuid AND field_key = 'rack_slot'`));
+
+    const changed = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
+      persistDeviceCustomFieldValues(f.deviceId, f.orgA, [
+        { definitionId: f.assetTagDef, fieldKey: 'asset_tag', type: 'text', value: 'AB-2' },
+      ], 'manual'));
+    expect(changed).toEqual(['asset_tag']);
+
+    const [siblingAfter] = await sys(() => db.execute<{ updatedAt: string; valueText: string }>(sql`
+      SELECT updated_at::text AS "updatedAt", value_text AS "valueText"
+        FROM public.device_custom_field_values
+       WHERE device_id = ${f.deviceId}::uuid AND field_key = 'rack_slot'`));
+    expect(siblingAfter).toMatchObject({
+      updatedAt: siblingBefore!.updatedAt,
+      valueText: 'SLOT-9',
+    });
+    expect(await readProjection(f.deviceId)).toMatchObject({
+      asset_tag: 'AB-2', rack_slot: 'SLOT-9',
+    });
   });
 
   runDb('stores each type in its own typed column and clears to all-NULL', async () => {
@@ -675,6 +799,81 @@ describe('device_custom_field_values — device org move', () => {
       { fieldKey: 'rack_unit', orgId: f.orgA2, definitionId: f.partnerWideDef },
     ]);
     expect(await readProjection(f.deviceId)).toMatchObject({ asset_tag: 'AB-1', rack_unit: 'R12' });
+  });
+
+  runDb('survives a device holding two rows under one key instead of aborting the move', async () => {
+    // W02's unique indexes + W03's anti-shadow trigger make "two visible
+    // definitions with one field_key" unreachable, so a device should never hold
+    // two value rows under one key. This forges that state anyway — with both
+    // guards disarmed, the way legacy data or a DBA could — and pins that the
+    // re-home DEGRADES rather than exploding: without the NOT EXISTS guard, the
+    // re-point targets a (device_id, definition_id) pair the sibling row already
+    // occupies and raises 23505 from inside a SECURITY DEFINER function,
+    // aborting the operator's entire device move with an unactionable error.
+    const f = await seedFixture();
+    await getTestDb().execute(sql`
+      ALTER TABLE public.custom_field_definitions DISABLE TRIGGER custom_field_definitions_no_shadow`);
+    let shadowPartnerDef: string;
+    try {
+      // A partner-wide 'asset_tag' shadowing orgA's own 'asset_tag'.
+      shadowPartnerDef = await createDefinition({ partnerId: f.partnerA, fieldKey: 'asset_tag' });
+    } finally {
+      await getTestDb().execute(sql`
+        ALTER TABLE public.custom_field_definitions ENABLE TRIGGER custom_field_definitions_no_shadow`);
+    }
+    // Two rows, same device, same field_key, different definition_id.
+    await insertValue({
+      deviceId: f.deviceId, orgId: f.orgA, definitionId: f.assetTagDef,
+      fieldKey: 'asset_tag', valueText: 'ORG-OWNED',
+    });
+    await insertValue({
+      deviceId: f.deviceId, orgId: f.orgA, definitionId: shadowPartnerDef,
+      fieldKey: 'asset_tag', valueText: 'PARTNER-WIDE',
+    });
+
+    // orgA2 has no 'asset_tag' of its own, so both rows' lateral resolves to the
+    // partner-wide definition — which one row already occupies.
+    const { rehomed, dropped } = await sys(() => rehomeAndMove(f.deviceId, f.orgA2, f.siteA2));
+    expect(rehomed).toBe(0);
+    expect(dropped).toBe(1);
+
+    const rows = await sys(() => db.execute<{ orgId: string; definitionId: string; valueText: string }>(sql`
+      SELECT org_id AS "orgId", definition_id AS "definitionId", value_text AS "valueText"
+        FROM public.device_custom_field_values WHERE device_id = ${f.deviceId}::uuid`));
+    // The row under the still-visible partner-wide definition survives; the
+    // redundant one is dropped and counted rather than colliding.
+    expect(rows).toEqual([
+      { orgId: f.orgA2, definitionId: shadowPartnerDef, valueText: 'PARTNER-WIDE' },
+    ]);
+  });
+
+  runDb('a CROSS-PARTNER move drops partner-wide values too, and reports the count', async () => {
+    // Cross-partner moves are system-scope only, and they are the one case where
+    // a PARTNER-WIDE definition also stops being visible — so those values are
+    // dropped by the same "not visible in the target org" rule as org-owned ones.
+    // Leaving them behind would strand a row pointing at a definition belonging
+    // to a partner the device no longer has anything to do with, which is a
+    // cross-tenant pointer. This is unrecoverable data loss by design, so the
+    // count is what makes it auditable — assert it, do not just assert the rows
+    // are gone.
+    const f = await seedFixture();
+    const targetSiteB = f.siteB;
+    await insertValue({
+      deviceId: f.deviceId, orgId: f.orgA, definitionId: f.assetTagDef,
+      fieldKey: 'asset_tag', valueText: 'AB-1',
+    });
+    await insertValue({
+      deviceId: f.deviceId, orgId: f.orgA, definitionId: f.partnerWideDef,
+      fieldKey: 'rack_unit', valueText: 'R12',
+    });
+
+    const { rehomed, dropped } = await sys(() => rehomeAndMove(f.deviceId, f.orgB, targetSiteB));
+    expect({ rehomed, dropped }).toEqual({ rehomed: 0, dropped: 2 });
+
+    const rows = await sys(() => db.execute(sql`
+      SELECT 1 FROM public.device_custom_field_values WHERE device_id = ${f.deviceId}::uuid`));
+    expect(rows).toHaveLength(0);
+    expect(await readProjection(f.deviceId)).toEqual({});
   });
 
   runDb('drops a value whose org-owned definition has no counterpart in the target org', async () => {
@@ -856,13 +1055,35 @@ describe('device_custom_field_values — org merge', () => {
 });
 
 describe('filterEngine custom.<key>', () => {
-  runDb('matches a device on a normalized custom-field value', async () => {
+  /**
+   * THE PROJECTION MAKES THE OBVIOUS TEST VACUOUS. Seeding a value populates
+   * `devices.custom_fields` too (that is the whole point of the projection), so
+   * a filter test that only asserts "the device matches" passes IDENTICALLY
+   * whether `filterEngine` reads the new table or the old
+   * `jsonb_extract_path_text(devices.custom_fields, …)`.
+   *
+   * These tests therefore FORCE the two to disagree: the value row is seeded,
+   * then `devices.custom_fields` is emptied with a direct UPDATE. That UPDATE is
+   * not reverted — the projection trigger fires on writes to
+   * `device_custom_field_values`, not on writes to `devices` — so the jsonb stays
+   * empty until the next value write. A filter that still matches can only be
+   * reading the table.
+   */
+  async function blankTheProjection(deviceId: string): Promise<void> {
+    await sys(() => db.execute(sql`
+      UPDATE public.devices SET custom_fields = '{}'::jsonb WHERE id = ${deviceId}::uuid`));
+    expect(await readProjection(deviceId)).toEqual({});
+  }
+
+  runDb('reads the table, not the jsonb projection', async () => {
     const { evaluateFilter } = await import('../../services/filterEngine');
     const f = await seedFixture();
     await insertValue({
       deviceId: f.deviceId, orgId: f.orgA, definitionId: f.assetTagDef,
       fieldKey: 'asset_tag', valueText: 'AB-1234',
     });
+    await blankTheProjection(f.deviceId);
+
     const matched = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () => evaluateFilter(
       { operator: 'AND', conditions: [{ field: 'custom.asset_tag', operator: 'equals', value: 'AB-1234' }] },
       { orgId: f.orgA },
@@ -883,8 +1104,25 @@ describe('filterEngine custom.<key>', () => {
       deviceId: f.deviceId, orgId: f.orgA, definitionId: f.partnerWideDef,
       fieldKey: 'rack_unit', valueText: 'R12',
     });
+    await blankTheProjection(f.deviceId);
     const matched = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () => evaluateFilter(
       { operator: 'AND', conditions: [{ field: 'custom.rack_unit', operator: 'equals', value: 'R12' }] },
+      { orgId: f.orgA },
+    ));
+    expect(matched.deviceIds).toContain(f.deviceId);
+  });
+
+  runDb('matches a NUMBER value, which the jsonb branch could never index', async () => {
+    const { evaluateFilter } = await import('../../services/filterEngine');
+    const f = await seedFixture();
+    const numberDef = await createDefinition({ orgId: f.orgA, fieldKey: 'rack_no', type: 'number' });
+    await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
+      persistDeviceCustomFieldValues(f.deviceId, f.orgA, [
+        { definitionId: numberDef, fieldKey: 'rack_no', type: 'number', value: 12 },
+      ], 'manual'));
+    await blankTheProjection(f.deviceId);
+    const matched = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () => evaluateFilter(
+      { operator: 'AND', conditions: [{ field: 'custom.rack_no', operator: 'equals', value: '12' }] },
       { orgId: f.orgA },
     ));
     expect(matched.deviceIds).toContain(f.deviceId);
