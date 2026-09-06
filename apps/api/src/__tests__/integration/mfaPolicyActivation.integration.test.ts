@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, users, userPasskeys, partnerUsers } from '../../db/schema';
+import { setOrganizationSoftwareDownloadPolicy } from '../../services/softwareDownloadPolicy';
 import { removeOrgFromPartnerOrder } from '../../services/orgOrdering';
 import { setRiskProfile } from '../../modules/mcpInvites/tools/configureDefaults';
 import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../../services/mfaPolicyActivation';
@@ -153,6 +154,31 @@ describe('MFA settings activation against real PostgreSQL and breeze_app', () =>
     expect(row?.settings).toMatchObject(denyTotp);
     expect(row?.settings).toMatchObject(writer === 'order cleanup'
       ? { organizationOrder: ['keep'] } : { riskProfile: 'strict' });
+  });
+
+  it('software-policy writes preserve a concurrently committed org MFA policy', async () => {
+    const { org } = await fixture('totp', true);
+    let release!: () => void;
+    let locked!: () => void;
+    const held = new Promise<void>((resolve) => { locked = resolve; });
+    const commit = new Promise<void>((resolve) => { release = resolve; });
+    const first = withSystemDbAccessContext(async () => {
+      await lockMfaPolicySettings({ kind: 'organization', id: org.id });
+      locked();
+      await commit;
+      await db.update(organizations).set({ settings: denyTotp }).where(eq(organizations.id, org.id));
+    });
+    await held;
+    let completed = false;
+    const second = withSystemDbAccessContext(() => setOrganizationSoftwareDownloadPolicy(org.id,
+      { version: 1, approvedPrivateOrigins: [] })).then(() => { completed = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(completed).toBe(false);
+    } finally { release(); }
+    await Promise.all([first, second]);
+    const [row] = await getTestDb().select().from(organizations).where(eq(organizations.id, org.id));
+    expect(row?.settings).toMatchObject({ ...denyTotp, softwareDownloadPolicy: { version: 1, approvedPrivateOrigins: [] } });
   });
 
   it('serializes partner and child settings through commit, observing the predecessor', async () => {

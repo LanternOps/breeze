@@ -25,7 +25,8 @@ Participating settings writers hold a partner-keyed advisory transaction lock
 before reading settings through the final write, serializing concurrent partner
 and child-org policy changes. Whole-blob order, order-cleanup and risk-profile
 writes use the same lock so stale cosmetic writes cannot restore old security
-settings. This is not a guarantee against concurrent factor
+settings. The organization mTLS, helper, log-forwarding and software-download
+settings writers also lock before reading their shared settings blob. This is not a guarantee against concurrent factor
 removal: factor lifecycle operations do not acquire that lock. Auth's existing
 live-policy/epoch checks continue to apply; coordinating every factor lifecycle
 operation is a separate extension, not silently claimed by this change.
