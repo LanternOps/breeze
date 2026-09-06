@@ -83,12 +83,11 @@ vi.mock('../../services/provisionCredentialHandle', () => ({
   provisionHandleExpiresAt: vi.fn(() => new Date('2030-01-01T00:00:00.000Z')),
 }));
 
-// #4630 — dynamic device group re-evaluation emit on provisioning.
-const emitDeviceChangeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-vi.mock('../../events/deviceEvents', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../events/deviceEvents')>();
-  return { ...actual, emitDeviceChange: emitDeviceChangeMock };
-});
+// #4630 — dynamic device group re-evaluation ENQUEUE on provisioning.
+const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
+}));
 
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -408,11 +407,12 @@ describe('POST /devices/provision', () => {
         }),
       );
 
-      // #4630 — the new device is evaluated against every dynamic group in
-      // its org immediately, not just on its next heartbeat.
-      expect(emitDeviceChangeMock).toHaveBeenCalledWith(
+      // #4630 — the new device is queued for evaluation against every dynamic
+      // group in its org immediately, not just on its next heartbeat. The
+      // evaluation itself runs off the request's transaction.
+      expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: 'device.created',
+          eventType: 'device.created',
           deviceId: 'device-prov-id',
           orgId: ORG_ID,
         }),

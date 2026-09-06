@@ -4,7 +4,9 @@
  *   - initializeDeviceEventHandlers wires one handler per DeviceChangeEventType
  *     to the correct groupMembership.ts function.
  *   - emitDeviceChange fans out to every registered handler and never lets one
- *     handler's rejection stop another (Promise.allSettled).
+ *     handler's rejection stop another (Promise.allSettled) — but SURFACES the
+ *     failures as an AggregateError so the BullMQ worker retries (#5039 review
+ *     finding 2: `attempts: 5` was dead code while this resolved).
  *   - mapChangedFieldsToFilterFields's field-name mapping used by the
  *     heartbeat/enrollment/provision emit sites.
  */
@@ -42,24 +44,32 @@ import {
   initializeDeviceEventHandlers,
   mapChangedFieldsToFilterFields,
   onDeviceChange,
+  resetDeviceEventHandlersForTests,
   type DeviceChangeEventType,
 } from './deviceEvents';
 
 const DEVICE_ID = 'dddd0001-dddd-dddd-dddd-dddddddddddd';
 const ORG_ID = 'aaaa0000-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
+// The device.created group SELECT now ends in `.orderBy(deviceGroups.id)` (a
+// lock-order contract, #4630 review finding 2), so `where` has to be
+// thenable AND carry an orderBy that resolves to the same rows.
 function chainSelect(rows: unknown[]) {
+  const whereResult = {
+    orderBy: vi.fn().mockResolvedValue(rows),
+    then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+  };
   return {
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
+      where: vi.fn().mockReturnValue(whereResult),
     }),
   };
 }
 
 describe('deviceEvents', () => {
-  // eventHandlers is a module-scope singleton with no reset hook, so this
-  // must register exactly once for the whole suite — calling it per-test
-  // would stack duplicate handlers on every DeviceChangeEventType.
+  // eventHandlers is a module-scope singleton. initializeDeviceEventHandlers is
+  // now idempotent (see its own test below), but registering once here still
+  // keeps the ad hoc handlers added by individual tests out of each other's way.
   beforeAll(() => {
     initializeDeviceEventHandlers();
   });
@@ -125,7 +135,17 @@ describe('deviceEvents', () => {
     onDeviceChange(eventType, failing);
     onDeviceChange(eventType, succeeding);
 
-    await emitDeviceChange(createDeviceChangeEvent(eventType, DEVICE_ID, ORG_ID, ['hostname']));
+    const original = console.error;
+    console.error = () => {};
+    try {
+      // Rejects (see the AggregateError case below) but only AFTER every
+      // handler has settled — that is the property under test here.
+      await expect(
+        emitDeviceChange(createDeviceChangeEvent(eventType, DEVICE_ID, ORG_ID, ['hostname'])),
+      ).rejects.toBeInstanceOf(AggregateError);
+    } finally {
+      console.error = original;
+    }
 
     expect(failing).toHaveBeenCalled();
     expect(succeeding).toHaveBeenCalled();
@@ -138,6 +158,155 @@ describe('deviceEvents', () => {
     await expect(
       emitDeviceChange(createDeviceChangeEvent('device.metrics_updated', DEVICE_ID, ORG_ID, ['cpuPercent'])),
     ).resolves.toBeUndefined();
+  });
+
+  // #4630 review finding 5: a permanently-throwing handler used to be swallowed
+  // whole by Promise.allSettled, so a dynamic group could go stale forever with
+  // nothing in the logs.
+  it('logs every rejected handler at error level', async () => {
+    const boom = new Error('evaluation exploded');
+    onDeviceChange('device.metrics_updated', vi.fn().mockRejectedValue(boom));
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      await expect(
+        emitDeviceChange(createDeviceChangeEvent('device.metrics_updated', DEVICE_ID, ORG_ID, [])),
+      ).rejects.toThrow();
+    } finally {
+      console.error = original;
+    }
+
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]![0])).toContain('device.metrics_updated');
+    expect(String(errors[0]![0])).toContain(DEVICE_ID);
+    expect(errors[0]![1]).toBe(boom);
+  });
+
+
+  it('does not log when every handler resolves', async () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      await emitDeviceChange(createDeviceChangeEvent('device.deleted', DEVICE_ID, ORG_ID, []));
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toHaveLength(0);
+  });
+});
+
+// #5039 review finding 2. Logging alone made `attempts: 5` on the re-evaluation
+// queue dead code: a transient 40P01 inside the evaluation completed the job
+// "successfully" and membership stayed stale forever. These cases run against a
+// RESET registry so the assertions are exact rather than "contains".
+describe('emitDeviceChange failure propagation (#5039)', () => {
+  beforeEach(() => {
+    resetDeviceEventHandlersForTests();
+    vi.clearAllMocks();
+    mockSelect.mockReturnValue(chainSelect([]));
+  });
+
+  it('throws an AggregateError carrying EVERY rejection so the BullMQ job retries', async () => {
+    const first = new Error('deadlock detected');
+    const second = new Error('filter exploded');
+    const survivor = vi.fn().mockResolvedValue(undefined);
+    onDeviceChange('device.metrics_updated', vi.fn().mockRejectedValue(first));
+    onDeviceChange('device.metrics_updated', vi.fn().mockRejectedValue(second));
+    onDeviceChange('device.metrics_updated', survivor);
+
+    const original = console.error;
+    console.error = () => {};
+    let raised: unknown;
+    try {
+      await emitDeviceChange(createDeviceChangeEvent('device.metrics_updated', DEVICE_ID, ORG_ID, []));
+    } catch (err) {
+      raised = err;
+    } finally {
+      console.error = original;
+    }
+
+    expect(raised).toBeInstanceOf(AggregateError);
+    expect((raised as AggregateError).errors).toEqual([first, second]);
+    expect(String((raised as Error).message)).toContain('device.metrics_updated');
+    // Still fanned out: the surviving handler ran despite the two rejections.
+    expect(survivor).toHaveBeenCalled();
+  });
+
+  it('resolves when every handler resolves', async () => {
+    onDeviceChange('device.metrics_updated', vi.fn().mockResolvedValue(undefined));
+    await expect(
+      emitDeviceChange(createDeviceChangeEvent('device.metrics_updated', DEVICE_ID, ORG_ID, [])),
+    ).resolves.toBeUndefined();
+  });
+
+  // The device.created handler evaluates every dynamic group in the org and
+  // deliberately continues past a failure. It must not SWALLOW them, or
+  // emitDeviceChange's throw above is inert for the whole enrolment/provision
+  // path — exactly where concurrent enrolments make a 40P01 most likely.
+  it('device.created evaluates every group and then rethrows the failures', async () => {
+    initializeDeviceEventHandlers();
+    mockSelect.mockReturnValue(chainSelect([{ id: 'group-1' }, { id: 'group-2' }, { id: 'group-3' }]));
+    const deadlock = new Error('deadlock detected');
+    mockEvaluateDeviceMembershipForGroup
+      .mockResolvedValueOnce({ evaluatedGroups: 1, added: 0, removed: 0 })
+      .mockRejectedValueOnce(deadlock)
+      .mockResolvedValueOnce({ evaluatedGroups: 1, added: 1, removed: 0 });
+
+    const original = console.error;
+    console.error = () => {};
+    let raised: unknown;
+    try {
+      await emitDeviceChange(createDeviceChangeEvent('device.created', DEVICE_ID, ORG_ID, []));
+    } catch (err) {
+      raised = err;
+    } finally {
+      console.error = original;
+    }
+
+    // group-3 was still evaluated despite group-2 blowing up...
+    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenCalledTimes(3);
+    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenLastCalledWith('group-3', DEVICE_ID);
+    // ...and the failure reached the worker instead of vanishing into a log.
+    // emitDeviceChange wraps the handler's own aggregate, so the deadlock is
+    // one level down: emit-aggregate -> created-handler aggregate -> 40P01.
+    expect(raised).toBeInstanceOf(AggregateError);
+    const handlerFailure = (raised as AggregateError).errors[0] as AggregateError;
+    expect(handlerFailure).toBeInstanceOf(AggregateError);
+    expect(handlerFailure.message).toContain('1 of 3 dynamic group evaluations');
+    expect(handlerFailure.errors).toEqual([deadlock]);
+  });
+
+  it('device.created resolves when every group evaluation succeeds', async () => {
+    initializeDeviceEventHandlers();
+    mockSelect.mockReturnValue(chainSelect([{ id: 'group-1' }, { id: 'group-2' }]));
+
+    await expect(
+      emitDeviceChange(createDeviceChangeEvent('device.created', DEVICE_ID, ORG_ID, [])),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('initializeDeviceEventHandlers idempotency (#4630)', () => {
+  // The BullMQ re-evaluation worker calls this on every job so a worker-role
+  // process (which never runs index.ts's bootstrap) has handlers at all. Without
+  // the guard that would stack a duplicate handler per job and evaluate each
+  // device N times.
+  beforeEach(() => {
+    resetDeviceEventHandlersForTests();
+    vi.clearAllMocks();
+    mockSelect.mockReturnValue(chainSelect([]));
+  });
+
+  it('registers each handler exactly once no matter how many times it is called', async () => {
+    initializeDeviceEventHandlers();
+    initializeDeviceEventHandlers();
+    initializeDeviceEventHandlers();
+
+    await emitDeviceChange(createDeviceChangeEvent('device.updated', DEVICE_ID, ORG_ID, ['hostname']));
+
+    expect(mockUpdateDeviceMemberships).toHaveBeenCalledTimes(1);
   });
 });
 

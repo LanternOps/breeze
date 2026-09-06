@@ -277,14 +277,13 @@ vi.mock('../metrics', () => ({
   resolveResponseStatus: (c: any) => (c?.finalized ? (c.res?.status ?? 500) : 500),
 }));
 
-// #4630 — the heartbeat's dynamic-group re-evaluation emit site. Real
-// createDeviceChangeEvent (pure), mocked emitDeviceChange so tests can assert
-// on the event shape without pulling in groupMembership.ts's DB graph.
-const emitDeviceChangeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-vi.mock('../../events/deviceEvents', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../events/deviceEvents')>();
-  return { ...actual, emitDeviceChange: emitDeviceChangeMock };
-});
+// #4630 — the heartbeat's dynamic-group re-evaluation ENQUEUE site. The
+// evaluation itself never runs on the request path any more; the handler only
+// hands the device id to the coalescing BullMQ queue.
+const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
+}));
 
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
@@ -3739,7 +3738,7 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
   });
 });
 
-describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit (#4630)', () => {
+describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation enqueue (#4630)', () => {
   const deviceRow = {
     id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'old-host',
     osType: 'windows', osVersion: '10.0.19045', osBuild: '19045',
@@ -3749,6 +3748,7 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit
 
   function arrange() {
     vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
     getActiveTrustKeysetMock.mockResolvedValue([]);
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([]));
@@ -3764,17 +3764,17 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit
     });
   }
 
-  it('emits device.updated with the changed filterable fields when hostname changes', async () => {
+  it('enqueues a device.updated re-evaluation with the changed filterable fields', async () => {
     arrange();
 
     const resp = await post({ agentVersion: '0.66.0', hostname: 'new-host' });
 
     expect(resp.status).toBe(200);
-    expect(emitDeviceChangeMock).toHaveBeenCalledWith(
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: 'device.updated',
         deviceId: 'device-1',
         orgId: 'org-1',
+        eventType: 'device.updated',
         changedFields: ['hostname'],
       }),
     );
@@ -3792,24 +3792,22 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit
     });
 
     expect(resp.status).toBe(200);
-    const [event] = emitDeviceChangeMock.mock.calls.find(
-      (call: unknown[]) => (call[0] as { type: string }).type === 'device.updated',
-    ) ?? [];
-    expect(event?.changedFields).toEqual(
+    const request = requestDeviceGroupReevaluationMock.mock.calls[0]?.[0];
+    expect(request?.changedFields).toEqual(
       expect.arrayContaining(['hostname', 'osVersion', 'osBuild', 'deviceRole']),
     );
   });
 
-  it('does not emit when no filterable field changes (steady-state heartbeat)', async () => {
+  it('does not enqueue when no filterable field changes (steady-state heartbeat)', async () => {
     arrange();
 
     const resp = await post({ agentVersion: '0.66.0' });
 
     expect(resp.status).toBe(200);
-    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
   });
 
-  it('does not emit when the agent re-reports its unchanged auto deviceRole (real steady state)', async () => {
+  it('does not enqueue when the agent re-reports its unchanged auto deviceRole (real steady state)', async () => {
     // The Go agent sends deviceRole on EVERY heartbeat (heartbeat.go
     // sendHeartbeat), and deviceRoleSource defaults to 'auto' fleet-wide, so a
     // body that omits deviceRole is not the steady state — this is.
@@ -3824,16 +3822,30 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit
     });
 
     expect(resp.status).toBe(200);
-    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
   });
 
-  it('does not emit for a non-filterable-only change (agentServerUrl)', async () => {
+  it('does not enqueue for a non-filterable-only change (agentServerUrl)', async () => {
     arrange();
 
     const resp = await post({ agentVersion: '0.66.0', serverUrl: 'https://api.example.com' });
 
     expect(resp.status).toBe(200);
-    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+  });
+
+  it('answers without waiting on the enqueue — a stalled Redis must not hold the transaction', async () => {
+    // The whole point of the queue is that no Redis round trip happens while
+    // this request's Postgres transaction is open. A never-settling enqueue
+    // proves the call site is `void`-ed rather than awaited: if the route ever
+    // regains an `await`, this test hangs to its timeout instead of passing.
+    arrange();
+    requestDeviceGroupReevaluationMock.mockReturnValue(new Promise(() => {}));
+
+    const resp = await post({ agentVersion: '0.66.0', hostname: 'new-host' });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalled();
   });
 });
 

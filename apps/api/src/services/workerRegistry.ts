@@ -822,6 +822,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
+    // global: its closure reaches jobs/peripheralJobs.ts (via
+    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'deviceGroupJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceGroupJobs');
+      return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
+    },
+  },
+  {
     name: 'browserSecurityWorker',
     placement: 'global',
     load: async () => {
