@@ -383,6 +383,25 @@ describe('POST /agents/enroll — dynamic device group re-evaluation emit (#4630
     process.env.NODE_ENV = 'test';
   });
 
+  it('emits device.created INSIDE a system DB access context (RLS denies contextless reads)', async () => {
+    // Outside withSystemDbAccessContext the handler's dynamic-group SELECT
+    // runs with breeze.scope='none' and silently returns zero rows, so the
+    // enrollment-time evaluation would be a no-op in production.
+    let insideContext = 0;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: any) => {
+      insideContext++;
+      try { return await fn(); } finally { insideContext--; }
+    });
+    let emittedInside: number | null = null;
+    emitDeviceChangeMock.mockImplementationOnce(async () => { emittedInside = insideContext; });
+
+    await enrollOk();
+
+    expect(emitDeviceChangeMock).toHaveBeenCalledTimes(1);
+    expect(emittedInside).toBeGreaterThan(0);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: any) => fn());
+  });
+
   it('emits device.created for the freshly enrolled device', async () => {
     await enrollOk();
 

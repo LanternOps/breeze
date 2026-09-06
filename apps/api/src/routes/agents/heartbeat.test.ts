@@ -3809,6 +3809,24 @@ describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit
     expect(emitDeviceChangeMock).not.toHaveBeenCalled();
   });
 
+  it('does not emit when the agent re-reports its unchanged auto deviceRole (real steady state)', async () => {
+    // The Go agent sends deviceRole on EVERY heartbeat (heartbeat.go
+    // sendHeartbeat), and deviceRoleSource defaults to 'auto' fleet-wide, so a
+    // body that omits deviceRole is not the steady state — this is.
+    arrange();
+
+    const resp = await post({
+      agentVersion: '0.66.0',
+      hostname: 'old-host',
+      osVersion: '10.0.19045',
+      osBuild: '19045',
+      deviceRole: 'workstation',
+    });
+
+    expect(resp.status).toBe(200);
+    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
+  });
+
   it('does not emit for a non-filterable-only change (agentServerUrl)', async () => {
     arrange();
 

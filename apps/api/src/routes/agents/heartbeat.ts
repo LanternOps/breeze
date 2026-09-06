@@ -838,8 +838,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.mainAgentSilentSince = null;
   }
 
-  // Only update deviceRole if agent provides one and current source is 'auto'
-  if (data.deviceRole && device.deviceRoleSource === 'auto') {
+  // Only update deviceRole if agent provides one, current source is 'auto',
+  // and it actually differs. The agent sends deviceRole on EVERY heartbeat and
+  // 'auto' is the fleet-wide default, so without the inequality check every
+  // steady-state heartbeat would look like a filterable change and trigger a
+  // dynamic-group re-evaluation (#4630 review).
+  if (data.deviceRole && device.deviceRoleSource === 'auto' && data.deviceRole !== device.deviceRole) {
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
