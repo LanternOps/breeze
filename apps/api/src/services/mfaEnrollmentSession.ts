@@ -90,12 +90,14 @@ export interface MfaFactorSessionReplacement<T> {
  * when the response body carries a one-time secret the user has to read
  * (recovery codes, #4480): a caller signed out by its own request never sees it.
  *
- * Three shapes call this, differing only in `expectedMfaEnabled` and whether a
- * code set accompanies the write: initial enrollment (factor must not exist yet,
- * codes required), rotation on a protected account (factor must still exist,
- * codes required), and factor REMOVAL (factor must still exist, no codes — a
- * self-disable that evicted its own caller bounced the user to
- * /login?reason=session-expired the moment they turned MFA off, #4934).
+ * Three shapes exist, differing only in `expectedMfaEnabled` and whether a code
+ * set accompanies the write, and each has its own entry point: this function
+ * is ROTATION on a protected account (factor must still exist, codes required);
+ * `completeInitialMfaEnrollment` is INSTALL (factor must not exist yet, codes
+ * required); `completeMfaFactorRemoval` is REMOVAL (factor must still exist, no
+ * codes — a self-disable that evicted its own caller bounced the user to
+ * /login?reason=session-expired the moment they turned MFA off, #4934). All
+ * three funnel into the same private core.
  *
  * Expensive recovery-code generation and hashing belong before this call; every
  * authority-bearing write happens inside finishAuthIssuance's supplied
@@ -221,8 +223,13 @@ export async function completeInitialMfaEnrollment<T>(
   // codes it returns are the only escape hatch a user locked out of their own
   // factor has, and they exist exactly once. (An omitted pair is the
   // removal shape — `completeMfaFactorRemoval`, #4934 — never this one.)
-  if (input.recoveryCodes === undefined || input.recoveryCodes.length === 0) {
-    throw new Error('Initial MFA enrollment must install a recovery-code set');
+  if (
+    input.recoveryCodes === undefined
+    || input.recoveryCodes.length === 0
+    || input.recoveryCodeHashes === undefined
+    || input.recoveryCodeHashes.length !== input.recoveryCodes.length
+  ) {
+    throw new Error('Initial MFA enrollment must install a count-matched recovery-code set');
   }
   return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: false, factorWrite: 'install' });
 }
