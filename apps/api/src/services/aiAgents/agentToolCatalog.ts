@@ -18,8 +18,9 @@ import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import {
   AGENT_HUMAN_ONLY_TOOLS, TOOL_ACTION_INPUT_KEYS, BLOCKED_TOOLS,
-  checkGuardrails, isReadOnlyResolution, toolActionEnum,
+  checkGuardrails, isReadOnlyResolution,
 } from '../aiGuardrails';
+import { toolActionEnum } from '../aiToolActions';
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { ACT_MANIFEST } from './actManifest';

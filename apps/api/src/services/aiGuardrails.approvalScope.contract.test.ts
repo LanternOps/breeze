@@ -14,8 +14,9 @@ import {
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   TOOL_ACTION_INPUT_KEYS,
-  checkGuardrails, resolveApprovalScope, toolActionEnum,
+  checkGuardrails, resolveApprovalScope,
 } from './aiGuardrails';
+import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
