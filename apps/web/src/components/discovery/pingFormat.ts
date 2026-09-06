@@ -11,8 +11,7 @@ export function formatPing(ms?: number | null): string {
 
 export function pingColor(ms?: number | null): string {
   if (ms == null) return 'text-muted-foreground';
-  if (ms < 5) return 'text-green-600 dark:text-green-400';
-  if (ms < 50) return 'text-emerald-600 dark:text-emerald-400';
-  if (ms < 200) return 'text-yellow-600 dark:text-yellow-400';
-  return 'text-red-600 dark:text-red-400';
+  if (ms < 50) return 'text-success';
+  if (ms < 150) return 'text-warning';
+  return 'text-destructive';
 }

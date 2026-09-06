@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
-import { ArrowLeft, Activity, LayoutGrid } from 'lucide-react';
+import { Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
@@ -59,6 +59,22 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const handleBack = () => {
     void navigateTo('/devices');
   };
+
+  // The "Open ports" stat is a shortcut to the ports section, not just a
+  // second place that repeats its count — this flag survives the tab-switch
+  // render so the scroll only fires once the overview panel (and the ports
+  // section inside it) is actually back in the DOM, and never on an
+  // unrelated tab change (URL back/forward, clicking a tab directly).
+  const [pendingPortsScroll, setPendingPortsScroll] = useState(false);
+  const handleViewPorts = useCallback(() => {
+    setPendingPortsScroll(true);
+    switchTab('overview');
+  }, []);
+  useEffect(() => {
+    if (!pendingPortsScroll || activeTab !== 'overview') return;
+    document.querySelector('[data-testid="network-detail-ports"]')?.scrollIntoView?.({ block: 'start' });
+    setPendingPortsScroll(false);
+  }, [pendingPortsScroll, activeTab]);
 
   // Lifted here (rather than local to OpenPortsSection) because that section
   // unmounts whenever the Monitoring tab is active — local state would reset
@@ -185,14 +201,12 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   if (error || !asset) {
     return (
       <div className="space-y-6" data-testid="network-device-detail-error">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-          {t('networkDeviceDetailPage.backToDevices')}
-        </button>
+        {/* Same breadcrumb the loaded page renders (below) — an error must
+            not drop the operator into a different navigational frame. */}
+        <Breadcrumbs items={[
+          { label: t('devicesPage.title'), href: '/devices' },
+          { label: t('networkDeviceDetailPage.networkDevice') },
+        ]} />
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
           <p className="text-sm text-destructive">{error || t('networkDeviceDetailPage.errors.notFound')}</p>
           <div className="mt-4 flex items-center justify-center gap-2">
@@ -249,7 +263,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const TAB_ID_PREFIX = 'network-detail-tab-';
 
   return (
-    <div className="max-w-6xl space-y-6" data-testid="network-device-detail">
+    <div className="space-y-6" data-testid="network-device-detail">
       {/* Screen-reader-only outcome announcements — see the `announce`
           callback in useNetworkAsset for what posts here and why. */}
       <div aria-live="polite" aria-atomic="true" className="sr-only" data-testid="network-detail-live">
@@ -263,6 +277,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       <NetworkDeviceHeader
         asset={asset}
         displayName={displayName}
+        siteName={extras.siteName ?? null}
         typeMeta={typeMeta}
         typeLabel={typeLabel}
         approvalMeta={approvalMeta}
@@ -276,7 +291,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         onAnnounce={announce}
       />
 
-      <NetworkDeviceStats asset={asset} />
+      <NetworkDeviceStats asset={asset} onViewPorts={handleViewPorts} />
 
       <OverflowTabs
         tabs={tabDefs}
@@ -327,7 +342,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                         <button
                           type="button"
                           data-testid="network-detail-type-save"
-                          className="text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                           disabled={typeSaving}
                           onClick={() => void handleSaveType()}
                         >

@@ -273,7 +273,7 @@ export function ProxyConnectPopover({
           aria-expanded={open}
           aria-controls={popoverId}
           onClick={() => setOpen((o) => !o)}
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Globe aria-hidden="true" className="h-3.5 w-3.5" />
           {t('networkDeviceDetailPage.openWebUi')}

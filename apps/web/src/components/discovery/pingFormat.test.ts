@@ -23,22 +23,18 @@ describe('pingColor', () => {
     expect(pingColor(undefined)).toBe('text-muted-foreground');
   });
 
-  it('colors readings under 5ms as the fastest tier, with a dark-theme variant', () => {
-    expect(pingColor(4.9)).toBe('text-green-600 dark:text-green-400');
+  it('colors readings under 50ms with the success token', () => {
+    expect(pingColor(0)).toBe('text-success');
+    expect(pingColor(49.9)).toBe('text-success');
   });
 
-  it('colors readings between 5ms and 50ms as the next tier, with a dark-theme variant', () => {
-    expect(pingColor(5)).toBe('text-emerald-600 dark:text-emerald-400');
-    expect(pingColor(49.9)).toBe('text-emerald-600 dark:text-emerald-400');
+  it('colors readings between 50ms and 150ms with the warning token', () => {
+    expect(pingColor(50)).toBe('text-warning');
+    expect(pingColor(149.9)).toBe('text-warning');
   });
 
-  it('colors readings between 50ms and 200ms as the warning tier, with a dark-theme variant', () => {
-    expect(pingColor(50)).toBe('text-yellow-600 dark:text-yellow-400');
-    expect(pingColor(199.9)).toBe('text-yellow-600 dark:text-yellow-400');
-  });
-
-  it('colors readings at or above 200ms as the slow tier, with a dark-theme variant', () => {
-    expect(pingColor(200)).toBe('text-red-600 dark:text-red-400');
-    expect(pingColor(2000)).toBe('text-red-600 dark:text-red-400');
+  it('colors readings at or above 150ms with the destructive token', () => {
+    expect(pingColor(150)).toBe('text-destructive');
+    expect(pingColor(2000)).toBe('text-destructive');
   });
 });

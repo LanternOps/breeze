@@ -73,6 +73,7 @@ export function useNetworkAsset(assetId: string) {
         model: raw.model ?? null,
         netbiosName: raw.netbiosName ?? null,
         siteId: raw.siteId ?? null,
+        siteName: raw.siteName ?? null,
         firstSeenAt: raw.firstSeenAt ?? null,
         snmpMonitoringEnabled: raw.snmpMonitoringEnabled ?? false,
         networkMonitoringEnabled: raw.networkMonitoringEnabled ?? false,

@@ -2,7 +2,7 @@
 // the IP/MAC/manufacturer subtitle line, and the header-level actions (Open
 // Web UI, Manage in Discovery).
 
-import { ChevronRight, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
+import { ChevronRight, MapPin, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DiscoveredAsset } from '../../discovery/DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from '../../discovery/DiscoveredAssetList';
@@ -12,6 +12,7 @@ import type { DeviceOption } from './types';
 export function NetworkDeviceHeader({
   asset,
   displayName,
+  siteName,
   typeMeta,
   typeLabel,
   approvalMeta,
@@ -26,6 +27,7 @@ export function NetworkDeviceHeader({
 }: {
   asset: DiscoveredAsset;
   displayName: string;
+  siteName: string | null;
   typeMeta?: (typeof typeConfig)[keyof typeof typeConfig];
   typeLabel: string;
   approvalMeta?: (typeof approvalStatusConfig)[keyof typeof approvalStatusConfig];
@@ -79,6 +81,12 @@ export function NetworkDeviceHeader({
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              {siteName && (
+                <span className="flex items-center gap-1" data-testid="network-detail-site">
+                  <MapPin aria-hidden="true" className="h-3.5 w-3.5" />
+                  {siteName}
+                </span>
+              )}
               <span className="font-mono">{asset.ip}</span>
               {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
               {asset.manufacturer !== '—' && (
@@ -108,7 +116,7 @@ export function NetworkDeviceHeader({
           <a
             href={`/discovery?asset=${asset.id}#assets`}
             data-testid="network-detail-manage-discovery"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             {t('networkDeviceDetailPage.manageInDiscovery')}
             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />

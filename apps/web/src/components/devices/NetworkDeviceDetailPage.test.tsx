@@ -790,6 +790,35 @@ describe('NetworkDeviceDetailPage', () => {
     expect(link.getAttribute('href')).toBe(`/discovery?asset=${ASSET_ID}#assets`);
   });
 
+  describe('site name in the header', () => {
+    it('renders the site name before the IP address when the asset endpoint returns one', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, siteName: 'HQ Office' } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const site = screen.getByTestId('network-detail-site');
+      expect(site.textContent).toContain('HQ Office');
+
+      const subtitle = site.parentElement as HTMLElement;
+      const children = Array.from(subtitle.children);
+      expect(children.indexOf(site)).toBeLessThan(
+        children.findIndex((el) => el.textContent === baseAsset.ipAddress),
+      );
+    });
+
+    it('omits the site element when the asset endpoint returns no site name', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(screen.queryByTestId('network-detail-site')).toBeNull();
+    });
+  });
+
   describe('proxy connect popover', () => {
     it('renders a labeled "Open Web UI" button only for web-ish ports, and it opens that port\'s popover', async () => {
       fetchWithAuthMock
@@ -1377,7 +1406,7 @@ describe('NetworkDeviceDetailPage', () => {
   });
 
   describe('stat strip', () => {
-    it('renders status, ping, last seen and linked device stats', async () => {
+    it('renders status, ping, open ports and linked device stats', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({
           data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
@@ -1394,10 +1423,46 @@ describe('NetworkDeviceDetailPage', () => {
       // real test run, so formatLastSeen falls back to an absolute date —
       // stable to assert on without mocking the clock.
       expect(stats.textContent).toMatch(/as of/i);
+      // baseAsset.openPorts has 2 entries.
+      expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
 
       const linked = screen.getByTestId('network-detail-stat-linked');
       expect(linked.getAttribute('href')).toBe('/devices/dev-9');
       expect(linked.textContent).toContain('agent-host');
+    });
+
+    it('renders 0 (not a dash) for the open-ports stat when the asset has no open ports', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, openPorts: [] } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('0');
+    });
+
+    it('clicking the open-ports stat switches to the overview tab and scrolls the ports section into view', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
+      const realScrollIntoView = Element.prototype.scrollIntoView;
+      const scrollSpy = vi.fn();
+      // jsdom has no layout and so no scrollIntoView implementation.
+      Element.prototype.scrollIntoView = scrollSpy;
+
+      try {
+        render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+        await screen.findByTestId('network-device-detail');
+
+        openMonitoringTab();
+        await screen.findByTestId('network-detail-monitoring');
+
+        fireEvent.click(screen.getByTestId('network-detail-stat-ports'));
+
+        await screen.findByTestId('network-detail-overview');
+        await waitFor(() => expect(scrollSpy).toHaveBeenCalledWith({ block: 'start' }));
+      } finally {
+        Element.prototype.scrollIntoView = realScrollIntoView;
+      }
     });
 
     it('shows a dash for the linked-device stat when the asset is unlinked', async () => {
@@ -1422,7 +1487,7 @@ describe('NetworkDeviceDetailPage', () => {
       await screen.findByTestId('network-device-detail');
 
       // 2.4ms falls in the fastest tier (pingColor thresholds in pingFormat.ts).
-      expect(screen.getByTestId('network-detail-ping').className).toContain('text-green-600');
+      expect(screen.getByTestId('network-detail-ping').className).toContain('text-success');
     });
 
     it('does not show an "as of" line when the asset has no last-seen timestamp', async () => {
@@ -1556,6 +1621,24 @@ describe('NetworkDeviceDetailPage', () => {
       expect(ports.textContent).toContain('FTP');
       expect(ports.textContent).toContain('Unencrypted');
       expect(screen.queryByTestId('network-detail-port-proxy-21')).toBeNull();
+    });
+
+    // The insecure-port hint used to be reachable only as a `title` attribute
+    // on a non-focusable span — invisible to a keyboard-only operator. It must
+    // now render as visible text in the DOM.
+    it('renders the insecure-port hint as visible text for a telnet row, not just a title', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, openPorts: [{ port: 23, service: 'telnet' }] } }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(
+        screen.getByText('This service sends credentials in clear text. Disable it on the device if you can.'),
+      ).toBeTruthy();
     });
 
     it('shows a muted kind label for a non-web, non-risky port', async () => {

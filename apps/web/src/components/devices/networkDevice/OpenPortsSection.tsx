@@ -67,7 +67,7 @@ export function OpenPortsSection({
               return (
                 <div
                   key={`${p.port}-${(p as { protocol?: string }).protocol ?? 'tcp'}-${index}`}
-                  className="flex items-center gap-3 py-1.5"
+                  className={`flex gap-3 py-1.5 ${info.risky ? 'items-start' : 'items-center'}`}
                 >
                   <span
                     data-testid="network-detail-port-number"
@@ -75,9 +75,14 @@ export function OpenPortsSection({
                   >
                     {p.port}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-sm" title={info.label}>
-                    {info.label}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">{info.label}</span>
+                    {info.risky && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t('networkDeviceDetailPage.ports.insecureHint')}
+                      </p>
+                    )}
+                  </div>
                   {info.kind === 'web' ? (
                     <ProxyConnectPopover
                       assetId={assetId}
@@ -91,10 +96,7 @@ export function OpenPortsSection({
                       onAnnounce={onAnnounce}
                     />
                   ) : info.risky ? (
-                    <span
-                      className="shrink-0 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-xs text-warning"
-                      title={t('networkDeviceDetailPage.ports.insecureHint')}
-                    >
+                    <span className="shrink-0 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-xs text-warning">
                       {t('networkDeviceDetailPage.ports.insecure')}
                     </span>
                   ) : kindLabel ? (

@@ -38,20 +38,18 @@ export function SnmpSection({ snmpData }: { snmpData: Record<string, string> }) 
   const { t } = useTranslation('devices');
   return (
     <Section title={t('networkDeviceDetailPage.sections.snmpData')} testId="network-detail-snmp">
-      <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
-        {Object.keys(snmpData).length === 0 ? (
-          <div className="col-span-2 text-xs text-muted-foreground">
-            {t('networkDeviceDetailPage.emptySnmp')}
-          </div>
-        ) : (
-          Object.entries(snmpData).map(([key, value]) => (
+      {Object.keys(snmpData).length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptySnmp')}</p>
+      ) : (
+        <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
+          {Object.entries(snmpData).map(([key, value]) => (
             <Fragment key={key}>
               <dt className="text-muted-foreground">{snmpFieldLabel(key, t)}</dt>
               <SnmpValue fieldKey={key} value={String(value ?? '')} />
             </Fragment>
-          ))
-        )}
-      </dl>
+          ))}
+        </dl>
+      )}
     </Section>
   );
 }
