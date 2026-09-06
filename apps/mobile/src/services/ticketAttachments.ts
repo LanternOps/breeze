@@ -207,7 +207,21 @@ export async function prepareImage(file: PickedAttachment): Promise<PickedAttach
  * request goes through RN's own FormData bridge or winter fetch's converter.
  */
 export function attachmentFilePart(file: PickedAttachment): File {
-  return new File(file.uri);
+  const part = new File(file.uri);
+  // `File.name` is a read-only getter derived from whatever path segment the
+  // (often OS-generated, cache) URI happens to end in — not the picker's own
+  // reported name. `getFormDataPartHeaders` in winter fetch's converter reads
+  // `part.name` for the Content-Disposition filename, and `form.append`'s 3rd
+  // argument (below) does NOT reliably reach it: React Native's own FormData
+  // patch only honours a filename argument when the appended value is
+  // `instanceof Blob` (`winter/FormData.ts`'s `normalizeArgs`) — a real
+  // `File` implements `Blob` structurally (satisfying winter fetch's own
+  // `'bytes' in entry` check) but is not an actual `Blob` instance, so that
+  // argument is silently dropped for it on-device. Shadowing the getter with
+  // an own property is what actually gets the picker's name (e.g. the camera
+  // roll's `IMG_1234.JPG`) to the server instead of a cache-path artifact.
+  Object.defineProperty(part, 'name', { value: file.name, configurable: true, enumerable: true });
+  return part;
 }
 
 /**
@@ -227,10 +241,10 @@ export async function uploadTicketAttachment(
   }
 
   const form = new FormData();
-  // The filename is the THIRD `append` argument rather than read off the
-  // `File` instance: a picker's reported name (e.g. the camera roll's
-  // `IMG_1234.JPG`) can differ from whatever segment the OS-assigned cache
-  // URI happens to end in, and that segment is what `File.name` derives from.
+  // The filename is ALSO passed as the 3rd `append` argument, belt-and-braces
+  // alongside the name shadowed onto the part itself (see
+  // `attachmentFilePart`) — harmless where it's redundant, and load-bearing
+  // for any FormData implementation that DOES honour it for a non-Blob value.
   // Content-Type is never hand-set here — see api.ts's comment on why the
   // runtime must generate the multipart boundary itself.
   form.append('file', attachmentFilePart(file) as unknown as Blob, file.name);

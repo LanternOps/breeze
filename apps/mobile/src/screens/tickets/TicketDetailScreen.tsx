@@ -295,7 +295,22 @@ export function TicketDetailScreen() {
             'Turn it on in Settings to continue.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              {
+                text: 'Open Settings',
+                onPress: () => {
+                  // openSettings() rejects on a device with no reachable
+                  // Settings intent (locked-down MDM, an odd OS build) — the
+                  // one actionable button in this dialog going silently dead
+                  // is exactly the "nothing happens" failure this alert
+                  // exists to fix, one level down.
+                  Linking.openSettings().catch((err: unknown) => {
+                    reportInternalError(err, 'ticket-attachment-open-settings');
+                    if (mounted.current) {
+                      setToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
+                    }
+                  });
+                },
+              },
             ]
           );
         } else if (outcome.reason === 'failed') {

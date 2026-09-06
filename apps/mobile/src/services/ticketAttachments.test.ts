@@ -326,6 +326,16 @@ describe('uploadTicketAttachment', () => {
     expect(part).not.toEqual({ uri: jpeg.uri, name: jpeg.name, type: jpeg.mimeType });
   });
 
+  it("names the part using the picker's filename, not whatever segment the cache URI ends in", () => {
+    // `File.name` on a real device derives from the URI, and a picker's
+    // cache URI (e.g. `.../ImagePicker/8F3C1234-ABCD.jpg`) rarely matches
+    // what the picker itself reported (`IMG_1234.JPG`) — the mismatch this
+    // test guards against.
+    const cameraRoll = { ...jpeg, uri: 'file:///cache/ImagePicker/8F3C1234-ABCD.jpg', name: 'IMG_1234.JPG' };
+
+    expect(attachmentFilePart(cameraRoll).name).toBe('IMG_1234.JPG');
+  });
+
   it('passes the filename as the THIRD `append` argument, not read off the File instance', async () => {
     coreRequest.mockResolvedValue({ data: { id: 'att-1' } });
 
@@ -479,9 +489,38 @@ describe('attachmentFilePart against the real winter-fetch converter (#5103)', (
   });
 
   it('THE FIX: attachmentFilePart() serialises cleanly through the real converter', async () => {
+    // The mocked `expo-file-system` File extends the real `Blob` class (see
+    // the mock above) purely so Node's own, stricter
+    // `FormData.append(name, value, filename)` — exercised throughout this
+    // file's `uploadTicketAttachment` tests — accepts it. That happens to
+    // route THIS test through convertFormDataAsync's `entry instanceof Blob`
+    // branch rather than the `'bytes' in entry` branch a real on-device File
+    // takes (see the next test for that one).
     const part = attachmentFilePart(jpeg);
 
     const result = await realConvertFormDataAsync(entriesOnlyFormData([['file', part]]));
+
+    expect(result.body.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(result.body)).toContain(`--${result.boundary}`);
+  });
+
+  it('THE FIX, real device shape: a Blob-implementing-but-not-instanceof part (bytes(), no Blob) also serialises cleanly', async () => {
+    // A real `expo-file-system` File is declared `implements Blob` (satisfies
+    // the interface — has `bytes()`, `type`, `size`, …) but does NOT extend
+    // the JS `Blob` class, so `entry instanceof Blob` is false for it on a
+    // real device; convertFormDataAsync instead takes its `'bytes' in entry'`
+    // branch. The mock above can't model that shape (it must extend Blob for
+    // the reason noted in the previous test), so this fixture stands in for
+    // the genuine on-device shape and proves THAT branch works too.
+    const realDeviceShapedPart = {
+      name: jpeg.name,
+      type: jpeg.mimeType,
+      bytes: async () => new Uint8Array([1, 2, 3]),
+    };
+
+    const result = await realConvertFormDataAsync(
+      entriesOnlyFormData([['file', realDeviceShapedPart]])
+    );
 
     expect(result.body.length).toBeGreaterThan(0);
     expect(new TextDecoder().decode(result.body)).toContain(`--${result.boundary}`);
