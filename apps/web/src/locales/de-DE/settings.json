@@ -1577,6 +1577,10 @@
       "running": "Status",
       "lastRunStatus": "Ergebnis des letzten Laufs"
     },
+    "inertBadge": {
+      "label": "Inaktiv",
+      "hint": "Für diese Art existiert noch keine partnerweite Grundlinie. Ein rein organisationseigener Agent überschreibt nur eine Grundlinie, daher hat er keine Wirkung, bis eine erstellt wird."
+    },
     "lastRun": {
       "never": "Nie ausgeführt",
       "at": "Letzte Ausführung {{at}}"

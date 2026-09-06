@@ -537,6 +537,20 @@ export interface AiAgentDto {
    * `null` rather than omitting the key.
    */
   lastRunFindingsToReview?: number | null;
+  /**
+   * Whether `resolveEffectiveAgentInner` would treat this row as effective
+   * (#4170) — always `true` for a partner-wide row (`allOrgs`), since it IS
+   * the baseline; for an org row, `true` only when an active partner-wide
+   * baseline of the same `kind` exists for this org's partner. An org row
+   * with `false` here shows `enabled`/`mode` from its own columns but the
+   * resolver returns `null` for it: it overrides nothing and has no effect.
+   *
+   * Optional for the same reason as the `lastRun*` fields above: only the
+   * LIST route computes it (one query for the whole page, not per row) —
+   * every other route that returns an `AiAgentDto` omits the key rather than
+   * guessing at it.
+   */
+  hasPartnerBaseline?: boolean;
 }
 
 /**

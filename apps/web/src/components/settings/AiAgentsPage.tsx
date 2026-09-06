@@ -40,6 +40,10 @@ export default function AiAgentsPage() {
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
 
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
+  // #4170: which kinds already have an active partner-wide baseline for this
+  // org's partner — reported alongside `data` because a not-yet-created org
+  // row has no `hasPartnerBaseline` of its own for the create form to read.
+  const [partnerBaselineKinds, setPartnerBaselineKinds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   // True once a load has completed at least once. `loading` alone would make
   // every refresh (a save, a re-enable) tear the empty state down and put the
@@ -54,6 +58,7 @@ export default function AiAgentsPage() {
   const [editorDirty, setEditorDirty] = useState(false);
   const [enablingId, setEnablingId] = useState<string | null>(null);
   const allOrgsHintId = useId();
+  const inertHintId = useId();
   /** The agent a Re-enable just restored, so its live row can show a one-time
    *  "switched off, review its policy" note (Finding 1). Cleared by any
    *  further state change — opening or closing the editor — rather than a
@@ -103,13 +108,14 @@ export default function AiAgentsPage() {
       // truncated body. Unguarded, that rejection escaped `void load()` with
       // no unhandledrejection handler anywhere, leaving the page in a
       // permanent loading state that renders as an ordinary empty screen.
-      const body = (await response.json()) as { data?: unknown };
+      const body = (await response.json()) as { data?: unknown; partnerBaselineKinds?: unknown };
       // A body we cannot read is an ERROR, not zero agents. `?? []` reported
       // "no agents yet" for a shape change and, worse, told the create form
       // every kind was free — so the next save 409'd on an agent the page had
       // just said did not exist.
       if (!Array.isArray(body.data)) throw new Error('GET /ai/agents: malformed body');
       setAgents(body.data as AiAgentDto[]);
+      setPartnerBaselineKinds(new Set(Array.isArray(body.partnerBaselineKinds) ? body.partnerBaselineKinds : []));
     } catch (err) {
       console.error('[AiAgentsPage] could not load agents', err);
       setError(true);
@@ -333,6 +339,7 @@ export default function AiAgentsPage() {
             key={editing.agent?.id ?? 'new'}
             agent={editing.agent}
             agents={agents}
+            partnerBaselineKinds={partnerBaselineKinds}
             showOwnerScope={isPartnerScope}
             defaultOwnerScope={defaultOwnerScope}
             onClose={closeEditor}
@@ -445,6 +452,7 @@ export default function AiAgentsPage() {
       {live.length > 0 && (
         <>
         <span id={allOrgsHintId} className="sr-only">{t('aiAgentsPage.allOrgsHint')}</span>
+        <span id={inertHintId} className="sr-only">{t('aiAgentsPage.inertBadge.hint')}</span>
         <ul className="divide-y rounded-lg border" data-testid="ai-agents-list">
           {live.map((agent) => (
             <li key={agent.id} className="flex flex-wrap items-center gap-3 p-3" data-testid={`ai-agent-row-${agent.id}`}>
@@ -499,6 +507,20 @@ export default function AiAgentsPage() {
                   >
                     {agent.enabled ? t('aiAgentsPage.runningBadge.running') : t('aiAgentsPage.runningBadge.notRunning')}
                   </span>
+                  {/* #4170: an org-only row is an override of a partner
+                      baseline, never a standalone policy — with no baseline
+                      for its kind, the resolver treats it as if it did not
+                      exist, regardless of what `enabled`/`mode` say above. */}
+                  {!agent.allOrgs && agent.hasPartnerBaseline === false && (
+                    <span
+                      className={badgeClass('warning', { size: 'sm' })}
+                      aria-describedby={inertHintId}
+                      aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${t('aiAgentsPage.inertBadge.label')}`}
+                      data-testid={`ai-agent-inert-badge-${agent.id}`}
+                    >
+                      {t('aiAgentsPage.inertBadge.label')}
+                    </span>
+                  )}
                   {lastRunCell(agent)}
                 </p>
                 {justReenabledId === agent.id && (

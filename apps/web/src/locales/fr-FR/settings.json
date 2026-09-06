@@ -1577,6 +1577,10 @@
       "running": "Statut",
       "lastRunStatus": "Résultat de la dernière exécution"
     },
+    "inertBadge": {
+      "label": "Inactif",
+      "hint": "Aucune référence à l’échelle du partenaire n’existe encore pour ce type. Un agent propre à l’organisation ne fait que remplacer une référence : il n’a donc aucun effet tant qu’aucune n’est créée."
+    },
     "lastRun": {
       "never": "Jamais exécuté",
       "at": "Dernière exécution {{at}}"

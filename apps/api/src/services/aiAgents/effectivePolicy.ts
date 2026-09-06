@@ -1,6 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import {
+  AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
   aiAgentActAssetsSchema,
@@ -309,6 +310,48 @@ export function mergeAgentPolicies(
   };
 
   return { effective, provenance };
+}
+
+/**
+ * Which `AiAgentKind`s currently have an active (non-disabled) partner-wide
+ * baseline row for `partnerId` — i.e. which kinds `resolveEffectiveAgentInner`
+ * would NOT reject at its `if (!partnerRow) return null` gate above.
+ *
+ * #4170: an org-only agent is override-only by design (that gate), but
+ * nothing told the create form or the agents list that a given org row is
+ * inert until a partner baseline for its kind exists. The LIST route
+ * (`GET /ai/agents`) uses this to flag existing org rows, and reports the
+ * whole set on the response so the create form can warn BEFORE a kind's org
+ * row exists at all — there is nothing to read `hasPartnerBaseline` off of at
+ * that point.
+ *
+ * Same read-elevation as the partner-row lookup in `resolveEffectiveAgentInner`
+ * (`readWithPartnerAxisVisibility`, pending the real RLS branch tracked by
+ * #4942) — an org token carries a partnerId but never passes
+ * `breeze_has_partner_access`, so a plain read under its own RLS context would
+ * silently come back empty. `partnerId: null` (no partner axis at all) answers
+ * the empty set without a query.
+ */
+export async function loadPartnerBaselineKinds(
+  partnerId: string | null,
+): Promise<Set<AiAgentKind>> {
+  if (!partnerId) return new Set();
+
+  const rows = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ kind: aiAgents.kind })
+      .from(aiAgents)
+      .where(and(
+        eq(aiAgents.partnerId, partnerId),
+        isNull(aiAgents.orgId),
+        isNull(aiAgents.disabledAt),
+      ))
+      // Bounded by the partial unique index (`ai_agents_partner_kind_uq`): at
+      // most one live partner-wide row per kind, so this can never return more
+      // than AI_AGENT_KINDS.length rows.
+      .limit(AI_AGENT_KINDS.length));
+
+  return new Set(rows.map((row) => row.kind));
 }
 
 export type ResolvedAgent = AiAgentPolicySnapshot;
