@@ -54,6 +54,7 @@ import {
   withSystemDbAccessContext,
 } from '../db';
 import { aiKillState as aiKillStateTable } from '../db/schema/aiKillState';
+import { users } from '../db/schema/users';
 
 export interface AiKillStateSnapshot {
   killed: boolean;
@@ -145,6 +146,11 @@ export function getCachedAiKillStateSnapshot(): AiKillStateSnapshot {
 export interface AiKillStateAdminRow extends AiKillStateSnapshot {
   reason: string | null;
   updatedBy: string | null;
+  /** Actor's `users.name`, resolved in the same read. NULL when `updatedBy` is
+   *  NULL or its user row no longer exists — never synthesized (#4931). */
+  updatedByName: string | null;
+  /** Actor's `users.email`, same resolution and same NULL contract (#4931). */
+  updatedByEmail: string | null;
   updatedAt: Date;
 }
 
@@ -157,6 +163,18 @@ export interface AiKillStateAdminRow extends AiKillStateSnapshot {
  * by `readAiKillState` alone). No fail-closed synthesis either: a missing
  * seed row here is a deployment bug the admin should see as an error, not a
  * synthetic `killed: true` that reads like a real state.
+ *
+ * ACTOR RESOLUTION (#4931): `updated_by` is a bare UUID with no FK (ops may
+ * flip the row through the SQL fallback in `docs/deploy/ai-kill-switch.md`),
+ * and the admin page used to render it raw — the one platform-wide control
+ * whose audit trail justifies its mandatory reason field showed an anonymous
+ * UUID as its actor. The name/email come from a LEFT JOIN in this same query:
+ * one round trip, and it runs under the system scope this read already opens,
+ * which is load-bearing — the actor is whichever platform admin last flipped
+ * the switch, and their `users` row may sit under a different partner than the
+ * caller's, where `breeze_user_isolation_select` would hide it from an
+ * org/partner-scoped read. LEFT (not inner) so an unresolvable actor degrades
+ * to NULL name/email instead of dropping the kill state itself.
  */
 export async function readAiKillStateRow(): Promise<AiKillStateAdminRow> {
   const query = () =>
@@ -166,9 +184,12 @@ export async function readAiKillStateRow(): Promise<AiKillStateAdminRow> {
         epoch: aiKillStateTable.epoch,
         reason: aiKillStateTable.reason,
         updatedBy: aiKillStateTable.updatedBy,
+        updatedByName: users.name,
+        updatedByEmail: users.email,
         updatedAt: aiKillStateTable.updatedAt,
       })
       .from(aiKillStateTable)
+      .leftJoin(users, eq(users.id, aiKillStateTable.updatedBy))
       .where(eq(aiKillStateTable.id, 'global'))
       .limit(1);
 
