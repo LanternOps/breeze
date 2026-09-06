@@ -2449,7 +2449,8 @@
     "dropzone": "Drop a CSV of your incumbent's field list here, or click to browse",
     "errors": {
       "previewFailed": "Couldn't preview these field definitions",
-      "importFailed": "Couldn't import these field definitions"
+      "importFailed": "Couldn't import these field definitions",
+      "allRefused": "None of these field definitions could be imported — see the errors below"
     },
     "ownerScope": {
       "legend": "Who owns these fields",

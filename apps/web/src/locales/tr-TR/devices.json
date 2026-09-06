@@ -2449,7 +2449,8 @@
     "dropzone": "Önceki sağlayıcınızın alan listesini içeren bir CSV'yi buraya bırakın veya göz atmak için tıklayın",
     "errors": {
       "previewFailed": "Bu alan tanımları önizlenemedi",
-      "importFailed": "Bu alan tanımları içe aktarılamadı"
+      "importFailed": "Bu alan tanımları içe aktarılamadı",
+      "allRefused": "Bu alan tanımlarından hiçbiri içe aktarılamadı — aşağıdaki hatalara bakın"
     },
     "ownerScope": {
       "legend": "Bu alanlar kime ait",

@@ -2449,7 +2449,8 @@
     "dropzone": "CSV-Datei mit der Feldliste Ihres bisherigen Anbieters hier ablegen oder klicken zum Durchsuchen",
     "errors": {
       "previewFailed": "Vorschau dieser Felddefinitionen fehlgeschlagen",
-      "importFailed": "Import dieser Felddefinitionen fehlgeschlagen"
+      "importFailed": "Import dieser Felddefinitionen fehlgeschlagen",
+      "allRefused": "Keine dieser Felddefinitionen konnte importiert werden — siehe die Fehler unten"
     },
     "ownerScope": {
       "legend": "Wem gehören diese Felder",

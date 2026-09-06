@@ -2449,7 +2449,8 @@
     "dropzone": "Déposez ici un CSV de la liste de champs de votre ancien fournisseur, ou cliquez pour parcourir",
     "errors": {
       "previewFailed": "Impossible de prévisualiser ces définitions de champs",
-      "importFailed": "Impossible d'importer ces définitions de champs"
+      "importFailed": "Impossible d'importer ces définitions de champs",
+      "allRefused": "Aucune de ces définitions de champs n'a pu être importée — voir les erreurs ci-dessous"
     },
     "ownerScope": {
       "legend": "À qui appartiennent ces champs",

@@ -100,7 +100,7 @@ describe('CustomFieldDefinitionImportStep', () => {
     expect(screen.getByTestId('cf-def-owner-partner')).toBeChecked();
   });
 
-  it('sends the preview POST through runAction (fetchWithAuth)', async () => {
+  it('sends the preview POST through runAction (fetchWithAuth), naming the selected source', async () => {
     mockPreview([{ index: 0, fieldKey: 'udf7', annotation: 'create' }]);
     render(<CustomFieldDefinitionImportStep source="datto_rmm" organizationId={ORG_ID} />);
     await uploadCsv('UDF Slot\nudf7\n');
@@ -109,6 +109,24 @@ describe('CustomFieldDefinitionImportStep', () => {
     const [url, init] = fetchWithAuthMock.mock.calls[0]!;
     expect(url).toBe('/custom-fields/import/preview');
     expect((init as { method: string }).method).toBe('POST');
+    const body = JSON.parse((init as { body: string }).body) as { externalSystem: string };
+    expect(body.externalSystem).toBe('datto_rmm');
+  });
+
+  it('derives a valid fieldKey even from a source label that starts with a digit or is all punctuation', async () => {
+    mockPreview([
+      { index: 0, fieldKey: 'f_2nd_monitor', name: '2nd Monitor', annotation: 'create' },
+      { index: 1, fieldKey: 'f_untitled', name: '###', annotation: 'create' },
+    ]);
+    render(<CustomFieldDefinitionImportStep source="datto_rmm" organizationId={ORG_ID} />);
+    await uploadCsv('UDF Slot\n2nd Monitor\n###\n');
+    fireEvent.click(screen.getByTestId('cf-def-preview'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const [, init] = fetchWithAuthMock.mock.calls[0]!;
+    const body = JSON.parse((init as { body: string }).body) as { rows: Array<{ fieldKey: string }> };
+    for (const row of body.rows) {
+      expect(row.fieldKey).toMatch(/^[a-z][a-z0-9_]*$/);
+    }
   });
 
   it('surfaces a type-conflict row and excludes it from the commit selection', async () => {
@@ -146,5 +164,24 @@ describe('CustomFieldDefinitionImportStep', () => {
     await waitFor(() => expect(onCommitted).toHaveBeenCalled());
     const summary = onCommitted.mock.calls[0]![0];
     expect(summary.created).toHaveLength(1);
+  });
+
+  it('surfaces an all-refused commit as an error, not neutral status text', async () => {
+    mockPreview([{ index: 0, fieldKey: 'udf7', annotation: 'create' }]);
+    fetchWithAuthMock.mockImplementationOnce(() =>
+      jsonResponse({
+        created: [],
+        skipped: [],
+        errors: [{ index: 0, fieldKey: 'udf7', error: 'Key already used on the other scope', code: 'key-shadowed' }],
+      }),
+    );
+    render(<CustomFieldDefinitionImportStep source="datto_rmm" organizationId={ORG_ID} />);
+    await uploadCsv('UDF Slot\nudf7\n');
+    fireEvent.click(screen.getByTestId('cf-def-preview'));
+    await waitFor(() => screen.getByTestId('cf-def-commit'));
+    fireEvent.click(screen.getByTestId('cf-def-commit'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('cf-def-summary')).toHaveClass('text-destructive');
+    expect(screen.getByTestId('cf-def-errors')).toHaveTextContent('Key already used on the other scope');
   });
 });

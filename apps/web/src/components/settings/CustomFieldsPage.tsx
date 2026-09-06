@@ -911,6 +911,10 @@ export default function CustomFieldsPage() {
           organizationId={currentOrgId}
           onClose={() => {
             setShowRmmImport(false);
+            // The wizard writes its own step hash (#import-definitions /
+            // #import-values) while open; leaving it wound up would make the
+            // settings URL misleadingly point at a closed wizard's step.
+            window.location.hash = '';
             void fetchFields();
           }}
         />

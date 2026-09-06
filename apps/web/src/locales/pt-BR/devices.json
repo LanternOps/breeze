@@ -2449,7 +2449,8 @@
     "dropzone": "Solte aqui um CSV com a lista de campos do seu fornecedor anterior, ou clique para procurar",
     "errors": {
       "previewFailed": "Não foi possível visualizar essas definições de campo",
-      "importFailed": "Não foi possível importar essas definições de campo"
+      "importFailed": "Não foi possível importar essas definições de campo",
+      "allRefused": "Nenhuma dessas definições de campo pôde ser importada — veja os erros abaixo"
     },
     "ownerScope": {
       "legend": "A quem pertencem estes campos",

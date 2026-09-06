@@ -6,6 +6,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
 import { runAction } from '../../lib/runAction';
 import { parseCsv } from '../../lib/csvParse';
+import { showToast } from '../shared/Toast';
 
 /**
  * Step 1 of the "Import from another RMM" wizard (#3257 W09): the DEFINITIONS
@@ -74,13 +75,25 @@ function guessDefinitionMapping(
   return mapping;
 }
 
-/** Mirrors `CustomFieldsPage.tsx`'s `generateFieldKey` — duplicated locally
- *  rather than imported across an unrelated settings-page boundary. */
+/**
+ * Mirrors `CustomFieldsPage.tsx`'s `generateFieldKey` — duplicated locally
+ * rather than imported across an unrelated settings-page boundary — with one
+ * addition this importer needs and the single-create form doesn't: the
+ * result is guaranteed to satisfy the server's `^[a-z][a-z0-9_]*$` key
+ * regex, not just produce something that USUALLY does. The single-create
+ * form lets an operator see and fix a bad key before submitting; here the
+ * key is generated once for up to 30 rows with no per-row key input, so a
+ * source label like "2nd Monitor" (leading digit) or "###" (no letters at
+ * all) would otherwise 400 the ENTIRE batch with no in-UI way to fix it.
+ */
 function generateFieldKey(name: string): string {
-  return name
+  const base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_|_$/g, '');
+  if (base === '') return 'f_untitled';
+  if (!/^[a-z]/.test(base)) return `f_${base}`;
+  return base;
 }
 
 const FIELD_TYPES: CustomFieldType[] = ['text', 'number', 'boolean', 'dropdown', 'date'];
@@ -189,6 +202,7 @@ export default function CustomFieldDefinitionImportStep({
     setSummary(null);
     try {
       const body = {
+        externalSystem: source,
         rows: rows.map((r) => ({
           ownerScope,
           ...(ownerScope === 'organization' ? { organizationId } : {}),
@@ -222,6 +236,7 @@ export default function CustomFieldDefinitionImportStep({
     setCommitting(true);
     try {
       const body = {
+        externalSystem: source,
         rows: chosen.map((r) => ({
           ownerScope: r.ownerScope,
           ...(r.ownerScope === 'organization' ? { organizationId: r.organizationId } : {}),
@@ -241,8 +256,10 @@ export default function CustomFieldDefinitionImportStep({
       setSummary(result);
       const wrote = result.created.length > 0;
       if (result.errors.length > 0 && !wrote) {
-        // runAction only toasts a request-level failure; a 200 carrying only
-        // errors[] (every row refused) still reads as "nothing imported" here.
+        // runAction only toasts a request-level failure (non-200 / thrown); a
+        // 200 carrying only errors[] (every row refused) is a real failure the
+        // operator must see, not a routine status line.
+        showToast({ type: 'error', message: t('customFieldDefinitionImport.errors.allRefused') });
       }
       onCommitted?.(result);
     } catch {
@@ -432,13 +449,27 @@ export default function CustomFieldDefinitionImportStep({
       )}
 
       {summary && (
-        <p data-testid="cf-def-summary" className="text-sm text-muted-foreground">
-          {t('customFieldDefinitionImport.summary', {
-            created: summary.created.length,
-            skipped: summary.skipped.length,
-            failed: summary.errors.length,
-          })}
-        </p>
+        <div className="space-y-2">
+          <p
+            data-testid="cf-def-summary"
+            className={`text-sm ${summary.errors.length > 0 ? 'text-destructive' : 'text-muted-foreground'}`}
+          >
+            {t('customFieldDefinitionImport.summary', {
+              created: summary.created.length,
+              skipped: summary.skipped.length,
+              failed: summary.errors.length,
+            })}
+          </p>
+          {summary.errors.length > 0 && (
+            <ul data-testid="cf-def-errors" className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+              {summary.errors.map((e) => (
+                <li key={e.index} data-testid={`cf-def-error-${e.index}`}>
+                  {e.fieldKey}: {e.error}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );
