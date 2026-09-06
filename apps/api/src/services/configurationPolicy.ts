@@ -108,15 +108,15 @@ export const pamInlineSettingsSchema = z
   })
   .strict();
 
+// Re-exported so routes/configurationPolicies/featureLinks.ts validates against
+// the SAME schema the service backstop uses (mirrors pamInlineSettingsSchema).
+export { deviceLifecycleInlineSettingsSchema };
+
 // Vulnerability scanning is a single opt-in toggle (BE-16 correlation gating).
 // `enabled` defaults to false so an absent/empty settings object means "off" —
 // the per-device gate (resolveVulnerabilityEnabledForDevice) and the daily
 // correlation job both treat no-policy / enabled:false as disabled. .strict()
 // rejects unknown keys, matching pam/patch posture.
-// Re-exported so routes/configurationPolicies/featureLinks.ts validates against
-// the SAME schema the service backstop uses (mirrors pamInlineSettingsSchema).
-export { deviceLifecycleInlineSettingsSchema };
-
 export const vulnerabilityInlineSettingsSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -2356,9 +2356,16 @@ export async function validateFeaturePolicyExists(
     featureType === 'monitoring' ||
     featureType === 'event_log' ||
     featureType === 'onedrive_helper' ||
-    featureType === 'vulnerability'
+    featureType === 'vulnerability' ||
+    featureType === 'device_lifecycle'
   ) {
-    // Monitoring, event_log, onedrive_helper, vulnerability have no policy table — requires inlineSettings
+    // These have no policy table — they require inlineSettings.
+    //
+    // Being absent from this list is NOT a harmless omission: the fall-through
+    // below accepts any id that happens to name a configuration policy in the
+    // same org (whole-policy linking), so the write proceeds and the
+    // `config_policy_feature_links_reference_integrity` trigger rejects it —
+    // a 500 where the caller should have got a 400 naming the mistake.
     if (featurePolicyId) {
       return { valid: false, error: `${featureType} feature type does not support featurePolicyId; use inlineSettings instead` };
     }
