@@ -187,7 +187,15 @@ export async function replaceSoftwareInventoryProjection(
     .select({ findingId: deviceVulnerabilities.id, name: softwareInventory.name, vendor: softwareInventory.vendor })
     .from(deviceVulnerabilities)
     .innerJoin(softwareInventory, eq(deviceVulnerabilities.softwareInventoryId, softwareInventory.id))
-    .where(and(eq(deviceVulnerabilities.deviceId, device.id), eq(softwareInventory.deviceId, device.id)))
+    // org_id first: device_vulnerabilities has no index led by device_id (only
+    // device_vuln_org_device_idx on (org_id, device_id)), so a device_id-only
+    // predicate scanned the whole table under the row lock on every inventory
+    // sync — 789 ms mean / 738 s max on US prod (2026-09-06).
+    .where(and(
+      eq(deviceVulnerabilities.orgId, device.orgId),
+      eq(deviceVulnerabilities.deviceId, device.id),
+      eq(softwareInventory.deviceId, device.id),
+    ))
     .orderBy(deviceVulnerabilities.id)
     .for('update', { of: deviceVulnerabilities });
 

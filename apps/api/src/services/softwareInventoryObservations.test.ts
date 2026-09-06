@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } from '@breeze/shared';
 
 // Hoisted so the `vi.mock` factories below (themselves hoisted above these
@@ -195,6 +196,34 @@ describe('replaceSoftwareInventoryProjection', () => {
     expect(ordered).toHaveBeenCalledTimes(1);
     expect(locked).toHaveBeenCalledWith('update', expect.any(Object));
     expect(updateSets).toEqual([expect.objectContaining({ softwareInventoryId: 'new-row' })]);
+  });
+
+  it('scopes the finding pre-lock by org_id so it can use device_vuln_org_device_idx (device_id alone has no leading index)', async () => {
+    const where = vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }) });
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where }),
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      update: vi.fn(),
+    };
+
+    await replaceSoftwareInventoryProjection(tx as never, {
+      device: { id: 'device-1', orgId: 'org-1', agentVersion: '1.0.0' },
+      items: [],
+      observationId: '11111111-1111-4111-8111-111111111111',
+      receivedAt: new Date('2026-09-06T00:00:00Z'),
+    });
+
+    expect(where).toHaveBeenCalledTimes(1);
+    const rendered = new PgDialect().sqlToQuery(where.mock.calls[0][0]);
+    expect(rendered.sql).toContain('"device_vulnerabilities"."org_id" = ');
+    expect(rendered.sql).toContain('"device_vulnerabilities"."device_id" = ');
+    expect(rendered.params).toContain('org-1');
   });
 
   it('does not re-link a finding when only the normalized name matches but vendor differs', async () => {
