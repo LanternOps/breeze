@@ -178,9 +178,11 @@ describe('buildAgentSaveBody', () => {
     expect(body.actAssets).toEqual({ supervisedActionKeys: [], scriptIds: [] });
   });
 
-  it('allowsRunScript recognises the bare and scoped forms only (#5065)', () => {
+  it('allowsRunScript recognises the bare entry only, like the server (#5065, #5089 review)', () => {
     expect(allowsRunScript('manage_services:restart\nrun_script')).toBe(true);
-    expect(allowsRunScript('run_script:execute')).toBe(true);
+    // A scoped form never admits run_script server-side (its catalog entry
+    // has no action), so it must not unlock the picker here either.
+    expect(allowsRunScript('run_script:execute')).toBe(false);
     expect(allowsRunScript('manage_services:restart\nrun_playbook')).toBe(false);
     expect(allowsRunScript('')).toBe(false);
   });

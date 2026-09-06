@@ -164,7 +164,12 @@ export function draftFrom(
  *  scoped form) — the precondition for authorizing scripts. Never auto-added
  *  by the picker: that would silently widen a separate control. */
 export function allowsRunScript(toolAllowlist: string): boolean {
-  return lines(toolAllowlist).some((entry) => entry === 'run_script' || entry.startsWith('run_script:'));
+  // Bare entry only — the same test the server applies
+  // (scriptAuthorization.ts: `isToolAllowlisted(toolAllowlist, 'run_script',
+  // null)`, and `run_script` has no action discriminator in the catalog).
+  // Accepting a scoped `run_script:x` here would let the picker offer
+  // scripts the save then 422s as run_script_not_allowed (#5089 review).
+  return lines(toolAllowlist).includes('run_script');
 }
 
 /**
