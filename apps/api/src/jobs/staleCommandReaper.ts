@@ -32,6 +32,7 @@ import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { attachWorkerObservability } from './workerObservability';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
 import { CANCEL_GRACE_MS } from '../services/scriptCancellation';
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../services/commandResultAcceptance';
@@ -1424,6 +1425,7 @@ export async function initializeStaleCommandReaper(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'staleCommandReaper');
   reaperWorker.on('error', (error) => {
     console.error('[StaleCommandReaper] Worker error:', error);
     captureException(error);

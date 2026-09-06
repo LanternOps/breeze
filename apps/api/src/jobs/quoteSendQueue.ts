@@ -39,6 +39,7 @@ import { requestLikeFromSnapshot } from '../services/auditEvents';
 import { writeAuditEvent } from '../services/auditEvents';
 import { supersededAuditEvent } from '../services/quoteSupersedeAudit';
 import { QuoteServiceError, type QuoteActor } from '../services/quoteTypes';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUOTE_SEND_QUEUE = 'quote-send';
 // BullMQ jobIds must not contain colons (repo rule). The id is unique PER
@@ -267,6 +268,7 @@ export function initializeQuoteSendWorker(): void {
     async (job: Job<QuoteSendJobData>) => processQuoteSendJob(job.data),
     { connection: getBullMQConnection(), concurrency: 3 },
   );
+  attachWorkerObservability(worker, 'quoteSendWorker');
   worker.on('error', (error) => {
     console.error('[quote-send] Worker error:', error);
     captureException(error);

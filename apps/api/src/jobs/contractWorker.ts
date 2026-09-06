@@ -23,6 +23,7 @@ import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const CONTRACT_QUEUE = 'contract-jobs';
 // Daily, before the invoice overdue sweep in the same hour lane.
@@ -175,6 +176,7 @@ export async function scheduleContractJobs(): Promise<void> {
 export async function initializeContractWorkers(): Promise<void> {
   try {
     contractWorker = createContractWorker();
+  attachWorkerObservability(contractWorker, 'contractWorker');
 
     contractWorker.on('error', (error) => {
       console.error('[ContractWorker] Worker error:', error);
