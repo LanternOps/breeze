@@ -481,9 +481,29 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   const realmChanged = priorRealmKnown && priorRealmId !== null && priorRealmId !== tokens.realmId;
   if (realmChanged) {
     try {
-      const { mappingsDeleted } = await withSystemDbAccessContext(
+      const { mappingsDeleted, owedPaymentDeletes } = await withSystemDbAccessContext(
         () => resetConnectionForRealmChange(db, connection.id, state.partnerId),
       );
+      // Same rule as the disconnect route below: the reset cannot be blocked
+      // (the new grant is already live), and the remote ids of the payment
+      // deletes it discards are all a human has left to reconcile with. They
+      // name Payments in the OLD company file, which is exactly why they cannot
+      // simply be retained.
+      if (owedPaymentDeletes.count > 0) {
+        writeRouteAudit(c, {
+          orgId: null,
+          action: 'accounting.connection.owed_deletes_discarded',
+          resourceType: 'accounting_connection',
+          resourceId: connection.id,
+          result: 'failure',
+          details: {
+            provider,
+            reason: 'realm_changed',
+            count: owedPaymentDeletes.count,
+            remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+          },
+        });
+      }
       console.warn('[accounting] QuickBooks realm changed on reconnect; mappings and CDC cursor cleared', {
         partnerId: state.partnerId, provider, mappingsDeleted,
       });
@@ -589,8 +609,27 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const removed = await deleteConnection(db, partner.partnerId, provider);
+  const { removed, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
+  // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
+  // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
+  // — the only thing that lets a human find those Payments afterwards (review
+  // wave 2, finding 3). The service already warned and raised Sentry.
+  if (owedPaymentDeletes.count > 0) {
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.connection.owed_deletes_discarded',
+      resourceType: 'accounting_connection',
+      resourceId: partner.partnerId,
+      result: 'failure',
+      details: {
+        provider,
+        reason: 'disconnect',
+        count: owedPaymentDeletes.count,
+        remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+      },
+    });
+  }
   return c.json({ disconnected: true });
 });
 

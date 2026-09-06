@@ -750,10 +750,13 @@ describe('accountingConnectionService', () => {
       const updateSetMock = vi.fn((_patch: Record<string, unknown>) => ({
         where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'c1' }]) })),
       }));
+      // The owed-delete pre-count (review wave 2, finding 3) runs before the
+      // delete; nothing is owed in this fixture.
+      const selectMock = vi.fn(() => ({ from: () => ({ where: async () => [] }) }));
       const db = {
         delete: vi.fn(() => ({ where: deleteWhereMock })),
         update: vi.fn(() => ({ set: updateSetMock })),
-        select: vi.fn(), insert: vi.fn(),
+        select: selectMock, insert: vi.fn(),
       };
       return { db, deleteWhereMock, updateSetMock };
     }
@@ -764,7 +767,7 @@ describe('accountingConnectionService', () => {
 
       const out = await resetConnectionForRealmChange(db, 'c1', 'p1');
 
-      expect(out).toEqual({ mappingsDeleted: 2 });
+      expect(out).toEqual({ mappingsDeleted: 2, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
       const del = new PgDialect().sqlToQuery(deleteWhereMock.mock.calls.at(-1)![0] as SQL);
       expect(del.params).toEqual(['c1', 'p1']);
       expect(updateSetMock.mock.calls.at(-1)![0]).toEqual({
@@ -883,5 +886,85 @@ describe('accountingConnectionService', () => {
       expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and \("accounting_connections"\."pull_payments" = \$\d+ or "accounting_connections"\."push_payments" = \$\d+\)/i);
       expect(params).toEqual(['quickbooks', 'connected', true, true]);
     });
+  });
+});
+
+describe('owed QuickBooks payment deletes on disconnect / realm change (review wave 2, finding 3)', () => {
+  // `accounting_entity_mappings_connection_partner_fk` is ON DELETE CASCADE, so
+  // dropping the connection row takes every mapping with it — including rows
+  // that still owe QuickBooks a payment DELETE. Breeze created those Payments in
+  // the partner's books and has not removed them; the disconnect must still
+  // work, but it must not be the last anyone ever hears of them.
+  const owedRows = [
+    { id: 'map-1', remoteEntityId: '181/145' },
+    { id: 'map-2', remoteEntityId: '182/146' },
+  ];
+
+  function dbWithOwedDeletes(owed: Array<{ id: string; remoteEntityId: string | null }>) {
+    const seen: { where?: unknown } = {};
+    return {
+      seen,
+      db: {
+        select: () => ({
+          from: () => ({
+            where: (cond: unknown) => {
+              seen.where = cond;
+              return Promise.resolve(owed);
+            },
+          }),
+        }),
+        delete: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'c1' }]) }) }),
+        update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'c1' }]) }) }) }),
+      } as never,
+    };
+  }
+
+  it('deleteConnection reports the owed payment deletes it is about to cascade away', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes(owedRows);
+      const { deleteConnection } = await import('./accountingConnectionService');
+
+      const result = await deleteConnection(db, 'p1', 'quickbooks');
+
+      expect(result.removed).toBe(true); // the disconnect is NEVER blocked
+      expect(result.owedPaymentDeletes).toEqual({ count: 2, remoteEntityIds: ['181/145', '182/146'] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('owed QuickBooks payment delete'),
+        expect.anything(),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('deleteConnection stays quiet when nothing is owed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes([]);
+      const { deleteConnection } = await import('./accountingConnectionService');
+
+      const result = await deleteConnection(db, 'p1', 'quickbooks');
+
+      expect(result.owedPaymentDeletes).toEqual({ count: 0, remoteEntityIds: [] });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('resetConnectionForRealmChange reports them too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { db } = dbWithOwedDeletes(owedRows);
+      const { resetConnectionForRealmChange } = await import('./accountingConnectionService');
+
+      const result = await resetConnectionForRealmChange(db, 'c1', 'p1');
+
+      expect(result.owedPaymentDeletes.count).toBe(2);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

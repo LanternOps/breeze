@@ -41,13 +41,19 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     mocks: {
       getConnection: vi.fn(),
       upsertConnection: vi.fn(),
-      deleteConnection: vi.fn(),
+      deleteConnection: vi.fn(async () => ({
+        removed: true,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+      })),
       exchangeCode: vi.fn(),
       fetchRealmSettings: vi.fn(),
       updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
       updateMultiCurrencyEnabled: vi.fn(),
       refreshRealmSettings: vi.fn(),
-      resetConnectionForRealmChange: vi.fn(async () => ({ mappingsDeleted: 0 })),
+      resetConnectionForRealmChange: vi.fn(async () => ({
+        mappingsDeleted: 0,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+      })),
       captureException: vi.fn(),
       captureMessage: vi.fn(),
       writeRouteAudit: vi.fn(),
@@ -441,7 +447,10 @@ describe('accounting routes', () => {
     // old realm's change stream.
     mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
-    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({ mappingsDeleted: 7 });
+    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({
+      mappingsDeleted: 7,
+      owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+    });
 
     const res = await runCallback(app, 'realm-B');
 
@@ -970,6 +979,43 @@ describe('accounting routes', () => {
       mocks.dbUpdateReturning.mockResolvedValueOnce([]);
       const res = await patchSettings({ pullPayments: true });
       expect(res.status).toBe(404);
+    });
+  });
+  describe('owed QuickBooks payment deletes discarded (review wave 2, finding 3)', () => {
+    it('POST /:provider/disconnect audits the owed deletes it cascades away, and still disconnects', async () => {
+      // The disconnect must NOT be blocked — but the remote ids are the only
+      // thing that lets a human find those Payments in QuickBooks afterwards.
+      mocks.deleteConnection.mockResolvedValueOnce({
+        removed: true,
+        owedPaymentDeletes: { count: 2, remoteEntityIds: ['181/145', '182/146'] },
+      });
+
+      const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ disconnected: true });
+      const event = mocks.writeRouteAudit.mock.calls
+        .map((call) => call[1] as Record<string, unknown>)
+        .find((e) => e.action === 'accounting.connection.owed_deletes_discarded');
+      expect(event).toMatchObject({
+        result: 'failure',
+        details: expect.objectContaining({
+          reason: 'disconnect', count: 2, remoteEntityIds: ['181/145', '182/146'],
+        }),
+      });
+    });
+
+    it('POST /:provider/disconnect writes no such audit when nothing is owed', async () => {
+      mocks.deleteConnection.mockResolvedValueOnce({
+        removed: true,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+      });
+
+      await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+
+      expect(mocks.writeRouteAudit.mock.calls
+        .map((call) => call[1] as Record<string, unknown>)
+        .some((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toBe(false);
     });
   });
 });
