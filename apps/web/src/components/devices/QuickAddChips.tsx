@@ -81,7 +81,7 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
             data-testid={`quick-add-${chip.id}`}
             aria-pressed={added}
             onClick={() => handleToggle(chip)}
-            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+            className={`inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
               added ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-muted'
             }`}
           >

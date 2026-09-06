@@ -1,0 +1,99 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organização",
+    "header": {
+      "type": {
+        "customer": "Cliente",
+        "internal": "Interna"
+      },
+      "primaryContact": "Contato principal",
+      "noPrimaryContact": "Sem contato principal",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} sites",
+      "scopeChip": "Espaço de trabalho: {{orgName}}",
+      "scopeChipHint": "Seu espaço de trabalho está definido para outra organização. Esta página sempre mostra {{orgName}}.",
+      "created": "Cliente desde {{date}}"
+    },
+    "actions": {
+      "workHere": "Trabalhar nesta organização",
+      "workHereToast": "Alterado para {{orgName}}",
+      "settings": "Configurações",
+      "more": "Mais ações",
+      "archive": "Arquivar",
+      "merge": "Mesclar",
+      "restore": "Restaurar",
+      "retry": "Tentar novamente"
+    },
+    "tabs": {
+      "overview": "Visão geral",
+      "contacts": "Contatos",
+      "sites": "Sites",
+      "devices": "Dispositivos",
+      "tickets": "Chamados",
+      "billing": "Contratos e faturamento",
+      "activity": "Atividade"
+    },
+    "comingSoon": {
+      "title": "Em breve",
+      "description": "Esta aba chega na próxima atualização do registro da organização."
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Dispositivos",
+        "devicesSub": "{{online}} de {{total}} online",
+        "alerts": "Alertas abertos",
+        "alertsSub": "{{critical}} críticos · {{high}} altos",
+        "tickets": "Chamados abertos",
+        "ticketsSub": "{{count}} aguardando o cliente",
+        "contracts": "Contratos ativos",
+        "contractsSub": "Próxima renovação {{date}}",
+        "contractsNoRenewal": "Sem renovação futura",
+        "invoices": "Em aberto",
+        "invoicesSub": "Próximo vencimento {{date}}",
+        "invoicesOverdue_one": "{{count}} vencida",
+        "invoicesOverdue_other": "{{count}} vencidas",
+        "invoicesNothingDue": "Nada a vencer",
+        "contacts": "Contatos",
+        "portalUsers": "Usuários do portal",
+        "sites": "Sites"
+      },
+      "activity": {
+        "title": "Atividade recente",
+        "empty": "Nenhuma atividade registrada ainda.",
+        "failed": "Não foi possível carregar a atividade recente.",
+        "viewAll": "Ver toda a atividade"
+      },
+      "criticalAlerts": {
+        "title": "Alertas críticos abertos",
+        "empty": "Nenhum alerta crítico aberto.",
+        "failed": "Não foi possível verificar os alertas críticos abertos.",
+        "viewAll": "Ver todos os alertas"
+      },
+      "lastActivity": "Última atividade {{date}}",
+      "noSummary": "Os totais de resumo não estão disponíveis no momento."
+    },
+    "archived": {
+      "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",
+      "restoreError": "Não foi possível restaurar esta organização."
+    },
+    "lifecycle": {
+      "inaccessible": "Esta organização está {{status}}, portanto seus dados ao vivo não estão disponíveis. Você ainda pode vê-la na lista de organizações.",
+      "backToList": "Voltar para organizações"
+    },
+    "unavailable": {
+      "title": "Não disponível neste espaço de trabalho",
+      "description": "Os registros de organização são uma visão em nível de parceiro. Seu login é restrito a uma única organização, portanto não há nada para alternar aqui.",
+      "action": "Ir para o painel"
+    },
+    "notFound": {
+      "title": "Organização não encontrada",
+      "description": "Esta organização não existe, ou você não tem mais acesso a ela.",
+      "action": "Voltar para organizações"
+    },
+    "error": {
+      "title": "Não foi possível carregar esta organização",
+      "description": "Ocorreu um erro ao buscar o registro. Verifique sua conexão e tente novamente."
+    },
+    "loading": "Carregando organização…"
+  }
+}

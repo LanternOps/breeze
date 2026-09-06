@@ -4485,7 +4485,9 @@
       "tryAgain": "Tekrar deneyin",
       "editOrganization": "Organizasyonu düzenle",
       "archiveOrganization": "Kuruluşu arşivle",
-      "deleting": "Siliniyor..."
+      "deleting": "Siliniyor...",
+      "openRecord": "Kaydı aç",
+      "openSettings": "Ayarlar"
     },
     "errors": {
       "fetchOrganizations": "Kuruluşlar getirilemedi",

@@ -4485,7 +4485,9 @@
       "tryAgain": "Try again",
       "editOrganization": "Edit organization",
       "archiveOrganization": "Archive organization",
-      "deleting": "Deleting..."
+      "deleting": "Deleting...",
+      "openRecord": "Open record",
+      "openSettings": "Settings"
     },
     "errors": {
       "fetchOrganizations": "Failed to fetch organizations",

@@ -4480,7 +4480,9 @@
       "tryAgain": "Riprova",
       "editOrganization": "Modifica organizzazione",
       "archiveOrganization": "Archivia organizzazione",
-      "deleting": "Eliminazione..."
+      "deleting": "Eliminazione...",
+      "openRecord": "Apri scheda",
+      "openSettings": "Impostazioni"
     },
     "errors": {
       "fetchOrganizations": "Impossibile recuperare le organizzazioni",

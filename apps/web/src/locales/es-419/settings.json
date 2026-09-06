@@ -4432,7 +4432,9 @@
       "tryAgain": "Intentar otra vez",
       "editOrganization": "Editar organización",
       "archiveOrganization": "Archivar organización",
-      "deleting": "Eliminando..."
+      "deleting": "Eliminando...",
+      "openRecord": "Abrir registro",
+      "openSettings": "Configuración"
     },
     "errors": {
       "fetchOrganizations": "No se han podido recuperar las organizaciones",

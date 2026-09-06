@@ -1037,7 +1037,15 @@
     "online": "Online"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} con agente, {{network}} di rete",
+    "agentOnlyBulkAction": "Si applica solo ai dispositivi con agente",
+    "eligibleOfSelected": "{{count}} di {{total}}",
+    "linkAsVmHost": "Collega come host VM + guest",
+    "notApplicable": "Non applicabile",
+    "viewDevice": "Visualizza {{name}}",
     "tableColumns": {
+      "class": "Classe",
+      "type": "Tipo",
       "device": "Dispositivo",
       "organization": "Organizzazione",
       "site": "Sito",
@@ -1049,6 +1057,8 @@
       "lastSeen": "Ultimo contatto"
     },
     "sortBy": {
+      "class": "Ordina per classe",
+      "type": "Ordina per tipo",
       "device": "Ordina per dispositivo",
       "organization": "Ordina per organizzazione",
       "site": "Ordina per sito",
@@ -1839,6 +1849,9 @@
     "selectedOrganization": "l'organizzazione selezionata",
     "subtitle": "Gestisci e monitora la tua flotta.",
     "title": "Dispositivi",
+    "hiddenNetworkNotice_one": "1 dispositivo di rete nascosto — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNetworkNotice_other": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNetworkNotice": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",
@@ -1883,6 +1896,8 @@
       "maintenanceOff": "Manutenzione disattivata",
       "maintenanceOn": "Manutenzione attivata",
       "multibootLinked": "Multiboot collegato",
+      "networkSkipped_one": "1 dispositivo di rete ignorato — questa azione si applica solo ai dispositivi con agente.",
+      "networkSkipped_other": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "networkSkipped": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "permanentDeleteCancelled": "Eliminazione permanente annullata",
       "permanentDeleting": "Eliminazione permanente di {{hostname}} in corso…",
@@ -2203,26 +2218,24 @@
     "backToDevices": "Torna ai dispositivi",
     "configurePrefix": "Configura il polling SNMP e i monitor di rete da",
     "confirmUnlink": "Scollegare questo dispositivo?",
-    "connecting": "Connessione in corso…",
-    "discoveryAssetView": "Vista asset di rilevamento",
-    "emptyPorts": "Nessuna porta aperta rilevata.",
+    "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
+    "connecting": "Connessione in corso",
+    "discoveryAssetView": "vista asset di rilevamento",
+    "emptyPorts": "Nessuna porta aperta trovata nell'ultima scansione.",
     "emptySnmp": "Non è stato raccolto alcun dato SNMP — il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la community string sia impostata nel profilo di rilevamento.",
     "errors": {
-      "load": "Caricamento non riuscito",
-      "malformed": "Malformato",
+      "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
+      "malformed": "Il server ha restituito una risposta imprevista per questo dispositivo di rete. Riprova e, se il problema persiste, contatta l'assistenza.",
       "notFound": "Dispositivo di rete non trovato"
     },
     "fields": {
-      "assetType": "Tipo di asset",
+      "assetType": "Tipo",
       "discoveryMethods": "Metodi di rilevamento",
       "discoveryProfile": "Profilo di rilevamento",
       "displayName": "Nome visualizzato",
       "firstSeen": "Prima rilevazione",
       "hostname": "Hostname",
-      "ipAddress": "Indirizzo IP",
-      "lastSeen": "Ultima rilevazione",
       "linkedDevice": "Dispositivo collegato",
-      "macAddress": "Indirizzo MAC",
       "manufacturer": "Produttore",
       "model": "Modello",
       "netbiosName": "Nome NetBIOS",
@@ -2235,48 +2248,67 @@
       "tags": "Tag"
     },
     "goBack": "Torna indietro",
-    "lastSeen": "Ultima rilevazione {{time}}",
+    "live": {
+      "webUiOpened": "L'interfaccia web è stata aperta in una nuova scheda",
+      "refreshed": "Dettagli del dispositivo aggiornati"
+    },
     "loading": "Caricamento del dispositivo di rete...",
     "manageInDiscovery": "Gestisci nel rilevamento",
     "manuallySet": "Impostato manualmente",
     "manuallySetWithDetected": "Impostato manualmente · scansione: {{type}}",
     "networkDevice": "Dispositivo di rete",
     "notConfigured": "Non configurato",
-    "notLinked": "Non collegato",
+    "notLinked": "Non ancora collegato a un dispositivo gestito.",
     "openWebUi": "Apri interfaccia web",
+    "ports": {
+      "insecure": "Non crittografato",
+      "insecureHint": "Questo servizio invia le credenziali in chiaro. Disattivalo sul dispositivo se possibile.",
+      "kind": {
+        "mgmt": "Gestione",
+        "remote": "Accesso remoto",
+        "print": "Stampa",
+        "file": "Condivisione file"
+      }
+    },
+    "proxyPort": "Porta",
+    "proxyPortInvalid": "Inserisci una porta compresa tra 1 e 65535",
     "proxyErrors": {
-      "disabled": "Questa destinazione è stata disabilitata per l'accesso proxy. Un amministratore deve riabilitarla nelle Impostazioni prima di potersi connettere.",
-      "mfaRequired": "L'accesso remoto richiede l'autenticazione a due fattori: abilitala nel tuo profilo.",
-      "noOnlineAgent": "Nessun agente online disponibile per fare da ponte a questa connessione. Un agente deve essere online per il proxy verso {{ip}}."
+      "disabled": "Un amministratore ha disabilitato l'accesso proxy a questa destinazione. Chiedigli di riabilitarlo in Impostazioni, Accesso remoto.",
+      "mfaRequired": "L'accesso remoto richiede l'autenticazione a due fattori. Abilitala nel tuo profilo, poi riprova.",
+      "noOnlineAgent": "Nessun agente online può raggiungere {{ip}} in questo momento. Metti online un agente su questa rete, poi riprova.",
+      "agentListFailed": "Impossibile caricare l'elenco degli agenti. Riprova."
     },
     "resetToAutoDetected": "Ripristina rilevamento automatico",
+    "savingType": "Salvataggio in corso…",
+    "resettingType": "Ripristino in corso…",
     "sections": {
       "discovery": "Rilevamento",
       "identity": "Identità",
       "monitoringStatus": "Stato monitoraggio",
-      "networkReachability": "Raggiungibilità rete",
       "openPorts": "Porte aperte",
       "snmpData": "Dati SNMP"
+    },
+    "stats": {
+      "asOf": "aggiornato al {{time}}"
     },
     "tabs": {
       "overview": "Panoramica",
       "monitoring": "Monitoraggio"
     },
     "toasts": {
-      "proxyConnectFailed": "Impossibile avviare la connessione proxy",
-      "typeReset": "Tipo reimpostato",
-      "typeResetFailed": "Reimpostazione del tipo non riuscita",
-      "typeUpdateFailed": "Aggiornamento del tipo non riuscito",
-      "typeUpdated": "Tipo aggiornato",
-      "unlinkFailed": "Scollegamento non riuscito",
-      "unlinked": "Scollegato",
+      "proxyConnectFailed": "Impossibile aprire l'interfaccia web",
+      "typeReset": "Tipo di dispositivo reimpostato al rilevamento automatico",
+      "typeResetFailed": "Impossibile reimpostare il tipo di dispositivo",
+      "typeUpdateFailed": "Impossibile aggiornare il tipo di dispositivo",
+      "typeUpdated": "Tipo di dispositivo aggiornato",
+      "unlinkFailed": "Impossibile scollegare il dispositivo",
+      "unlinked": "Dispositivo scollegato",
       "linked": "Dispositivo collegato",
       "linkFailed": "Impossibile collegare il dispositivo"
     },
     "unlink": "Scollega",
     "unlinking": "Scollegamento...",
-    "viewManagedDevice": "Visualizza dispositivo gestito",
-    "autoLinkSuppressed": "Collegamento automatico disabilitato: scollegato da un utente",
+    "autoLinkSuppressed": "Il collegamento automatico è disattivato per questo asset perché qualcuno lo ha scollegato. Collegalo manualmente per riattivarlo.",
     "linkManually": "Collega manualmente…",
     "linkManuallySelectDevice": "Seleziona un dispositivo",
     "linkManuallyLinking": "Collegamento in corso…",
@@ -2289,7 +2321,17 @@
       "auto": "— rilevato automaticamente",
       "manual": "— impostato manualmente"
     },
-    "sameDeviceAs": "Stesso dispositivo di {{name}}"
+    "sameDeviceAs": "Stesso dispositivo di {{name}}",
+    "showMore": "Mostra di più",
+    "showLess": "Mostra meno",
+    "showAllPorts": "Mostra tutte ({{count}})",
+    "showFewerPorts": "Mostra meno",
+    "tryAgain": "Riprova",
+    "snmpFields": {
+      "sysName": "Nome sistema",
+      "sysDescr": "Descrizione",
+      "sysObjectId": "ID oggetto (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

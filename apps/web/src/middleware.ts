@@ -1,5 +1,12 @@
 import { defineMiddleware } from 'astro:middleware';
+import { isSupportedLocale, type SupportedLocale } from '@breeze/shared';
 import { resolveConnectSrcDirective, resolveFrameSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
+import { LOCALE_COOKIE_NAME } from './lib/appearance';
+
+/** Exported for direct unit testing alongside the CSP helpers below. */
+export function resolveLocaleFromCookie(value: string | undefined): SupportedLocale | undefined {
+  return isSupportedLocale(value) ? value : undefined;
+}
 
 function readFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -116,7 +123,9 @@ export function relaxExistingCsp(
   return directives.join('; ');
 }
 
-export const onRequest = defineMiddleware(async (_context, next) => {
+export const onRequest = defineMiddleware(async (context, next) => {
+  context.locals.locale = resolveLocaleFromCookie(context.cookies.get(LOCALE_COOKIE_NAME)?.value);
+
   const response = await next();
   const headers = new Headers(response.headers);
   const strictDevCsp = import.meta.env.DEV && readFlag('CSP_STRICT_DEV');
