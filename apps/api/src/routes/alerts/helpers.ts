@@ -394,18 +394,22 @@ export async function validatePushoverChannelInheritance(
 
 export async function validateAlertRuleNotificationBindings(
   orgId: string,
-  overrides: AlertRuleOverrides
+  overrides: AlertRuleOverrides,
+  callerScope: 'organization' | 'partner' | 'system'
 ): Promise<string | null> {
   const requestedChannelIds = [...new Set(getNotificationChannelIds(overrides).filter(Boolean))];
   const needsPartnerAxis = requestedChannelIds.length > 0
     || (typeof overrides.escalationPolicyId === 'string' && overrides.escalationPolicyId.length > 0);
 
   // Dual-axis (#2130): a rule may bind the org's own rails OR partner-wide
-  // rails (org_id NULL) owned by the org's partner. Partner-wide rows are
-  // RLS-invisible to org-scope callers, so for them this still resolves to
-  // "same organization" — which is also what their UI offers.
+  // rails (org_id NULL) owned by the org's partner. The partner arm is gated on
+  // the CALLER's scope, not the org's partner (CLAUDE.md "Partner-Wide First"
+  // step 3): since #4956 the partner-wide SELECT branch makes those rows
+  // visible to org tokens too, so RLS no longer keeps an org admin from binding
+  // their MSP's shared Slack/PagerDuty rail to a rule they control. For org
+  // callers this resolves to "same organization" — which is what their UI offers.
   let orgPartnerId: string | null = null;
-  if (needsPartnerAxis) {
+  if (needsPartnerAxis && callerScope !== 'organization') {
     const [orgRow] = await db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
