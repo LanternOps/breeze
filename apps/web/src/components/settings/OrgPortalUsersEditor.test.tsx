@@ -5,6 +5,12 @@ const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: any[]) => fetchWithAuth(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+// runAction surfaces success/warning/error toasts via showToast from ../shared/Toast.
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({
+  showToast: (...a: unknown[]) => showToastMock(...a),
+}));
+
 import OrgPortalUsersEditor from './OrgPortalUsersEditor';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -52,6 +58,41 @@ describe('OrgPortalUsersEditor', () => {
       expect.objectContaining({ method: 'POST' })
     ));
   });
+
+  it('warns when the invite could not link a contact because several contacts share the address', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(ok({ data: [] }))                                                                          // initial list
+      .mockResolvedValueOnce(ok({ data: { id: 'pu-new', email: 'new@acme.example', status: 'invited', contactLink: 'ambiguous' }, emailSent: true })) // invite
+      .mockResolvedValueOnce(ok({ data: [] }));                                                                         // reload
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('portal-users-invite-open'));
+    fireEvent.change(screen.getByTestId('portal-users-invite-email'), { target: { value: 'new@acme.example' } });
+    fireEvent.click(screen.getByTestId('portal-users-invite-submit'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('not see tickets') })
+    ));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it.each(['created', 'linked'] as const)(
+    'does not warn when the invite contactLink is %s',
+    async (contactLink) => {
+      fetchWithAuth
+        .mockResolvedValueOnce(ok({ data: [] }))
+        .mockResolvedValueOnce(ok({ data: { id: 'pu-new', email: 'new@acme.example', status: 'invited', contactLink }, emailSent: true }))
+        .mockResolvedValueOnce(ok({ data: [] }));
+      render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByTestId('portal-users-invite-open'));
+      fireEvent.change(screen.getByTestId('portal-users-invite-email'), { target: { value: 'new@acme.example' } });
+      fireEvent.click(screen.getByTestId('portal-users-invite-submit'));
+
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+      expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    }
+  );
 
   it('guards the invite email client-side: invalid disables Send, valid enables it', async () => {
     fetchWithAuth.mockResolvedValueOnce(ok({ data: [] }));

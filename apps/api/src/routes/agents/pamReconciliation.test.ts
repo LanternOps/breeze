@@ -27,6 +27,7 @@ function buildApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
     c.set('agent', {
       deviceId: '30000000-0000-4000-8000-000000000001',
       orgId: '40000000-0000-4000-8000-000000000001',
+      partnerId: '70000000-0000-4000-8000-000000000001',
       agentId: 'agent-primary',
       siteId: '50000000-0000-4000-8000-000000000001',
       role,

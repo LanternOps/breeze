@@ -18,6 +18,7 @@ export * from './tokenRevocation';
 export * from './refreshTokenFamily';
 export * from './authBrowserTransition';
 export * from './userSession';
+export * from './mfaEnrollmentSession';
 export * from './recoveryCodeAuth';
 export * from './authTransitionMetrics';
 export * from './clientIp';

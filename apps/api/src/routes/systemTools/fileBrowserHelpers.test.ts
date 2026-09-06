@@ -6,6 +6,7 @@ import {
   buildBulkItemFailure,
   auditErrorMessage,
   buildSingleItemUploadBody,
+  buildCommandFailureResponse,
   CLOUDFLARE_SWALLOWED_STATUSES,
 } from './fileBrowserHelpers';
 import { DEVICE_UNREACHABLE_ERROR, type CommandResult } from '../../services/commandQueue';
@@ -226,6 +227,37 @@ describe('mapCommandFailure', () => {
     expect(mapCommandFailure(result, 'fallback').status).toBe(503);
   });
 
+  // The queue refuses every non-online device with one sentence,
+  // `Device is ${device.status}, cannot execute command` (commandQueue.ts:832,
+  // 1013), and `device_status` has seven values. Collapsing all of them to
+  // "The device is offline." is wrong five times out of six.
+  it.each([
+    ['maintenance', 'The device is maintenance and cannot run commands.'],
+    ['decommissioned', 'The device is decommissioned and cannot run commands.'],
+    ['quarantined', 'The device is quarantined and cannot run commands.'],
+    ['updating', 'The device is updating and cannot run commands.'],
+    ['pending', 'The device is pending and cannot run commands.'],
+  ])('names a %s device rather than calling it offline', (deviceState, expected) => {
+    const result: CommandResult = {
+      status: 'failed',
+      error: `Device is ${deviceState}, cannot execute command`,
+    };
+    const failure = mapCommandFailure(result, 'fallback');
+
+    expect(failure.code).toBe('device_offline');
+    expect(failure.status).toBe(503);
+    expect(failure.message).toBe(expected);
+  });
+
+  it('does not echo unrecognised internal text back with a confident 503', () => {
+    // The guard regex admits bare `is offline` / `is unknown` shapes that the
+    // queue sentence does not cover. They keep the generic message rather than
+    // passing raw internal wording through — unclassified text belongs on the
+    // 500 fallback, not on a 503 that asserts we know what happened.
+    const result: CommandResult = { status: 'failed', error: 'Relay says the host is unknown' };
+    expect(mapCommandFailure(result, 'fallback').message).toBe('The device is offline.');
+  });
+
   it('falls through to 500 with the raw error for unclassified failures', () => {
     const result: CommandResult = { status: 'failed', error: 'Permission denied' };
     expect(mapCommandFailure(result, 'fallback')).toEqual({
@@ -387,5 +419,68 @@ describe('buildSingleItemUploadBody', () => {
     const body = buildSingleItemUploadBody(result, 'Upload failed.');
     expect(body.unverified).toBeUndefined();
     expect(body.status).toBe(503);
+  });
+});
+
+// The shared response builder the non-file-browser systemTools routes adopted
+// in #4025. Those routes previously hand-rolled `{ error }` + a status at ~25
+// call sites; centralising the shape is what stops one of them from quietly
+// dropping the `unverified` flag on a state-changing timeout.
+describe('buildCommandFailureResponse', () => {
+  it('marks a mutating timeout unverified so the caller warns before a retry', () => {
+    const { body, status } = buildCommandFailureResponse(
+      { status: 'timeout', error: 'Command timed out after 15000ms' },
+      'Failed to kill process',
+      { mutating: true },
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('agent_timeout');
+    expect(body.unverified).toBe(true);
+    expect(body.error).toContain('may have completed');
+  });
+
+  it('omits unverified entirely on a read-only timeout', () => {
+    const { body, status } = buildCommandFailureResponse(
+      { status: 'timeout', error: 'Command timed out after 60000ms' },
+      'Failed to get processes',
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('agent_timeout');
+    // Absent, not `false` — the routes spread this straight into c.json and a
+    // literal `unverified: false` would read as a deliberate "we checked".
+    expect('unverified' in body).toBe(false);
+    expect(body.error).toContain('Please try again');
+  });
+
+  it('reproduces the 404 the routes used to derive from a "not found" substring', () => {
+    // Verbatim from agent/internal/remote/tools/services_windows.go:89 and
+    // tasks_windows.go:276 — the substring test these routes dropped.
+    for (const error of ['service not found: WinRM', 'task not found: \\Backup\\Daily']) {
+      const { body, status } = buildCommandFailureResponse({ status: 'failed', error }, 'fallback');
+      expect(status).toBe(404);
+      expect(body.code).toBe('path_not_found');
+      expect(body.error).toBe(error);
+    }
+  });
+
+  it('applies the fallback when the agent gave us nothing to show', () => {
+    const { body } = buildCommandFailureResponse({ status: 'failed' }, 'Failed to list tasks');
+    expect(body.error).toBe('Failed to list tasks');
+  });
+
+  it('never answers with a Cloudflare-swallowed status for any real agent error', () => {
+    for (const error of REAL_AGENT_ERRORS) {
+      for (const mutating of [false, true]) {
+        for (const status of ['failed', 'timeout'] as const) {
+          const response = buildCommandFailureResponse({ status, error }, 'fallback', { mutating });
+          expect(
+            CLOUDFLARE_SWALLOWED_STATUSES,
+            `${status}/${error || '<empty>'} (mutating=${mutating}) answered ${response.status}`,
+          ).not.toContain(response.status);
+        }
+      }
+    }
   });
 });

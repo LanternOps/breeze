@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { cn, widthPercentClass } from "@/lib/utils";
-import { formatCurrency } from "@/lib/i18n/format";
+import { formatCurrency, formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 
 interface UsageData {
@@ -15,6 +15,9 @@ interface UsageData {
     monthlyUsedCents: number;
     dailyUsedCents: number;
   } | null;
+  /** #4388 W04: the partner's cached platform-credit balance. `null`/absent
+   *  when BYOK, no partner id, or nothing cached yet. */
+  credits?: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
 }
 
 interface AiCostIndicatorProps {
@@ -114,9 +117,11 @@ export default function AiCostIndicator({
     ? Math.min((monthlyUsed / monthlyBudget) * 100, 100)
     : 0;
 
-  const costDisplay = monthlyBudget
-    ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
-    : `${formatCurrency(monthlyUsed / 100)} this month`;
+  const costDisplay = (
+    monthlyBudget
+      ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
+      : `${formatCurrency(monthlyUsed / 100)} this month`
+  ) + (usage.credits ? ` · ${formatNumber(usage.credits.remaining)} credits` : '');
 
   const barColor =
     percentage > 90

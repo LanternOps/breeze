@@ -9,6 +9,14 @@ type InputEvent struct {
 	Key       string   `json:"key,omitempty"`       // Key code or character
 	Modifiers []string `json:"modifiers,omitempty"` // "ctrl", "alt", "shift", "meta"
 	Delta     int      `json:"delta,omitempty"`     // Scroll delta
+
+	// CapsLock is the viewer's Caps Lock state at the moment this event was
+	// produced. A pointer, because "the viewer did not say" (nil) has to be
+	// distinguishable from "the viewer says Caps Lock is off" (false): only the
+	// latter lets the agent take ownership of the AlphaShift bit. Viewers that
+	// predate issue #3595 never set it, and those sessions keep the platform
+	// handler's original behaviour.
+	CapsLock *bool `json:"capsLock,omitempty"`
 }
 
 // InputHandler processes input events
@@ -63,6 +71,16 @@ type InputHandler interface {
 // code mappings (like ":", "!", "@", non-ASCII characters).
 type TypeCharHandler interface {
 	TypeChar(ch rune) error
+}
+
+// TextTyper is an optional interface for input handlers that can inject a whole
+// literal string in one operation (macOS CGEventKeyboardSetUnicodeString,
+// Windows KEYEVENTF_UNICODE batched into a single SendInput call). Preferred
+// over TypeCharHandler because it is both faster and layout-independent: the
+// string is delivered verbatim regardless of the remote machine's active
+// keyboard layout. See InjectText in input_text.go.
+type TextTyper interface {
+	TypeText(text string) error
 }
 
 // NewInputHandler creates a platform-specific input handler.

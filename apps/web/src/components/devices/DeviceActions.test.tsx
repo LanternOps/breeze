@@ -60,6 +60,17 @@ const remoteToolsDeniedPolicy = {
 // every jsdom case, so query the DOM element directly and read its props.
 const button = (name: RegExp) => screen.getByRole('button', { name });
 
+it.each(['power', 'menu'])('labels an active lease as exit in the %s menu after a heartbeat reports online', async (menu) => {
+  const onAction = vi.fn();
+  render(<DeviceActions device={{ ...onlineDevice, maintenanceUntil: new Date(Date.now() + 3600000).toISOString() }} onAction={onAction} />);
+  await userEvent.click(menu === 'power' ? button(/^power$/i) : screen.getByTestId('device-actions-menu'));
+  const action = button(/^exit maintenance$/i);
+  expect(screen.queryByRole('button', { name: /^enter maintenance$/i })).not.toBeInTheDocument();
+  await userEvent.click(action);
+  expect(onAction).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: 'Exit Maintenance Mode' })).toBeInTheDocument();
+});
+
 describe('DeviceActions — offline gating (issue #2013)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -289,7 +300,31 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       await user.click(screen.getByTestId('device-action-remove'));
       expect(onAction).not.toHaveBeenCalled();
-      expect(await screen.findByText('Remove Device')).toBeInTheDocument();
+      // #3987: the generic "Remove Device" confirm was replaced by
+      // RemoveDeviceDialog, which titles itself with the hostname.
+      expect(await screen.findByText('Remove edge-01?')).toBeInTheDocument();
+    });
+
+    // #3987 items 2 + 6: Remove is no longer a bare yes/no confirm — it asks
+    // what should happen to the agent and forwards the answer, so the detail
+    // page's DELETE carries `uninstallAgent` exactly like the fleet list's.
+    it('Remove opens the agent-choice dialog and forwards the choice to onAction', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+      await user.click(screen.getByTestId('device-action-remove'));
+
+      expect(screen.getByTestId('remove-choice-uninstall')).toBeChecked();
+      await user.click(screen.getByTestId('remove-choice-leave'));
+      await user.click(screen.getByTestId('device-actions-remove-confirm'));
+
+      expect(onAction).toHaveBeenCalledWith(
+        'decommission',
+        expect.objectContaining({ id: baseDevice.id }),
+        { uninstallAgent: false },
+      );
     });
 
     // The compact variant is currently unused in production — the sole
@@ -307,5 +342,69 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       expect(screen.getByTestId('device-action-restore')).toBeInTheDocument();
       expect(screen.getByTestId('device-action-permanent-delete')).toBeInTheDocument();
     });
+  });
+});
+
+// #4936: putting ONE box into maintenance before a reboot is a per-device act,
+// but the Power dropdown — the menu a tech opens immediately before Reboot /
+// Shutdown — had no maintenance entry. The item added here routes through the
+// SAME ConfirmDialog + onAction("maintenance") contract the "…" overflow item
+// already used, so no new handler, service call or endpoint is involved; the
+// dispatch target is DeviceDetailPage's existing `case "maintenance"`, which
+// calls toggleMaintenanceMode(device.id, …) for that single device.
+describe('DeviceActions — maintenance mode in the Power menu (#4936)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('offers maintenance in the Power menu and dispatches to the reason/duration dialog', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+    await user.click(button(/^power$/i));
+    await user.click(screen.getByTestId('device-power-action-maintenance'));
+
+    // Entry opens the parent's form; exit alone retains the yes/no confirmation.
+    expect(onAction).toHaveBeenCalledWith(
+      'maintenance',
+      expect.objectContaining({ id: 'device-1' }),
+    );
+  });
+
+  it('sits beside Reboot and Shutdown rather than replacing the overflow-menu entry', async () => {
+    const user = userEvent.setup();
+    render(<DeviceActions device={onlineDevice} onAction={vi.fn()} />);
+
+    await user.click(button(/^power$/i));
+    expect(screen.getByTestId('device-power-action-maintenance')).toBeInTheDocument();
+
+    // The pre-existing "…" entry is untouched — this PR adds a second path, it
+    // does not move the only one.
+    await user.click(screen.getByTestId('device-actions-menu'));
+    expect(await screen.findByText('Enter Maintenance')).toBeInTheDocument();
+  });
+
+  // The Power BUTTON keeps its pre-existing `!online` gate (pinned by #2013 /
+  // #2078 above), so for a device already in maintenance the dropdown cannot be
+  // opened and exit stays on the "…" menu. Pinned here so that asymmetry is a
+  // documented consequence rather than a surprise: relaxing the Power gate is a
+  // separate decision (bulkActionGating.ts warns against "fixing" it in passing).
+  it('still offers Exit Maintenance on the overflow menu for a device in maintenance', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(<DeviceActions device={maintenanceDevice} onAction={onAction} />);
+
+    expect(button(/^power$/i)).toBeDisabled();
+
+    await user.click(screen.getByTestId('device-actions-menu'));
+    await user.click(await screen.findByText('Exit Maintenance'));
+
+    expect(await screen.findByText('Exit Maintenance Mode')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Exit Maintenance' }));
+    expect(onAction).toHaveBeenCalledWith(
+      'maintenance',
+      expect.objectContaining({ id: 'device-1', status: 'maintenance' }),
+    );
   });
 });

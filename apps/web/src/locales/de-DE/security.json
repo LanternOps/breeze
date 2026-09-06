@@ -1070,6 +1070,11 @@
       "title": "PAM-Regel löschen",
       "message": "Regel „{{name}}“ löschen? Rechteerhöhungsanfragen werden dieser Regel nicht mehr zugeordnet.",
       "confirm": "Regel löschen"
+    },
+    "staleTierBadge": {
+      "label": "Veraltet",
+      "tooltip": "Risikostufe {{tier}} entspricht nichts mehr, was diese Regel auswählen kann, sodass sie nie wieder zutreffen kann.",
+      "tooltipWithTiers": "Risikostufe {{tier}} entspricht nichts mehr, was diese Regel auswählen kann, sodass sie nie wieder zutreffen kann. Aktuell verwendete Stufen: {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

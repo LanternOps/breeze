@@ -236,4 +236,57 @@ describe('peripheral policy v2 schema governance', () => {
       evidence: { reason: 'integration-test' },
     }]);
   });
+
+  /**
+   * #4806 — the test above proves the trigger's own data-shape check
+   * permits an org-only restamp, but it issues that restamp as
+   * getTestDb() (the schema-owner connection), so it would pass even if
+   * breeze_cascade_device_org_id()'s auto-discovery never covered this
+   * table at all: the test's own explicit UPDATE does the work.
+   *
+   * This test isolates the actual mechanism #4806 now depends on: with
+   * breeze_app's UPDATE grant on this table revoked, the ONLY write here
+   * is a real breeze_app `UPDATE devices SET org_id = ...` (matching what
+   * moveOrg.ts issues) — no statement of any kind touches
+   * peripheral_policy_delivery_events directly. If the auto-discovery
+   * cascade trigger didn't cover this table, the row would keep its stale
+   * org_id and this test would fail; the moveOrg.ts loop-skip
+   * (DEVICE_ORG_FK_CASCADE_TABLES) alone is not exercised here on purpose,
+   * since that only proves no 42501 is raised, not that the restamp
+   * happens without it.
+   */
+  it('restamps peripheral_policy_delivery_events via the cascade trigger alone, with breeze_app UPDATE revoked', async () => {
+    const eventId = await insertEvent(fixtureA);
+
+    // Sanity: breeze_app really has no UPDATE on this table. If this ever
+    // regressed back to granted, the restamp below could still pass, but
+    // for the wrong reason (an app-level statement papering over a broken
+    // cascade instead of the cascade doing the work) — this test would
+    // then no longer prove what its name says.
+    const [priv] = (await getTestDb().execute(sql`
+      SELECT has_table_privilege('breeze_app', 'peripheral_policy_delivery_events', 'UPDATE') AS "canUpdate"
+    `)) as unknown as Array<{ canUpdate: boolean }>;
+    expect(priv?.canUpdate).toBe(false);
+
+    // The one and only write: a real breeze_app connection (`db`, not
+    // getTestDb()) moving the device's org (and site, per the
+    // devices_site_org_fk composite FK) under a system-scoped RLS context —
+    // the same privilege level moveOrg.ts's own `.update(devices)` runs
+    // under. No statement here names peripheral_policy_delivery_events.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE devices
+      SET org_id = ${fixtureB.orgId}, site_id = ${fixtureB.siteId}
+      WHERE id = ${fixtureA.deviceId}
+    `));
+
+    const rows = await getTestDb().execute(sql`
+      SELECT org_id AS "orgId", evidence
+      FROM peripheral_policy_delivery_events
+      WHERE id = ${eventId}
+    `) as unknown as Array<{ orgId: string; evidence: Record<string, unknown> }>;
+    expect(rows).toEqual([{
+      orgId: fixtureB.orgId,
+      evidence: { reason: 'integration-test' },
+    }]);
+  });
 });

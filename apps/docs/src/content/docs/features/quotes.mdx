@@ -61,6 +61,27 @@ A quote separates **one-time** charges (hardware, project work) from **recurring
 
 Each pricing table also has a **Show subtotal** option you can turn on or off per table. When enabled, the table's subtotal -- split by recurrence -- appears on both the in-app **Preview** and the **PDF** the customer sees, so you can choose which sections show a running figure.
 
+## Quoting by device set
+
+A **recurring** quote line can price a live device count instead of a fixed number. Turn on **Bill by device set** on a monthly or annual line and pick one of four:
+
+| Device set | Bills |
+|---|---|
+| Per device | Every device on the organization, optionally narrowed to one site |
+| Per device role | Only devices with the roles you choose (servers, workstations, firewalls...), optionally narrowed to one site |
+| Per device group | The members of one device group. Dynamic groups are evaluated live |
+| Per seat | The organization's active users |
+
+The quantity is counted by Breeze, not typed in. The quantity box disappears while a device set is on. Any of the four can also carry an **included quantity**: the line then bills that quantity every period even when the live count is lower, and you choose whether the units above it are billed at a separate rate or just reported for review.
+
+**The number on the quote is an estimate**, and the customer's document labels every such line as an estimated quantity that will be billed at the actual count each billing period. A brand-new customer with nothing enrolled yet quotes at zero, and the document still shows the line and the explanation. That is the point.
+
+Counts refresh when you add the line or edit its device-set or allowance settings, and when you press **Refresh counts** on a draft quote. The read-only estimate can show the current count without changing the quote. Counts deliberately do **not** refresh when the quote is sent or accepted: sending reports which lines have drifted and leaves the numbers alone, so a scheduled send can never reprice a document you already approved.
+
+A device set cannot be added to a one-time line or to a component of a bundle, and the **kind** of device set cannot be changed after the line is created — to switch a line from device roles to a device group, remove it and add it again. What the set contains stays editable: you can change which roles are included, or point the line at a different device group, at any time. A device group that a draft, sent, or viewed quote prices cannot be deleted until that line is removed.
+
+Accepting the quote creates a contract line of the matching type, with the price frozen at what the customer signed. From then on the contract counts for itself every billing period.
+
 ### Customer Bill-To ("Prepared for")
 
 Every quote -- including a **draft** -- renders a **Prepared for** block with the customer's name, billing address, and tax id, drawn from the organization's **Billing** settings. This shows on both the in-app **Preview** and the **PDF**, so a draft you're reviewing looks the way the customer will see it. (Previously the block was blank until the quote was sent.)
@@ -170,12 +191,33 @@ Beyond priced line items, a quote body can contain content blocks that turn it i
 | **Rich text** | Scope, assumptions, terms — formatted paragraphs, lists, and headings |
 | **Table** | Comparison grids, schedules, responsibility matrices |
 | **Callout** | Pulling out a caveat, an inclusion, or a deadline |
+| **Contract** | Attaching a template from your [contract template library](/features/contracts/#contract-templates) for the customer to review as part of the proposal |
 
 Tables and callouts are edited **in place** on the quote itself, so what you see while editing is what the customer receives — no round trip through a PDF to check the result.
 
 <Aside>
   Rich text is sanitized before it is stored. If you paste markup Breeze does not allow, it tells you what was stripped rather than silently discarding it.
 </Aside>
+
+### Contract blocks
+
+A **Contract** block attaches a document from your [contract template library](/features/contracts/#contract-templates) to a quote, so the customer reviews (and, by accepting the quote, effectively agrees to) that document alongside the priced lines.
+
+<Steps>
+1. Add a **Contract** block and choose a **template**. Breeze attaches its **latest published version** -- there's no separate version picker, and a template with no published version yet can't be attached.
+2. Optionally give the block a **label** (shown instead of the template's name).
+3. If the template declares any **manual variables**, fill them in -- Breeze won't let you add the block with one left blank.
+</Steps>
+
+The block pins to **whichever published version was latest at attach time** -- it doesn't automatically follow later edits to the template. If a newer version of the same template is published afterward, the block shows an **Update to vN** button so you can re-pin it to that newer version deliberately; nothing changes until you click it.
+
+**Variables** are resolved when the block renders: auto variables (customer name/address, your organization's name, quote number/title, totals, dates) come from the quote automatically; manual variables use whatever you entered when you attached (or last edited) the block. An uploaded-PDF template has no variables -- it's attached as-is.
+
+<Aside type="caution">
+  **Send is blocked while any contract block has an unresolved variable.** If a manual variable is left blank -- for example, after switching a block to a newer template version that added one -- Breeze refuses to send the quote until every declared variable on every contract block has a value. The block editor lists which ones are still missing.
+</Aside>
+
+When the customer **accepts** a quote with contract blocks, Breeze freezes each block's rendered content (an authored template's substituted text, or an uploaded PDF as-is) into a permanent, standalone **contract document** -- the record of exactly what the customer saw and agreed to at that moment, unaffected by any later edits to the template. Executed contract documents can be downloaded as PDF from the **Contracts → Documents** tab, or from the related recurring contract's own detail page if one was linked.
 
 ## Cloning a Quote
 
@@ -205,4 +247,5 @@ Quote access is governed by role permissions: viewing requires quote read access
 - [Product Catalog](/features/product-catalog/) -- the price list quotes pull from
 - [Invoices](/features/invoices/) -- where an accepted quote's one-time charges land, deposit first
 - [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become agreements
+- [Recurring Contracts → Contract Templates](/features/contracts/#contract-templates) -- manage the document library contract blocks attach
 - [Online Payments](/features/online-payments/) -- let customers pay the deposit and balance by card

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -21,6 +21,7 @@ import {
   scanDueComplianceChecks,
 } from './featureConfigResolver';
 import { isManagedAutomation } from './aiAgents/managedAutomation';
+import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
@@ -60,6 +61,19 @@ export type PolicyEvaluationResponse = {
 type EvaluatePolicyOptions = {
   source?: string;
   requestRemediation?: boolean;
+  /**
+   * Identity of the requesting caller when evaluatePolicy runs inside a
+   * request (POST /policies/:id/evaluate). Partner-wide remediation
+   * automations (org_id NULL) are reachable only for system scope or the
+   * owning partner's own partner-scoped token; an org token carries a
+   * partnerId, and the partner-wide SELECT branch on `automations` makes those
+   * rows readable from an org RLS context as well, so the app-layer gate IS
+   * the access check (#4952).
+   *
+   * Omitted on the background/worker path (policyEvaluationWorker), which is
+   * genuinely system-scoped.
+   */
+  auth?: PartnerWideReadAuth | null;
 };
 
 type TargetConfig = {
@@ -128,6 +142,99 @@ type DeviceRuleEvaluation = {
 };
 
 type VersionOperator = 'any' | 'exact' | 'minimum' | 'maximum';
+
+// ─── Compliance-row upserts (#4122) ─────────────────────────────────────────
+//
+// Both compliance shapes used to be written with a non-atomic select-then-
+// insert against a table that had no uniqueness at all, so two concurrent
+// evaluations of the same policy each saw "no row" and each inserted. The
+// duplicates then fed `policyAlertBridge`'s reconcile guard and the next
+// evaluation's own read, which picked an arbitrary one of them.
+//
+// Migration 2026-09-29-100000 adds the two PARTIAL unique indexes these
+// builders arbitrate on. Postgres only infers a partial index as an ON CONFLICT
+// arbiter when the statement's inference predicate implies the index predicate,
+// so each `targetWhere` below must stay byte-for-byte equivalent to its index's
+// `WHERE`. Getting it wrong is loud, not silent: `42P10 there is no unique or
+// exclusion constraint matching the ON CONFLICT specification`.
+//
+// `remediationAttempts` is deliberately absent from every SET list — it is a
+// counter owned by the remediation path and a re-evaluation must not reset it.
+// This matches the UPDATE these upserts replace.
+//
+// Both builders are exported so `policyEvaluationService.upsertSql.test.ts` can
+// assert the COMPILED SQL. A call-shape assertion against a mocked `db` would
+// stay green with the wrong conflict target, which is the whole bug class here.
+
+type ComplianceUpsertDetails = Record<string, unknown>;
+
+export function buildPolicyComplianceUpsert(input: {
+  policyId: string;
+  deviceId: string;
+  status: EvaluationStatus;
+  details: ComplianceUpsertDetails;
+  checkedAt: Date;
+}) {
+  const mutable = {
+    status: input.status,
+    details: input.details,
+    lastCheckedAt: input.checkedAt,
+    updatedAt: input.checkedAt,
+  };
+  return db
+    .insert(automationPolicyCompliance)
+    .values({
+      policyId: input.policyId,
+      deviceId: input.deviceId,
+      ...mutable,
+    })
+    .onConflictDoUpdate({
+      // Mirrors `apc_policy_device_uq`.
+      target: [automationPolicyCompliance.policyId, automationPolicyCompliance.deviceId],
+      targetWhere: isNotNull(automationPolicyCompliance.policyId),
+      set: mutable,
+    });
+}
+
+export function buildConfigPolicyComplianceUpsert(input: {
+  configPolicyId: string;
+  configItemName: string;
+  deviceId: string;
+  status: 'compliant' | 'non_compliant' | 'error';
+  details: ComplianceUpsertDetails;
+  checkedAt: Date;
+}) {
+  const mutable = {
+    status: input.status,
+    details: input.details,
+    lastCheckedAt: input.checkedAt,
+    updatedAt: input.checkedAt,
+  };
+  return db
+    .insert(automationPolicyCompliance)
+    .values({
+      // Explicitly NULL: this row lives on the config-policy axis, and a
+      // non-null policy_id here would also land it in `apc_policy_device_uq`.
+      policyId: null,
+      configPolicyId: input.configPolicyId,
+      configItemName: input.configItemName,
+      deviceId: input.deviceId,
+      ...mutable,
+    })
+    .onConflictDoUpdate({
+      // Mirrors `apc_config_policy_item_device_uq`.
+      target: [
+        automationPolicyCompliance.configPolicyId,
+        automationPolicyCompliance.configItemName,
+        automationPolicyCompliance.deviceId,
+      ],
+      targetWhere: and(
+        isNotNull(automationPolicyCompliance.configPolicyId),
+        isNotNull(automationPolicyCompliance.configItemName),
+      ),
+      set: mutable,
+    });
+}
 
 export type RuleEvaluationDebugInput = {
   device: {
@@ -929,8 +1036,11 @@ function extractScriptIdFromAction(action: unknown): string | null {
   return null;
 }
 
-export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): Promise<string | null> {
-  return resolvePolicyRemediationAutomationIdForOrg(policy, policy.orgId);
+export async function resolvePolicyRemediationAutomationId(
+  policy: PolicyRow,
+  auth?: PartnerWideReadAuth | null
+): Promise<string | null> {
+  return resolvePolicyRemediationAutomationIdForOrg(policy, policy.orgId, auth);
 }
 
 /**
@@ -938,15 +1048,26 @@ export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): P
  * OR partner-wide automations (org_id NULL) owned by the org's partner. A
  * plain eq(orgId, ...) silently never matches partner-wide rows — evaluation
  * runs under a system DB context, so RLS is not the filter here.
+ *
+ * The partner-wide arm must therefore carry the CALLER's own visibility when
+ * this runs inside a request (POST /policies/:id/evaluate). An org token
+ * carries a partnerId, and automations' partner-wide SELECT branch makes those
+ * rows readable from an org context too, so nothing below this gate stops an
+ * org caller from remediating with another tenant's partner-wide automation
+ * (#4952). `auth` absent = the system/worker path, which is genuinely
+ * system-scoped.
  */
-async function automationOwnershipConditionForOrg(orgId: string): Promise<SQL> {
+async function automationOwnershipConditionForOrg(
+  orgId: string,
+  auth?: PartnerWideReadAuth | null
+): Promise<SQL> {
   const [org] = await db
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  if (!org?.partnerId) {
+  if (!org?.partnerId || !canReadPartnerWideRows(auth, org.partnerId)) {
     return eq(automations.orgId, orgId);
   }
 
@@ -964,7 +1085,8 @@ async function automationOwnershipConditionForOrg(orgId: string): Promise<SQL> {
  */
 export async function resolvePolicyRemediationAutomationIdForOrg(
   policy: PolicyRow,
-  orgId: string | null
+  orgId: string | null,
+  auth?: PartnerWideReadAuth | null
 ): Promise<string | null> {
   const explicitAutomationId = extractRemediationAutomationId(policy.rules);
   if (explicitAutomationId) {
@@ -976,16 +1098,26 @@ export async function resolvePolicyRemediationAutomationIdForOrg(
   }
 
   const candidates = await db
-    .select({ id: automations.id, actions: automations.actions })
+    .select({
+      id: automations.id,
+      actions: automations.actions,
+      orgId: automations.orgId,
+      partnerId: automations.partnerId,
+    })
     .from(automations)
     .where(
       and(
-        await automationOwnershipConditionForOrg(orgId),
+        await automationOwnershipConditionForOrg(orgId, auth),
         eq(automations.enabled, true)
       )
     );
 
   for (const candidate of candidates) {
+    // Defense in depth on each loaded row (#4952) — see
+    // automationOwnershipConditionForOrg.
+    if (candidate.orgId === null && !canReadPartnerWideRows(auth, candidate.partnerId)) {
+      continue;
+    }
     if (!Array.isArray(candidate.actions)) {
       continue;
     }
@@ -1110,7 +1242,8 @@ async function triggerRemediationAutomation(
   policy: PolicyRow,
   device: TargetDevice,
   status: EvaluationStatus,
-  remediationAutomationId: string | null
+  remediationAutomationId: string | null,
+  auth?: PartnerWideReadAuth | null
 ): Promise<string | null> {
   if (status !== 'non_compliant' || !remediationAutomationId) {
     return null;
@@ -1126,7 +1259,7 @@ async function triggerRemediationAutomation(
     .where(
       and(
         eq(automations.id, remediationAutomationId),
-        await automationOwnershipConditionForOrg(device.orgId)
+        await automationOwnershipConditionForOrg(device.orgId, auth)
       )
     )
     .limit(1);
@@ -1134,6 +1267,11 @@ async function triggerRemediationAutomation(
   // Both policy-remediation paths run per evaluated device, so a policy pointed
   // at the managed row would create one agent run per device in the fleet.
   if (!automation || !automation.enabled || isManagedAutomation(automation)) return null;
+
+  // Defense in depth on the loaded row (#4952): re-assert the caller's
+  // partner-wide visibility even though the ownership condition above already
+  // dropped the partner-wide arm for callers that lack it.
+  if (automation.orgId === null && !canReadPartnerWideRows(auth, automation.partnerId)) return null;
 
   const [run] = await db
     .insert(automationRuns)
@@ -1251,7 +1389,7 @@ export async function evaluatePolicy(
     if (!remediationIdByOrg.has(deviceOrgId)) {
       remediationIdByOrg.set(
         deviceOrgId,
-        await resolvePolicyRemediationAutomationIdForOrg(policy, deviceOrgId)
+        await resolvePolicyRemediationAutomationIdForOrg(policy, deviceOrgId, options.auth)
       );
     }
     return remediationIdByOrg.get(deviceOrgId) ?? null;
@@ -1379,39 +1517,36 @@ export async function evaluatePolicy(
       registryState: registryStateByDevice.get(device.id) ?? [],
       configState: configStateByDevice.get(device.id) ?? [],
     });
+    const checkedAt = new Date();
     const status: EvaluationStatus = evaluation.passed ? 'compliant' : 'non_compliant';
     const details = {
-      evaluatedAt: new Date().toISOString(),
+      evaluatedAt: checkedAt.toISOString(),
       rules: ruleKeys,
       passed: evaluation.passed,
       ruleResults: evaluation.details,
       source,
     };
 
-    if (existing) {
-      await db
-        .update(automationPolicyCompliance)
-        .set({
-          status,
-          details,
-          lastCheckedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(automationPolicyCompliance.id, existing.id));
-    } else {
-      await db
-        .insert(automationPolicyCompliance)
-        .values({
-          policyId: policy.id,
-          deviceId: device.id,
-          status,
-          details,
-          lastCheckedAt: new Date(),
-        });
-    }
+    // The `existing` read above still supplies `previousStatus` for the event
+    // payloads below, but it no longer decides insert-vs-update: a concurrent
+    // evaluation may have inserted the row between that SELECT and here, and
+    // only the ON CONFLICT arbiter closes that window (#4122).
+    await buildPolicyComplianceUpsert({
+      policyId: policy.id,
+      deviceId: device.id,
+      status,
+      details,
+      checkedAt,
+    });
 
     const remediationRunId = requestRemediation
-      ? await triggerRemediationAutomation(policy, device, status, await remediationAutomationIdForOrg(device.orgId))
+      ? await triggerRemediationAutomation(
+          policy,
+          device,
+          status,
+          await remediationAutomationIdForOrg(device.orgId),
+          options.auth
+        )
       : null;
 
     evaluationResults.push({
@@ -1652,8 +1787,9 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
     const ruleKeys = parsePolicyRules(complianceRule.rules).rules.map((rule) => rule.type);
 
+    const checkedAt = new Date();
     const evaluationDetails = {
-      evaluatedAt: new Date().toISOString(),
+      evaluatedAt: checkedAt.toISOString(),
       rules: ruleKeys,
       passed: status === 'compliant',
       ruleResults: ruleDetails,
@@ -1661,42 +1797,17 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
       enforcementLevel: complianceRule.enforcementLevel,
     };
 
-    // Upsert compliance row keyed by (configPolicyId=featureLinkId, configItemName, deviceId)
-    const [existing] = await db
-      .select()
-      .from(automationPolicyCompliance)
-      .where(
-        and(
-          eq(automationPolicyCompliance.configPolicyId, complianceRule.featureLinkId),
-          eq(automationPolicyCompliance.configItemName, complianceRule.name),
-          eq(automationPolicyCompliance.deviceId, deviceId)
-        )
-      )
-      .limit(1);
-
-    if (existing) {
-      await db
-        .update(automationPolicyCompliance)
-        .set({
-          status,
-          details: evaluationDetails,
-          lastCheckedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(automationPolicyCompliance.id, existing.id));
-    } else {
-      await db
-        .insert(automationPolicyCompliance)
-        .values({
-          policyId: null,
-          configPolicyId: complianceRule.featureLinkId,
-          configItemName: complianceRule.name,
-          deviceId,
-          status,
-          details: evaluationDetails,
-          lastCheckedAt: new Date(),
-        });
-    }
+    // Atomic upsert keyed by (configPolicyId=featureLinkId, configItemName,
+    // deviceId). This replaced a select-then-insert whose read/write gap let
+    // two concurrent evaluations both insert for the same key (#4122).
+    await buildConfigPolicyComplianceUpsert({
+      configPolicyId: complianceRule.featureLinkId,
+      configItemName: complianceRule.name,
+      deviceId,
+      status,
+      details: evaluationDetails,
+      checkedAt,
+    });
 
     // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
@@ -1796,7 +1907,10 @@ async function triggerConfigPolicyRemediation(
   }
 
   // Find an automation that uses the remediation script — the device org's
-  // own automations plus its partner's partner-wide ones (#2133).
+  // own automations plus its partner's partner-wide ones (#2133). No `auth`
+  // argument: this path is only reachable from scanAndEvaluateConfigPolicyCompliance
+  // on the background worker, which is genuinely system-scoped. If a request
+  // route ever calls it, thread the caller's auth through (#4952).
   const deviceOrgAutomationCondition = await automationOwnershipConditionForOrg(deviceRow.orgId);
   const candidates = await db
     .select({ id: automations.id, actions: automations.actions })

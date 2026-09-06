@@ -117,6 +117,13 @@ export interface PamRule {
   approvalDurationMinutes?: number | null;
   createdAt: string;
   updatedAt: string;
+  // #3128: computed by GET /pam/rules — true when matchRiskTier can no longer
+  // be produced by this rule's tool selector (an AI tool risk-tier
+  // re-classification left the rule permanently unmatchable). Optional
+  // because older cached responses / other constructors of this type won't
+  // have them.
+  matchRiskTierStale?: boolean;
+  matchRiskTierValidTiers?: number[] | null;
 }
 
 /**

@@ -29,12 +29,13 @@ import {
   type ContractTemplateDetail,
   type TemplateVersionSummary,
 } from '../../../lib/api/contractTemplates';
-import type { QuoteBlockInput, CoverPage } from '@breeze/shared';
+import type { QuoteBlockInput, CoverPage, QuoteDeviceSetType } from '@breeze/shared';
 import { computeQuoteTotals, computeQuoteProfit, priceFromMarkup, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { showToast } from '../../shared/Toast';
+import type { DeviceRole } from '@/lib/deviceRoles';
 import { useToastRailOffset } from '../../shared/toastRailOffset';
 import RichTextEditor from '../../common/RichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
@@ -188,6 +189,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const toggleShowInternal = onToggleInternal ?? toggleFallbackShowInternal;
   const { quote, blocks: serverBlocks, lines: serverLines } = detail;
   const currency = quote.currencyCode;
+  useEffect(() => {
+    const onDeviceCountsRefreshed = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === quote.id) onChanged?.();
+    };
+    window.addEventListener('breeze:quote-device-counts-refreshed', onDeviceCountsRefreshed);
+    return () => window.removeEventListener('breeze:quote-device-counts-refreshed', onDeviceCountsRefreshed);
+  }, [quote.id, onChanged]);
 
   // ---- undo-able deletion (deferred DELETE + grace window) -----------------
   // Confirming a line/section removal hides it here and starts a grace timer;
@@ -416,7 +424,21 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [contractVarErrors, setContractVarErrors] = useState<Record<string, string>>({});
   const [contractLabel, setContractLabel] = useState('');
 
-  useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect is flushed AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale string the effect captured. Comparing the rendered STRING (not the
+  // prop's identity) means a refetch that hands back an equal-but-unchanged
+  // value changes nothing on screen and can't discard an in-progress edit.
+  const termsSeed = quote.termsAndConditions ?? '';
+  const [termsSeededFrom, setTermsSeededFrom] = useState(termsSeed);
+  if (termsSeededFrom !== termsSeed) {
+    setTermsSeededFrom(termsSeed);
+    setTerms(termsSeed);
+    setTermsDirty(false);
+  }
 
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
@@ -434,7 +456,17 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // selected_lines block further down for the rationale.
   const stagedSelectedLines = useRef(false);
   useEffect(() => { if (!stagedSelectedLines.current) setDepositType(quote.depositType ?? 'none'); }, [quote.depositType]);
-  useEffect(() => { setDepositPercentDraft(quote.depositPercent ?? ''); }, [quote.depositPercent]);
+  // Same render-phase reseed as `terms` above (#4807) — the percent field is a
+  // live-typed draft, so a passive effect here is the identical clobber
+  // window. Resetting the inline range error too: it described the draft this
+  // reseed just replaced.
+  const depositPercentSeed = quote.depositPercent ?? '';
+  const [depositPercentSeededFrom, setDepositPercentSeededFrom] = useState(depositPercentSeed);
+  if (depositPercentSeededFrom !== depositPercentSeed) {
+    setDepositPercentSeededFrom(depositPercentSeed);
+    setDepositPercentDraft(depositPercentSeed);
+    setDepositPctError(null);
+  }
 
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
   // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +
@@ -1226,8 +1258,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
    * rules close #3519 for every branch that routes through here — which is the
    * catch: nothing enforces that routing, so a NEW block type must call this
    * helper rather than re-inlining `positionNewBlock` + reset + `refresh()`,
-   * or it reopens the bug. (Line creation still has the unfixed twin of this
-   * problem; see the note on `doAddCatalog`.)
+   * or it reopens the bug. (Line creation had the unfixed twin of this problem;
+   * it now runs the same one-shot resync-and-warn tail via `finishLineCreate`,
+   * see below — #4286.)
    *
    * 1. It never throws. A throw would escape into `runScoped`'s catch and toast
    *    "Could not add the section" over a block that DOES exist — the copy that
@@ -1465,15 +1498,29 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   [quote.id, refresh, runScoped, t]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
-  // KNOWN GAP (#3519's unfixed twin, deliberately out of scope here): every line
-  // creation below rests on the same premise the block path just stopped
-  // trusting — "no success toast, the appended row and the moving totals ARE the
-  // feedback" — and ends with the fire-and-forget `refresh()` rather than the
-  // honest `finishBlockCreate` tail. So a line POST that succeeds while its
-  // quiet refetch fails is still completely silent, and a tech on a flaky link
-  // can re-add the same line the way the reporter re-uploaded the same image.
-  // Fixing it needs its own copy, its own 8 locales and its own tests, so it is
-  // filed separately rather than smuggled into this change.
+  /**
+   * Tail for every line-creation path below, once the POST has already
+   * succeeded server-side. Same shape as `finishBlockCreate` and closes the
+   * same defect (#3519) for line creation (#4286): these mutations
+   * deliberately have no success toast of their own — the appended row and
+   * the moving totals ARE the feedback — so a quiet refetch that fails after
+   * a successful write must say so honestly, or the technician reads silence
+   * as "nothing happened" and re-adds the same line, duplicating a billable
+   * charge.
+   *
+   * Never throws (see `resync`), and goes through the one-shot `resync()`
+   * rather than the coalescing `refresh()` for the same reason `finishBlockCreate`
+   * does: adding a line is a one-shot action, not the tab-through burst the
+   * throttle exists to cap, and its outcome report must not sit behind a
+   * cooldown window.
+   */
+  const finishLineCreate = useCallback(async (): Promise<void> => {
+    const resynced = await resync();
+    if (!resynced) {
+      showToast({ message: t('quotes.editor.errors.lineAddedListStale'), type: 'warning' });
+    }
+  }, [resync, t]);
+
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
@@ -1489,8 +1536,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       // control. Failures still toast.
       onUnauthorized: UNAUTHORIZED,
     });
-    refresh();
-  }, [quote.id, quote.currencyCode, refresh, t]);
+    await finishLineCreate();
+  }, [quote.id, quote.currencyCode, finishLineCreate, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
     runScoped(pendingKey.addLine(blockId), () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
@@ -1581,14 +1628,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   const addManual = useCallback((
     blockId: string,
-    form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: {
+      name: string; description: string; quantity?: string; unitPrice: string; cost: string; sku: string; partNumber: string;
+      taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean; contractLineType?: QuoteDeviceSetType;
+      deviceRoles?: Exclude<DeviceRole, 'unknown'>[]; deviceGroupId?: string; siteId?: string; includedQuantity?: number;
+      overageMode?: 'bill' | 'flag'; overageUnitPrice?: number;
+    },
   ) => {
     // A line needs at least a title (name) or a description (mirrors the API refine).
     if (!form.name.trim() && !form.description.trim()) return Promise.resolve(false);
     // Guard qty 0 / non-numeric here too — the inline edit path already does, and
     // a silent $0-quantity line is a real footgun on the add path.
     const qtyNum = Number(form.quantity);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+    if (!form.contractLineType && (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum))) {
       handleActionError(new Error('invalid quantity'), t('quotes.editor.errors.quantityWholeGreaterThanZero'));
       return Promise.resolve(false);
     }
@@ -1615,7 +1667,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           blockId,
           name: form.name.trim() || null,
           description: form.description.trim() || null,
-          quantity: qtyNum,
+          ...(form.contractLineType ? {} : { quantity: qtyNum }),
           unitPrice: priceNum,
           unitCost: costEmpty ? null : costNum,
           sku: form.sku.trim() || null,
@@ -1626,38 +1678,56 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           // Manual lines are never deposit-eligible by default (no catalog itemType
           // to infer hardware from); the user flags it later in the line editor.
           depositEligible: false,
+          ...(form.contractLineType ? {
+            contractLineType: form.contractLineType,
+            deviceRoles: form.deviceRoles,
+            deviceGroupId: form.deviceGroupId,
+            siteId: form.siteId,
+            includedQuantity: form.includedQuantity,
+            overageMode: form.overageMode,
+            overageUnitPrice: form.overageUnitPrice,
+          } : {}),
         }),
         errorFallback: t('quotes.editor.errors.addLine'),
         // No success toast — the appended row is the feedback (see addCatalog).
         onUnauthorized: UNAUTHORIZED,
       });
       // Optionally persist the manual line to the product catalog for reuse.
-      if (form.saveToCatalog) {
-        await runAction({
-          request: () => createCatalogItem({
-            itemType: 'service',
-            name: form.name.trim() || form.description.trim(),
-            description: form.description.trim() || null,
-            billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
-            billingFrequency: form.recurrence === 'monthly'
-              ? 'monthly'
-              : form.recurrence === 'annual'
-                ? 'annual'
-                : null,
-            // Price-book row in the quote's currency (the legacy unitPrice would be
-            // stored as the PARTNER currency — wrong for a foreign-currency quote).
-            prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
-            taxable: form.taxable,
-          }),
-          errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
-          successMessage: t('quotes.editor.success.savedToCatalog'),
-          onUnauthorized: UNAUTHORIZED,
-        });
-        void loadCatalog();
+      // This sits in a `finally` around `finishLineCreate()`: the manual LINE
+      // already exists server-side by this point (the addManualLine call above
+      // succeeded), so a failed catalog-save must not skip the resync — that
+      // would reopen #4286 for this one branch, stranding the line with no
+      // list refresh and no stale-list warning even though runAction's own
+      // "saving it to the catalog failed" toast already fired.
+      try {
+        if (form.saveToCatalog) {
+          await runAction({
+            request: () => createCatalogItem({
+              itemType: 'service',
+              name: form.name.trim() || form.description.trim(),
+              description: form.description.trim() || null,
+              billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
+              billingFrequency: form.recurrence === 'monthly'
+                ? 'monthly'
+                : form.recurrence === 'annual'
+                  ? 'annual'
+                  : null,
+              // Price-book row in the quote's currency (the legacy unitPrice would be
+              // stored as the PARTNER currency — wrong for a foreign-currency quote).
+              prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
+              taxable: form.taxable,
+            }),
+            errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
+            successMessage: t('quotes.editor.success.savedToCatalog'),
+            onUnauthorized: UNAUTHORIZED,
+          });
+          void loadCatalog();
+        }
+      } finally {
+        await finishLineCreate();
       }
-      refresh();
     }, t('quotes.editor.errors.addLine'));
-  }, [quote.id, refresh, loadCatalog, runScoped, t]);
+  }, [quote.id, quote.currencyCode, finishLineCreate, loadCatalog, runScoped, t]);
 
   // Deferred-flush executor for a line delete (see startLineDelete). No
   // success toast — the undo toast at delete time already told the user.
@@ -2218,7 +2288,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <input
                     ref={imageFileInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg"
                     onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
                     data-testid="quote-block-image-file"
                     className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
@@ -2515,7 +2585,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <>
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg"
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
                       disabled={isPending('cover-image')}
                       data-testid="quote-cover-page-image-file"
@@ -2530,10 +2600,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         </div>
       )}
 
-      {/* The rail joins as a second column only at xl: below that the two-column
-          split starves the pricing table (at 1100px the blocks track is ~420px
-          against a ~650px table minimum) and forces sideways scrolling on the
-          most-checked figures. Stacked, the table gets the full content width. */}
+      {/* The rail joins as a second column only at xl (1280px): below that the
+          two-column split starves the pricing table and forces sideways
+          scrolling on the most-checked figures. Stacked, the table gets the
+          full content width. Even at xl, this breakpoint tracks VIEWPORT
+          width, not the width actually left for the blocks column — with the
+          left nav sidebar expanded (256px) the table's real budget is closer
+          to ~576px at exactly 1280px (#4668), which is why the table's own
+          min-width floor (QuoteBlockCard.tsx) has to stay well under that,
+          not just under the full 650px this column could theoretically
+          offer. */}
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with a min-width
@@ -2673,6 +2749,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 key={block.id}
                 block={block}
                 quoteId={quote.id}
+                orgId={quote.orgId}
                 lines={linesForBlock(block.id)}
                 currency={currency}
                 taxRate={quote.taxRate}

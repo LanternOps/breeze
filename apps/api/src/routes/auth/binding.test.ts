@@ -235,10 +235,26 @@ describe('POST /browser-binding/bootstrap', () => {
   it('rejects a present Origin outside the configured allowlist', async () => {
     const response = await app.request('/browser-binding/bootstrap', {
       method: 'POST',
-      headers: { origin: 'https://evil.example', 'sec-fetch-site': 'same-origin' },
+      headers: { origin: 'https://evil.example', 'sec-fetch-site': 'same-site' },
     });
     expect(response.status).toBe(403);
     expect(transition.resolve).not.toHaveBeenCalled();
+  });
+
+  it('accepts an Origin outside the allowlist when the browser asserts it is same-origin (SSH-tunnel self-host)', async () => {
+    transition.resolve.mockImplementationOnce(() => {
+      throw new AuthBindingRotationRequiredError({ kind: 'browser', value: C2 }, 'missing');
+    });
+    const response = await app.request('/browser-binding/bootstrap', {
+      method: 'POST',
+      headers: {
+        origin: 'https://localhost:8443',
+        'sec-fetch-site': 'same-origin',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(transition.resolve).toHaveBeenCalled();
   });
 
   it('rejects Sec-Fetch-Site cross-site even when Origin is otherwise allowed', async () => {

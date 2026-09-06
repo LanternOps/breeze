@@ -7,14 +7,16 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Custom Fields let you attach structured metadata to devices that goes beyond the built-in attributes (hostname, OS type, tags, etc.). You define field definitions at the organisation or partner level, then set values on individual devices. This is useful for tracking asset numbers, purchase dates, warranty expiry, department assignments, compliance status, and any other data specific to your environment.
 
+Migrating custom fields in bulk from another RMM? See [Migrating to Breeze](/migration/overview/#alongside-this-phase-backfill-custom-fields-from-the-incumbent) for the **Import from another RMM** wizard, which drives the same definitions and values endpoints this page documents.
+
 ---
 
 ## How it works
 
 Custom Fields has two layers:
 
-1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner.
-2. **Field values** -- stored as a JSONB object on each device record (`custom_fields` column). Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
+1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner, and a `fieldKey` is unique **per owner** -- see [Uniqueness and shadowing](#uniqueness-and-shadowing).
+2. **Field values** -- stored in a dedicated `device_custom_field_values` table, one row per device/definition pair, and validated against the definition's declared type on every write. The `custom_fields` JSONB column on the device record is maintained as a trigger-rebuilt projection of that table (plus any pre-existing key that doesn't match the enforced `field_key` pattern, preserved as-is) for backward compatibility -- every existing reader of `devices.custom_fields` keeps working unchanged. Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
 
 ---
 
@@ -47,8 +49,19 @@ When creating a field definition you can supply an `options` object to constrain
 You can also set a `defaultValue` on the definition. If a device does not have an explicit value for the field, the default is used. Setting `required: true` indicates that the field should always be populated for applicable devices.
 
 <Aside>
-  Validation options are stored on the definition for use by the UI and any future server-side enforcement. The current device PATCH endpoint accepts any value that matches the Zod schema (`string`, `number`, `boolean`, or `null`) without cross-referencing the definition's options at write time.
+  Every value is validated against the field's declared `type` and `options` on every write path -- `PATCH /api/v1/devices/:id`, `PATCH /api/v1/devices/:id/custom-fields`, and script write-back. See [Accepted value types](#accepted-value-types) for the rejection codes.
 </Aside>
+
+---
+
+## Uniqueness and shadowing
+
+Two rules keep a `fieldKey` unambiguous, both enforced in the database and returned as `409` -- both predate this page's bulk importer and are what the importer relies on rather than re-implementing, since a mismatched key is otherwise silently ambiguous data corruption:
+
+- **`fieldKey` is unique per owner.** Two definitions cannot share a key on the same axis (two organisation-owned fields, or two partner-wide fields). Creating a duplicate returns `409 { code: "field-key-duplicate" }`.
+- **An organisation-owned key cannot shadow an all-organisations key, or vice versa.** If `asset_tag` already exists as a partner-wide field, no organisation under that partner can also define an organisation-owned `asset_tag` (and the reverse). Creating a shadowing definition returns `409 { code: "field-key-shadowed" }`.
+
+Both rules exist because a value can only be attributed to one definition. Without them, a device could resolve two different definitions for the same key -- disagreeing on `type` -- with no way to tell which one a stored value belongs to.
 
 ---
 
@@ -137,6 +150,7 @@ curl -X POST /api/v1/custom-fields \
       "choices": ["Finance", "Engineering", "Sales", "Support"]
     },
     "required": true,
+    "scriptWrite": false,
     "defaultValue": null,
     "deviceTypes": null,
     "createdAt": "2026-02-18T12:00:00.000Z",
@@ -151,7 +165,7 @@ curl -X POST /api/v1/custom-fields \
 
 ## Setting values on devices
 
-Custom field values live in the `custom_fields` JSONB column on the `devices` table. To set or update values, send a `PATCH` request to the device endpoint with a `customFields` object whose keys correspond to field keys:
+Values are set by sending a `PATCH` request to the device endpoint with a `customFields` object whose keys correspond to field keys. The request/response shape is unchanged from before this feature's normalized storage landed: you still read and write the same `customFields` object on the device record -- see [Database schema](#database-schema) for where it's actually stored now.
 
 ```bash
 curl -X PATCH /api/v1/devices/<device-id> \
@@ -172,14 +186,103 @@ curl -X PATCH /api/v1/devices/<device-id> \
 
 ### Accepted value types
 
-The device update endpoint validates each custom field value against this schema:
+Each value must first match the Zod wire schema (`string`, `number`, `boolean`, or `null` -- `null` removes the field), then be validated against the **target definition's own declared `type` and `options`**. A value that fails either check is rejected -- not silently stored -- with `400 { error, code: "invalid-custom-field-value", fields: [{ fieldKey, reason }] }`. `reason` is one of:
 
-| Allowed type | Notes |
+| Reason | Meaning |
 |---|---|
-| `string` | Maximum 10,000 characters |
-| `number` | Integer or decimal |
-| `boolean` | `true` or `false` |
-| `null` | Removes the field from the device |
+| `unknown_field` | No custom field definition visible to this device's organisation owns that key. |
+| `invalid_type` | The value's shape doesn't match the field's declared `type`. |
+| `out_of_range` | A `number` value falls outside the field's `min`/`max`. |
+| `not_a_choice` | A `dropdown` value isn't one of the field's declared `options.choices`. |
+| `too_long` | A `text` value exceeds the fixed 10,000-character limit. (`options.maxLength` on a definition is a client-side UI hint only -- it is not enforced by this check.) |
+| `invalid_date` | A `date` value doesn't parse. |
+| `not_applicable_to_device` | The field's `deviceTypes` excludes this device's OS. |
+
+This applies to both `PATCH /api/v1/devices/:id` and `PATCH /api/v1/devices/:id/custom-fields`, and to [script write-back](#writing-custom-fields-from-a-script) (whose own rejection reasons are listed separately, below).
+
+<Aside type="caution">
+  A caller that previously stored free-form strings under a `number` or `dropdown` field, or wrote a key with no matching definition at all, now gets a `400` on that write. Existing stored values are untouched -- this only affects new writes.
+</Aside>
+
+---
+
+## Writing custom fields from a script
+
+A script running on a device can set that device's own custom fields directly from its output — no API key, no device UUID, and no extra network call. This is the equivalent of Ninja-Property-Set for Breeze.
+
+<Aside type="caution">
+  **This is not a secrets channel.** The write-back marker rides the script's stdout, and stdout is persisted to the execution record where any user with `scripts:read` can see it. The value is also visible on the device record afterward. Never write a password, API key, or other secret through this feature — use a [secret variable](/features/scripts/#secret-variables-in-scripts) instead.
+</Aside>
+
+### Enabling it on a field
+
+Script write-back is opt-in per field definition, and off by default. Turn on **Allow scripts to write this field** (`scriptWrite: true`) on the field's definition — see [Creating a field definition](#creating-a-field-definition) — before any script can set it. A script targeting a field with `scriptWrite: false` (or a field that doesn't exist) has that write rejected.
+
+### The marker
+
+Print a line to stdout in this exact form:
+
+```
+::breeze:custom-fields:: {"key":"value"}
+```
+
+The text after the marker must be a single JSON object whose keys are field keys and whose values are the new field values. `null` clears a field, exactly like the device PATCH endpoint. A script can emit the marker more than once; later lines win for a repeated key.
+
+<Tabs>
+  <TabItem label="PowerShell">
+```powershell
+$fields = @{ ram_slot_type = 'DDR5-5600'; free_dimm_slots = 2 }
+Write-Output "::breeze:custom-fields:: $($fields | ConvertTo-Json -Compress)"
+```
+  </TabItem>
+  <TabItem label="Bash">
+```bash
+echo "::breeze:custom-fields:: {\"ram_slot_type\":\"DDR5-5600\",\"free_dimm_slots\":2}"
+```
+  </TabItem>
+  <TabItem label="Python">
+```python
+import json
+print("::breeze:custom-fields:: " + json.dumps({"ram_slot_type": "DDR5-5600"}))
+```
+  </TabItem>
+</Tabs>
+
+### Type coercion and validation
+
+Each value is validated and coerced against the target field's declared `type`, using the same rules as [accepted value types](#accepted-value-types) above:
+
+| Field type | Coercion |
+|---|---|
+| `text` | Coerced to a string; rejected if it exceeds the field's `maxLength` or fails its `pattern` |
+| `number` | Coerced to a number; rejected if it falls outside `min`/`max` |
+| `boolean` | Accepts `true`/`false` (JSON booleans) |
+| `dropdown` | The value must be one of the field's declared `options.choices` |
+| `date` | Must parse as a valid date string |
+
+A value that fails coercion or validation is rejected for that key only — it does not fail the rest of the marker or the script run itself.
+
+### Reading the result
+
+Every execution that emitted at least one marker gets a `customFieldResult` summary (`{ applied: string[], rejected: [{ key, reason }] }`), visible in the execution's detail view in the web UI and via `GET /scripts/executions/:executionId`. `rejected[].reason` is one of:
+
+| Reason | Meaning |
+|---|---|
+| `unknown_field` | No custom field definition matches that key |
+| `not_script_writable` | The field exists but `scriptWrite` is off |
+| `not_applicable_to_device` | The field's `deviceTypes` excludes this device |
+| `invalid_type` / `out_of_range` / `not_a_choice` / `too_long` / `invalid_date` | The value failed type coercion or validation — see the table above |
+| `marker_unparseable` | The marker line's JSON could not be parsed — see the sanitizer caveat below |
+| `too_many_lines` / `too_many_keys` / `marker_too_large` | The marker exceeded the script's per-run limits (20 marker lines, 50 keys, 8 KB of marker JSON) |
+| `forbidden_key` | The key was `__proto__`, `constructor`, or `prototype` |
+
+A silently-rejected write is exactly the failure this summary exists to prevent — check it whenever a value you expected doesn't show up on the device.
+
+<Aside type="caution">
+  **Sanitizer interaction.** Script output is scanned for likely secrets before being stored (see [Output sanitization](/features/scripts/#output-sanitization)) — a marker whose JSON happens to contain a key like `token`, `secret`, or `password` gets rewritten (`key=[REDACTED]`) before the server ever sees it, which breaks the JSON and surfaces as `marker_unparseable`. Avoid field keys and values that look secret-shaped.
+</Aside>
+
+To read a custom field value back into a script as an input, bind a script parameter with source **From a device custom field** — see [Parameter sources](/features/scripts/#parameter-sources).
 
 ---
 
@@ -205,7 +308,7 @@ curl "/api/v1/custom-fields?type=dropdown&search=department" \
 
 ### Filtering devices by custom field values
 
-Custom field values are stored as JSONB on each device. In the current implementation, device list queries (`GET /api/v1/devices`) do not directly filter by custom field values in query parameters. To find devices with specific custom field values, retrieve the device list and filter client-side, or use PostgreSQL JSONB queries if you have direct database access.
+Device list queries (`GET /api/v1/devices`) do not directly filter by custom field values in query parameters. To find devices with specific custom field values, retrieve the device list and filter client-side, or -- if you have direct database access -- query `device_custom_field_values` (see [Database schema](#database-schema)) rather than the device's `custom_fields` JSONB projection; the normalized table carries an `(org_id, field_key, value_text)` index and is the source of truth.
 
 ---
 
@@ -232,7 +335,7 @@ curl -X PATCH /api/v1/custom-fields/<field-id> \
 
 ## Deleting a field definition
 
-`DELETE /api/v1/custom-fields/:id` removes the definition. This does not automatically remove corresponding values from the `custom_fields` JSONB on existing devices -- those values become orphaned but remain on the device record until explicitly cleared.
+`DELETE /api/v1/custom-fields/:id` removes the definition **and cascades to every stored value under it** -- a value can never outlive its definition, since the value table's foreign key is `ON DELETE CASCADE`. The device's `customFields` projection updates in the same transaction. This is different from earlier behaviour, where a deleted definition left its values orphaned in the device's JSONB; deletion is now destructive of the data, not just the schema, so treat it accordingly.
 
 ```bash
 curl -X DELETE /api/v1/custom-fields/<field-id> \
@@ -252,6 +355,16 @@ All mutating operations on custom field definitions are recorded in the audit lo
 | `custom_field.delete` | A field definition is deleted |
 
 Device-level custom field value changes are logged under the `device.update` audit action when the device is patched.
+
+---
+
+## Values in exports and the partner API
+
+Custom field values now appear in the tenant GDPR export (each value's `field_key` and stored value land in the export archive), and the partner configuration API returns **one record per datum**. Previously, if an organisation-owned and an all-organisations definition happened to share a `fieldKey` -- an anti-shadowing gap now closed, see [Uniqueness and shadowing](#uniqueness-and-shadowing) -- the same value could be exported twice. Both fixes follow from the same underlying change: values are read from `device_custom_field_values` (one row is one datum) rather than from the device's JSONB, which had no way to distinguish "one value" from "one value counted twice."
+
+## The `warranty` mapping target
+
+The **Import from another RMM** wizard (see [Migrating to Breeze](/migration/overview/#alongside-this-phase-backfill-custom-fields-from-the-incumbent)) can map a source column onto `warranty` instead of a custom field. This is not a custom field at all -- it writes `device_warranty`'s start date, end date, and manufacturer directly, and drives the warranty-expiry alerting the rest of the platform already has. A mapped warranty value is **never applied over data a manufacturer API lookup already supplied** unless the operator explicitly opts in to overriding it on that import; provider-sourced warranty data is treated as more authoritative than a bulk import by default.
 
 ---
 
@@ -292,6 +405,7 @@ All endpoints require authentication and an appropriate scope (`organization`, `
     placeholder?: string;
   };
   required?: boolean;    // Default: false
+  scriptWrite?: boolean; // Default: false - see "Writing custom fields from a script"
   defaultValue?: unknown;
   deviceTypes?: ("windows" | "macos" | "linux")[];
   orgId?: string;        // UUID - omit for org-scoped users
@@ -312,6 +426,7 @@ All endpoints require authentication and an appropriate scope (`organization`, `
     placeholder?: string;
   };
   required?: boolean;
+  scriptWrite?: boolean;
   defaultValue?: unknown;
   deviceTypes?: ("windows" | "macos" | "linux")[] | null;
 }
@@ -338,7 +453,18 @@ Field definitions are stored in the `custom_field_definitions` table:
 | `created_at` | TIMESTAMP | Creation timestamp |
 | `updated_at` | TIMESTAMP | Last modification timestamp |
 
-Device values are stored in the `custom_fields` JSONB column on the `devices` table as a flat key-value object.
+Device values are stored one row per device/definition pair in `device_custom_field_values`:
+
+| Column | Type | Description |
+|---|---|---|
+| `device_id` | UUID | References `devices.id` (`ON DELETE CASCADE`) |
+| `org_id` | UUID | Denormalised from the device, for tenant scoping |
+| `definition_id` | UUID | References `custom_field_definitions.id` (`ON DELETE CASCADE`) |
+| `field_key` | VARCHAR(100) | Denormalised from the definition, so a value survives being read without a join |
+| `value_text` / `value_number` / `value_bool` / `value_date` | typed columns | At most one populated, matching the definition's `type`. All four `NULL` means the value was explicitly cleared. |
+| `source` | VARCHAR(32) | `manual`, `api`, `script`, `import`, or `backfill` -- how the value was written |
+
+The `custom_fields` JSONB column on `devices` is retained as a trigger-maintained **projection** of this table -- it is rebuilt on every write and is read-only in practice; writing it directly is reverted by the next value write. Existing integrations that read `devices.custom_fields` keep working unchanged.
 
 ---
 
@@ -359,9 +485,9 @@ When creating a field definition, supply at most one of `orgId` or `partnerId`. 
 
 Verify that the `PATCH /api/v1/devices/:id` request includes a `customFields` key in the JSON body, not `custom_fields`. The API expects camelCase property names. Also confirm that each value is a `string`, `number`, `boolean`, or `null` -- objects and arrays are not accepted as values.
 
-### Deleted definition but values remain on devices
+### Deleted a definition and the values are gone
 
-Deleting a field definition does not cascade to device values. The values in the `custom_fields` JSONB column on each device persist after the definition is removed. To clean up orphaned values, patch each affected device with the field key set to `null`.
+This is expected: `DELETE /api/v1/custom-fields/:id` cascades to every stored value under that definition, and the device's `customFields` projection reflects the deletion immediately. There is no undo -- re-creating a definition with the same `fieldKey` does not restore the old values, because it is a new definition with a new id. If you need the data back, restore from a backup taken before the delete.
 
 ### "Custom field not found" on GET/PATCH/DELETE
 

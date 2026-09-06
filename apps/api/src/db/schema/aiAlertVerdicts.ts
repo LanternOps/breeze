@@ -63,6 +63,12 @@ export const aiAlertVerdicts = pgTable('ai_alert_verdicts', {
     .where(sql`${t.supersededBy} IS NULL AND ${t.alertId} IS NOT NULL`),
   uniqueIndex('ai_alert_verdicts_live_group_uq').on(t.correlationGroupId)
     .where(sql`${t.supersededBy} IS NULL AND ${t.correlationGroupId} IS NOT NULL`),
+  // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): the rollup's
+  // "every persisted verdict" count can't use ai_alert_verdicts_latest_idx
+  // above (it's partial on superseded_by IS NULL).
+  index('ai_alert_verdicts_org_created_idx').on(t.orgId, t.createdAt),
+  index('ai_alert_verdicts_org_feedback_idx').on(t.orgId, t.feedbackAt)
+    .where(sql`${t.feedbackAt} IS NOT NULL`),
 ]);
 
 export type AiAlertVerdictRow = typeof aiAlertVerdicts.$inferSelect;

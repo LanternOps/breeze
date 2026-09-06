@@ -87,7 +87,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
       // take them where they were going.
       if (result.user && result.tokens) {
         login(result.user, result.tokens);
-        await navigateTo(safeNextPath(nextParam) ?? '/quotes', { replace: true });
+        await navigateTo(safeNextPath(nextParam) ?? '/', { replace: true });
         return;
       }
 

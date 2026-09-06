@@ -329,6 +329,67 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+describe('heartbeatSchema — versioned agent health tolerance', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.65.15',
+  };
+  const validHealth = {
+    schemaVersion: 1 as const,
+    deviceId: '11111111-1111-4111-8111-111111111111',
+    agentVersion: '0.65.15',
+    overall: 'warning' as const,
+    metricsAvailable: true,
+    components: {
+      metrics: { state: 'warning' as const, reason: 'collector delayed' },
+      commandLoop: { state: 'healthy' as const },
+    },
+    observedAt: '2026-08-24T12:34:56.789Z',
+  };
+
+  it('accepts omission and strips the current unversioned health map', () => {
+    const omitted = heartbeatSchema.parse(minimal);
+    const legacy = heartbeatSchema.parse({
+      ...minimal,
+      healthStatus: { status: 'healthy', components: { metrics: 'healthy' } },
+    });
+
+    expect(omitted.healthStatus).toBeUndefined();
+    expect(legacy.healthStatus).toBeUndefined();
+  });
+
+  it('retains every bounded v1 field including an optional wire device id', () => {
+    const parsed = heartbeatSchema.parse({ ...minimal, healthStatus: validHealth });
+    expect(parsed.healthStatus).toEqual(validHealth);
+  });
+
+  it.each([
+    ['unknown schema', { ...validHealth, schemaVersion: 2 }],
+    ['non-object components', { ...validHealth, components: [] }],
+    ['invalid component state', { ...validHealth, components: { metrics: { state: 'degraded' } } }],
+    ['bad observedAt', { ...validHealth, observedAt: 'yesterday' }],
+    ['oversized component name', { ...validHealth, components: { ['x'.repeat(101)]: { state: 'error' } } }],
+    ['oversized reason', { ...validHealth, components: { metrics: { state: 'error', reason: 'x'.repeat(513) } } }],
+    ['too many components', {
+      ...validHealth,
+      components: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+        `component-${index}`,
+        { state: 'healthy' },
+      ])),
+    }],
+    ['unsupported top-level member', { ...validHealth, userHelpers: { status: 'healthy' } }],
+  ])('drops %s without rejecting reachability', (_label, healthStatus) => {
+    const parsed = heartbeatSchema.safeParse({ ...minimal, healthStatus });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.healthStatus).toBeUndefined();
+  });
+
+  it('keeps unrelated heartbeat fields strict', () => {
+    expect(heartbeatSchema.safeParse({ agentVersion: '0.65.15', healthStatus: validHealth }).success).toBe(false);
+  });
+});
+
 // signedInUpns degrades at FIELD level (.catch([])): a violating UPN list must
 // cost only the UPNs, never the whole onedriveDeviceState block — the block
 // carries mounted/drift/KFM state whose silent loss leaves stale rows that
@@ -615,5 +676,111 @@ describe('heartbeatSchema — agentEdition passthrough (#4072)', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.agentEdition).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------
+// #3207 W5 — scheduled-restart status
+// ---------------------------------------------------------------------
+
+describe('heartbeatSchema — rebootStatus (#3207 W5)', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.65.15',
+  };
+  const SCHEDULED_AT = '2026-09-02T13:00:00.000Z';
+
+  function parse(rebootStatus: unknown) {
+    const result = heartbeatSchema.safeParse(
+      rebootStatus === undefined ? minimal : { ...minimal, rebootStatus },
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('unreachable');
+    return result.data;
+  }
+
+  it('accepts a full snapshot', () => {
+    const data = parse({
+      scheduledAt: SCHEDULED_AT,
+      deadline: '2026-09-02T16:00:00.000Z',
+      source: 'patch_job',
+      deferralsUsed: 1,
+      maxDeferrals: 3,
+    });
+    expect(data.rebootStatus).toEqual({
+      scheduledAt: SCHEDULED_AT,
+      deadline: '2026-09-02T16:00:00.000Z',
+      source: 'patch_job',
+      deferralsUsed: 1,
+      maxDeferrals: 3,
+    });
+  });
+
+  it('keeps null distinguishable from absent', () => {
+    // This is the whole reason the field is `.nullish()` and not `.optional()`:
+    // absent means "no news" (a pre-#3207 agent) and must leave the console's
+    // stored view alone, while null means "nothing is scheduled any more" and
+    // must clear it. Collapsing the two silently strands a cancelled restart on
+    // the device page forever.
+    const explicitNull = parse(null);
+    expect(explicitNull.rebootStatus).toBeNull();
+
+    const absent = parse(undefined);
+    expect(Object.hasOwn(absent, 'rebootStatus')).toBe(false);
+  });
+
+  it('drops the whole snapshot when scheduledAt is malformed', () => {
+    // scheduledAt anchors the snapshot: storing a restart with no time is worse
+    // than storing nothing. The rest of the heartbeat must still parse.
+    const data = parse({ scheduledAt: 'not-a-date', deferralsUsed: 1 });
+    expect(data.rebootStatus).toBeUndefined();
+    expect(data.status).toBe('ok');
+  });
+
+  it('drops the whole snapshot when scheduledAt is missing', () => {
+    const data = parse({ source: 'patch_job', deferralsUsed: 1 });
+    expect(data.rebootStatus).toBeUndefined();
+  });
+
+  it('drops a source outside the bounded token pattern, keeping the schedule', () => {
+    // The source is echoed back by the agent and rendered in the console, so a
+    // markup- or newline-bearing value must never reach the column. Dropping
+    // only that member keeps the restart itself visible.
+    for (const source of ['<script>alert(1)</script>', 'Patch Job', 'a'.repeat(33), '']) {
+      const data = parse({ scheduledAt: SCHEDULED_AT, source });
+      expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
+      expect(data.rebootStatus?.source).toBeUndefined();
+    }
+  });
+
+  it('accepts every source a server-side producer actually sends', () => {
+    for (const source of ['patch_job', 'maintenance_window', 'manual']) {
+      const data = parse({ scheduledAt: SCHEDULED_AT, source });
+      expect(data.rebootStatus?.source).toBe(source);
+    }
+  });
+
+  it('drops out-of-range or non-integer deferral counters independently', () => {
+    for (const bad of [99, -1, 1.5, 'lots']) {
+      const data = parse({ scheduledAt: SCHEDULED_AT, deferralsUsed: bad, maxDeferrals: bad });
+      expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
+      expect(data.rebootStatus?.deferralsUsed).toBeUndefined();
+      expect(data.rebootStatus?.maxDeferrals).toBeUndefined();
+    }
+  });
+
+  it('keeps a zero deferral budget rather than treating it as absent', () => {
+    // 0 means "this restart cannot be postponed" and NULL means "this agent
+    // predates deferral reporting"; a falsy guard anywhere in the chain would
+    // collapse the two.
+    const data = parse({ scheduledAt: SCHEDULED_AT, deferralsUsed: 0, maxDeferrals: 0 });
+    expect(data.rebootStatus?.deferralsUsed).toBe(0);
+    expect(data.rebootStatus?.maxDeferrals).toBe(0);
+  });
+
+  it('drops a malformed deadline without dropping the schedule', () => {
+    const data = parse({ scheduledAt: SCHEDULED_AT, deadline: 'soon' });
+    expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
+    expect(data.rebootStatus?.deadline).toBeUndefined();
   });
 });

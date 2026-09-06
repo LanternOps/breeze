@@ -1,41 +1,75 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-// Tracks how many times the count(*) query (db.select({ count })...where()) is
-// issued, so tests can prove the unbounded count is skipped unless withTotal is
-// set. The count select is distinguishable from the row select by its shape:
-// the count projection has a `count` key; the row projection does not.
+// Tracks how many times the capped count query (the OUTER `select({ count
+// })...from(<capped derived table>)`) is issued, so tests can prove the count
+// is skipped unless withTotal is set. Distinguished from the row select by
+// its projection shape: the count projection has a `count` key, the row
+// projection does not.
 const countQueryCalls = vi.fn();
 // Captures the WHERE condition handed to the feed query so tests can prove the
 // org_id scoping is present (BREEZE-B — it is load-bearing for performance, not
 // cosmetic; see the comment in events.ts).
 const feedWhereArgs: unknown[] = [];
+// Captures the WHERE/LIMIT the capped-count derived table builds (#4834), so
+// tests can prove (a) it reuses the arm's `where` unchanged — same predicate,
+// same index — and (b) the count is genuinely bounded, never an unbounded
+// count(*). `mockCappedCounts` is consumed FIFO in build order (resource arm,
+// then details arm) so a test can drive below-cap / above-cap scenarios.
+const cappedCountWhereArgs: unknown[] = [];
+const cappedCountLimitArgs: { limit: number }[] = [];
+let mockCappedCounts: number[] = [];
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
-    select: vi.fn((projection?: Record<string, unknown>) => ({
-      from: vi.fn(() => ({
-        leftJoin: vi.fn(() => ({
-          where: vi.fn((cond: unknown) => {
-            feedWhereArgs.push(cond);
-            return {
-              orderBy: vi.fn(() => ({
-                limit: vi.fn(() => ({
-                  offset: vi.fn().mockResolvedValue([])
-                }))
-              }))
-            };
+    select: vi.fn((projection?: Record<string, unknown>) => {
+      // Inner capped-count derived table: `SELECT 1 FROM audit_logs WHERE
+      // <arm predicate> LIMIT (cap + 1)`, later wrapped in `.as(...)`.
+      if (projection && 'one' in projection) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn((cond: unknown) => {
+              cappedCountWhereArgs.push(cond);
+              return {
+                limit: vi.fn((n: number) => {
+                  cappedCountLimitArgs.push({ limit: n });
+                  return { as: vi.fn(() => ({ __cappedSubquery: true })) };
+                })
+              };
+            })
+          }))
+        };
+      }
+      // Outer `SELECT count(*) FROM (<capped derived table>) t`.
+      if (projection && 'count' in projection) {
+        return {
+          from: vi.fn(() => {
+            countQueryCalls();
+            return Promise.resolve([{ count: mockCappedCounts.shift() ?? 0 }]);
           })
-        })),
-        where: vi.fn(() => {
-          if (projection && 'count' in projection) countQueryCalls();
-          return Promise.resolve([{ count: 0 }]);
-        }),
-      }))
-    })),
+        };
+      }
+      // Row-projection feed-arm read (unchanged).
+      return {
+        from: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn((cond: unknown) => {
+              feedWhereArgs.push(cond);
+              return {
+                orderBy: vi.fn(() => ({
+                  // Each feed arm is a bounded `limit(offset + limit)` read; the
+                  // page is cut client-side by mergeFeedPage. No `.offset()`.
+                  limit: vi.fn().mockResolvedValue([])
+                }))
+              };
+            })
+          }))
+        }))
+      };
+    }),
   }
 }));
 
@@ -86,7 +120,7 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { eventsRoutes, likePrefixPattern, formatActionMessage } from './events';
+import { eventsRoutes, likePrefixPattern, formatActionMessage, mergeFeedPage, FEED_TOTAL_CAP } from './events';
 
 describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
   it('appends a trailing wildcard for a clean dotted prefix', () => {
@@ -106,25 +140,28 @@ describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
 });
 
 describe('formatActionMessage (automated command labels)', () => {
-  it('labels automated patch installs', () => {
-    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'success'))
-      .toBe('Patches installed — host-1');
+  // #4225: these rows are written at DISPATCH time (commandQueue.ts), before
+  // the agent has reported back, so the label must not claim completion and
+  // the audit row's `result` must not claim 'success'.
+  it('labels automated patch installs in dispatch tense, not completed tense, with no suffix for the neutral result', () => {
+    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'dispatched'))
+      .toBe('Patch install command sent — host-1');
   });
 
   it('labels automated script runs', () => {
-    expect(formatActionMessage('agent.command.script', null, 'success'))
-      .toBe('Script ran');
+    expect(formatActionMessage('agent.command.script', null, 'dispatched'))
+      .toBe('Script run command sent');
   });
 
-  it('marks a failed automated patch install', () => {
+  it('still marks a failed automated command explicitly', () => {
     expect(formatActionMessage('agent.command.install_patches', 'host-1', 'failure'))
-      .toBe('Patches installed — host-1 (failed)');
+      .toBe('Patch install command sent — host-1 (failed)');
   });
 
   it('labels rollback, uninstall, and update', () => {
-    expect(formatActionMessage('agent.command.rollback_patches', null, 'success')).toBe('Patches rolled back');
-    expect(formatActionMessage('agent.command.software_uninstall', null, 'success')).toBe('Software uninstalled');
-    expect(formatActionMessage('agent.command.software_update', null, 'success')).toBe('Software updated');
+    expect(formatActionMessage('agent.command.rollback_patches', null, 'dispatched')).toBe('Patch rollback command sent');
+    expect(formatActionMessage('agent.command.software_uninstall', null, 'dispatched')).toBe('Software uninstall command sent');
+    expect(formatActionMessage('agent.command.software_update', null, 'dispatched')).toBe('Software update command sent');
   });
 });
 
@@ -133,6 +170,9 @@ describe('GET /devices/:id/events validation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
     app = new Hono();
     app.route('/devices', eventsRoutes);
   });
@@ -250,7 +290,59 @@ describe('GET /devices/:id/events validation', () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as { pagination: { total: number | null } };
     expect(json.pagination.total).toBe(0);
-    expect(countQueryCalls).toHaveBeenCalledTimes(1);
+    // One count per feed arm (resource arm + details arm), summed.
+    expect(countQueryCalls).toHaveBeenCalledTimes(2);
+  });
+
+  // #4834 stop-gap: cap the withTotal count instead of walking the device's
+  // whole audit history (option 2 of the three the issue lays out).
+  it('reports the exact sum and totalIsLowerBound=false when both arms are below the cap', async () => {
+    mockCappedCounts = [40, 10];
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      pagination: { total: number; totalIsLowerBound: boolean };
+    };
+    expect(json.pagination.total).toBe(50);
+    expect(json.pagination.totalIsLowerBound).toBe(false);
+  });
+
+  it('clamps total to FEED_TOTAL_CAP and sets totalIsLowerBound=true when the summed raw count exceeds the cap', async () => {
+    mockCappedCounts = [8000, 3000]; // sum 11000 > FEED_TOTAL_CAP (10000)
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?limit=10&withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      pagination: { total: number; totalIsLowerBound: boolean };
+    };
+    expect(json.pagination.total).toBe(FEED_TOTAL_CAP);
+    expect(json.pagination.totalIsLowerBound).toBe(true);
+  });
+
+  it('caps the count query per arm at FEED_TOTAL_CAP + 1 and reuses the arm predicate unchanged', async () => {
+    feedWhereArgs.length = 0;
+    mockCappedCounts = [5, 5];
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?withTotal=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    // The count query is genuinely bounded — never an unbounded count(*).
+    expect(JSON.stringify(cappedCountLimitArgs)).toContain('limit');
+    expect(cappedCountLimitArgs).toEqual([
+      { limit: FEED_TOTAL_CAP + 1 },
+      { limit: FEED_TOTAL_CAP + 1 },
+    ]);
+    // Same predicate as the row read, arm for arm, so the count hits the same
+    // index the row read for that arm uses.
+    expect(cappedCountWhereArgs).toHaveLength(2);
+    expect(JSON.stringify(cappedCountWhereArgs[0])).toBe(JSON.stringify(feedWhereArgs[0]));
+    expect(JSON.stringify(cappedCountWhereArgs[1])).toBe(JSON.stringify(feedWhereArgs[1]));
   });
 
   it('rejects an invalid withTotal value with 400', async () => {
@@ -268,6 +360,9 @@ describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)",
   beforeEach(() => {
     vi.clearAllMocks();
     feedWhereArgs.length = 0;
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
     app = new Hono();
     app.route('/devices', eventsRoutes);
   });
@@ -286,9 +381,115 @@ describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)",
     // this predicate). Assert the org column and the device's org id are both
     // in the WHERE, so removing the scoping fails here rather than silently
     // regressing to a seq scan in production.
-    expect(feedWhereArgs).toHaveLength(1);
-    const serialized = JSON.stringify(feedWhereArgs[0]);
-    expect(serialized).toContain('org_id');
-    expect(serialized).toContain('org-123');
+    expect(feedWhereArgs).toHaveLength(2);
+    for (const arm of feedWhereArgs) {
+      const serialized = JSON.stringify(arm);
+      expect(serialized).toContain('org_id');
+      expect(serialized).toContain('org-123');
+    }
+  });
+});
+
+// The feed runs as breeze_app under forced RLS, where only leakproof clauses
+// can become index conditions. These tests pin the SHAPE of each arm's WHERE so
+// a refactor cannot quietly re-merge the arms into the one-query form that
+// walked the whole org (2.4M rows, 13-minute page loads on US, 2026-09-03).
+// The runtime proof that the shapes actually hit the partial indexes lives in
+// __tests__/integration/deviceEventsFeedIndexes.integration.test.ts.
+describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotability)', () => {
+  let app: Hono;
+  const DEVICE = '11111111-1111-1111-1111-111111111111';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    feedWhereArgs.length = 0;
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
+    app = new Hono();
+    app.route('/devices', eventsRoutes);
+  });
+
+  async function arms(query: string) {
+    const res = await app.request(`/devices/${DEVICE}/events${query}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    expect(feedWhereArgs).toHaveLength(2);
+    return {
+      resource: JSON.stringify(feedWhereArgs[0]),
+      details: JSON.stringify(feedWhereArgs[1]),
+    };
+  }
+
+  it('resource arm keys on resource_id only — never the non-leakproof details->>deviceId', async () => {
+    const { resource } = await arms('');
+    expect(resource).toContain('resource_id');
+    expect(resource).not.toContain("->>'deviceId'");
+  });
+
+  it('details arm carries the JSONB key test (the partial-index predicate), the equality, and the disjointness guard', async () => {
+    const { details } = await arms('');
+    expect(details).toContain("? 'deviceId'");
+    expect(details).toContain("->>'deviceId'");
+    expect(details).toContain('IS DISTINCT FROM');
+    // Unfiltered feed: no actor is excluded from either arm (old OR semantics).
+    expect(details).not.toContain("<> 'agent'");
+  });
+
+  it('unfiltered Activities feed keeps agent rows in the resource arm (no actor exclusion)', async () => {
+    const { resource } = await arms('?limit=50&withTotal=true');
+    expect(resource).not.toContain("<> 'agent'");
+  });
+
+  it('deliberate-action feed adds actor_type <> agent to both arms (partial index on the resource arm)', async () => {
+    const { resource, details } = await arms('?actions=script.,device.command&includeAutomated=true');
+    expect(resource).toContain("<> 'agent'");
+    expect(resource).toContain('LIKE');
+    expect(details).toContain("<> 'agent'");
+  });
+
+  it('includeAutomated alone also counts as the deliberate feed', async () => {
+    const { resource } = await arms('?includeAutomated=true');
+    expect(resource).toContain("<> 'agent'");
+    // The automated arm is system-only; the agent's own command-result rows
+    // are telemetry.
+    expect(resource).toContain("= 'system'");
+    expect(resource).not.toContain("'agent')");
+  });
+});
+
+describe('mergeFeedPage (two-arm page merge)', () => {
+  // sortKey mirrors FEED_SORT_KEY: to_char(timestamp, 'YYYYMMDDHH24MISSUS').
+  const row = (id: string, sortKey: string) => ({ id, sortKey });
+
+  it('interleaves both arms newest-first and cuts the page', () => {
+    const a = [row('a3', '20260103000000000000'), row('a1', '20260101000000000000')];
+    const b = [row('b2', '20260102000000000000')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['a3', 'b2', 'a1']);
+    expect(mergeFeedPage(a, b, 1, 1).map((r) => r.id)).toEqual(['b2']);
+    expect(mergeFeedPage(a, b, 2, 5).map((r) => r.id)).toEqual(['a1']);
+  });
+
+  it('orders by the microsecond key, not the millisecond Date, so it matches SQL', () => {
+    // Same millisecond (…123ms), different microseconds: SQL puts the later
+    // microsecond first. A Date-based merge would see a tie and fall through to
+    // the id tiebreak, putting 'zzzz' first — wrong.
+    const a = [row('zzzz', '20260101000000123400')];
+    const b = [row('aaaa', '20260101000000123900')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['aaaa', 'zzzz']);
+  });
+
+  it('breaks exact timestamp ties by id DESC, matching the SQL ORDER BY', () => {
+    const a = [row('aaaa', '20260101000000000000')];
+    const b = [row('bbbb', '20260101000000000000')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['bbbb', 'aaaa']);
+  });
+
+  it('applies the offset even when one arm is empty', () => {
+    const a = [row('a3', '20260103000000000000'), row('a2', '20260102000000000000'), row('a1', '20260101000000000000')];
+    expect(mergeFeedPage(a, [], 1, 1).map((r) => r.id)).toEqual(['a2']);
+    expect(mergeFeedPage([], a, 2, 5).map((r) => r.id)).toEqual(['a1']);
   });
 });

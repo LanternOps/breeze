@@ -1,37 +1,57 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  computeWorkersHealthy,
   createReadinessEvaluator,
   type ReadinessEvaluatorOptions
 } from './readiness';
+import type {
+  ConsumerLifecycleState,
+  ConsumerReadinessState,
+} from './workerReadinessRegistry';
 
 /**
  * Harness with a controllable clock and mutable dependency state, so a single
  * evaluator instance (one "process lifetime") can be walked through
  * healthy → unhealthy → healthy transitions.
  *
- * `workersHealthy` deliberately does NOT fold in `redis` — production keeps the
- * `db` / `redis` / `workers` / `requireRedis` terms independent, and coupling
- * them here would let a mutation in one term hide behind another.
+ * The registry state is deliberately mutable so lifecycle transitions can be
+ * exercised against one evaluator instance.
  */
 function harness(overrides: Partial<ReadinessEvaluatorOptions> = {}) {
   const state = {
     db: true,
     redis: true,
     workers: true,
+    consumerState: 'running' as ConsumerLifecycleState,
     shuttingDown: false,
     clock: 1_000_000
   };
 
   const checkDb = vi.fn(async () => state.db);
   const checkRedis = vi.fn(async () => state.redis);
-  const workersHealthy = vi.fn((_redisOk: boolean) => state.workers);
+  const consumer = (): ConsumerReadinessState => ({
+    name: 'required-consumer-internal-name',
+    required: true,
+    state: state.workers ? state.consumerState : 'expected',
+    running: state.workers && state.consumerState === 'running',
+    redisConnected: state.workers && state.consumerState === 'running',
+    transitionedAt: new Date(state.clock).toISOString(),
+    lastSuccessfulJobAt: null,
+    lastErrorAt: state.consumerState === 'failed' ? new Date(state.clock).toISOString() : null,
+    lastErrorCode: state.consumerState === 'failed' ? 'InternalFailure' : null,
+  });
+  const workerRegistry = {
+    snapshot: vi.fn(() => ({ requiredConsumer: consumer() })),
+    requiredConsumersRunnable: vi.fn(
+      () => state.workers && state.consumerState === 'running',
+    ),
+  };
   const onProbeFailure = vi.fn();
 
   const evaluator = createReadinessEvaluator({
     checkDb,
     checkRedis,
-    workersHealthy,
+    workerRegistry,
+    workersInitialized: () => true,
     onProbeFailure,
     isShuttingDown: () => state.shuttingDown,
     requireRedis: true,
@@ -41,7 +61,14 @@ function harness(overrides: Partial<ReadinessEvaluatorOptions> = {}) {
     ...overrides
   });
 
-  return { state, evaluator, checkDb, checkRedis, workersHealthy, onProbeFailure };
+  return {
+    state,
+    evaluator,
+    checkDb,
+    checkRedis,
+    workerRegistry,
+    onProbeFailure,
+  };
 }
 
 describe('createReadinessEvaluator', () => {
@@ -102,12 +129,61 @@ describe('createReadinessEvaluator', () => {
   });
 
   describe('verdict composition', () => {
+    it.each(['expected', 'stopped', 'redis_disconnected', 'failed'] as const)(
+      'fails admission when a required consumer is %s',
+      async (consumerState) => {
+        const { state, evaluator } = harness();
+        state.consumerState = consumerState;
+
+        expect(await evaluator.get()).toMatchObject({
+          ready: false,
+          workers: false,
+          consumers: {
+            requiredConsumer: { state: consumerState },
+          },
+        });
+      },
+    );
+
+    it('allows an optional disabled consumer when every required consumer is runnable', async () => {
+      const optionalDisabled: ConsumerReadinessState = {
+        name: 'optional-internal-name',
+        required: false,
+        state: 'disabled',
+        running: false,
+        redisConnected: false,
+        transitionedAt: '2026-08-24T00:00:00.000Z',
+        lastSuccessfulJobAt: null,
+        lastErrorAt: null,
+        lastErrorCode: 'feature_disabled',
+      };
+      const { evaluator } = harness({
+        workerRegistry: {
+          snapshot: () => ({ optionalDisabled }),
+          requiredConsumersRunnable: () => true,
+        },
+      } as Partial<ReadinessEvaluatorOptions>);
+
+      expect(await evaluator.get()).toMatchObject({ ready: true, workers: true });
+    });
+
+    it('reflects a recovered consumer on the next invalidated evaluation', async () => {
+      const { state, evaluator, checkDb } = harness();
+      state.consumerState = 'stopped';
+      expect(await evaluator.get()).toMatchObject({ ready: false, workers: false });
+
+      state.consumerState = 'running';
+      evaluator.invalidate();
+
+      expect(await evaluator.get()).toMatchObject({ ready: true, workers: true });
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
+
     it('fails readiness on unreachable Redis when Redis is required', async () => {
       // Isolates the requireRedis term: workers report healthy, db is fine, so
       // Redis is the only thing that can decide the verdict.
       const { state, evaluator } = harness({
         requireRedis: true,
-        workersHealthy: () => true
       });
 
       state.redis = false;
@@ -115,55 +191,38 @@ describe('createReadinessEvaluator', () => {
         ready: false,
         db: true,
         redis: false,
-        workers: true
-      });
-    });
-
-    it('ignores Redis for the verdict when Redis is optional', async () => {
-      const { state, evaluator } = harness({
-        requireRedis: false,
-        workersHealthy: () => true
-      });
-
-      state.redis = false;
-      expect(await evaluator.get()).toMatchObject({ ready: true, redis: false });
-    });
-
-    it('tolerates absent workers caused by an optional Redis, while still reporting workers:false', async () => {
-      // The verdict forgives it; the `workers` field must not lie about it.
-      const { state, evaluator } = harness({
-        requireRedis: false,
-        workersHealthy: (redisOk) => redisOk
-      });
-
-      state.redis = false;
-      expect(await evaluator.get()).toMatchObject({
-        ready: true,
-        redis: false,
         workers: false
       });
     });
 
+    it('keeps admission closed without Redis even when direct Redis use is optional', async () => {
+      const { state, evaluator } = harness({ requireRedis: false });
+
+      state.redis = false;
+      expect(await evaluator.get()).toMatchObject({
+        ready: false,
+        redis: false,
+        workers: false,
+      });
+    });
+
     it('still fails readiness when workers are down for a reason other than Redis', async () => {
-      const { evaluator } = harness({ requireRedis: false, workersHealthy: () => false });
+      const { state, evaluator } = harness({ requireRedis: false });
+      state.workers = false;
 
       expect(await evaluator.get()).toMatchObject({ ready: false, redis: true, workers: false });
     });
 
     it('fails readiness on a database outage regardless of Redis being optional', async () => {
-      const { state, evaluator } = harness({ requireRedis: false, workersHealthy: () => true });
+      const { state, evaluator } = harness({ requireRedis: false });
 
       state.db = false;
       expect(await evaluator.get()).toMatchObject({ ready: false, db: false });
     });
 
-    it('passes the freshly probed Redis result to the worker view', async () => {
-      const { state, evaluator, workersHealthy } = harness();
-
-      state.redis = false;
-      await evaluator.get();
-
-      expect(workersHealthy).toHaveBeenCalledWith(false);
+    it('stays closed before consumer declarations complete', async () => {
+      const { evaluator } = harness({ workersInitialized: () => false });
+      expect(await evaluator.get()).toMatchObject({ ready: false, workers: false });
     });
   });
 
@@ -360,78 +419,5 @@ describe('createReadinessEvaluator', () => {
 
       expect((await evaluator.get()).ready).toBe(false);
     });
-  });
-});
-
-describe('computeWorkersHealthy', () => {
-  const base = {
-    phase: 'started' as const,
-    workerStatus: { alertWorkers: true, cisJobs: true },
-    redisOk: true,
-    shuttingDown: false
-  };
-
-  it('is healthy when every tracked worker initialised', () => {
-    expect(computeWorkersHealthy(base)).toBe(true);
-  });
-
-  it('is unhealthy when any tracked worker failed to initialise', () => {
-    expect(
-      computeWorkersHealthy({ ...base, workerStatus: { alertWorkers: true, cisJobs: false } })
-    ).toBe(false);
-  });
-
-  it('is unhealthy before worker initialisation runs', () => {
-    // The HTTP server starts listening before initializeWorkers() resolves, so
-    // probes really do hit this window.
-    expect(computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {} })).toBe(false);
-  });
-
-  it('is unhealthy while pending even when Redis is also unreachable', () => {
-    // Guard ordering: 'pending' must be checked before the Redis branch, or a
-    // Redis-optional deployment would report healthy before anything started.
-    expect(
-      computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {}, redisOk: false })
-    ).toBe(false);
-  });
-
-  it('is unhealthy when Redis is unreachable', () => {
-    // Every tracked worker is BullMQ-backed. Whether the deployment tolerates
-    // that is a verdict decision, not a fact about the workers.
-    expect(computeWorkersHealthy({ ...base, redisOk: false })).toBe(false);
-  });
-
-  it('stays unhealthy when Redis recovers but boot never started the workers', () => {
-    // Nothing is consuming the queues; only a restart fixes this, so returning
-    // healthy here would be a lie in the same direction as the original bug.
-    expect(
-      computeWorkersHealthy({ ...base, phase: 'skipped-no-redis', workerStatus: {} })
-    ).toBe(false);
-  });
-
-  it('is unhealthy when boot skipped the workers and Redis is still down', () => {
-    expect(
-      computeWorkersHealthy({
-        ...base,
-        phase: 'skipped-no-redis',
-        workerStatus: {},
-        redisOk: false
-      })
-    ).toBe(false);
-  });
-
-  it('is unhealthy for a started phase with no recorded workers', () => {
-    // `every` is vacuously true on an empty map. Guarding against that stops a
-    // refactor that marks 'started' too early from reporting a healthy API
-    // with zero workers running.
-    expect(computeWorkersHealthy({ ...base, workerStatus: {} })).toBe(false);
-  });
-
-  it('is unhealthy while shutting down', () => {
-    expect(computeWorkersHealthy({ ...base, shuttingDown: true })).toBe(false);
-  });
-
-  it('is unhealthy while shutting down even when everything else is healthy', () => {
-    expect(computeWorkersHealthy({ ...base, shuttingDown: true, redisOk: true })).toBe(false);
   });
 });

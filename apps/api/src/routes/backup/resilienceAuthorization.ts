@@ -6,6 +6,7 @@ import type { AuthContext } from '../../middleware/auth';
 import {
   ResilienceAuthorizationError,
   authorizeResilienceResources,
+  isSiteRestrictedPrincipalKind,
   type AuthorizedResilienceResources,
   type ResilienceOperation,
   type ResilienceResourceRef,
@@ -64,15 +65,7 @@ export async function resolveRouteAuthorizedDeviceIds(
 ): Promise<string[] | null> {
   const auth = c.get('auth') as AuthContext;
   const permissions = c.get('permissions') as UserPermissions | undefined;
-  const isSiteRestrictedPrincipal = [
-    'user_session',
-    'client_user',
-    'api_key',
-    'oauth_grant',
-    'ai_agent',
-  ].includes(auth.principal.kind);
-
-  if (!isSiteRestrictedPrincipal || !permissions?.allowedSiteIds) return null;
+  if (!isSiteRestrictedPrincipalKind(auth.principal.kind) || !permissions?.allowedSiteIds) return null;
   if (permissions.allowedSiteIds.length === 0) return [];
 
   const rows = await db

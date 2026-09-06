@@ -8,9 +8,8 @@ import {
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
-import DRPlanGroupCard, { type DRGroupForm, type DRPlanDevice as Device } from './DRPlanGroupCard';
+import DRPlanGroupCard, { type DRGroupForm } from './DRPlanGroupCard';
 import { useTranslation } from 'react-i18next';
-import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type DRPlanDetails = {
@@ -66,8 +65,8 @@ export default function DRPlanEditor({
   const [rpoTargetMinutes, setRpoTargetMinutes] = useState('60');
   const [rtoTargetMinutes, setRtoTargetMinutes] = useState('240');
   const [status, setStatus] = useState<'draft' | 'active' | 'archived'>('draft');
-  const [devices, setDevices] = useState<Device[]>([]);
   const [groups, setGroups] = useState<DRGroupForm[]>([createEmptyGroup()]);
+  const [groupReadiness, setGroupReadiness] = useState<Record<string, boolean>>({});
   const [originalGroups, setOriginalGroups] = useState<DRGroupForm[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,16 +83,8 @@ export default function DRPlanEditor({
         setLoading(true);
         setError(undefined);
 
-        const devicesPromise = fetchWithAuth('/devices?limit=500');
         const planPromise = planId ? fetchWithAuth(`/dr/plans/${planId}`) : null;
-        const [devicesResponse, planResponse] = await Promise.all([devicesPromise, planPromise]);
-
-        if (!devicesResponse.ok) throw new Error('Failed to load devices');
-        const devicesPayload = await devicesResponse.json();
-        const nextDevices = asList(devicesPayload, 'devices');
-        if (!cancelled) {
-          setDevices(Array.isArray(nextDevices) ? nextDevices : []);
-        }
+        const planResponse = planPromise ? await planPromise : null;
 
         if (planResponse) {
           if (!planResponse.ok) throw new Error('Failed to load plan details');
@@ -188,6 +179,10 @@ export default function DRPlanEditor({
     }
     if (groups.some((group) => group.deviceIds.length === 0)) {
       setError('Each recovery group must include at least one device.');
+      return;
+    }
+    if (groups.some((group) => groupReadiness[group.localId] !== true)) {
+      setError('Device choices are not ready. Retry or finish loading devices before saving.');
       return;
     }
 
@@ -295,6 +290,7 @@ export default function DRPlanEditor({
   }, [
     description,
     groups,
+    groupReadiness,
     isEdit,
     name,
     onSaved,
@@ -443,7 +439,6 @@ export default function DRPlanEditor({
                       group={group}
                       index={index}
                       total={groups.length}
-                      devices={devices}
                       dependencyOptions={groups.slice(0, index)}
                       onChange={(updater) => updateGroup(group.localId, updater)}
                       onMove={(direction) => moveGroup(index, direction)}
@@ -452,6 +447,13 @@ export default function DRPlanEditor({
                           prev.length === 1
                             ? [createEmptyGroup()]
                             : prev.filter((item) => item.localId !== group.localId)
+                        )
+                      }
+                      onCanSubmitChange={(canSubmit) =>
+                        setGroupReadiness((current) =>
+                          current[group.localId] === canSubmit
+                            ? current
+                            : { ...current, [group.localId]: canSubmit }
                         )
                       }
                     />
@@ -479,7 +481,7 @@ export default function DRPlanEditor({
           <button
             type="button"
             onClick={handleSave}
-            disabled={loading || saving}
+            disabled={loading || saving || groups.some((group) => groupReadiness[group.localId] !== true)}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

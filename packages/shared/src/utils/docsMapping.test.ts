@@ -21,6 +21,34 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/ai-agents/');
     });
 
+    it('/ai-agents/runs maps to AI Agents docs', () => {
+      const result = getDocsForPath('/ai-agents/runs');
+      expect(result.label).toBe('AI Agents');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/ai-agents/runs/:id maps to AI Agents docs', () => {
+      const result = getDocsForPath('/ai-agents/runs/abc-123');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/ai-agents/impact beats the generic /ai-agents entry', () => {
+      const result = getDocsForPath('/ai-agents/impact');
+      expect(result.label).toBe('AI Impact');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-impact/`);
+    });
+
+    it('/admin/llm-provider-catalog beats the generic /admin entry', () => {
+      const result = getDocsForPath('/admin/llm-provider-catalog');
+      expect(result.label).toBe('LLM Provider Catalog');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/bring-your-own-llm-key/`);
+    });
+
+    it('/admin still falls back to partner management', () => {
+      const result = getDocsForPath('/admin');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/reference/partner-management/`);
+    });
+
     it('/alerts maps to alerts docs', () => {
       const result = getDocsForPath('/alerts');
       expect(result.label).toBe('Alerts');

@@ -553,12 +553,16 @@ roleRoutes.get(
     const partnerRoleIds = rolesData.filter((r) => r.scope === 'partner').map((r) => r.id);
     const orgRoleIds = rolesData.filter((r) => r.scope === 'organization').map((r) => r.id);
 
-    const userCounts: { roleId: string; count: number }[] = [];
+    // `count` is every membership row; `activeCount` only those whose user
+    // is status='active' — the set the AI-agent recipient resolver
+    // (services/aiAgents/recipients.ts) can actually notify, so the agent
+    // forms can flag a role that would fail act mode's recipient check.
+    const userCounts: { roleId: string; count: number; activeCount: number }[] = [];
 
     if (scopeContext.scope === 'partner') {
       if (partnerRoleIds.length > 0) {
         const counts = await db
-          .select({ roleId: partnerUsers.roleId, count: count() })
+          .select({ roleId: partnerUsers.roleId, count: count(), activeCount: sql<number>`count(*) filter (where exists (select 1 from users u where u.id = ${partnerUsers.userId} and u.status = 'active'))` })
           .from(partnerUsers)
           .where(
             and(
@@ -567,11 +571,11 @@ roleRoutes.get(
             )
           )
           .groupBy(partnerUsers.roleId);
-        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
+        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count), activeCount: Number(row.activeCount ?? 0) })));
       }
       if (focusedOrgId && orgRoleIds.length > 0) {
         const counts = await db
-          .select({ roleId: organizationUsers.roleId, count: count() })
+          .select({ roleId: organizationUsers.roleId, count: count(), activeCount: sql<number>`count(*) filter (where exists (select 1 from users u where u.id = ${organizationUsers.userId} and u.status = 'active'))` })
           .from(organizationUsers)
           .where(
             and(
@@ -580,11 +584,11 @@ roleRoutes.get(
             )
           )
           .groupBy(organizationUsers.roleId);
-        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
+        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count), activeCount: Number(row.activeCount ?? 0) })));
       }
     } else if (orgRoleIds.length > 0) {
       const counts = await db
-        .select({ roleId: organizationUsers.roleId, count: count() })
+        .select({ roleId: organizationUsers.roleId, count: count(), activeCount: sql<number>`count(*) filter (where exists (select 1 from users u where u.id = ${organizationUsers.userId} and u.status = 'active'))` })
         .from(organizationUsers)
         .where(
           and(
@@ -593,10 +597,11 @@ roleRoutes.get(
           )
         )
         .groupBy(organizationUsers.roleId);
-      userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
+      userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count), activeCount: Number(row.activeCount ?? 0) })));
     }
 
     const userCountMap = new Map(userCounts.map((uc) => [uc.roleId, uc.count]));
+    const activeUserCountMap = new Map(userCounts.map((uc) => [uc.roleId, uc.activeCount]));
 
     // Build a map of role IDs to names for parent role lookup
     const roleNameMap = new Map(rolesData.map((r) => [r.id, r.name]));
@@ -604,7 +609,8 @@ roleRoutes.get(
     const data = rolesData.map((role) => ({
       ...role,
       parentRoleName: role.parentRoleId ? roleNameMap.get(role.parentRoleId) || null : null,
-      userCount: userCountMap.get(role.id) || 0
+      userCount: userCountMap.get(role.id) || 0,
+      activeUserCount: activeUserCountMap.get(role.id) || 0
     }));
 
     return c.json({ data });

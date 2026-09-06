@@ -1076,6 +1076,7 @@ vulnerabilityRoutes.post(
         acceptedUntil: null,
         mitigationNote: null,
         resolvedAt: null,
+        resolvedObservationId: null,
       })
       .where(eq(deviceVulnerabilities.id, id));
 

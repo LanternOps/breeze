@@ -26,10 +26,21 @@ interface Props {
   id?: string;
 }
 
+// The hash can be a bare tab value (`#detail`) or a composed one where other
+// components append their own `&`-separated segments (InvoiceLineDevices'
+// `devices=<ids>` toggle state — see InvoiceLineDevices.tsx). The tab is NOT
+// reliably the first segment: InvoiceLineDevices' own writer (writeOpenIds)
+// composes its `devices=<ids>` segment onto whatever hash already exists, and
+// on an issued invoice opened at the default tab the hash starts empty, so it
+// produces `#devices=<id>` with no tab segment at all — first-segment parsing
+// would misread `devices=<id>` as the tab and fall through to the default.
+// Parse segment-AWARE instead of position-aware: the tab is whichever segment
+// (in any position) matches a known tab value.
 function readTab(isDraft: boolean): Tab {
   if (typeof window === 'undefined') return isDraft ? 'editor' : 'detail';
-  const raw = window.location.hash.replace(/^#/, '');
-  if (TAB_LABELS.some((t) => t.value === raw)) return raw as Tab;
+  const segments = window.location.hash.replace(/^#/, '').split('&');
+  const match = segments.find((s) => TAB_LABELS.some((t) => t.value === s));
+  if (match) return match as Tab;
   return isDraft ? 'editor' : 'detail';
 }
 
@@ -115,7 +126,18 @@ export default function InvoiceWorkspace({ id }: Props) {
 
   const selectTab = useCallback((next: string) => {
     setTab(next as Tab);
-    if (typeof window !== 'undefined') window.location.hash = `#${next}`;
+    if (typeof window === 'undefined') return;
+    // Mirror InvoiceLineDevices' own writer (writeOpenIds): keep every segment
+    // that ISN'T a known tab value (e.g. `devices=<ids>`) regardless of where
+    // it sits — the tab segment may be absent entirely (see readTab above) —
+    // and write the new tab first. Only replacing the whole hash, or assuming
+    // the tab is positionally first, is what produced the composed-hash bugs
+    // this guards against.
+    const otherSegments = window.location.hash
+      .replace(/^#/, '')
+      .split('&')
+      .filter((s) => s && !TAB_LABELS.some((t) => t.value === s));
+    window.location.hash = [next, ...otherSegments].join('&');
   }, []);
 
   if (loading) {

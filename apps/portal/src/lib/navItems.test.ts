@@ -40,6 +40,51 @@ describe('buildPortalNavItems — enable_tickets nav gating (#2345)', () => {
   });
 });
 
+describe('buildPortalNavItems — full flag set (#4562)', () => {
+  it('orders every enabled portal destination', () => {
+    expect(buildPortalNavItems({
+      enableTickets: true,
+      enableAssetCheckout: true,
+      enableSelfService: true,
+      enablePasswordReset: true,
+      enableDashboard: true,
+      enableSecurity: true,
+      enableBackups: true,
+      enableReports: true,
+      enableSupportUsage: true,
+    }).map((item) => item.href)).toEqual([
+      '/dashboard',
+      '/quotes',
+      '/invoices',
+      '/tickets',
+      '/devices',
+      '/security',
+      '/backups',
+      '/reports',
+      '/assets',
+      '/profile',
+    ]);
+  });
+
+  it('fails closed for new flags and honors self-service false', () => {
+    expect(buildPortalNavItems({
+      enableTickets: false,
+      enableAssetCheckout: false,
+      enableSelfService: false,
+      enablePasswordReset: true,
+      enableDashboard: false,
+      enableSecurity: false,
+      enableBackups: false,
+      enableReports: false,
+      enableSupportUsage: false,
+    }).map((item) => item.href)).toEqual([
+      '/quotes',
+      '/invoices',
+      '/profile',
+    ]);
+  });
+});
+
 describe('buildPortalNavItems — Equipment (/assets) gating', () => {
   it('shows Equipment only when asset checkout is enabled', () => {
     expect(

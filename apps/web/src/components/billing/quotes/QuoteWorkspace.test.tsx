@@ -273,16 +273,41 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-add-block')).toBeInTheDocument());
 
-    // GET #2 — the terms blur-save's refresh() leading edge.
+    // GET #2 — the terms blur-save's refresh() leading edge. Awaited to its own
+    // deferred slot BEFORE the add-block interaction starts. Neither GET is
+    // issued by the fireEvent that provokes it: #2 comes from an async
+    // continuation of the terms PATCH (QuoteEditor.tsx:499, via refresh() ->
+    // resync()) and #3 from a continuation of the block POST
+    // (QuoteEditor.tsx:1436 -> finishBlockCreate -> resync()). Firing both
+    // interactions back-to-back leaves those two continuations unsynchronised,
+    // so nothing pins WHICH one lands in deferred[0] — yet every assertion
+    // below depends on deferred[0] being the older request and deferred[1] the
+    // newer one. Sequencing the provocations pins that order instead of
+    // inheriting it from whichever continuation drained first, and gives each
+    // chain its own waitFor budget rather than making them share one window.
     fireEvent.change(screen.getByTestId('quote-terms'), { target: { value: 'Net 30' } });
     fireEvent.blur(screen.getByTestId('quote-terms'));
+    // Real-timer waitFor with the library's default 1000ms budget flaked in CI
+    // (observed on PR #4704, unrelated file/branch): under the parallel-shard
+    // CPU contention of a full-suite run, the PATCH -> refresh() -> resync()
+    // continuation chain can legitimately take longer than 1s wall-clock even
+    // though it does only a handful of awaits. Widen the budget rather than
+    // the assertion — this doesn't change what's being tested, just how long
+    // CI is allowed to take to get there.
+    await waitFor(() => expect(deferred).toHaveLength(1), { timeout: 5000 });
 
-    // GET #3 — the add-block resync, issued while #2 is still open.
+    // GET #3 — the add-block resync. #2 is still an unresolved promise here, so
+    // the two requests genuinely overlap, exactly as before: this only removes
+    // the ambiguity about their order, not the concurrency being tested.
     fireEvent.click(screen.getByTestId('quote-add-block-type-heading'));
     fireEvent.change(screen.getByTestId('quote-block-heading-text'), { target: { value: 'Scope of work' } });
     fireEvent.click(screen.getByTestId('quote-add-block-submit'));
+    await waitFor(() => expect(deferred).toHaveLength(2), { timeout: 5000 });
 
-    await waitFor(() => expect(deferred.length).toBe(2));
+    // Neither refetch has answered yet, so the canvas is still pre-mutation.
+    // Pinning that here is what stops the "block survives" assertion at the end
+    // from passing for the trivial reason that the canvas never moved at all.
+    expect(screen.getByTestId('quote-blocks-empty')).toBeInTheDocument();
 
     // The NEWER request answers first, carrying the block that was just created.
     deferred[1].resolve(json({ data: { ...draft, blocks: [newBlock] } }));
@@ -304,5 +329,12 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     // payload wins by arriving last and the canvas goes empty again. (Verified
     // red against the unguarded fetchDetail, so the flush above is sufficient.)
     expect(screen.queryByTestId('quote-blocks-empty')).not.toBeInTheDocument();
-  });
+    // Per-test budget. The two 5000ms waitFor windows above are each allowed to
+    // run long under CI load, but vitest's default per-test timeout is ALSO
+    // 5000ms, so the widened windows alone just moved the flake from
+    // "waitFor timed out" to "Test timed out in 5000ms" (observed twice on
+    // 2026-09-03, both on agent-only PRs, after the windows were widened in
+    // #4704). The test's own timeout has to cover the sum of every window it
+    // contains, not just the largest one: 1s mount + 5s + 5s + 1s + slack.
+  }, 20_000);
 });

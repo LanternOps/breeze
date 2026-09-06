@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { buildRemoteAccessLaunchUrl, resolveRemoteAccessLaunch } from './remoteAccessLauncher';
+import {
+  buildRemoteAccessLaunchUrl,
+  resolveRemoteAccessLaunch,
+  checkRemoteAccessLaunchAvailability,
+} from './remoteAccessLauncher';
 import { encryptSecret } from './secretCrypto';
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
 
@@ -333,5 +337,126 @@ describe('resolveRemoteAccessLaunch — per-technician provider preference', () 
     const r = resolveRemoteAccessLaunch({ customFields: { k: 'avas' } }, sneaky, 'sneaky');
     expect(r.launchUrl).toBeNull();
     expect(r.skipReason).toBe('scheme_not_allowed');
+  });
+});
+
+// -----------------------------------------------------------------------
+// checkRemoteAccessLaunchAvailability (#3402)
+//
+// The availability check is the ONLY launcher entry point GET
+// /devices/:id may call. It must never decrypt or substitute (covered by
+// a spy in core.remoteAccessLaunch.test.ts), and it must agree with
+// resolveRemoteAccessLaunch (issuance) on every skip reason EXCEPT
+// 'scheme_not_allowed', which by construction only exists once the
+// template has actually been substituted with the real password -- work
+// availability deliberately never does.
+// -----------------------------------------------------------------------
+describe('checkRemoteAccessLaunchAvailability — parity with issuance', () => {
+  const scenarios: Array<{
+    name: string;
+    device: { customFields?: Record<string, unknown> | null };
+    settings: InheritableRemoteAccessSettings | undefined;
+    preferredProviderId?: string | null;
+  }> = [
+    {
+      name: 'no settings at all',
+      device: { customFields: { rustdesk_id: '1' } },
+      settings: undefined,
+    },
+    {
+      name: 'empty settings object',
+      device: { customFields: { rustdesk_id: '1' } },
+      settings: {},
+    },
+    {
+      name: 'unknown defaultProviderId',
+      device: { customFields: { rustdesk_id: '1' } },
+      settings: { ...rustdeskSettings, defaultProviderId: 'nonexistent' },
+    },
+    {
+      name: 'default provider disabled',
+      device: { customFields: { rustdesk_id: '1' } },
+      settings: { ...rustdeskSettings, providers: [{ ...baseProvider, enabled: false }] },
+    },
+    {
+      name: 'device missing the custom field the provider needs',
+      device: { customFields: {} },
+      settings: rustdeskSettings,
+    },
+    {
+      name: 'device custom field is an empty string',
+      device: { customFields: { rustdesk_id: '' } },
+      settings: rustdeskSettings,
+    },
+    {
+      name: 'empty url template',
+      device: { customFields: { rustdesk_id: '1' } },
+      settings: { ...rustdeskSettings, providers: [{ ...baseProvider, urlTemplate: '' }] },
+    },
+    {
+      name: 'happy path — resolves',
+      device: { customFields: { rustdesk_id: '294064193' } },
+      settings: rustdeskSettings,
+    },
+    {
+      name: 'preference falls back to default (unknown preferred id)',
+      device: { customFields: { rustdesk_id: '294064193' } },
+      settings: rustdeskSettings,
+      preferredProviderId: 'not-a-real-provider',
+    },
+    {
+      name: 'preference selects the other enabled provider',
+      device: { customFields: { rustdesk_id: '294064193', mesh_node_id: 'abc123' } },
+      settings: {
+        defaultProviderId: 'rustdesk',
+        providers: [
+          baseProvider,
+          {
+            id: 'mesh',
+            name: 'Mesh',
+            urlTemplate: 'https://mesh.example.test/#device={id}',
+            customFieldKey: 'mesh_node_id',
+            enabled: true,
+          },
+        ],
+      },
+      preferredProviderId: 'mesh',
+    },
+  ];
+
+  it.each(scenarios)('$name: availability and issuance agree', ({ device, settings, preferredProviderId }) => {
+    const availability = checkRemoteAccessLaunchAvailability(device, settings, preferredProviderId);
+    const issuance = resolveRemoteAccessLaunch(device, settings, preferredProviderId);
+
+    expect(availability.skipReason).toBe(issuance.skipReason);
+    expect(availability.providerId).toBe(issuance.providerId);
+    expect(availability.available).toBe(issuance.launchUrl !== null);
+  });
+
+  it('never returns scheme_not_allowed — that is issuance-only, since it requires substitution', () => {
+    const sneaky: InheritableRemoteAccessSettings = {
+      defaultProviderId: 'sneaky',
+      providers: [
+        { id: 'sneaky', name: 'Sneaky', urlTemplate: 'j{id}cript:alert(1)', customFieldKey: 'k', enabled: true },
+      ],
+    };
+    const device = { customFields: { k: 'avas' } };
+
+    const availability = checkRemoteAccessLaunchAvailability(device, sneaky);
+    expect(availability.available).toBe(true);
+    expect(availability.skipReason).toBeNull();
+
+    // Issuance, which DOES substitute, catches the tampered template.
+    const issuance = resolveRemoteAccessLaunch(device, sneaky);
+    expect(issuance.skipReason).toBe('scheme_not_allowed');
+    expect(issuance.launchUrl).toBeNull();
+  });
+
+  it('reports available:true with the resolved providerId on the happy path', () => {
+    const availability = checkRemoteAccessLaunchAvailability(
+      { customFields: { rustdesk_id: '294064193' } },
+      rustdeskSettings,
+    );
+    expect(availability).toEqual({ available: true, providerId: 'rustdesk', skipReason: null });
   });
 });

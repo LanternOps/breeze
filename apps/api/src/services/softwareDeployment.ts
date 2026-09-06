@@ -72,6 +72,7 @@ export interface CreateSoftwareDeploymentResult {
   status: 'pending' | 'failed';
   message?: string;
   dispatchedDeviceIds: string[];
+  deviceResults: SoftwareInstallFanoutDeviceResult[];
 }
 
 export type SoftwareInstallDispatchTransport = 'ws' | 'queued';
@@ -224,12 +225,41 @@ export interface BuildAndDispatchSoftwareInstallsInput {
    * default to 0.
    */
   deviceRetryCounts?: Record<string, number>;
+  /** Exact rows created/claimed for this fan-out, keyed by device id. */
+  deploymentResultIdsByDevice?: ReadonlyMap<string, string>;
 }
 
 export interface SoftwareInstallFanoutResult {
   status: 'pending' | 'failed';
   message?: string;
   dispatchedDeviceIds: string[];
+  deviceResults: SoftwareInstallFanoutDeviceResult[];
+}
+
+export interface SoftwareInstallFanoutDeviceResult {
+  deviceId: string;
+  deploymentResultId: string;
+  status: 'queued' | 'delivered' | 'failed';
+  deviceCommandId: string | null;
+  message?: string;
+}
+
+function fanoutDeviceResult(
+  input: BuildAndDispatchSoftwareInstallsInput,
+  deviceId: string,
+  status: SoftwareInstallFanoutDeviceResult['status'],
+  deviceCommandId: string | null,
+  message?: string,
+): SoftwareInstallFanoutDeviceResult | null {
+  const deploymentResultId = input.deploymentResultIdsByDevice?.get(deviceId);
+  if (!deploymentResultId) return null;
+  return {
+    deviceId,
+    deploymentResultId,
+    status,
+    deviceCommandId,
+    ...(message ? { message } : {}),
+  };
 }
 
 /**
@@ -354,6 +384,13 @@ async function dispatchManagerInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
+  for (const deviceId of fanoutDeviceIds) {
+    if (!targetDevices.some((device) => device.id === deviceId)) {
+      const result = fanoutDeviceResult(input, deviceId, 'failed', null, DEVICE_NO_LONGER_AVAILABLE);
+      if (result) deviceResults.push(result);
+    }
+  }
   let osMismatchCount = 0;
   for (const device of targetDevices) {
     if (device.osType !== installMethod.platform) {
@@ -371,6 +408,14 @@ async function dispatchManagerInstalls(
           ),
         );
       osMismatchCount++;
+      const result = fanoutDeviceResult(
+        input,
+        device.id,
+        'failed',
+        null,
+        `${NO_INSTALL_METHOD_FOR_OS} (${device.osType})`,
+      );
+      if (result) deviceResults.push(result);
       continue;
     }
 
@@ -386,8 +431,15 @@ async function dispatchManagerInstalls(
       softwareName: catalogItem.name,
       forceReinstall,
     };
-    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    const dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
     dispatchedDeviceIds.push(device.id);
+    const result = fanoutDeviceResult(
+      input,
+      device.id,
+      dispatch.transport === 'ws' ? 'delivered' : 'queued',
+      dispatch.deviceCommandId,
+    );
+    if (result) deviceResults.push(result);
   }
 
   if (dispatchedDeviceIds.length === 0 && (osMismatchCount > 0 || missingDeviceCount > 0)) {
@@ -398,9 +450,10 @@ async function dispatchManagerInstalls(
           ? `${NO_INSTALL_METHOD_FOR_OS} on any target device`
           : 'No target device is still available',
       dispatchedDeviceIds: [],
+      deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults };
 }
 
 export async function buildAndDispatchSoftwareInstalls(
@@ -473,6 +526,10 @@ export async function buildAndDispatchSoftwareInstalls(
         status: 'failed',
         message: resolved.error,
         dispatchedDeviceIds: [],
+        deviceResults: fanoutDeviceIds.flatMap((deviceId) => {
+          const result = fanoutDeviceResult(input, deviceId, 'failed', null, resolved.error);
+          return result ? [result] : [];
+        }),
       };
     }
     resolvedInstaller = resolved;
@@ -498,6 +555,16 @@ export async function buildAndDispatchSoftwareInstalls(
       status: 'failed',
       message: 'No installer available for this version',
       dispatchedDeviceIds: [],
+      deviceResults: fanoutDeviceIds.flatMap((deviceId) => {
+        const result = fanoutDeviceResult(
+          input,
+          deviceId,
+          'failed',
+          null,
+          'No installer available for this version',
+        );
+        return result ? [result] : [];
+      }),
     };
   }
 
@@ -622,6 +689,13 @@ export async function buildAndDispatchSoftwareInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
+  for (const deviceId of fanoutDeviceIds) {
+    if (!targetDevices.some((device) => device.id === deviceId)) {
+      const result = fanoutDeviceResult(input, deviceId, 'failed', null, DEVICE_NO_LONGER_AVAILABLE);
+      if (result) deviceResults.push(result);
+    }
+  }
   let variableFailureCount = 0;
   let policyDenialCount = 0;
   // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
@@ -656,6 +730,14 @@ export async function buildAndDispatchSoftwareInstalls(
             ),
           );
         variableFailureCount++;
+        const result = fanoutDeviceResult(
+          input,
+          device.id,
+          'failed',
+          null,
+          `Software deployment templates cannot use secret variable(s) ${secretTemplateKeys.map(variableToken).join(', ')}`,
+        );
+        if (result) deviceResults.push(result);
         continue;
       }
       const ctx: InstallerVariableContext = {
@@ -683,6 +765,14 @@ export async function buildAndDispatchSoftwareInstalls(
             ),
           );
         variableFailureCount++;
+        const result = fanoutDeviceResult(
+          input,
+          device.id,
+          'failed',
+          null,
+          `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
+        );
+        if (result) deviceResults.push(result);
         continue;
       }
       // Substituting a non-null template yields a non-null string; the ?? keeps
@@ -714,6 +804,8 @@ export async function buildAndDispatchSoftwareInstalls(
         );
       policyDenialCount++;
       policyDenialReasons.add(decision.reason);
+      const result = fanoutDeviceResult(input, device.id, 'failed', null, decision.reason);
+      if (result) deviceResults.push(result);
       continue;
     }
 
@@ -764,8 +856,15 @@ export async function buildAndDispatchSoftwareInstalls(
       ...(detectionRules ? { detectionRules } : {}),
       forceReinstall,
     };
-    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    const dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
     dispatchedDeviceIds.push(device.id);
+    const result = fanoutDeviceResult(
+      input,
+      device.id,
+      dispatch.transport === 'ws' ? 'delivered' : 'queued',
+      dispatch.deviceCommandId,
+    );
+    if (result) deviceResults.push(result);
   }
 
   // If NOTHING dispatched because every target failed variable resolution or
@@ -786,9 +885,10 @@ export async function buildAndDispatchSoftwareInstalls(
               [...policyDenialReasons].sort().join(', ')
             : 'No target device is still available',
       dispatchedDeviceIds: [],
+      deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults };
 }
 
 export async function createSoftwareDeployment(
@@ -899,15 +999,18 @@ export async function createSoftwareDeployment(
   }
 
   // Insert per-device results
-  if (deviceIds.length > 0) {
-    await db.insert(deploymentResults).values(
+  const insertedDeviceResults = deviceIds.length > 0
+    ? await db.insert(deploymentResults).values(
       deviceIds.map((deviceId) => ({
         deploymentId: deployment.id,
         deviceId,
         status: 'pending' as const,
       })),
-    );
-  }
+    ).returning({ id: deploymentResults.id, deviceId: deploymentResults.deviceId })
+    : [];
+  const deploymentResultIdsByDevice = new Map(
+    insertedDeviceResults.map((result) => [result.deviceId, result.id]),
+  );
 
   // For immediate installs, dispatch software_install commands to online agents
   // via the shared fan-out (presign, EDR resolution, variable substitution,
@@ -930,9 +1033,16 @@ export async function createSoftwareDeployment(
       options: options ?? null,
       createdBy,
       markDispatched: true,
+      deploymentResultIdsByDevice,
     });
     return { deploymentId: deployment.id, deployment, ...fanout };
   }
 
-  return { deploymentId: deployment.id, deployment, status: 'pending', dispatchedDeviceIds: [] };
+  return {
+    deploymentId: deployment.id,
+    deployment,
+    status: 'pending',
+    dispatchedDeviceIds: [],
+    deviceResults: [],
+  };
 }

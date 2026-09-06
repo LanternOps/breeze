@@ -84,6 +84,7 @@ const titleCase = (s: string): string =>
 const REPORT_TYPE_LABELS: Record<string, string> = {
   security_compliance_posture: 'Security & Compliance Posture',
   ai_org_narrative: 'Weekly AI Operations Narrative',
+  ai_agent_impact: 'AI Agent Impact',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);

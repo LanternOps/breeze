@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { deploymentResults } from '../db/schema';
 import { redactSecretsFromOutput } from './secretRedaction';
+import { applyAutomationActionTerminal } from './automationActionResults';
 
 /**
  * Command-id shape used for WS-dispatched software installs:
@@ -78,7 +79,7 @@ function normalizeInstallError(error: string | null | undefined): string | null 
   return error;
 }
 
-export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<void> {
+export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<string | null> {
   const attemptNumber = input.attemptNumber ?? 0;
   const drStatus =
     input.status === 'completed'
@@ -135,5 +136,25 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
       `device=${input.deviceId} attempt=${attemptNumber}: no pending row at this attempt ` +
       `(already applied, superseded by a retry, or unknown).`
     );
+    return null;
   }
+
+  const effectiveId = Array.isArray(updated) && typeof updated[0]?.id === 'string'
+    ? updated[0].id
+    : null;
+  if (!effectiveId) return null;
+
+  await applyAutomationActionTerminal({
+    source: 'deployment_result',
+    deploymentResultId: effectiveId,
+    terminalStatus: drStatus === 'completed' ? 'succeeded' : 'failed',
+    output: input.stdout != null ? redactSecretsFromOutput(input.stdout) : null,
+    error: input.error != null
+      ? redactSecretsFromOutput(normalizeInstallError(input.error) as string)
+      : input.stderr != null
+        ? redactSecretsFromOutput(input.stderr)
+        : null,
+    completedAt,
+  });
+  return effectiveId;
 }

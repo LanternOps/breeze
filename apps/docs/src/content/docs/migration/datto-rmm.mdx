@@ -27,6 +27,7 @@ Datto RMM is flat: an account contains **Sites**, and a Site contains Devices. T
 | — | Site | Create one site per org (name it `Main`) unless the customer genuinely has multiple locations. |
 | Device Group / filter | Device Group | Datto's saved device filters map to Breeze [dynamic device groups](/features/device-groups/). |
 | Device | Device | |
+| — | **Contact** | Breeze contacts are first-class records, organization-level or pinned to a site. Load them from your PSA export with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts). |
 
 <Aside type="caution">
   Resist the temptation to map Datto Sites onto Breeze *Sites* under one big organization. Breeze scopes tenancy, RLS, billing, and portal access at the **organization** level — a customer that is only a Site cannot be isolated, billed, or given portal access independently. One customer, one organization.
@@ -78,8 +79,10 @@ Datto RMM's API v2 is at `https://<zone>-api.centrastage.net/api/v2`, where `<zo
 
    ```bash
    curl -sf -H "Authorization: Bearer $TOKEN" \
-     "https://$ZONE-api.centrastage.net/api/v2/device/$DEVICE_UID" | jq '{hostname, udf}'
+     "https://$ZONE-api.centrastage.net/api/v2/device/$DEVICE_UID" | jq '{uid, hostname, udf}'
    ```
+
+   Keep `uid` in the export even though nothing in Phase 0-5 uses it yet — it's the durable identifier the custom-field backfill (below) needs on its first run.
 
 </Steps>
 
@@ -145,13 +148,18 @@ Import the converted bodies in bulk with [Recipe 6](/migration/toolkit/#recipe-6
 
 ## Migrating UDFs
 
+Datto UDFs are device-scope only — there is no per-organization variant — so the field *definitions* import is a single **partner-wide** pass, not one per site. Use the **Import from another RMM** wizard (Settings → Custom Fields, or the Devices page) rather than hand-rolling the join described in earlier versions of this page.
+
 <Steps>
 
-1. Decide which of `udf1`…`udf30` are actually populated — usually 3 to 6 of them. Dump all thirty across a sample of 50 devices and count non-empty values.
-2. Create matching Breeze [custom fields](/features/custom-fields/) with real names and types. This is the moment to stop calling it `udf7`.
-3. Backfill by joining your Datto per-device UDF export against Breeze devices on hostname, then `POST` the values via the device custom-field-values endpoint — one of the few surfaces that does accept an `X-API-Key`.
+1. Decide which of `udf1`…`udf30` are actually populated — usually 3 to 6 of them. Dump all thirty across a sample of 50 devices (Phase 0, step 4) and count non-empty values.
+2. Open the wizard, choose **Datto RMM** as the source, and upload a CSV whose columns are the populated `udf` slots. The wizard previews each as a candidate field definition — rename `udf7` to something real and set its type — before creating anything. Choose **All organizations** as the owner: there is no org-scoped Datto UDF to preserve.
+3. On the values step, upload your per-device UDF export (Phase 0, step 4: `uid`, `hostname`, and `udf`) and map each `udf` column to the matching custom field.
+4. **Also map `uid` to Source device ID**, even though hostname alone is enough to resolve most rows. Datto's `uid` is the durable per-device identifier [Custom Fields](/features/custom-fields/) records on this first run — every later re-import (after more devices enroll) then resolves by that exact id instead of a hostname guess.
 
 </Steps>
+
+A row the wizard can't resolve to exactly one device — no match, or more than one candidate — is reported, never guessed at. Re-run the values step after each enrollment wave; an already-applied value is left alone by default.
 
 ---
 

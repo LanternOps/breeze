@@ -26,7 +26,7 @@ Atera is flat — Customers contain Agents, with an optional Site/Folder layer t
 | **Customer** | **Organization** | Direct match. |
 | Site / folder | **Site** | If unused, create one `Main` site per organization. |
 | Agent | Device | |
-| Contact | — | Breeze cannot create contacts programmatically today; enter them by hand or via your PSA. |
+| **Contact** | **Contact** | First-class records, organization-level or pinned to a site. Bulk-load with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts) — matched on `externalId` so re-imports are idempotent, with fuzzy email/name matches held back for an explicit acknowledgement. |
 
 ---
 
@@ -74,7 +74,7 @@ Generate an API key under **Admin → API**. Everything below uses `X-API-KEY` a
 
    List your configured fields in **Admin → Custom Fields** first, then loop that call across agents.
 
-4. **Export contacts and tickets if you are leaving Atera's PSA.** `GET /contacts` and `GET /tickets`. Ticket history does not migrate into Breeze — export it to storage for reference before you cancel.
+4. **Export contacts and tickets if you are leaving Atera's PSA.** `GET /contacts` and `GET /tickets`. Contacts do land in Breeze — save the export as CSV and feed it to [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts). Ticket history does not — export it to storage for reference before you cancel.
 
 </Steps>
 

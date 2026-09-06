@@ -6,6 +6,7 @@ import { metricAnomalyIncidents } from '../db/schema/metricAnomalyIncidents';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `metric_anomaly_incidents` transactional dispatch marker
@@ -45,8 +46,10 @@ const REAPER_QUEUE_NAME = 'metric-anomaly-incident-publisher';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with dispatch_attempts > this are considered stuck: logged as an
-// alarm and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// alarm and left alone rather than retried forever. Exported so
+// metricAnomalyIncidentRetention.ts's prune cutoff stays in sync with this
+// threshold instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 type PublisherJobData = { type: 'publish-anomaly-incidents'; queuedAt: string };
 
@@ -293,6 +296,7 @@ export async function initializeMetricAnomalyIncidentPublisher(): Promise<void> 
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'metricAnomalyIncidentPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[MetricAnomalyIncidentPublisher] Worker error:', error);
     captureException(error);

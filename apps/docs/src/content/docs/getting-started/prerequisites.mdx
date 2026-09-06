@@ -6,17 +6,33 @@ sidebar:
   label: Prerequisites
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 
 ## Server Requirements
 
-| Resource | Minimum | Recommended (500+ agents) |
+<Aside type="caution" title="Server sizing only">
+This table covers the Breeze **server** (API, web, PostgreSQL, Redis, and the reverse proxy). It says nothing about agent-side footprint on the machines you're monitoring, which is separate and much smaller.
+</Aside>
+
+| Resource | Floor | Baseline (small MSP) |
 |---|---|---|
-| **CPU** | 2 vCPU | 4 vCPU |
-| **RAM** | 4 GB | 8 GB |
-| **Disk** | 40 GB SSD | 100 GB SSD |
+| **CPU** | 2 x86-64 vCPU | 4 vCPU |
+| **RAM** | 4 GiB | 8 GiB |
+| **Disk** | 20 GiB free in the install directory | 60 GiB SSD-backed, plus snapshot headroom |
 | **OS** | Ubuntu 22.04+ / Debian 12+ | Ubuntu 24.04 LTS |
-| **Network** | Public IP, ports 80/443 open | Static IP with DNS A record |
+| **Network** | Public IP, ports 80/443 open, NTP | Static IP with DNS A record, TLS reverse proxy, NTP |
+
+The **CPU / RAM / Disk Floor** values are what [`guided-setup.sh`](https://github.com/LanternOps/breeze/blob/main/scripts/guided-setup.sh) checks before install: below them it warns and, without an explicit "continue anyway" (defaulted to no, including in unattended `--yes` runs), the install stops. They're a warning threshold, not a tested capacity limit. The OS and Network rows are general recommendations — the script doesn't check them.
+
+The **CPU / RAM / Disk Baseline** values are a real-world small-MSP data point, contributed via [#3930](https://github.com/LanternOps/breeze/issues/3930): a two-person MSP settled on 4 vCPU / 8 GiB RAM / 60 GiB SSD, plus extra headroom for snapshots. The jump from the 20 GiB disk floor reflects PostgreSQL, Redis's append-only file, container images, logs, upgrade image churn, and (on ZFS) snapshots all competing for the same volume — 20 GiB leaves little margin for any of that.
+
+Breeze does not publish arm64 server images — GHCR images are amd64 only. On Apple Silicon, use `docker-compose.override.yml.local-build` to build native arm64 images instead (see [Docker Deployment](/deploy/environment/#docker-deployment)).
+
+<Aside type="note" title="No per-agent sizing formula">
+There isn't yet enough controlled data to turn "N agents" into a hardware number. Validate your sizing against actual agent count, event volume, retention window, remote-control usage, and backup policy, and scale up if you see resource pressure.
+
+Redis in particular ships with a `256mb` default `maxmemory` and a `noeviction` policy (see [`REDIS_MAXMEMORY`](/deploy/environment/#docker-deployment)) — job data queues rather than getting silently dropped, but a fleet outgrowing the default will need it raised, or writes start failing. If you have real-world sizing data for your fleet size, [open an issue](https://github.com/LanternOps/breeze/issues/new) — we'd like to build this table out with more data points.
+</Aside>
 
 ## Required Software
 

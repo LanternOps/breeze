@@ -22,9 +22,9 @@ function asServiceError(err: unknown): { status: number; code?: string; message?
  * Expected 4xx service errors (not-a-draft, org-denied, not-found, invalid-state)
  * count as `skipped` (tallied by `.code`); anything else counts as `failed`.
  */
-export async function runBulk(
+export async function runBulk<T>(
   ids: string[],
-  perItem: (id: string) => Promise<unknown>
+  perItem: (id: string) => Promise<T>
 ): Promise<BulkResult> {
   const result: BulkResult = { total: ids.length, succeeded: 0, skipped: 0, failed: 0, skippedReasons: {} };
   for (const id of ids) {
@@ -66,13 +66,26 @@ export async function runBulk(
  * `withDbAccessContext(ctx, …)` opens a fresh transaction; `ctx` re-establishes
  * the caller's exact RLS scope (build it with `dbAccessContextFromAuth`) so
  * tenant isolation is identical to the request path.
+ *
+ * `afterItemCommit` (#3905) runs for each item AFTER its own transaction has
+ * committed and BEFORE the next item starts — the seam for post-commit work
+ * that must not be done under the item's locks, such as the deferred quote
+ * email (`services/quoteLifecycle.ts`, DeferredQuoteEmail). It is inside the
+ * same per-item try/catch as `perItem`, so a throw from it counts the item the
+ * way any other item failure counts; a best-effort hook should swallow its own
+ * errors rather than turn a committed item into a reported failure.
  */
-export async function runBulkIsolated(
+export async function runBulkIsolated<T>(
   ctx: DbAccessContext,
   ids: string[],
-  perItem: (id: string) => Promise<unknown>
+  perItem: (id: string) => Promise<T>,
+  afterItemCommit?: (id: string, value: T) => Promise<void>
 ): Promise<BulkResult> {
   return runOutsideDbContext(() =>
-    runBulk(ids, (id) => withDbAccessContext(ctx, () => perItem(id)))
+    runBulk(ids, async (id) => {
+      const value = await withDbAccessContext(ctx, () => perItem(id));
+      if (afterItemCommit) await afterItemCommit(id, value);
+      return value;
+    })
   );
 }

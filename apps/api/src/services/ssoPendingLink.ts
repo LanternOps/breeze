@@ -202,6 +202,22 @@ export async function consumeSsoPendingLink(tokenHash: string): Promise<SsoPendi
   return parseRecord(await getDelAtomic(redis as RedisWithGetDel, pendingKey(tokenHash)));
 }
 
+/** Restore the single consumed record after a retryable factor failure. The
+ * original window is preserved, so wrong codes cannot extend the ceremony. */
+export async function restoreConsumedSsoPendingLink(
+  tokenHash: string,
+  record: SsoPendingLink,
+): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  const remainingSeconds = Math.ceil(
+    (record.createdAt + SSO_PENDING_LINK_TTL_SECONDS * 1000 - Date.now()) / 1000,
+  );
+  if (remainingSeconds <= 0) return false;
+  await redis.setex(pendingKey(tokenHash), remainingSeconds, JSON.stringify(record));
+  return true;
+}
+
 /**
  * Re-arm the record's TTL to the full window. Called when the password step
  * succeeds and hands off to the MFA continuation, so the factor step gets its
@@ -214,9 +230,13 @@ export async function consumeSsoPendingLink(tokenHash: string): Promise<SsoPendi
 export async function touchSsoPendingLink(tokenHash: string): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  const raw = await redis.get(pendingKey(tokenHash));
-  if (!raw) return;
-  await redis.setex(pendingKey(tokenHash), SSO_PENDING_LINK_TTL_SECONDS, raw);
+  const record = parseRecord(await redis.get(pendingKey(tokenHash)));
+  if (!record) return;
+  await redis.setex(
+    pendingKey(tokenHash),
+    SSO_PENDING_LINK_TTL_SECONDS,
+    JSON.stringify({ ...record, createdAt: Date.now() }),
+  );
 }
 
 /** Hard invalidation (attempt exhaustion, stale-state verdicts). Best-effort. */

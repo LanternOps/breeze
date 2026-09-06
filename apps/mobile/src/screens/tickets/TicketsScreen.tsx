@@ -55,10 +55,11 @@ function Chip({
 
 function TicketRow({ ticket, onPress }: { ticket: TicketSummary; onPress: () => void }) {
   const breached = isBreached(ticket);
+  const ref = ticketRef(ticket);
   return (
     <Pressable onPress={onPress} accessibilityRole="button" style={styles.row}>
       <View style={styles.rowHeader}>
-        <Text style={styles.ref}>{ticketRef(ticket)}</Text>
+        {ref ? <Text style={styles.ref}>{ref}</Text> : null}
         <View style={[styles.priorityDot, { backgroundColor: priorityColor(ticket.priority) }]} />
         <Text style={styles.priority}>{priorityLabel(ticket.priority)}</Text>
         {breached ? <Text style={styles.breach}>SLA</Text> : null}
@@ -114,7 +115,18 @@ export function TicketsScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + spacing['3'] }]}>
-      <Text style={styles.title}>Tickets</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Tickets</Text>
+        <Pressable
+          onPress={() => navigation.navigate('CreateTicket')}
+          accessibilityRole="button"
+          accessibilityLabel="New ticket"
+          hitSlop={8}
+          style={styles.addButton}
+        >
+          <Text style={styles.addButtonText}>+</Text>
+        </Pressable>
+      </View>
 
       <View style={styles.filters}>
         <Chip label="Open" active={queue === 'open'} onPress={() => dispatch(setQueue('open'))} />
@@ -180,7 +192,25 @@ export function TicketsScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: palette.dark.bg0 },
-  title: { ...type.title, color: palette.dark.textHi, paddingHorizontal: spacing['4'] },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing['4'],
+  },
+  title: { ...type.title, color: palette.dark.textHi },
+  addButton: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: palette.dark.border,
+    backgroundColor: palette.dark.bg1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // The glyph sits a hair high in most fonts; the line height keeps it centred.
+  addButtonText: { ...type.title, color: palette.dark.textHi, lineHeight: 30 },
   filters: {
     flexDirection: 'row',
     alignItems: 'center',

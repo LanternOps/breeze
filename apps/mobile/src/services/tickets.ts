@@ -1,4 +1,6 @@
 import { coreRequest } from './api';
+import type { TicketCommentType } from './ticketCommentTypes';
+import type { TicketAttachmentMeta } from './ticketAttachmentContract';
 
 /**
  * Ticket surface for mobile. `/api/v1/mobile/*` has no ticket routes, so the
@@ -46,21 +48,11 @@ export interface TicketSummary {
   statusColor: string | null;
 }
 
-export type TicketCommentType =
-  | 'comment'
-  | 'internal'
-  | 'status_change'
-  | 'assignment'
-  | 'time_entry'
-  | 'system';
-
-/** Entry kinds the API emits as activity rather than a person's comment. */
-export const SYSTEM_COMMENT_TYPES: ReadonlySet<TicketCommentType> = new Set([
-  'status_change',
-  'assignment',
-  'time_entry',
-  'system',
-]);
+// Defined in a leaf module so pure copy/logic modules can import the VALUE
+// without dragging this file's `./api` (and therefore react-native) graph into
+// the Vitest runner. Re-exported here so existing importers are unaffected.
+export type { TicketCommentType } from './ticketCommentTypes';
+export { SYSTEM_COMMENT_TYPES } from './ticketCommentTypes';
 
 export interface TicketComment {
   id: string;
@@ -82,6 +74,13 @@ export interface TicketComment {
    * string. Render the placeholder off this rather than off `content`.
    */
   deleted?: boolean;
+  /**
+   * Files posted with this comment (W11, #4337). Absent on activity entries and
+   * on servers predating the attachments release; the API also returns `[]` for
+   * a soft-deleted comment even though the rows still exist, so an empty array
+   * is never proof that nothing was attached.
+   */
+  attachments?: TicketAttachmentMeta[];
 }
 
 export interface TicketDetail extends TicketSummary {
@@ -140,20 +139,58 @@ export async function getTickets(params: ListTicketsParams = {}): Promise<Ticket
   };
 }
 
+export interface CreateTicketInput {
+  orgId: string;
+  subject: string;
+  description?: string;
+  priority: TicketPriority;
+}
+
+/**
+ * `POST /tickets` (`createTicketSchema`). The server allocates the internal
+ * number and stamps `source: 'manual'`; the response is the full ticket row.
+ */
+export async function createTicket(input: CreateTicketInput): Promise<TicketSummary> {
+  const response = await coreRequest<{ data: TicketSummary }>('/tickets', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return response.data;
+}
+
 export async function getTicket(id: string): Promise<TicketDetail> {
   const response = await coreRequest<{ data: TicketDetail }>(`/tickets/${id}`);
   const ticket = response.data;
   return { ...ticket, comments: Array.isArray(ticket.comments) ? ticket.comments : [] };
 }
 
+/**
+ * Post a comment, optionally claiming attachments uploaded beforehand.
+ *
+ * `attachmentIds` are ids from `uploadTicketAttachment` — pending rows the
+ * server claims inside this comment's transaction. The field is OMITTED rather
+ * than sent as `[]` when empty: the API defaults it, and sending an empty array
+ * to a server predating the attachments release would be an unknown key.
+ *
+ * `content` may be empty when at least one attachment is present —
+ * `addTicketCommentSchema` refines "text or at least one attachment", so a
+ * photo-only comment is legal and the caller must not gate on text alone.
+ */
 export async function addTicketComment(
   id: string,
   content: string,
-  isPublic: boolean
+  isPublic: boolean,
+  attachmentIds?: string[]
 ): Promise<TicketComment> {
+  const body: { content: string; isPublic: boolean; attachmentIds?: string[] } = {
+    content,
+    isPublic,
+  };
+  if (attachmentIds && attachmentIds.length > 0) body.attachmentIds = attachmentIds;
+
   const response = await coreRequest<{ data: TicketComment }>(`/tickets/${id}/comments`, {
     method: 'POST',
-    body: JSON.stringify({ content, isPublic }),
+    body: JSON.stringify(body),
   });
   return response.data;
 }

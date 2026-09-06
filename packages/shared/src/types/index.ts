@@ -3,6 +3,10 @@
 // ============================================
 
 export * from './auth';
+export * from './deviceOptions';
+export * from './agentHealth';
+export * from './scriptAdmission';
+export * from './softwareInventoryObservation';
 
 // ============================================
 // Multi-Tenancy Types
@@ -158,6 +162,14 @@ export interface Device {
   activeVpns: VpnPresence[] | null;
   createdAt: Date;
   updatedAt: Date;
+  // RMM-QA-176 manual maintenance lease. Serialised from the API as ISO
+  // strings. `maintenanceUntil > now` — not `status` — is the truth of "a
+  // technician put this device into maintenance": the heartbeat overwrites
+  // status on every beat.
+  maintenanceStartedAt?: string | null;
+  maintenanceUntil?: string | null;
+  maintenanceReason?: string | null;
+  maintenanceStartedBy?: string | null;
 }
 
 // Current-state power/battery telemetry for portable devices (#2142). Reported
@@ -376,7 +388,14 @@ export interface MtlsCertData {
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type ScriptRunAs = 'system' | 'user' | 'elevated';
-export type ExecutionStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+export const EXECUTION_STATUSES = [
+  'pending', 'queued', 'running', 'cancelling',
+  'completed', 'failed', 'timeout', 'cancelled',
+] as const;
+export type ExecutionStatus = typeof EXECUTION_STATUSES[number];
+
+export const CANCEL_STATES = ['requested', 'confirmed', 'unconfirmed', 'failed'] as const;
+export type CancelState = typeof CANCEL_STATES[number];
 // 'automation' is read-only provenance: only the automation runtime mints it
 // (#3162), never an API caller — the execute-script request schema deliberately
 // still accepts only the first four.
@@ -416,6 +435,10 @@ export interface ScriptExecution {
   stderr: string | null;
   errorMessage: string | null;
   createdAt: Date;
+  cancelRequestedAt?: string | null;
+  cancelState?: CancelState | null;
+  cancelledBy?: string | null;
+  cancelCommandId?: string | null;
 }
 
 // ============================================
@@ -424,7 +447,10 @@ export interface ScriptExecution {
 
 export type AutomationTriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
 export type AutomationOnFailure = 'stop' | 'continue' | 'notify';
-export type AutomationRunStatus = 'running' | 'completed' | 'failed' | 'partial';
+export const AUTOMATION_RUN_STATUSES = [
+  'running', 'completed', 'failed', 'partial', 'cancelled',
+] as const;
+export type AutomationRunStatus = typeof AUTOMATION_RUN_STATUSES[number];
 export type PolicyEnforcement = 'monitor' | 'warn' | 'enforce';
 export type ComplianceStatus = 'compliant' | 'non_compliant' | 'pending' | 'error';
 
@@ -673,6 +699,8 @@ export interface InheritableAiBudgetSettings {
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+  /** #4388 — pre-cap alert rungs (1–99). Empty = off. Omit = inherit. */
+  alertThresholdPercents?: number[];
 }
 
 // A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).
@@ -776,10 +804,12 @@ export * from './filters';
 
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './orgNarrativeReport';
 export * from './ticketTriage';
+export * from './aiAgentImpact';
 
 // ============================================
 // Billing Enum SSOT
@@ -808,10 +838,17 @@ export * from './postureReport';
 export * from './executiveSummaryReport';
 
 // ============================================
+// Portal Visibility DTOs (Wave 1 - #4562)
+// ============================================
+
+export * from './portalVisibility';
+
+// ============================================
 // Public login-context wire contract (#2183)
 // ============================================
 
 export * from './loginContext';
+export * from './ssoDiscovery';
 export * from './publicQuote';
 
 // ============================================

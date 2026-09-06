@@ -131,6 +131,49 @@ describe('verifyEntraIdToken', () => {
     expect(claims.email).toBeNull();
   });
 
+  // ---- #3258 security round: the two address claims are kept APART ----
+  // `preferred_username` is the UPN, which Entra guarantees is a tenant-owned
+  // address. The `email` claim is NOT verified unless `xms_edov` says the
+  // tenant proved domain ownership (the nOAuth class of bugs). Collapsing them
+  // with `??` made an attacker-settable claim indistinguishable from a UPN, so
+  // the exchange could not apply a different rule to each.
+
+  it('exposes the UPN separately from the unverified email claim', async () => {
+    const token = await mintEntraToken({
+      tid,
+      oid,
+      preferred_username: 'Finance.User@Contoso.com',
+      email: 'Someone.Else@Victim.example',
+    });
+
+    const claims = await verifyEntraIdToken(token, { audience });
+
+    expect(claims.upn).toBe('finance.user@contoso.com');
+    expect(claims.emailClaim).toBe('someone.else@victim.example');
+    // The display/storage address still prefers the UPN.
+    expect(claims.email).toBe('finance.user@contoso.com');
+  });
+
+  it('reports xms_edov=false by default — absence is NOT verification', async () => {
+    const token = await mintEntraToken({ tid, oid, email: 'Finance.User@Contoso.com' });
+    const claims = await verifyEntraIdToken(token, { audience });
+    expect(claims.upn).toBeNull();
+    expect(claims.emailClaim).toBe('finance.user@contoso.com');
+    expect(claims.emailDomainOwnerVerified).toBe(false);
+  });
+
+  it('reports xms_edov=true only for the real boolean claim', async () => {
+    const token = await mintEntraToken({ tid, oid, email: 'a@b.com', xms_edov: true });
+    expect((await verifyEntraIdToken(token, { audience })).emailDomainOwnerVerified).toBe(true);
+  });
+
+  it('does not accept a string "true" xms_edov as verification', async () => {
+    // Entra emits a JSON boolean. Anything else is not the claim we mean, and a
+    // truthy coercion here would reopen the hole this rule exists to close.
+    const token = await mintEntraToken({ tid, oid, email: 'a@b.com', xms_edov: 'true' as never });
+    expect((await verifyEntraIdToken(token, { audience })).emailDomainOwnerVerified).toBe(false);
+  });
+
   it('returns the raw scp claim when present', async () => {
     const token = await mintEntraToken({ tid, oid, scp: 'access_as_user profile' });
     const claims = await verifyEntraIdToken(token, { audience });

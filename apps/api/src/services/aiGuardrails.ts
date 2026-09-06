@@ -252,14 +252,32 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
+  // Money-authoring drafts vs money-moving actions (#2551): this boundary
+  // tracks reversibility/external-commitment, not dollar amount. Drafting —
+  // create_draft, add_manual_line, add_catalog_line, update, etc. — only
+  // mutates an internal record nobody outside Breeze has seen yet; it's
+  // Tier 2 (auto-execute + audit) no matter how large the draft's total is.
+  // The step that actually commits externally — issuing/voiding an invoice,
+  // recording/voiding a payment, sending a quote to the customer, or
+  // transitioning a contract's lifecycle — is what exposes the change beyond
+  // Breeze, so THAT step is Tier 3 regardless of amount. A five-figure quote
+  // draft and a $10 one get the same tier; only `send` escalates.
+  //
+  // This is deliberate, not an oversight that `manage_organizations:
+  // create_org` is Tier 3 while `manage_quotes: create_draft` is Tier 2 —
+  // create_org is gated on tenant-structure mutation, an unrelated axis, not
+  // financial size. A partner-configurable dollar-amount escalation
+  // threshold for drafting was proposed and explicitly deferred (not
+  // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
-  // add_contact stays at the tool's base tier (it returns guidance only).
+  // add_contact (#3258) writes customer PII (a first-class contact record),
+  // so it escalates too, even though it reshapes no tenant boundary.
   // update_org's approval SCOPE (not its tier) is input-aware — see
   // resolveApprovalScope's override hook below.
-  manage_organizations: ['create_org', 'update_org', 'create_site'],
+  manage_organizations: ['create_org', 'update_org', 'create_site', 'add_contact'],
   // s1_threat_action is registered at base Tier 3 (see TIER3_FOUR_EYES_TOOLS /
   // TIER3_SUPERVISED_TOOLS below for its whole-tool catch-all), but its
   // `action` enum (kill/quarantine/rollback) is a real dispatch discriminator
@@ -321,6 +339,11 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
   manage_tickets: ['move_org'],
+  // Grants an AUTHORITY, not a device action: it converts "this agent must ask
+  // a human for <opKey>" into "this agent may run <opKey> unattended for this
+  // org from now on". Proposing that and authorising it are separate
+  // responsibilities. See services/aiToolsAiAgentGovernance.ts.
+  manage_ai_agents: ['authorize_supervised_key'],
   // Destroys or rewinds state.
   manage_hyperv_checkpoints: ['delete', 'apply'],
   manage_patches: ['rollback'],
@@ -340,6 +363,10 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'computer_control', 'create_remote_session',
   // Tenant destruction.
   'delete_tenant',
+  // AI agent authority grants (P2-5, #4192). Whole-tool member on top of the
+  // TIER3_FOUR_EYES_ACTIONS entry above, so a future action of this tool
+  // defaults to four_eyes instead of falling through to `supervised`.
+  'manage_ai_agents',
   // Identity / account control — M365 (helpdesk tools; dispatch outside the
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
@@ -370,6 +397,25 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // request_elevation above). Not named in spec §3.2; classified four_eyes
   // out of caution — flagged in the task report "concerns".
   'request_elevation',
+]);
+
+/**
+ * Tools the `ai_agent` principal may NEVER call, whatever its allowlist says.
+ *
+ * A third unconditional denial class alongside BLOCKED_TOOLS (tier 4) and
+ * `isSecretBearingTool` — and, like those, enforced in `checkAgentGuardrails`
+ * ABOVE the allowlist and the multiplexed-action resolution, so the deny
+ * cannot depend on a parseable `action` or on the snapshot omitting the name.
+ *
+ * `manage_ai_agents` (P2-5, #4192) grants an agent a pre-authorized action
+ * key: an agent able to call it could grant ITSELF new unattended authority,
+ * which is the one escalation no approval scope can contain (the grant
+ * outlives the run). Membership here is a registry, not a hard-coded string,
+ * so aiGuardrails.agentPrincipal.contract.test.ts can treat the class as
+ * unconditionally denied instead of duplicating the literal.
+ */
+export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
+  'manage_ai_agents',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -410,13 +456,22 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
-  manage_organizations: ['create_site'],
+  // add_contact (#3258) writes customer PII but is neither externally-binding
+  // nor identity/destroy-class, so it stays supervised alongside create_site
+  // rather than four_eyes — see spec §5.
+  manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // The customer's "regular work on a PC" (spec §3.2's explicit supervised list).
   'execute_command', 'run_script',
+  // #3525: stopping a script is a de-escalation — it never starts work, carries
+  // no operator-chosen content, target, credential or binary, and the worst
+  // outcome of an unwanted one is a job that has to be re-run. Supervised, at
+  // the same gate as the run_script it undoes; four_eyes would leave a runaway
+  // script on a customer endpoint while a second approver is found.
+  'cancel_script_execution',
   // s1_isolate_device is deliberately ABSENT here: its boolean `isolate`
   // discriminator cannot be action-classified (spec §3.1), so its scope is
   // resolved by resolveApprovalScope's override hook instead of this static
@@ -451,7 +506,41 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // RMM-QA-176 D9: a 'maintenance' feature link is the canonical
+  // monitoring-suppression source, so authoring one is a different class of
+  // act from authoring any other link — but only the INPUT says which it is,
+  // so it cannot be classified by (tool, action) in the static tables.
+  'manage_policy_feature_link:add',
+  'manage_policy_feature_link:update',
 ]);
+
+/**
+ * True when a (tool, action, input) triple escalates to Tier 3 on argument
+ * CONTENT. Exported so checkGuardrails, resolveApprovalScope and the tests all
+ * ask the SAME question — a second copy of this predicate is how a tier and
+ * its scope drift apart.
+ *
+ * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
+ * which is safe here because the handler writes exactly the featureType it was
+ * given, so a value that is not the literal 'maintenance' cannot create a
+ * maintenance link either. The handler's own principal check (D9.3) is the
+ * belt to this brace for `update`, where featureType is not a required input.
+ *
+ * The action guard is not decoration: without it a read (`list`) carrying a
+ * stray featureType argument would be escalated into an approval that the MCP
+ * transport then denies outright.
+ */
+export function isInputAwareTier3(
+  toolName: string,
+  action: string | undefined,
+  input: Record<string, unknown>,
+): boolean {
+  return (
+    toolName === 'manage_policy_feature_link' &&
+    (action === 'add' || action === 'update') &&
+    input.featureType === 'maintenance'
+  );
+}
 
 /**
  * Whole-tool counterpart of TIER3_INPUT_AWARE_ACTIONS — base-tier-3 tools
@@ -477,6 +566,16 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (isInputAwareTier3(toolName, action, input)) {
+    // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
+    // whole-tool scope set and add/update are in neither *_ACTIONS scope
+    // table, so without this override an escalated add/update would fall all
+    // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
+    // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
+    // escalations and manage_configuration_policy's own create/update/delete —
+    // authoring policy configuration, not an externally binding act.
+    return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
     // isolate:false is containment RELEASE (reverses a prior mitigation —
@@ -513,12 +612,21 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
+  // whoever may start a script may stop it, and nobody else.
+  cancel_script_execution: { resource: 'scripts', action: 'execute' },
   manage_alerts: {
     list: { resource: 'alerts', action: 'read' },
     get: { resource: 'alerts', action: 'read' },
     acknowledge: { resource: 'alerts', action: 'acknowledge' },
     resolve: { resource: 'alerts', action: 'write' },
     suppress: { resource: 'alerts', action: 'write' },
+  },
+  // Per-ACTION shape (like manage_tickets below) so a future action of this
+  // tool cannot inherit the grant permission by accident. `ai_agents:write`
+  // already exists in the canonical registry, seed, migration and catalog.
+  manage_ai_agents: {
+    authorize_supervised_key: { resource: 'ai_agents', action: 'write' },
   },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
@@ -587,6 +695,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'contracts', action: 'write' },
     add_line: { resource: 'contracts', action: 'write' },
     remove_line: { resource: 'contracts', action: 'write' },
+    update_line: { resource: 'contracts', action: 'write' },
     activate: { resource: 'contracts', action: 'manage' },
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
@@ -1075,6 +1184,10 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
 const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
   run_script: { limit: 5, windowSeconds: 300 },
+  // Deliberately looser than run_script: a stop is the safe direction, and a
+  // rate limit that blocks a tech's assistant from halting a runaway script is
+  // worse than the burst it prevents.
+  cancel_script_execution: { limit: 20, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
@@ -1145,6 +1258,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   get_service_monitoring_status: { limit: 30, windowSeconds: 300 },
   // Integration & webhook tools
   test_webhook: { limit: 5, windowSeconds: 300 },
+  // AI agent governance — a grant is a rare, deliberate act.
+  manage_ai_agents: { limit: 5, windowSeconds: 3600 },
   // Agent version & remote session tools
   trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
@@ -1207,6 +1322,24 @@ export type GuardrailCheck =
        */
       approvalScope: AiApprovalScope;
     });
+
+/**
+ * The read-only formula `checkAgentGuardrails` applies to a resolved
+ * `GuardrailCheck`: tier 1 is always read-only; tier 2 is read-only only on
+ * the #3130 allowlists (an explicit `readOnly: true` from an action-level
+ * table, or the tool being in `TIER2_READONLY_TOOLS`). Extracted so
+ * `agentToolCatalog.ts`'s catalog-operation resolution (which never calls
+ * `checkAgentGuardrails` — it has no run policy to check against) computes
+ * the exact same answer `checkAgentGuardrails` would, instead of a
+ * hand-rolled copy that could drift from it.
+ */
+export function isReadOnlyResolution(
+  toolName: string,
+  check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
+): boolean {
+  return check.tier === 1
+    || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+}
 
 /**
  * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
@@ -1282,6 +1415,20 @@ export function checkGuardrails(
       tier: 1,
       allowed: true,
       requiresApproval: false,
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
+
+  // Input-aware Tier-3 escalation (RMM-QA-176 D9). After the Tier-1 downgrade
+  // so a read action can never be escalated by a stray argument; before
+  // TIER3_ACTIONS and TIER2_ACTIONS, and necessarily before the base-tier
+  // resolution below, so the base tier 2 cannot claim it first.
+  if (isInputAwareTier3(toolName, action, input)) {
+    return {
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: resolveApprovalScope(toolName, action, input),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1624,6 +1771,9 @@ export function checkAgentGuardrails(
   if (isSecretBearingTool(toolName)) {
     return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
   }
+  if (AGENT_HUMAN_ONLY_TOOLS.has(toolName)) {
+    return deny(`Tool "${toolName}" is human-only and is never available to agents`);
+  }
 
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
   if (siteDenial) return deny(`Denied: ${siteDenial}`);
@@ -1648,8 +1798,7 @@ export function checkAgentGuardrails(
     );
   }
 
-  const readOnly = base.tier === 1
-    || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+  const readOnly = isReadOnlyResolution(toolName, base);
 
   // A device-less run has no site scope (buildAgentAuthContext pins
   // allowedSiteIds only when a device exists), so a mutation from it would be
@@ -1934,6 +2083,10 @@ function buildApprovalDescription(
       if (Array.isArray(input.deviceIds)) parts.push(`on ${input.deviceIds.length} device(s)`);
       break;
 
+    case 'cancel_script_execution':
+      parts.push(`Stop script execution ${(input.executionId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      break;
+
     case 'manage_services':
       parts.push(`${action?.toUpperCase()} service "${input.serviceName}"`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
@@ -1969,6 +2122,34 @@ function buildApprovalDescription(
       }
       break;
     }
+
+    // P2-5 (#4192): the op key ONLY. Never the agent's own text, never a
+    // rationale — this string is rendered in the approval inbox and stored on
+    // the intent, and no model-authored content may reach either.
+    //
+    // The parenthetical is not decoration: `cloneValuesFromEffective`
+    // (`aiAgents/supervisedKeyGrant.ts`) materializes the partner's CURRENT
+    // policy as a per-org `ai_agents` row whenever the org has none — the
+    // COMMON case under partner-wide-first. After that the org follows the
+    // partner only where the merge is tighten-only, so a partner that later
+    // WIDENS (a new tool in the allowlist, a raised limit, a new recipient or
+    // trigger) no longer reaches this org. The grant audit row records
+    // `clonedFromEffective` after the fact; this is the only place the second
+    // approver can be told BEFORE they consent. Unconditional because the
+    // description is built at intent-CREATION time, when whether the org
+    // already has a row is a race against the release — stating the
+    // conditional truth is honest at both moments.
+    case 'manage_ai_agents':
+      if (action === 'authorize_supervised_key') {
+        parts.push(
+          `Authorize the AI agent to run "${String(input.opKey ?? 'unknown')}" without an approval ` +
+          'for this organization in future runs',
+          '(creates a per-organization agent policy override if this organization does not already have one)',
+        );
+      } else {
+        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      }
+      break;
 
     case 'security_scan':
       parts.push(`Security: ${action}`);
@@ -2070,6 +2251,11 @@ function buildApprovalDescription(
       parts.push(`to ${input.level} ${(input.targetId as string)?.slice(0, 8)}...`);
       break;
 
+    case 'manage_policy_feature_link':
+      parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
+      parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      break;
+
     case 'remove_configuration_policy_assignment':
       parts.push(`Remove config policy assignment ${(input.assignmentId as string)?.slice(0, 8)}...`);
       break;
@@ -2111,7 +2297,44 @@ function buildApprovalDescription(
       if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
       else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
       else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
-      else parts.push(`Organizations: ${action}`);
+      else if (action === 'add_contact') {
+        // Review finding (fix round 1): `input.name` had no `??` fallback, so
+        // a phone/mobile-only contact (legal since contacts_identifiable_chk
+        // only needs ONE of name/email/phone/mobile) rendered literally as
+        // `Add contact "undefined"` — the approver saw nothing identifying,
+        // the exact failure spec §5 created this branch to prevent. Falls
+        // back through the same priority order createContact accepts, and
+        // lists every OTHER present identifier alongside it so the approver
+        // sees everything supplied, not just whichever field won the fallback.
+        const acName = typeof input.name === 'string' ? input.name : undefined;
+        const acEmail = typeof input.email === 'string' ? input.email : undefined;
+        const acPhone = typeof input.phone === 'string' ? input.phone : undefined;
+        const acMobile = typeof input.mobile === 'string' ? input.mobile : undefined;
+        const acHeadline = acName ?? acEmail ?? acPhone ?? acMobile ?? 'no identifying info provided';
+        const acOthers = [
+          acEmail && acEmail !== acHeadline ? `email: ${acEmail}` : null,
+          acPhone && acPhone !== acHeadline ? `phone: ${acPhone}` : null,
+          acMobile && acMobile !== acHeadline ? `mobile: ${acMobile}` : null,
+        ].filter((part): part is string => part !== null);
+        parts.push(
+          `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
+        );
+        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
+        // two add_contact inputs whose effect reaches beyond inserting a row,
+        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
+        // holds the scope's primary slot and REPLACES the legacy projection —
+        // organizations.billing_contact, or sites.contact when a site is
+        // pinned, which is a public partner-API DTO. Without these the
+        // approver cannot tell "file a new contact" (routine, hence
+        // supervised) apart from "overwrite this customer's billing contact".
+        const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+        if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
+        if (input.isPrimary === true) {
+          parts.push(
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+          );
+        }
+      } else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':

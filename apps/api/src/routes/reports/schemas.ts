@@ -187,3 +187,17 @@ export const dataQuerySchema = z.object({
   limit: z.string().optional(),
   offset: z.string().optional()
 });
+
+export const reportRecipientParamSchema = z.object({
+  id: z.string().guid(),
+  contactId: z.string().guid().optional(),
+});
+
+export const addReportRecipientSchema = z.object({
+  contactId: z.string().guid(),
+});
+
+export const convertReportRecipientSchema = z.object({
+  email: z.string().email().max(320),
+  name: z.string().trim().min(1).max(255).optional(),
+});

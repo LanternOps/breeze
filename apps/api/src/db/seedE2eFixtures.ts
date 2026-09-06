@@ -35,6 +35,7 @@ import {
   devicePatches,
   backupConfigs,
   backupJobs,
+  aiBudgetAlertEvents,
 } from './schema';
 import { and, eq } from 'drizzle-orm';
 
@@ -354,6 +355,41 @@ export async function seedE2eFixtures(
           startedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
           completedAt: new Date(Date.now() - 350 * 60 * 1000),
           errorLog: 'E2E synthetic failure: target unreachable',
+        }),
+    );
+
+    // ── AI budget alert event (#4388 W03) ───────────────────────────────────
+    // One fired monthly 80% rung for the current period so the AI usage
+    // settings page (`/settings/ai-usage`) renders `ai-budget-fired-rungs`.
+    // Period key computed the same way as aiCostTracker.ts getUsageSummary()
+    // (UTC calendar month, `YYYY-MM`) so it's found by the same query.
+    const now = new Date();
+    const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    await upsertByLookup(
+      () =>
+        db
+          .select({ id: aiBudgetAlertEvents.id })
+          .from(aiBudgetAlertEvents)
+          .where(
+            and(
+              eq(aiBudgetAlertEvents.orgId, orgId),
+              eq(aiBudgetAlertEvents.period, 'monthly'),
+              eq(aiBudgetAlertEvents.periodKey, monthlyKey),
+              eq(aiBudgetAlertEvents.thresholdPct, 80),
+            ),
+          )
+          .limit(1),
+      () =>
+        db.insert(aiBudgetAlertEvents).values({
+          orgId,
+          period: 'monthly',
+          periodKey: monthlyKey,
+          thresholdPct: 80,
+          capCents: 10000,
+          usedCents: 8500,
+          billingSource: 'platform',
+          deliveredAt: now,
+          recipientCount: 1,
         }),
     );
 

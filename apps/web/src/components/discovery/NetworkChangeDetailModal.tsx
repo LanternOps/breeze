@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { eventTypeConfig, formatDateTime, type DeviceOption, type NetworkChangeEvent } from './networkTypes';
+import { eventTypeConfig, formatDateTime, type NetworkChangeEvent } from './networkTypes';
 import { Dialog } from '../shared/Dialog';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 
 type NetworkChangeDetailModalProps = {
   open: boolean;
   event: NetworkChangeEvent | null;
   timezone?: string;
-  devices: DeviceOption[];
+  currentOrgId: string | null;
   canAcknowledge: boolean;
   canLinkDevice: boolean;
   onClose: () => void;
@@ -24,7 +26,7 @@ export default function NetworkChangeDetailModal({
   open,
   event,
   timezone,
-  devices,
+  currentOrgId,
   canAcknowledge,
   canLinkDevice,
   onClose,
@@ -34,8 +36,15 @@ export default function NetworkChangeDetailModal({
   const { t } = useTranslation('discovery');
   const [ackNotes, setAckNotes] = useState('');
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [deviceSearch, setDeviceSearch] = useState('');
   const [working, setWorking] = useState<'ack' | 'link' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    orgId: currentOrgId ?? undefined,
+    includeIds: selectedDeviceId ? [selectedDeviceId] : [],
+    enabled: open && canLinkDevice,
+  });
 
   useEffect(() => {
     if (!event) return;
@@ -47,8 +56,9 @@ export default function NetworkChangeDetailModal({
 
   const selectedDeviceLabel = useMemo(() => {
     if (!event?.linkedDeviceId) return null;
-    return devices.find((device) => device.id === event.linkedDeviceId)?.label ?? event.linkedDeviceId;
-  }, [devices, event?.linkedDeviceId]);
+    const device = deviceOptions.options.find((option) => option.id === event.linkedDeviceId);
+    return (device?.displayName ?? device?.hostname) || event.linkedDeviceId;
+  }, [deviceOptions.options, event?.linkedDeviceId]);
 
   if (!event) return null;
 
@@ -70,7 +80,7 @@ export default function NetworkChangeDetailModal({
   };
 
   const handleLink = async () => {
-    if (!selectedDeviceId) {
+    if (!selectedDeviceId || !deviceOptions.canSubmit) {
       setError(t('networkChangeDetailModal.errors.selectDeviceBeforeLinking'));
       return;
     }
@@ -221,22 +231,19 @@ export default function NetworkChangeDetailModal({
             )}
             {canLinkDevice && (
               <>
-                <select
-                  value={selectedDeviceId}
-                  onChange={(update) => setSelectedDeviceId(update.target.value)}
-                  className="mt-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  <option value="">{t('networkChangeDetailModal.options.selectDevice')}</option>
-                  {devices.map((device) => (
-                    <option key={device.id} value={device.id}>
-                      {device.label}
-                    </option>
-                  ))}
-                </select>
+                <DeviceOptionPicker
+                  className="mt-3"
+                  result={deviceOptions}
+                  selectedIds={selectedDeviceId ? [selectedDeviceId] : []}
+                  onSelectedIdsChange={(ids) => setSelectedDeviceId(ids[0] ?? '')}
+                  search={deviceSearch}
+                  onSearchChange={setDeviceSearch}
+                  selectionMode="single"
+                />
                 <button
                   type="button"
                   onClick={handleLink}
-                  disabled={working !== null || devices.length === 0}
+                  disabled={working !== null || !selectedDeviceId || !deviceOptions.canSubmit}
                   className="mt-3 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {working === 'link' ? t('networkChangeDetailModal.actions.linking') : t('networkChangeDetailModal.actions.linkDevice')}

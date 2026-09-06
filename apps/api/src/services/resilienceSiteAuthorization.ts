@@ -92,6 +92,17 @@ const SITE_UNRESTRICTED_PRINCIPAL_KINDS = new Set<PrincipalKind['kind']>([
   'system',
 ]);
 
+/**
+ * Whether a principal of this kind is subject to the site grant at all.
+ *
+ * Exported so route-level adapters share one list with the resolver below: a
+ * kind present here but missing there (or the reverse) is a silent hole in an
+ * app-layer-only boundary, since RLS does not enforce the site axis.
+ */
+export function isSiteRestrictedPrincipalKind(kind: PrincipalKind['kind'] | undefined): boolean {
+  return kind !== undefined && SITE_RESTRICTED_PRINCIPAL_KINDS.has(kind);
+}
+
 function siteAccessAllowed(principal: AuthorizationPrincipal, siteId: string): boolean {
   if (SITE_RESTRICTED_PRINCIPAL_KINDS.has(principal.kind)) {
     return canAccessSite(principal.permissions, siteId);

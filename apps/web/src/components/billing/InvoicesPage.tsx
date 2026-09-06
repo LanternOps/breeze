@@ -7,6 +7,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { usePermissions } from '../../lib/permissions';
+import { useJwtClaims } from '../../lib/authScope';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
@@ -97,6 +98,15 @@ function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
 export function InvoicesPage() {
   const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
+  // POST /accounting/quickbooks/invoices/push-bulk is `requireScope('partner',
+  // 'system')`, so an organization-scoped session can only ever get a 403 —
+  // hide the action rather than offer a guaranteed failure. The reactive hook
+  // (not the one-shot `getJwtClaims()`) because this decision is rendered:
+  // captured at mount, a cold load would freeze the empty-store answer (#4010).
+  // While the scope is `unresolved` the action stays visible — unknown is not
+  // denied, and falling through to the server is the correct default there.
+  const claims = useJwtClaims();
+  const isOrgScoped = claims.status === 'resolved' && claims.claims.scope === 'organization';
   const bulk = useBulkSelection();
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
@@ -325,6 +335,59 @@ export function InvoicesPage() {
     },
     [bulk, loadInvoices, filters, t],
   );
+
+  // Bulk QuickBooks push (Phase C, Task 7). Deliberately NOT routed through
+  // `runBulkInvoices`: the accounting route answers a bare
+  // `{ enqueued, skipped, failed }` (no `data` envelope, no `succeeded`) and
+  // only enqueues — the push itself happens later on the accounting-sync
+  // worker, so the toast must say "queued", never "pushed".
+  //
+  // `failed` counts invoices whose enqueue threw (a Redis outage, say). Those
+  // will never reach the worker, so folding them into `enqueued` would promise
+  // a push that never happens — the failure branch therefore takes precedence
+  // over the skipped-only one. It defaults to 0 so an older or unexpected body
+  // degrades to the previous two-number wording instead of printing `undefined`.
+  const pushSelectedToQuickbooks = useCallback(async () => {
+    const invoiceIds = Array.from(bulk.selectedIds);
+    if (invoiceIds.length === 0) return;
+    if (invoiceIds.length > BULK_ID_LIMIT) {
+      showToast({ type: 'warning', message: t('invoicesPage.bulk.limit', { limit: BULK_ID_LIMIT }) });
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const { enqueued, skipped, failed = 0 } = await runAction<{
+        enqueued: number;
+        skipped: number;
+        failed?: number;
+      }>({
+        request: () =>
+          fetchWithAuth('/accounting/quickbooks/invoices/push-bulk', {
+            method: 'POST',
+            body: JSON.stringify({ invoiceIds }),
+          }),
+        errorFallback: t('invoicesPage.bulk.quickbooksFailed'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (failed > 0) {
+        showToast({
+          type: 'warning',
+          message: t('invoicesPage.bulk.quickbooksQueuedFailed', { enqueued, skipped, failed }),
+        });
+      } else {
+        showToast(
+          skipped > 0
+            ? { type: 'warning', message: t('invoicesPage.bulk.quickbooksQueuedPartial', { enqueued, skipped }) }
+            : { type: 'success', message: t('invoicesPage.bulk.quickbooksQueued', { enqueued }) },
+        );
+      }
+      bulk.clear();
+    } catch (err) {
+      handleActionError(err, t('invoicesPage.bulk.quickbooksFailed'));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulk, t]);
 
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
@@ -723,6 +786,7 @@ export function InvoicesPage() {
               actions={[
                 ...(can('invoices', 'send') ? [{ key: 'issue', label: t('invoicesPage.bulk.issue'), disabled: bulkBusy, onClick: () => void runBulkInvoices('/invoices/bulk-issue', t('invoicesPage.bulk.issuedVerb')) }] : []),
                 ...(can('invoices', 'send') ? [{ key: 'void', label: t('invoicesPage.bulk.void'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
+                ...(can('invoices', 'write') && !isOrgScoped ? [{ key: 'quickbooks', label: t('invoicesPage.bulk.quickbooks'), disabled: bulkBusy, onClick: () => void pushSelectedToQuickbooks() }] : []),
                 ...(can('invoices', 'write') ? [{ key: 'delete', label: t('invoicesPage.bulk.deleteDrafts'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />

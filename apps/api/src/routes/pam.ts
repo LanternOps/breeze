@@ -48,6 +48,10 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
+import {
+  describePamRuleTierDrift,
+  PAM_RULE_TIER_UNREACHABLE_CODE,
+} from '../services/pamRuleTierDrift';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -1059,6 +1063,33 @@ function validateRuleShape(rule: RuleCriteriaShape): string | null {
   return null;
 }
 
+/**
+ * #3128: reject a tool-action rule pinned to a risk tier its tool selector can
+ * no longer resolve to. Tool tiers are static code that ships with the API, so
+ * a re-classification (#3105 moved three read-only execute_command
+ * commandTypes from Tier 3 to Tier 2) can leave a stored rule permanently
+ * unmatchable — and the engine's exact-equality match makes that silent.
+ *
+ * Deliberately NOT folded into validateRuleShape: that one feeds a Zod
+ * superRefine on create, which would emit the generic validation-failure body.
+ * Calling this from both handlers gives create and update the SAME
+ * machine-readable 400, and keeps the check off the preview endpoint — a
+ * dry-run must stay able to demonstrate that a stale rule matches nothing.
+ *
+ * Fails OPEN for an unrecognised tool name (see describePamRuleTierDrift).
+ */
+function tierDriftResponse(
+  rule: RuleCriteriaShape & { matchNegate?: readonly string[] | null },
+): { error: string; code: string; validTiers: number[] } | null {
+  const drift = describePamRuleTierDrift(rule);
+  if (!drift) return null;
+  return {
+    error: drift.message,
+    code: PAM_RULE_TIER_UNREACHABLE_CODE,
+    validTiers: drift.validTiers,
+  };
+}
+
 const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
   const err = validateRuleShape(rule);
   if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
@@ -1106,7 +1137,18 @@ pamRoutes.get('/rules', requirePamRead, async (c) => {
     .from(pamRules)
     .where(where)
     .orderBy(pamRules.priority, pamRules.createdAt);
-  return c.json({ success: true, rules: rows });
+  // #3128: surface tier drift so the UI can badge a rule that can no longer
+  // match. Computed per response rather than stored — the tool tier tables are
+  // code, so the answer changes on deploy, not on write.
+  const rules = rows.map((row) => {
+    const drift = describePamRuleTierDrift(row);
+    return {
+      ...row,
+      matchRiskTierStale: drift != null,
+      matchRiskTierValidTiers: drift?.validTiers ?? null,
+    };
+  });
+  return c.json({ success: true, rules });
 });
 
 pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', createRuleSchema), async (c) => {
@@ -1125,6 +1167,11 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
   // ability. Mirrors the canAccessSite gate on the elevation handlers.
   if (perms?.allowedSiteIds && !canAccessSite(perms, payload.siteId ?? '')) {
     return c.json({ error: 'Site access denied' }, 403);
+  }
+
+  const tierDrift = tierDriftResponse(payload);
+  if (tierDrift) {
+    return c.json(tierDrift, 400);
   }
 
   const [created] = await db
@@ -1364,6 +1411,13 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   const shapeError = validateRuleShape(merged);
   if (shapeError) {
     return c.json({ error: shapeError }, 400);
+  }
+
+  // Validate the MERGED tier selector: a PATCH that only moves matchRiskTier
+  // must be checked against the rule's STORED matchToolName (and vice versa).
+  const mergedTierDrift = tierDriftResponse(merged);
+  if (mergedTierDrift) {
+    return c.json(mergedTierDrift, 400);
   }
 
   const [updated] = await db.transaction(async (tx) => {

@@ -95,6 +95,167 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       }
     },
     schemas: {
+      // Custom-field definition importer (#3257 W07)
+      CustomFieldDefinitionImportRow: {
+        type: 'object',
+        required: ['fieldKey', 'name', 'type', 'ownerScope'],
+        properties: {
+          fieldKey: {
+            type: 'string',
+            pattern: '^[a-z][a-z0-9_]*$',
+            maxLength: 100,
+            description: 'Lowercase alphanumeric with underscores — the same rule POST /custom-fields enforces.'
+          },
+          name: { type: 'string', maxLength: 100 },
+          type: { type: 'string', enum: ['text', 'number', 'boolean', 'dropdown', 'date'] },
+          options: { type: 'object', nullable: true, description: 'Shared CustomFieldOptions contract (choices/min/max/…).' },
+          required: { type: 'boolean' },
+          deviceTypes: { type: 'array', nullable: true, items: { type: 'string', enum: ['windows', 'macos', 'linux'] } },
+          ownerScope: {
+            type: 'string',
+            enum: ['partner', 'organization'],
+            description: 'Ownership axis. Org XOR partner is enforced by custom_field_definitions_one_owner_chk.'
+          },
+          organizationId: { type: 'string', format: 'uuid', description: 'Required when ownerScope is "organization".' },
+          sourceLabel: {
+            type: 'string',
+            maxLength: 120,
+            description: 'The incumbent RMM\'s own name for the field (e.g. "udf7"). Recorded in the audit trail, never stored on the definition.'
+          },
+          expectedAnnotation: {
+            type: 'string',
+            description: 'COMMIT only. The annotation preview returned; the row is rejected if it has since moved.'
+          },
+          expectedDefinitionId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'COMMIT only. Required when expectedAnnotation is "already-exists" — pins the acknowledgement to one definition.'
+          }
+        }
+      },
+      CustomFieldDefinitionImportRequest: {
+        type: 'object',
+        required: ['rows'],
+        properties: {
+          partnerId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'System scope only may name a partner other than its own; anyone else supplying a different one gets 403.'
+          },
+          externalSystem: {
+            type: 'string',
+            maxLength: 64,
+            default: 'csv',
+            description: 'Which RMM the file came from (datto_rmm, ninjaone, cw_automate, n_central, csv). Recorded in the audit trail.'
+          },
+          rows: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1000,
+            items: { $ref: '#/components/schemas/CustomFieldDefinitionImportRow' }
+          }
+        }
+      },
+      DeviceCustomFieldImportValue: {
+        type: 'object',
+        required: ['target', 'value'],
+        properties: {
+          target: {
+            oneOf: [
+              {
+                type: 'object',
+                required: ['kind', 'fieldKey'],
+                properties: {
+                  kind: { type: 'string', enum: ['customField'] },
+                  fieldKey: { type: 'string', minLength: 1, maxLength: 100 }
+                }
+              },
+              {
+                type: 'object',
+                required: ['kind', 'field'],
+                properties: {
+                  kind: { type: 'string', enum: ['warranty'] },
+                  field: {
+                    type: 'string',
+                    enum: ['warrantyStartDate', 'warrantyEndDate', 'manufacturer'],
+                    description:
+                      'device_warranty columns an import may write. "status" is COMPUTED from the end date and never accepted; '
+                      + '"is_subscription" is never written at all — a true value suppresses expiry alerting and an import cannot know it.'
+                  }
+                }
+              }
+            ]
+          },
+          value: {
+            nullable: true,
+            oneOf: [{ type: 'string', maxLength: 10000 }, { type: 'number' }, { type: 'boolean' }],
+            description: 'null is an explicit clear, not "absent".'
+          }
+        }
+      },
+      DeviceCustomFieldImportRow: {
+        type: 'object',
+        required: ['values'],
+        description:
+          'Every identifier is optional and EVERY supplied one is resolved — a row whose identifiers point at different '
+          + 'devices is refused as identity-conflict rather than letting the first hit win. Resolution order: deviceId, '
+          + '(externalSystem, externalId) via device_external_links, serialNumber, hostname.',
+        properties: {
+          organizationId: { type: 'string', format: 'uuid', nullable: true, description: 'Narrows resolution to one organization. Out of reach ⇒ org-not-found.' },
+          deviceId: { type: 'string', format: 'uuid', nullable: true },
+          externalSystem: { type: 'string', maxLength: 64, nullable: true },
+          externalId: { type: 'string', maxLength: 255, nullable: true, description: 'Recorded as a durable device_external_links row on the first non-link match, so the next run resolves exactly.' },
+          externalSourceInstance: { type: 'string', maxLength: 255, nullable: true, description: 'Reserved; always null today.' },
+          serialNumber: { type: 'string', maxLength: 255, nullable: true },
+          hostname: { type: 'string', maxLength: 255, nullable: true },
+          values: { type: 'array', items: { $ref: '#/components/schemas/DeviceCustomFieldImportValue' } },
+          expectedOutcome: {
+            type: 'string',
+            enum: ['matched', 'link-match', 'ambiguous', 'not-found', 'org-not-found', 'identity-conflict'],
+            description: 'COMMIT only. The row outcome preview returned; the row is rejected "annotation-changed" if it has since moved.'
+          },
+          expectedDeviceId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'COMMIT only. REQUIRED when expectedOutcome is "ambiguous" — pins the acknowledgement to the device the operator picked.'
+          }
+        }
+      },
+      DeviceCustomFieldImportRequest: {
+        type: 'object',
+        required: ['rows'],
+        properties: {
+          partnerId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'System scope only may name a partner other than its own; anyone else supplying a different one gets 403.'
+          },
+          externalSystem: {
+            type: 'string',
+            maxLength: 64,
+            default: 'csv',
+            description: 'Which RMM the file came from. Used for the audit trail when a row does not name its own.'
+          },
+          mode: {
+            type: 'string',
+            enum: ['skip', 'update'],
+            default: 'skip',
+            description: 'What to do with a field that already holds a value. Per VALUE, not per row.'
+          },
+          overrideProviderWarranty: {
+            type: 'boolean',
+            default: false,
+            description: 'Replace warranty rows whose data_source is "provider" (a manufacturer API lookup). Off by default: a vendor answer outranks a CSV.'
+          },
+          rows: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1000,
+            description: 'Capped at 1000 rows AND 5000 total values per request — the row cap alone does not bound the work.',
+            items: { $ref: '#/components/schemas/DeviceCustomFieldImportRow' }
+          }
+        }
+      },
       // Common schemas
       Pagination: {
         type: 'object',
@@ -372,13 +533,16 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           // so a caller cannot forge this provenance.
           triggerType: { type: 'string', enum: ['manual', 'scheduled', 'alert', 'policy', 'automation'] },
           parameters: { type: 'object', nullable: true },
-          status: { type: 'string', enum: ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] },
+          status: { type: 'string', enum: ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled'] },
           startedAt: { type: 'string', format: 'date-time', nullable: true },
           completedAt: { type: 'string', format: 'date-time', nullable: true },
           exitCode: { type: 'integer', nullable: true },
           stdout: { type: 'string', nullable: true },
           stderr: { type: 'string', nullable: true },
-          errorMessage: { type: 'string', nullable: true }
+          errorMessage: { type: 'string', nullable: true },
+          cancelState: { type: 'string', nullable: true, enum: ['requested', 'confirmed', 'unconfirmed', 'failed'] },
+          cancelRequestedAt: { type: 'string', format: 'date-time', nullable: true },
+          cancelCommandId: { type: 'string', format: 'uuid', nullable: true }
         }
       },
 
@@ -482,6 +646,32 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           total: { type: 'integer' }
         }
       },
+      ScriptAdmissionTarget: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestedDeviceId', 'admission'],
+        properties: {
+          requestedDeviceId: { type: 'string', format: 'uuid' },
+          admission: { type: 'string', enum: ['admitted', 'excluded', 'suppressed', 'denied'] },
+          reasonCode: { type: 'string' },
+          executionId: { type: 'string', format: 'uuid' },
+          commandId: { type: 'string', format: 'uuid' },
+          batchId: { type: 'string', format: 'uuid' }
+        }
+      },
+      ScriptAdmissionResult: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestId', 'status', 'targets'],
+        properties: {
+          requestId: { type: 'string', format: 'uuid' },
+          status: { type: 'string', enum: ['queued', 'partially_queued', 'rejected'] },
+          targets: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ScriptAdmissionTarget' }
+          }
+        }
+      },
 
       // Automation schemas
       Automation: {
@@ -509,10 +699,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           id: { type: 'string', format: 'uuid' },
           automationId: { type: 'string', format: 'uuid' },
           triggeredBy: { type: 'string' },
-          status: { type: 'string', enum: ['running', 'completed', 'failed', 'partial'] },
+          status: { type: 'string', enum: ['running', 'completed', 'failed', 'partial', 'cancelled'] },
           devicesTargeted: { type: 'integer' },
           devicesSucceeded: { type: 'integer' },
           devicesFailed: { type: 'integer' },
+          devicesCancelled: { type: 'integer' },
           logs: { type: 'array', items: { type: 'object' } },
           startedAt: { type: 'string', format: 'date-time' },
           completedAt: { type: 'string', format: 'date-time', nullable: true }
@@ -1018,6 +1209,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1028,7 +1223,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'disableMfa',
         tags: ['Auth'],
         summary: 'Disable MFA',
-        description: 'Disable MFA for the current user. Requires a valid MFA code (TOTP or SMS). May be blocked by organization policy requiring MFA.',
+        description: 'Disable MFA for the current user. Requires a valid MFA code (TOTP or SMS) plus the current password. May be blocked by organization policy requiring MFA. Disabling advances the user\'s MFA epoch and revokes every refresh token family, so all OTHER sessions are signed out; the calling session is replaced in the same response (new refresh/CSRF cookies plus `tokens.accessToken`) and must adopt it.',
         requestBody: {
           required: true,
           content: {
@@ -1036,24 +1231,42 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               schema: {
                 type: 'object',
                 properties: {
-                  code: { type: 'string', minLength: 6, maxLength: 6 }
+                  code: { type: 'string', minLength: 6, maxLength: 6 },
+                  currentPassword: { type: 'string', description: 'The account password, re-verified so a stolen access token alone cannot strip the second factor.' }
                 },
-                required: ['code']
+                required: ['code', 'currentPassword']
               }
             }
           }
         },
         responses: {
           '200': {
-            description: 'MFA disabled',
+            description: 'MFA disabled and the calling session replaced',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/Success' }
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    message: { type: 'string' },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller. Install it before the next request — the previous access token is invalid from this point. Withheld on the rare post-commit install failure, in which case the client must re-authenticate.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           '400': { $ref: '#/components/responses/BadRequest' },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { description: 'Organization or partner policy still requires MFA for this user.' },
+          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No factor was removed.' },
+          '428': { description: 'The client auth binding must be rotated before a session can be issued. Retry after re-bootstrapping the binding.' }
         }
       }
     },
@@ -1227,8 +1440,15 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4660 (extends #4470): a rejected `currentPassword` is 400 with a
+          // stable `code` (`invalid_credentials`), alongside the pre-existing
+          // 400s for a passwordless account and a too-weak new password. 401
+          // is reserved for a dead bearer.
           '400': { $ref: '#/components/responses/BadRequest' },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          // #4746: current-password guesses are metered per user (5 / 5 min),
+          // the same shared step-up limiter the MFA factor routes use.
+          '429': { $ref: '#/components/responses/TooManyRequests' }
         }
       }
     },
@@ -1330,6 +1550,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1340,10 +1564,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'regenerateRecoveryCodes',
         tags: ['Auth'],
         summary: 'Regenerate MFA recovery codes',
-        description: 'Generate new recovery codes for the authenticated user. MFA must be enabled. Previous codes are invalidated.',
+        description: 'Generate new recovery codes for the authenticated user. MFA must be enabled. Previous codes are invalidated. Rotation advances the user\'s MFA epoch and revokes every refresh token family, so all OTHER sessions are signed out; the calling session is replaced in the same response (new refresh/CSRF cookies plus `tokens.accessToken`) and must adopt it.',
         responses: {
           '200': {
-            description: 'Recovery codes generated',
+            description: 'Recovery codes generated and the calling session replaced',
             content: {
               'application/json': {
                 schema: {
@@ -1351,13 +1575,23 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   properties: {
                     success: { type: 'boolean' },
                     recoveryCodes: { type: 'array', items: { type: 'string' } },
-                    message: { type: 'string' }
+                    message: { type: 'string' },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller. Install it before the next request — the previous access token is invalid from this point.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
                   }
                 }
               }
             }
           },
-          '400': { $ref: '#/components/responses/BadRequest' }
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No codes were rotated.' },
+          '428': { description: 'The client auth binding must be rotated before a session can be issued. Retry after re-bootstrapping the binding.' }
         }
       }
     },
@@ -1425,6 +1659,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -2436,6 +2674,295 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     },
 
     // ============================================
+    // CUSTOM FIELD DEFINITION IMPORT (#3257 W07)
+    // ============================================
+    '/custom-fields/import/preview': {
+      post: {
+        operationId: 'previewCustomFieldDefinitionImport',
+        tags: ['Devices'],
+        summary: 'Preview a custom-field definition import',
+        description:
+          'Annotate every submitted definition row against current state without writing anything. '
+          + 'Requires organization, partner or system scope, devices:write and MFA; JWT only (an X-API-Key caller gets 401). '
+          + 'Rows with ownerScope "partner" additionally require full partner org access — a batch containing one from a '
+          + 'caller without it is refused 403 in full, matching POST /custom-fields.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomFieldDefinitionImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Annotated rows',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    rows: {
+                      type: 'array',
+                      items: {
+                        allOf: [
+                          { $ref: '#/components/schemas/CustomFieldDefinitionImportRow' },
+                          {
+                            type: 'object',
+                            properties: {
+                              index: { type: 'integer' },
+                              annotation: {
+                                type: 'string',
+                                enum: ['create', 'already-exists', 'type-conflict', 'key-shadowed', 'org-not-found', 'partner-wide-denied'],
+                                description:
+                                  'create = no field owns this key on the row\'s axis; already-exists = same axis, same type (skipped at commit); '
+                                  + 'type-conflict = same axis different type, or the key appears twice in the file; '
+                                  + 'key-shadowed = the key is taken on the OTHER ownership axis (W03 anti-shadowing trigger); '
+                                  + 'org-not-found = the organization is absent or out of reach; '
+                                  + 'partner-wide-denied = the caller may not create all-organizations fields.',
+                              },
+                              existingId: { type: 'string', format: 'uuid', nullable: true },
+                              existingType: { type: 'string', nullable: true },
+                              conflictReason: { type: 'string' },
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap exceeded, bad field key, organization row with no organizationId)' },
+          '403': { description: 'Access denied to this partner, or partner-wide rows without full partner org access' },
+        },
+      },
+    },
+    '/custom-fields/import': {
+      post: {
+        operationId: 'commitCustomFieldDefinitionImport',
+        tags: ['Devices'],
+        summary: 'Commit a custom-field definition import',
+        description:
+          'Create the acknowledged definitions. Every annotation is RE-DERIVED against fresh state inside the request and a row '
+          + 'whose annotation moved since preview is rejected with code "annotation-changed"; an "already-exists" acknowledgement '
+          + 'must pin expectedDefinitionId or it is rejected with "match-changed". '
+          + 'Always responds 200, even when errors[] is non-empty: a partial import must not read as a total failure.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomFieldDefinitionImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Import summary (may report per-row errors)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    created: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          definitionId: { type: 'string', format: 'uuid' },
+                          fieldKey: { type: 'string' },
+                          ownerScope: { type: 'string', enum: ['partner', 'organization'] },
+                          organizationId: { type: 'string', format: 'uuid', nullable: true },
+                        },
+                      },
+                    },
+                    skipped: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          definitionId: { type: 'string', format: 'uuid' },
+                          fieldKey: { type: 'string' },
+                          reason: { type: 'string', enum: ['already-exists'] },
+                        },
+                      },
+                    },
+                    errors: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          fieldKey: { type: 'string' },
+                          error: { type: 'string' },
+                          code: {
+                            type: 'string',
+                            enum: [
+                              'org-not-found', 'type-conflict', 'key-shadowed', 'annotation-changed',
+                              'match-changed', 'partner-wide-denied', 'write-failed',
+                            ],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap exceeded, unpinned "already-exists" acknowledgement)' },
+          '403': { description: 'Access denied to this partner, or partner-wide rows without full partner org access' },
+        },
+      },
+    },
+
+    // ============================================
+    // DEVICE CUSTOM FIELD VALUE IMPORT (#3257 W08)
+    // ============================================
+    '/devices/custom-fields/import/preview': {
+      post: {
+        operationId: 'previewDeviceCustomFieldImport',
+        tags: ['Devices'],
+        summary: 'Preview a device custom-field value import',
+        description:
+          'Resolve each row to a device and annotate EVERY VALUE on it, without writing anything. '
+          + 'Annotation is per value, not per row: the normal case is a row where most values land, one names a field '
+          + 'this organization has never defined, and one fails type validation. '
+          + 'Requires organization, partner or system scope, devices:write and MFA; JWT only (an X-API-Key caller gets 401).',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DeviceCustomFieldImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Annotated rows',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    rows: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          outcome: {
+                            type: 'string',
+                            enum: ['matched', 'link-match', 'ambiguous', 'not-found', 'org-not-found', 'identity-conflict'],
+                            description:
+                              'How the DEVICE resolved. link-match = an existing device_external_links row (needs no acknowledgement); '
+                              + 'ambiguous = several devices match and the operator must pick one explicitly — the importer never auto-selects; '
+                              + 'identity-conflict = two identifiers each pinned a different device; '
+                              + 'org-not-found = the organization is absent or out of reach (deliberately the same answer for both).',
+                          },
+                          deviceId: { type: 'string', format: 'uuid', nullable: true },
+                          method: { type: 'string', enum: ['id', 'link', 'serial', 'hostname'], nullable: true },
+                          organizationId: { type: 'string', format: 'uuid', nullable: true },
+                          candidates: { type: 'array', items: { type: 'object' }, description: 'Ranked, for ambiguous / identity-conflict. Ranking is presentational and never selects.' },
+                          conflictingMethods: { type: 'array', items: { type: 'string' } },
+                          discardedIdentifiers: { type: 'array', items: { type: 'string' }, description: 'Identifiers the row supplied that carried no information (today: a serial on the agent junk denylist).' },
+                          values: {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                target: { type: 'object' },
+                                outcome: {
+                                  type: 'string',
+                                  enum: ['applied', 'skipped-already-set', 'no-definition', 'type-error', 'not-applicable-to-device', 'device-unresolved'],
+                                  description:
+                                    'skipped-already-set covers both an identical re-import and a differing value the default "skip" mode declines to overwrite; '
+                                    + 'no-definition = run the DEFINITIONS import first; '
+                                    + 'not-applicable-to-device = the definition is scoped to other deviceTypes; '
+                                    + 'device-unresolved = the row itself did not resolve, so no value on it can be judged.',
+                                },
+                                reason: { type: 'string', enum: ['invalid_type', 'out_of_range', 'not_a_choice', 'too_long', 'invalid_date'] },
+                                warning: { type: 'string', description: 'Advisory and orthogonal to outcome — e.g. a key that feeds the device\'s partner-integration stableIdentifiers.' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap or value cap exceeded, unknown mapping target)' },
+          '403': { description: 'Access denied to this partner, MFA required, or missing devices:write' },
+        },
+      },
+    },
+    '/devices/custom-fields/import': {
+      post: {
+        operationId: 'commitDeviceCustomFieldImport',
+        tags: ['Devices'],
+        summary: 'Commit a device custom-field value import',
+        description:
+          'Write the acknowledged values. Device resolution and every value annotation are RE-DERIVED against fresh state '
+          + 'inside the request and never taken from preview: a row whose outcome moved is rejected "annotation-changed", '
+          + 'and an "ambiguous" acknowledgement must pin expectedDeviceId or it is rejected "match-unconfirmed" / "match-changed". '
+          + 'Each row is written in its own transaction — its values, its durable external link and its warranty together — '
+          + 'so a failure rolls back that device alone and later rows still commit. '
+          + 'Always responds 200, even when errors[] is non-empty: a partial import must not read as a total failure.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DeviceCustomFieldImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Import summary (may report per-row errors)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    appliedValues: { type: 'integer', description: 'Counts VALUES, not rows, so the total reconciles against the file.' },
+                    skippedValues: { type: 'integer' },
+                    failedValues: { type: 'integer' },
+                    linksCreated: { type: 'integer' },
+                    rows: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          deviceId: { type: 'string', format: 'uuid' },
+                          organizationId: { type: 'string', format: 'uuid' },
+                          method: { type: 'string', enum: ['id', 'link', 'serial', 'hostname'] },
+                          externalSystem: { type: 'string', nullable: true },
+                          applied: { type: 'integer' },
+                          skipped: { type: 'integer' },
+                          failed: { type: 'integer' },
+                          appliedFieldKeys: { type: 'array', items: { type: 'string' }, description: 'Field KEYS only — a value never enters the audit payload.' },
+                          warranty: { type: 'string', enum: ['applied', 'skipped-provider-owned', 'skipped-already-set', 'none'] },
+                          linkCreated: { type: 'boolean' },
+                        },
+                      },
+                    },
+                    errors: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          error: { type: 'string' },
+                          code: {
+                            type: 'string',
+                            enum: ['org-not-found', 'not-found', 'identity-conflict', 'annotation-changed', 'match-changed', 'match-unconfirmed', 'write-failed'],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap or value cap exceeded, unpinned "ambiguous" acknowledgement)' },
+          '403': { description: 'Access denied to this partner, MFA required, or missing devices:write' },
+        },
+      },
+    },
+
+    // ============================================
     // SCRIPT ENDPOINTS
     // ============================================
     '/scripts': {
@@ -2574,8 +3101,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         operationId: 'executeScript',
         tags: ['Scripts'],
-        summary: 'Execute script',
-        description: 'Execute script on one or more devices. Creates a batch if multiple devices. Commands are delivered via WebSocket for immediate execution. Requires MFA.',
+        summary: 'Queue script execution',
+        description: 'Authorize and admit a script for one or more devices. A 201 response reports queue admission per distinct requested target and is not evidence of terminal execution success. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -2600,19 +3127,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
         responses: {
           '201': {
-            description: 'Execution started',
+            description: 'Per-target queue admission result',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    batchId: { type: 'string', format: 'uuid', nullable: true },
-                    scriptId: { type: 'string', format: 'uuid' },
-                    devicesTargeted: { type: 'integer' },
-                    executions: { type: 'array', items: { type: 'object' } },
-                    status: { type: 'string' }
-                  }
-                }
+                schema: { $ref: '#/components/schemas/ScriptAdmissionResult' }
               }
             }
           }
@@ -2673,18 +3191,58 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         operationId: 'cancelScriptExecution',
         tags: ['Scripts'],
-        summary: 'Cancel execution',
+        summary: 'Request a stop for an execution',
+        description: 'Asks the device to stop a running script (#3525). The execution moves to the transient `cancelling` state and only becomes `cancelled` once the stop is proven — either the server retracted a command the device never received, or the agent reported the process terminated. Poll the execution for the final `status` and `cancelState`.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  graceSeconds: {
+                    type: 'integer',
+                    minimum: 0,
+                    maximum: 30,
+                    default: 5,
+                    description: 'Seconds to wait after SIGTERM before SIGKILL. No graceful phase on Windows.'
+                  }
+                }
+              }
+            }
+          }
+        },
         responses: {
           '200': {
-            description: 'Execution cancelled',
+            description: 'Cancellation requested; the returned execution carries the current status and cancelState',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/Success' }
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    execution: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        status: { type: 'string', enum: ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled'] },
+                        cancelState: { type: 'string', nullable: true, enum: ['requested', 'confirmed', 'unconfirmed', 'failed'] },
+                        completedAt: { type: 'string', format: 'date-time', nullable: true }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
-          '400': { $ref: '#/components/responses/BadRequest' }
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          // Changed from 400 in #3525 W02b: a terminal execution is a conflict,
+          // not a malformed request.
+          '409': { description: 'Execution is no longer cancellable (already terminal)' },
+          '500': { description: 'Execution state is inconsistent (no paired script command); cancellation refused rather than stamped unproven' }
         }
       }
     },
@@ -3194,7 +3752,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           { $ref: '#/components/parameters/idParam' },
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
-          { name: 'status', in: 'query', schema: { type: 'string', enum: ['running', 'completed', 'failed', 'partial'] } }
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['running', 'completed', 'failed', 'partial', 'cancelled'] } }
         ],
         responses: {
           '200': {
@@ -3211,6 +3769,88 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           }
+        }
+      }
+    },
+    '/automations/runs/{runId}/cancel': {
+      post: {
+        operationId: 'cancelAutomationRun',
+        tags: ['Automations'],
+        summary: 'Stop a running automation run',
+        description: 'Stops an automation run (#3525). The run moves to `cancelled` immediately — that write is the dispatch fence, so no device that has not been dispatched yet ever will be. Devices already dispatched are asked to stop and close on their own evidence, so `devicesCancelled` only counts PROVEN stops and rises after this call returns. `execute_command` and `deploy_software` actions cannot be recalled at all and are reported in `uncancellableActions` rather than claimed stopped. Config-policy runs are out of scope and return 404.',
+        parameters: [
+          { name: 'runId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  graceSeconds: {
+                    type: 'integer',
+                    minimum: 0,
+                    maximum: 30,
+                    default: 5,
+                    description: 'Seconds each device waits after SIGTERM before SIGKILL. No graceful phase on Windows.'
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Cancellation requested. The counts describe what THIS call achieved, not that every device stopped.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    run: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        status: { type: 'string', enum: ['cancelled'] }
+                      }
+                    },
+                    alreadyCancelling: { type: 'boolean', description: 'The run had already been cancelled; the devices were asked again.' },
+                    actionsCancelled: { type: 'integer', description: 'Action rows that had never been dispatched and are now terminal.' },
+                    executionsStopped: { type: 'integer', description: 'Executions PROVEN stopped: the server retracted the command before the device saw it.' },
+                    executionsRequested: { type: 'integer', description: 'Executions a stop was sent to. NOT yet stopped — the device has not confirmed and may never.' },
+                    executions: {
+                      type: 'object',
+                      description: 'Per-kind breakdown of the script-execution sweep. Exactly one bucket per execution.',
+                      properties: {
+                        requested: { type: 'integer' },
+                        retracted: { type: 'integer' },
+                        alreadyCancelling: { type: 'integer' },
+                        noActionNeeded: { type: 'integer' },
+                        failed: { type: 'integer' }
+                      }
+                    },
+                    uncancellableActions: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          actionIndex: { type: 'integer' },
+                          actionType: { type: 'string' },
+                          reason: { type: 'string' }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { description: 'Partner-wide run and the caller cannot manage partner-wide state, or the run escapes the caller\'s site allowlist' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': { description: 'The run already finished on its own and cannot be relabelled cancelled' }
         }
       }
     },

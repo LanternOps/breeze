@@ -14,6 +14,7 @@ import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
 import { ticketStatusLabel, ticketStatusTone } from './ticketMarks';
+import { TicketSlaBadge } from './TicketList';
 
 /** Activity copy derived from the ticket's own status. This component only ever
  *  sees the ticket record plus its public replies, so it must never assert that
@@ -267,6 +268,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
           <StatusMark tone={tone}>
             {ticketStatusLabel(ticket.status)}
           </StatusMark>
+          <TicketSlaBadge sla={ticket.sla} testId="portal-ticket-sla-badge" />
           {/* Priority is context, not state: one mark per row. Urgent and high
               keep their tinted text; routine priorities stay muted. */}
           <span

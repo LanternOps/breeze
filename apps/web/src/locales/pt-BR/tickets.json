@@ -445,6 +445,17 @@
       "feedbackFailed": "Não foi possível salvar o feedback da triagem do chamado.",
       "feedbackSaved": "Feedback da triagem salvo"
     },
+    "aiDraft": {
+      "kindReply": "Resposta gerada por IA",
+      "kindResolutionNote": "Nota de resolução gerada por IA",
+      "sendAsMe": "Enviar como eu",
+      "sending": "Enviando…",
+      "discard": "Descartar",
+      "sendFailed": "Não foi possível enviar o rascunho da IA.",
+      "sent": "Rascunho enviado",
+      "discardFailed": "Não foi possível descartar o rascunho da IA.",
+      "discarded": "Rascunho descartado"
+    },
     "resolve": {
       "noteLabel": "Nota de resolução (visível para o solicitante)",
       "submit": "Resolver chamado"

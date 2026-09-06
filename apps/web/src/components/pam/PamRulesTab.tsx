@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
-import { ListChecks, Plus } from 'lucide-react';
+import { AlertTriangle, ListChecks, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -325,8 +325,35 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       </div>
                     )}
                   </td>
-                  <td className={`${tdClass} max-w-[320px] truncate text-xs text-muted-foreground`} title={ruleCriteriaSummary(rule, signerGroupNames)}>
-                    {ruleCriteriaSummary(rule, signerGroupNames) || '—'}
+                  <td className={`${tdClass} max-w-[320px] text-xs text-muted-foreground`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate" title={ruleCriteriaSummary(rule, signerGroupNames)}>
+                        {ruleCriteriaSummary(rule, signerGroupNames) || '—'}
+                      </span>
+                      {rule.matchRiskTierStale && (
+                        <span
+                          data-testid={`pam-rule-stale-tier-${rule.id}`}
+                          title={
+                            rule.matchRiskTierValidTiers && rule.matchRiskTierValidTiers.length > 0
+                              ? t('pamPamRulesTab.staleTierBadge.tooltipWithTiers', {
+                                  defaultValue:
+                                    'Risk tier {{tier}} no longer matches anything this rule can select, so it can never match. Tiers currently in use: {{tiers}}.',
+                                  tier: rule.matchRiskTier,
+                                  tiers: rule.matchRiskTierValidTiers.join(', '),
+                                })
+                              : t('pamPamRulesTab.staleTierBadge.tooltip', {
+                                  defaultValue:
+                                    'Risk tier {{tier}} no longer matches anything this rule can select, so it can never match.',
+                                  tier: rule.matchRiskTier,
+                                })
+                          }
+                          className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+                          {t('pamPamRulesTab.staleTierBadge.label', { defaultValue: 'Stale' })}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td
                     className={`${tdClass} whitespace-nowrap text-xs text-muted-foreground`}

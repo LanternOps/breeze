@@ -27,6 +27,15 @@ export interface RunningTimer {
   /** Set while the timer is device-only; null once the server owns it. */
   localId: string | null;
   ticketId: string | null;
+  /**
+   * Ticket label fields, joined server-side onto every entry so a row can be
+   * labelled without the ticket being in the phone's ticket list — that list
+   * is filter-scoped (open, assigned to me, first 50), so resolved tickets and
+   * other people's tickets are never in it. Null for device-only timers and
+   * entries with no ticket.
+   */
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
   startedAt: string;
   description: string | null;
 }
@@ -34,6 +43,9 @@ export interface RunningTimer {
 export interface TimeEntry {
   id: string;
   ticketId: string | null;
+  /** See RunningTimer.ticketNumber. */
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
   startedAt: string;
   endedAt: string | null;
   durationMinutes: number | null;
@@ -115,6 +127,8 @@ function narrowRunningTimer(row: ServerTimeEntry): RunningTimer {
     id: row.id,
     localId: null,
     ticketId: row.ticketId ?? null,
+    ticketNumber: row.ticketNumber ?? null,
+    ticketSubject: row.ticketSubject ?? null,
     startedAt: row.startedAt,
     description: row.description ?? null,
   };
@@ -124,6 +138,8 @@ function narrowTimeEntry(row: ServerTimeEntry): TimeEntry {
   return {
     id: row.id,
     ticketId: row.ticketId ?? null,
+    ticketNumber: row.ticketNumber ?? null,
+    ticketSubject: row.ticketSubject ?? null,
     startedAt: row.startedAt,
     endedAt: row.endedAt ?? null,
     durationMinutes: row.durationMinutes ?? null,

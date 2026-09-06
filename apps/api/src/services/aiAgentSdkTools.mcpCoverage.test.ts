@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { TOOL_TIERS, createBreezeMcpServer } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { TIER3_ACTIONS } from './aiGuardrails';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 /**
@@ -181,8 +182,44 @@ const PREREQUISITE_TOOLS = CONFIG_POLICY_TOOLS.filter(
   (name) => name !== 'manage_policy_feature_link',
 );
 
+/**
+ * `manage_organizations` joins the list for #3258 W02, which added the SAME six
+ * contact fields (siteId, phone, mobile, title, roles, isPrimary) BY HAND in
+ * three separate places — the Anthropic `input_schema.properties` in
+ * aiToolsOrgs.ts, `toolInputSchemas` in aiToolSchemas.ts, and the SDK `tool()`
+ * zod shape in aiAgentSdkTools.ts. All three strip rather than reject, so a
+ * field missed in any one of them vanishes on the way to `createContact` and
+ * the tool still reports success: an `isPrimary: true` the model was told to
+ * send would silently create an ordinary contact.
+ */
+const KEY_PARITY_TOOLS = [...CONFIG_POLICY_TOOLS, 'manage_organizations'] as const;
+
+/** The six fields #3258 W02 added to all three declarations at once. */
+const CONTACT_FIELDS = ['siteId', 'phone', 'mobile', 'title', 'roles', 'isPrimary'] as const;
+
+let sdkServer: ReturnType<typeof createBreezeMcpServer> | undefined;
+
+/**
+ * The zod shape a tool was actually registered with inside
+ * `createBreezeMcpServer`. Unlike the other two sources this one is not an
+ * exported object: it only exists on the built MCP server, so the test reaches
+ * through the SDK's `_registeredTools` map. That is a private field, but the
+ * alternative — regexing the shape literal out of the source, as
+ * `declaredDescription` does for the description — cannot see what the SDK
+ * ended up registering, which is the thing that governs at runtime.
+ */
+function sdkDeclaredKeys(name: string): string[] {
+  sdkServer ??= createBreezeMcpServer(() => ({}) as never);
+  const registered = (sdkServer as unknown as {
+    instance?: { _registeredTools?: Record<string, { inputSchema?: z.ZodObject<z.ZodRawShape> }> };
+  }).instance?._registeredTools?.[name];
+  const shape = registered?.inputSchema?.shape;
+  if (!shape) throw new Error(`tool('${name}', ...) registered no zod shape on the SDK server`);
+  return Object.keys(shape).sort();
+}
+
 describe('advertised input_schema matches the enforced Zod schema (#2814)', () => {
-  it.each(CONFIG_POLICY_TOOLS)('%s advertises exactly the keys it validates', (name) => {
+  it.each(KEY_PARITY_TOOLS)('%s advertises exactly the keys it validates', (name) => {
     const advertised = Object.keys(
       aiTools.get(name)!.definition.input_schema.properties as Record<string, unknown>,
     ).sort();
@@ -194,6 +231,72 @@ describe('advertised input_schema matches the enforced Zod schema (#2814)', () =
       'a key the model is told to send but Zod does not know is stripped silently — the write '
         + 'lands with defaults and the tool still reports success',
     ).toEqual(advertised);
+  });
+
+  it('manage_organizations declares the same keys in the SDK tool() shape as in the other two', () => {
+    // The third hand-maintained copy. `z.object()` STRIPS unknown keys, so a
+    // field present in the registry definition and in toolInputSchemas but
+    // missing here is dropped between the model and the handler with no error
+    // anywhere — the exact silent-success failure #2814 documents, on a tool
+    // that writes customer PII and can replace an organization's billing
+    // contact (#3258 W02).
+    const declared = sdkDeclaredKeys('manage_organizations');
+    const advertised = Object.keys(
+      aiTools.get('manage_organizations')!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const enforced = Object.keys(
+      (toolInputSchemas.manage_organizations as z.ZodObject<z.ZodRawShape>).shape,
+    ).sort();
+
+    expect(declared).toEqual(advertised);
+    expect(declared).toEqual(enforced);
+    // Named explicitly so a drop reads as "the contact fields went missing"
+    // rather than as an opaque array diff.
+    for (const field of CONTACT_FIELDS) {
+      expect(declared, `SDK tool() shape is missing ${field}`).toContain(field);
+      expect(advertised, `input_schema is missing ${field}`).toContain(field);
+      expect(enforced, `toolInputSchemas is missing ${field}`).toContain(field);
+    }
+  });
+});
+
+/**
+ * MCP discovery consequence of #3258 W02, pinned deliberately.
+ *
+ * `isToolWhollyGatedOverMcp` (routes/mcpServer.ts) suppresses a tool from
+ * `tools/list` when EVERY value of its `action` enum is in `TIER3_ACTIONS`:
+ * MCP has no interactive approval channel, so such a tool could only ever
+ * answer MCP_APPROVAL_REQUIRED, and advertising it would be the
+ * "advertised-but-dead" pattern that suppression exists to eliminate. Adding
+ * `add_contact` to TIER3_ACTIONS made all four manage_organizations actions
+ * Tier 3, so the whole tool is now hidden from MCP clients and every MCP call
+ * to it is refused — correct, and a deliberate loss of MCP reach that should
+ * be re-decided (not silently reversed) the day a sub-Tier-3 action is added.
+ *
+ * The behaviour itself is asserted through the real listing path in
+ * routes/mcpServer.approvalGate.test.ts. THIS assertion is the half that suite
+ * cannot make: it mocks the tool registry, so only here — against the real
+ * definition — can the advertised enum be compared with TIER3_ACTIONS.
+ */
+describe('manage_organizations is wholly gated over MCP (#3258 W02)', () => {
+  it('every advertised action is Tier 3, which is what removes it from tools/list', () => {
+    const advertisedActions = (
+      aiTools.get('manage_organizations')!.definition.input_schema.properties as {
+        action?: { enum?: string[] };
+      }
+    ).action?.enum;
+    expect(advertisedActions, 'manage_organizations must stay action-multiplexed').toBeDefined();
+
+    const tier3 = TIER3_ACTIONS.manage_organizations ?? [];
+    expect(advertisedActions).toContain('add_contact');
+    for (const action of advertisedActions!) {
+      expect(
+        tier3,
+        `"${action}" is not in TIER3_ACTIONS, so manage_organizations is NO LONGER wholly gated `
+          + 'over MCP: it returns to tools/list and that action becomes callable without approval. '
+          + 'That may be the intent — update this test and the MCP listing test together if so.',
+      ).toContain(action);
+    }
   });
 });
 

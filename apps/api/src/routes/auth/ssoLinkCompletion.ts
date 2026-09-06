@@ -21,7 +21,10 @@ import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../../services/ssoDomainVerification';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { consumeSsoPendingLink } from '../../services/ssoPendingLink';
+import {
+  consumeSsoPendingLink,
+  restoreConsumedSsoPendingLink,
+} from '../../services/ssoPendingLink';
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { auditLogin } from './helpers';
 
@@ -589,6 +592,12 @@ export async function finalizeSsoPendingLink(
       });
       capability = undefined;
     } catch (err) {
+      if (err instanceof RecoveryCodeInvalidError) {
+        const restored = await restoreConsumedSsoPendingLink(tokenHash, record);
+        if (!restored) {
+          console.warn('[sso/link] invalid recovery code could not restore the retryable pending record');
+        }
+      }
       const reason = err instanceof RecoveryCodeInvalidError
         ? 'invalid_mfa_code'
         : err instanceof SsoCompletionRejected

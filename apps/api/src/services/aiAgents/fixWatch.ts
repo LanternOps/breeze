@@ -22,7 +22,7 @@
  * never establish recovery (a human dismissing an alert is not the same as
  * the underlying condition clearing) — it cancels the watch instead.
  */
-import { and, desc, eq, gt, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 import type { AgentRunVerdict, AiAgentMode } from '@breeze/shared';
 import {
   db,
@@ -34,12 +34,23 @@ import {
 // agentCircuit.ts/runService.ts: this sits on the run-finish path, and the
 // barrel would drag every partial-mock unit test of that path into stubbing
 // the whole schema surface.
-import { aiAgentFixWatches, type AiAgentFixWatch } from '../../db/schema/aiAgentFixWatches';
+import {
+  aiAgentFixWatches,
+  type AiAgentFixWatch,
+  type NewAiAgentFixWatch,
+} from '../../db/schema/aiAgentFixWatches';
 import { alerts } from '../../db/schema/alerts';
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { createNotification } from '../userNotifications';
+import { captureException } from '../sentry';
 import { resolveRecipientUserIds } from './recipients';
+import { insertOpEvidence, watchEvidenceSourceId } from './opEvidence';
+import {
+  demoteSupervisedKey,
+  notifyDemotion,
+  type NotifyDemotionInput,
+} from './supervisedKeyDemote';
 
 /** Same skip-if-already-system shape duplicated across this module family. */
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -81,6 +92,16 @@ export interface FixWatchOutcomeInput {
   executedActions: ReadonlyArray<{
     verification?: 'passed' | 'failed' | 'inconclusive' | 'skipped';
     execution?: 'succeeded' | 'failed' | 'timeout' | 'unknown';
+    /**
+     * The manifest op key of this execution (`manage_services.restart` — a
+     * DOT key, unlike an intent's colon key). Snapshotted onto the watch row
+     * (P2-5, #4192) so the phase-2 verdict knows which operations its
+     * `recurred` / `held_qualified` outcome grades, without re-reading a run
+     * outcome that may have been pruned by then. Structurally compatible with
+     * `runLoop.ts`'s `OutcomeExecutedAction.actOpKey`; absent on every
+     * pre-Part-B (non-act) execution.
+     */
+    actOpKey?: string;
   }>;
   /**
    * The run's own rollup verdict (`computeRunVerdict`, runLoop.ts). LOCKED:
@@ -137,47 +158,263 @@ export async function createFixWatchRow(
   const alertId = run.alertId as string;
 
   return inSystemDbContext(async () => {
-    const [alertRow] = await db
-      .select({ ruleId: alerts.ruleId, deviceId: alerts.deviceId, configItemName: alerts.configItemName })
-      .from(alerts)
-      .where(and(eq(alerts.id, alertId), eq(alerts.orgId, run.orgId)))
-      .limit(1);
-    if (!alertRow) {
-      console.warn('[fixWatch] triggering alert is not (or no longer) in the run org — skipping watch', {
-        runId: run.id, orgId: run.orgId, alertId,
-      });
-      return null;
-    }
+    const anchor = await loadWatchAnchor({ orgId: run.orgId, alertId, logContext: { runId: run.id } });
+    if (!anchor) return null;
 
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, run.orgId))
-      .limit(1);
-    if (!org?.partnerId) {
-      console.warn('[fixWatch] run org has no resolvable partner — skipping watch', {
-        runId: run.id, orgId: run.orgId,
-      });
-      return null;
-    }
-
-    const [watch] = await db
-      .insert(aiAgentFixWatches)
-      .values({
-        orgId: run.orgId,
-        partnerId: org.partnerId,
-        agentId: run.agentId,
-        runId: run.id,
-        alertId,
-        ruleId: alertRow.ruleId,
-        deviceId: alertRow.deviceId,
-        configItemName: alertRow.configItemName,
-        state: 'pending',
-      })
-      .onConflictDoNothing({ target: aiAgentFixWatches.runId })
-      .returning({ id: aiAgentFixWatches.id });
+    const [watch] = await insertFixWatchRowQuery({
+      orgId: run.orgId,
+      partnerId: anchor.partnerId,
+      agentId: run.agentId,
+      runId: run.id,
+      alertId,
+      ruleId: anchor.ruleId,
+      deviceId: anchor.deviceId,
+      configItemName: anchor.configItemName,
+      state: 'pending',
+      sourceKind: 'act_run',
+      opKeys: snapshotActOpKeys(outcome),
+    });
 
     return watch?.id ?? null;
+  });
+}
+
+/**
+ * The op keys this run's executions are about to be graded on, de-duplicated
+ * and in first-seen order (P2-5, #4192). Every executed action contributes,
+ * not just the verified ones: the watch's verdict is about the ALERT the run
+ * as a whole was trying to fix, and Task 6 writes one evidence row per key.
+ * Duplicates would collide on `watchEvidenceSourceId(watchId, key)` and be
+ * absorbed by ON CONFLICT DO NOTHING anyway — dropping them here keeps the
+ * stored array honest about what it means. A pre-Part-B run (no act keys at
+ * all) snapshots `[]`, which Task 6 reads as "nothing to grade".
+ */
+function snapshotActOpKeys(outcome: FixWatchOutcomeInput): string[] {
+  const keys = new Set<string>();
+  for (const action of outcome.executedActions) {
+    if (action.actOpKey) keys.add(action.actOpKey);
+  }
+  return [...keys];
+}
+
+/**
+ * The statement executor. Defaults to the ambient `db`, but a caller inside a
+ * SAVEPOINT (`intentReleaseWorker.ts`'s terminalization) MUST thread the
+ * savepoint's own executor: postgres-js records the first failed query of a
+ * scope in that scope's `uncaughtError` and rethrows it when the scope ends
+ * EVEN IF the caller caught the rejection, so a statement issued through the
+ * ambient proxy would abort the OUTER transaction — here, a terminal CAS for
+ * an action that already ran. Same contract, same reason, as
+ * `insertOpEvidence`'s second parameter.
+ */
+export type WatchDatabase = Pick<typeof db, 'select' | 'insert'>;
+
+/**
+ * The triggering alert's denormalized identity plus the org's partner — the
+ * two reads both watch constructors need, in the caller's ambient
+ * transaction. Returns null (already logged) when either is unusable, which
+ * is a skipped watch, never a thrown error: a watch is observational, and
+ * losing one must not fail the run or the release that asked for it.
+ */
+async function loadWatchAnchor(
+  input: { orgId: string; alertId: string; logContext: Record<string, unknown> },
+  database: WatchDatabase = db,
+): Promise<{ ruleId: string | null; deviceId: string; configItemName: string | null; partnerId: string } | null> {
+  const [alertRow] = await database
+    .select({ ruleId: alerts.ruleId, deviceId: alerts.deviceId, configItemName: alerts.configItemName })
+    .from(alerts)
+    .where(and(eq(alerts.id, input.alertId), eq(alerts.orgId, input.orgId)))
+    .limit(1);
+  if (!alertRow) {
+    console.warn('[fixWatch] triggering alert is not (or no longer) in the run org — skipping watch', {
+      ...input.logContext, orgId: input.orgId, alertId: input.alertId,
+    });
+    return null;
+  }
+
+  const [org] = await database
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, input.orgId))
+    .limit(1);
+  if (!org?.partnerId) {
+    console.warn('[fixWatch] run org has no resolvable partner — skipping watch', {
+      ...input.logContext, orgId: input.orgId,
+    });
+    return null;
+  }
+
+  return { ...alertRow, partnerId: org.partnerId };
+}
+
+/**
+ * The act-run watch insert, unexecuted — exported so its ON CONFLICT clause
+ * (the thing that absorbs a duplicate `finishRun`) can be asserted as
+ * compiled SQL rather than against a mocked builder. `run_id`'s UNIQUE became
+ * PARTIAL in `2026-10-01-100000-ai-agents-graduation-evidence.sql` (`WHERE
+ * source_kind = 'act_run'`, since one run may now also spawn N intent
+ * watches), and Postgres cannot infer a partial unique index as the arbiter
+ * unless the statement repeats its predicate — without it this is a runtime
+ * 42P10 on exactly the redelivery the clause exists for.
+ */
+export function insertFixWatchRowQuery(values: NewAiAgentFixWatch, database: WatchDatabase = db) {
+  return database
+    .insert(aiAgentFixWatches)
+    .values(values)
+    .onConflictDoNothing({
+      target: aiAgentFixWatches.runId,
+      where: sql`${aiAgentFixWatches.sourceKind} = 'act_run'`,
+    })
+    .returning({ id: aiAgentFixWatches.id });
+}
+
+/** The intent-anchored sibling. Arbitrates on the partial `intent_id` UNIQUE,
+ *  never on `run_id` — N independently-released intents legitimately share
+ *  one run (#4206). Same predicate-repetition requirement as above. */
+export function insertIntentFixWatchRowQuery(values: NewAiAgentFixWatch, database: WatchDatabase = db) {
+  return database
+    .insert(aiAgentFixWatches)
+    .values(values)
+    .onConflictDoNothing({
+      target: aiAgentFixWatches.intentId,
+      where: sql`${aiAgentFixWatches.intentId} is not null`,
+    })
+    .returning({ id: aiAgentFixWatches.id });
+}
+
+/** Everything an intent-anchored watch needs from a just-released intent. */
+export interface IntentForWatch {
+  intentId: string;
+  orgId: string;
+  runId: string;
+  agentId: string;
+  alertId: string;
+  /** The colon key `canonicalPolicyKey` resolved for this intent. */
+  opKey: string;
+}
+
+/**
+ * Sibling of `createFixWatchRow` for a released ACTION INTENT rather than an
+ * act-mode run (P2-5, #4192 — closes #4206). `createFixWatchRow` rejects
+ * anything but an act-mode, execution-succeeded, verification-passed RUN
+ * (`isFixWatchEligible`) and cannot be reused: a released intent has no
+ * manifest execution and no `actVerify` read-back, and N intents from one run
+ * each need their OWN verification episode instead of sharing one run-unique
+ * watch.
+ *
+ * Reuses the same denormalisation (`rule_id` / `device_id` /
+ * `config_item_name` off the TRIGGERING ALERT ROW, read predicated by BOTH id
+ * and org) and the same partner resolution, and JOINS the caller's ambient
+ * system transaction so the watch row commits with the terminal CAS that
+ * released the intent.
+ *
+ * Returns null ONLY when no watch row exists for this intent afterwards — the
+ * alert is unreadable in this org, or the org has no resolvable partner. A
+ * conflict on the partial `intent_id` UNIQUE returns the EXISTING row's id,
+ * because the caller reads null as "nothing will ever verify this operation"
+ * and credits it `verified` on the spot; saying null while a live watch is
+ * about to render a verdict would write a premature, immutable ledger row.
+ */
+export async function createIntentFixWatchRow(
+  input: IntentForWatch,
+  database: WatchDatabase = db,
+): Promise<string | null> {
+  return inSystemDbContext(async () => {
+    const anchor = await loadWatchAnchor(
+      { orgId: input.orgId, alertId: input.alertId, logContext: { intentId: input.intentId, runId: input.runId } },
+      database,
+    );
+    if (!anchor) return null;
+
+    const [watch] = await insertIntentFixWatchRowQuery({
+      orgId: input.orgId,
+      partnerId: anchor.partnerId,
+      agentId: input.agentId,
+      runId: input.runId,
+      intentId: input.intentId,
+      alertId: input.alertId,
+      ruleId: anchor.ruleId,
+      deviceId: anchor.deviceId,
+      configItemName: anchor.configItemName,
+      state: 'pending',
+      sourceKind: 'intent',
+      opKeys: [input.opKey],
+    }, database);
+    if (watch) return watch.id;
+
+    // ON CONFLICT DO NOTHING returned no row: a watch for this intent already
+    // exists (only a redelivery that also re-won a terminal CAS can get here,
+    // which the release guard makes unreachable in practice). Report ITS id
+    // so the null contract above stays literally true.
+    const [existing] = await database
+      .select({ id: aiAgentFixWatches.id })
+      .from(aiAgentFixWatches)
+      .where(and(eq(aiAgentFixWatches.intentId, input.intentId), eq(aiAgentFixWatches.orgId, input.orgId)))
+      .limit(1);
+    return existing?.id ?? null;
+  });
+}
+
+/** DB page size for one recovery-sweep read. The page is a list of
+ *  CANDIDATES, not of proven strandings — nothing in this table records
+ *  whether a watch's phase-1 job was ever added, so the sweep's Redis probe
+ *  (`fixWatchWorker.ts`) is what actually discriminates. The reader therefore
+ *  pages instead of taking one capped slice: a fleet with more concurrently
+ *  `pending` watches than the cap would otherwise hand the sweep the same
+ *  oldest-N healthy rows every tick and never reach a newer stranded one
+ *  until those aged out (review finding, P2-5). */
+export const STRANDED_WATCH_SWEEP_PAGE = 200;
+
+/** Keyset position in the pending set, ordered `(created_at, id)`. */
+export interface PendingWatchCursor {
+  id: string;
+  createdAt: Date;
+}
+
+/**
+ * One page of `pending` watches created more than `olderThanMs` ago, oldest
+ * first — the reader behind `fixWatchWorker.ts`'s recovery sweep (P2-5,
+ * #4192). Pass the previous page's last row as `after` to continue.
+ *
+ * A watch row is committed inside a DB transaction and its BullMQ job is
+ * added AFTER that transaction closes (`bullmqQueue.ts`'s #1105 tripwire
+ * forbids enqueueing inside a held context), so a crash — or a Redis blip —
+ * between the two strands the row: `pending` forever, with no job to move it.
+ * A phase-1 job that exhausts its `attempts` strands it the same way.
+ *
+ * Neither mode is visible here: a healthy watch stays `pending` for up to
+ * `RECOVERY_TIMEOUT_HOURS` while phase 1 self-re-delays every 5 minutes, so
+ * every row this returns may be perfectly healthy. The caller probes Redis
+ * per id and acts only on the ones with no live job. Keyset paging (rather
+ * than OFFSET) keeps each page an index range scan on
+ * `ai_agent_fix_watches_pending_recovery_idx`.
+ */
+export async function listPendingWatchesForRecovery(
+  olderThanMs: number,
+  after: PendingWatchCursor | null = null,
+  limit = STRANDED_WATCH_SWEEP_PAGE,
+): Promise<PendingWatchCursor[]> {
+  return inSystemDbContext(async () => {
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const rows = await db
+      .select({ id: aiAgentFixWatches.id, createdAt: aiAgentFixWatches.createdAt })
+      .from(aiAgentFixWatches)
+      .where(
+        and(
+          eq(aiAgentFixWatches.state, 'pending'),
+          lt(aiAgentFixWatches.createdAt, cutoff),
+          // Row-value comparison, so the tuple order matches the ORDER BY
+          // exactly and no row is visited twice or skipped when several
+          // watches share a `created_at`. Casts are explicit because the
+          // driver sends parameters untyped.
+          after
+            ? sql`(${aiAgentFixWatches.createdAt}, ${aiAgentFixWatches.id}) > (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+            : undefined,
+        ),
+      )
+      .orderBy(asc(aiAgentFixWatches.createdAt), asc(aiAgentFixWatches.id))
+      .limit(limit);
+    return rows;
   });
 }
 
@@ -278,6 +515,158 @@ export type FixWatchPhase2Outcome =
 interface RecurrenceDetected {
   watch: AiAgentFixWatch;
   recurrenceAlertId: string;
+  /** One entry per key the recurrence actually revoked — see
+   *  `demoteRecurredKeys`. Empty is the normal case. */
+  demotions: NotifyDemotionInput[];
+}
+
+/**
+ * Watch-verdict op evidence (Task 6, P2-5, #4192) — one row per entry of
+ * `watch.opKeys`, written INSIDE the caller's winning CAS transaction,
+ * before it returns. A pre-P2-5 watch (or one whose `snapshotActOpKeys`
+ * snapshotted nothing) carries `op_keys: []` and writes nothing — there is
+ * no key to grade.
+ *
+ * `namespace` follows `source_kind`: an intent-anchored watch grades a
+ * released intent's canonical `tool:action` key (`policy_key`); an
+ * act-run-anchored watch grades a manifest op key (`act_op`) — same mapping
+ * `createIntentFixWatchRow`/`createFixWatchRow` use to pick `source_kind` in
+ * the first place.
+ *
+ * No try/catch here on purpose: an insert failure propagates and rolls back
+ * the SAME transaction as the CAS that just won, undoing both together. That
+ * is safe (unlike `intentReleaseWorker.ts`'s SAVEPOINT-isolated evidence
+ * write) because nothing externally visible has happened yet at this point —
+ * `sendRecurrenceNotifications` runs strictly AFTER this function returns,
+ * in ITS OWN `inSystemDbContext` call — so a rollback here just means the
+ * next redelivery of this phase-2 job re-evaluates from `watching` again.
+ */
+async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recurred' | 'verified'): Promise<void> {
+  if (watch.opKeys.length === 0) return;
+  const occurredAt = new Date();
+  await insertOpEvidence(
+    watch.opKeys.map((opKey) => ({
+      orgId: watch.orgId,
+      agentId: watch.agentId,
+      namespace: watch.sourceKind === 'intent' ? ('policy_key' as const) : ('act_op' as const),
+      opKey,
+      ruleId: watch.ruleId,
+      sourceKind: 'watch' as const,
+      sourceId: watchEvidenceSourceId(watch.id, opKey),
+      metric,
+      runId: watch.runId,
+      occurredAt,
+    })),
+  );
+}
+
+/**
+ * AUTO-DEMOTE on a `recurred` verdict (Task 16, P2-5, #4192) — the second of
+ * the two disqualifying signals, the other being an ATTEMPTED failure in
+ * `jobs/intentReleaseWorker.ts`. The fix did not hold, so any key the ORG
+ * actually granted for this operation stops running unattended.
+ *
+ * Runs INSIDE the caller's winning CAS transaction, in a SAVEPOINT of its
+ * own — the SAME containment `intentReleaseWorker.ts`'s sibling revoke uses,
+ * and for a stronger version of the same reason. **The revoke is the side
+ * that yields.** On the happy path it is still one atomic commit with the
+ * `recurred` CAS and its evidence rows, which is what the plan asks for; only
+ * the losing side changed. If a revoke failure were allowed to propagate it
+ * would unwind the CAS, the watch-verdict evidence AND the operator-facing
+ * recurrence alert together, leaving the watch back in `watching` — and
+ * unlike a `pending` watch, a `watching` one is NOT recoverable:
+ * `listPendingWatchesForRecovery` scans `state = 'pending'` only, so once
+ * this phase-2 job exhausts its five BullMQ attempts the recurrence is
+ * silently never reported at all. A key that outlives its revoke by one
+ * sweep is strictly better than a recurrence no human ever hears about.
+ *
+ * A plain try/catch would NOT be enough, which is why this is a real nested
+ * transaction with the executor threaded: postgres-js records the first
+ * failed query of a transaction scope in that scope's `uncaughtError` and
+ * rethrows it when the scope ends EVEN IF the caller caught the rejection
+ * (`postgres/src/index.js`'s `scope()`), so a statement issued through the
+ * ambient `db` proxy would abort the outer transaction no matter how it were
+ * wrapped. `demoteSupervisedKey`'s second parameter exists for exactly this.
+ *
+ * Only COLON keys are considered: `policy_key` colon keys are the only thing
+ * `supervisedActionKeys` ever holds, while an act-run watch's `op_keys` are
+ * the manifest's DOT keys, which are not grantable and would never match.
+ * The list is SORTED so that two concurrent multi-key demotes can never take
+ * the same pair of `(org, agent, op_key)` advisory locks in opposite orders.
+ * (Today an intent-anchored watch carries exactly one key and an act-run
+ * watch carries none of this shape, so the multi-key case is defensive; a
+ * deadlock there now rolls back to the savepoint and is captured, and the
+ * verdict still stands.)
+ *
+ * Returns the notifications the caller must send AFTER the commit — never
+ * from in here. A contained failure returns `[]`: nothing was revoked, so
+ * there is nothing to announce.
+ */
+async function demoteRecurredKeys(watch: AiAgentFixWatch): Promise<NotifyDemotionInput[]> {
+  const grantableKeys = watch.opKeys.filter((opKey) => opKey.includes(':')).sort();
+  if (grantableKeys.length === 0) return [];
+
+  try {
+    return await db.transaction(async (tx) => {
+      const demotions: NotifyDemotionInput[] = [];
+      for (const opKey of grantableKeys) {
+        const { revoked, orgAgentId } = await demoteSupervisedKey({
+          orgId: watch.orgId,
+          agentId: watch.agentId,
+          opKey,
+          reason: 'recurrence',
+          runId: watch.runId,
+          watchId: watch.id,
+          intentId: watch.intentId,
+        }, tx);
+        // Only a key that was really revoked earns a page. A key held only by
+        // the partner ceiling was never live for this org, so announcing its
+        // "revocation" would report an authority change that did not happen.
+        if (revoked && orgAgentId) {
+          demotions.push({
+            orgId: watch.orgId,
+            agentId: watch.agentId,
+            orgAgentId,
+            opKey,
+            reason: 'recurrence',
+            runId: watch.runId,
+            watchId: watch.id,
+          });
+        }
+      }
+      return demotions;
+    });
+  } catch (error) {
+    // Loud, but never at the cost of a verdict a human needs to see.
+    // Identifiers only in the message — no alert text, no model-authored
+    // text, no op key values beyond the ids this row already carries.
+    captureException(
+      new Error(
+        `auto-demote failed for fix watch ${watch.id} (org ${watch.orgId}, run ${watch.runId}); recurred verdict kept`,
+        { cause: error },
+      ),
+    );
+    return [];
+  }
+}
+
+/**
+ * `config_item_name` of the rule-less attention alert this module raises. One
+ * definition because the episode guard below and the insert it guards MUST
+ * agree — a drift between them silently disables the guard.
+ */
+const FIX_WATCH_ALERT_CONFIG_ITEM = 'ai_agent_fix_watch';
+
+/**
+ * The recurrence notification's dedupe key. Module-private on purpose: the
+ * covering test states the key SHAPE literally rather than importing this,
+ * so a change here has to be a deliberate one. `recurrenceAlertId` is in the
+ * key because a run whose watches were re-armed for a LATER episode must
+ * still be able to page — a second, genuinely distinct recurrence carries a
+ * different alert id.
+ */
+function recurrenceEpisodeDedupeKey(runId: string, recurrenceAlertId: string): string {
+  return `fix-watch-${runId}-${recurrenceAlertId}-recurred`;
 }
 
 /**
@@ -288,6 +677,19 @@ interface RecurrenceDetected {
  * update so a slow recipient-resolution or notification write can never hold
  * a pooled connection across it, and so a failure here can never roll back
  * the watch's already-committed `recurred` state).
+ *
+ * **Both artifacts are keyed on the EPISODE, not on the watch** (review fix,
+ * P2-5 #4192). Until this wave a run produced exactly ONE watch, so
+ * "one per watch" and "one per recurrence" were the same statement. They are
+ * not any more: `createIntentFixWatchRow` gives every released intent its own
+ * watch, and all N watches of a run denormalize the SAME
+ * `alertId`/`ruleId`/`deviceId` off `loadWatchAnchor`. One underlying
+ * recurrence therefore wins N independent `watching -> recurred` CAS races
+ * and arrives here N times — which without episode keying would page the
+ * on-call tech N times and leave the org N duplicate active alerts for one
+ * event. That is the same operator-facing double-fire the phase-2 CAS-loser
+ * stand-down at `checkFixWatchPhase2` exists to prevent, re-opened through a
+ * different door.
  */
 async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAlertId: string): Promise<void> {
   await inSystemDbContext(async () => {
@@ -329,12 +731,42 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
         metadata: {
           watchId: watch.id, runId: watch.runId, agentId: watch.agentId, recurrenceAlertId,
         },
-        // Discriminated by the WATCH, not just the agent — one dedupe key
-        // per watch episode (a watch is terminal-once, so this never
-        // re-fires for the same watch id).
-        dedupeKey: `fix-watch-${watch.id}-recurred`,
+        // Discriminated by the EPISODE — the run plus the recurrence alert
+        // that ended it — not by the watch. N sibling watches of one run all
+        // present this identical key, so `createNotification`'s
+        // (user_id, dedupe_key) partial unique index collapses them into the
+        // one notification the recipient should actually get.
+        dedupeKey: recurrenceEpisodeDedupeKey(watch.runId, recurrenceAlertId),
       });
     }
+
+    // The attention alert has NO dedupe key of its own, so the episode
+    // collapse has to be an explicit guard: skip when an earlier sibling of
+    // this same episode already raised it. Keyed on the two identifiers the
+    // insert below already writes into `context`, and predicated on
+    // `device_id` so the probe rides `idx_alerts_device_triggered`
+    // (2026-05-17-b) instead of scanning jsonb across the table.
+    //
+    // Check-then-insert rather than a unique index over a jsonb expression:
+    // `alerts` is one of the hottest tables in the schema, and such an index
+    // would have to be built over every historical row for a guard whose
+    // failure mode is cosmetic. Two siblings whose statements interleave
+    // inside one READ COMMITTED window can therefore still both insert —
+    // that bounds the duplicates by the number of genuinely concurrent
+    // phase-2 workers (`concurrency: 5`) instead of by the number of intents
+    // the run released, and never affects a ledger fact.
+    const [alreadyRaised] = await db
+      .select({ id: alerts.id })
+      .from(alerts)
+      .where(and(
+        eq(alerts.orgId, watch.orgId),
+        eq(alerts.deviceId, watch.deviceId),
+        eq(alerts.configItemName, FIX_WATCH_ALERT_CONFIG_ITEM),
+        sql`${alerts.context}->>'runId' = ${watch.runId}`,
+        sql`${alerts.context}->>'recurrenceAlertId' = ${recurrenceAlertId}`,
+      ))
+      .limit(1);
+    if (alreadyRaised) return;
 
     // Rule-less attention alert — mirrors `actVerify.ts`'s
     // `recordActVerifyFailureAlert` direct-insert pattern (`ruleId: null`,
@@ -345,7 +777,7 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
       deviceId: watch.deviceId,
       orgId: watch.orgId,
       configPolicyId: null,
-      configItemName: 'ai_agent_fix_watch',
+      configItemName: FIX_WATCH_ALERT_CONFIG_ITEM,
       severity: 'high',
       title: `Agent fix did not hold: ${agentRow.name}`,
       message:
@@ -421,7 +853,12 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       // dedupe key), so stand down entirely rather than returning 'recurred'
       // a second time.
       if (!moved) return null;
-      return { watch, recurrenceAlertId: recurrence.id };
+      await recordWatchVerdictEvidence(watch, 'recurred');
+      return {
+        watch,
+        recurrenceAlertId: recurrence.id,
+        demotions: await demoteRecurredKeys(watch),
+      };
     }
 
     const [moved] = await db
@@ -430,6 +867,7 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
       .returning({ id: aiAgentFixWatches.id });
     if (!moved) return null;
+    await recordWatchVerdictEvidence(watch, 'verified');
     return 'held_qualified';
   });
 
@@ -442,6 +880,37 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
     console.error('[fixWatch] failed to notify a recurrence (non-fatal — the watch state is already committed)', {
       watchId, error,
     });
+    // #4582 — a console line is invisible in production, and both catches
+    // below/above swallow the only signal a human would ever get that a
+    // committed verdict went unannounced. Identifiers only in the message.
+    captureException(
+      new Error(`recurrence notification failed for fix watch ${watchId}; the verdict is committed`, {
+        cause: error,
+      }),
+    );
+  }
+  // Separately caught: a failing recurrence notification must not suppress
+  // the revoke notice, which is the more consequential of the two (an
+  // operator's agent just lost unattended authority). Both are strictly
+  // post-commit, so neither can unwind the verdict.
+  for (const demotion of detected.demotions) {
+    try {
+      await notifyDemotion(demotion);
+    } catch (error) {
+      console.error('[fixWatch] failed to notify a supervised-key revoke (non-fatal — the revoke is already committed)', {
+        watchId, opKey: demotion.opKey, error,
+      });
+      // #4582 — the revoke is COMMITTED: an org just lost unattended
+      // authority. `notifyDemotion` reports its own no-recipient outcomes, so
+      // a throw reaching here is the last remaining way that becomes silent.
+      captureException(
+        new Error(
+          `supervised-key revoke notification failed for fix watch ${watchId} `
+          + `(op key "${demotion.opKey}"); the revoke is committed`,
+          { cause: error },
+        ),
+      );
+    }
   }
   return { action: 'recurred' };
 }

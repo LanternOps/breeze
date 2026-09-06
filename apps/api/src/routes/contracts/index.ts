@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
+import { contractPeriodRoutes } from './periods';
 import { contractCrudRoutes } from './contracts';
 import { contractLifecycleRoutes } from './lifecycle';
 import { contractGenerateRoutes } from './generate';
@@ -18,4 +19,5 @@ contractRoutes.route('/', contractReportRoutes);   // /currency-mismatches — l
 contractRoutes.route('/', contractLifecycleRoutes); // /:id/activate, /:id/pause, /:id/resume, /:id/cancel
 contractRoutes.route('/', contractGenerateRoutes);  // /:id/generate
 contractRoutes.route('/', contractLineRoutes);       // /:id/lines, /:id/lines/:lineId
+contractRoutes.route('/', contractPeriodRoutes);     // /:id/periods/:periodId/outcome (#3205 W07)
 contractRoutes.route('/', contractCrudRoutes);       // /, /:id (param matchers last)

@@ -42,12 +42,29 @@ export function getGithubReleasePageUrl(): string {
   return `${getReleaseSourceReleaseBase()}/tag/v${version}`;
 }
 
-function githubDownloadBase(): string {
-  const version = getGithubReleaseVersion();
-  if (version === 'latest') {
+// `version` overrides the per-process env resolution (BINARY_VERSION /
+// BREEZE_VERSION). Callers that must agree with a checksum served from the
+// agent_versions row — the public component-download routes, see
+// services/promotedAgentVersion.ts and issue #3499 — pass the promoted row's
+// version explicitly so the bytes and the checksum come from one source.
+// Omitting it preserves the historical env-resolved behavior.
+function githubDownloadBase(version?: string): string {
+  const resolved = version ?? getGithubReleaseVersion();
+  if (resolved === 'latest') {
     return `${getReleaseSourceReleaseBase()}/latest/download`;
   }
-  return `${getReleaseSourceReleaseBase()}/download/v${version}`;
+  // agent_versions rows store a bare semver ("0.105.1"); the env var is also
+  // bare by convention. Normalize either form to the "v"-prefixed release tag.
+  const tag = resolved.startsWith('v') ? resolved : `v${resolved}`;
+  // The tag is now interpolated into a URL path from a DB row (creatable via
+  // POST /agent-versions) rather than only from env, and agent_versions.version
+  // has no format constraint. Refuse anything that could escape the release
+  // path instead of 404ing mysteriously — the same standard releaseSource.ts
+  // applies to the repository segment.
+  if (!/^v[0-9A-Za-z._-]+$/.test(tag)) {
+    throw new Error(`Refusing to build a download URL for malformed release tag "${tag}"`);
+  }
+  return `${getReleaseSourceReleaseBase()}/download/${tag}`;
 }
 
 // Spec 3c serving-surface guard: routes/agents/download.ts redirects and
@@ -55,13 +72,13 @@ function githubDownloadBase(): string {
 // ever seeing a manifest. All canonical asset filenames are static strings
 // today, so this is a tripwire against a future builder (or refactor) leaking
 // a signing-input asset onto a public surface.
-function githubAssetDownloadUrl(filename: string): string {
+function githubAssetDownloadUrl(filename: string, version?: string): string {
   if (isSigningInputAssetName(filename)) {
     throw new Error(
       `Refusing to build a download URL for signing-input asset "${filename}"`,
     );
   }
-  return `${githubDownloadBase()}/${filename}`;
+  return `${githubDownloadBase(version)}/${filename}`;
 }
 
 export function getGithubReleaseRepository(): string {
@@ -82,16 +99,16 @@ export function getGithubReleaseArtifactManifestSignatureUrl(): string {
   return `${githubDownloadBase()}/release-artifact-manifest.json.ed25519`;
 }
 
-export function getGithubAgentUrl(os: string, arch: string): string {
+export function getGithubAgentUrl(os: string, arch: string, version?: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-agent-${os}-${arch}${extension}`;
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
-export function getGithubBackupUrl(os: string, arch: string): string {
+export function getGithubBackupUrl(os: string, arch: string, version?: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-backup-${os}-${arch}${extension}`;
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
 export function getGithubAgentPkgUrl(os: string, arch: string): string {
@@ -99,10 +116,10 @@ export function getGithubAgentPkgUrl(os: string, arch: string): string {
   return githubAssetDownloadUrl(filename);
 }
 
-export function getGithubWatchdogUrl(os: string, arch: string): string {
+export function getGithubWatchdogUrl(os: string, arch: string, version?: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-watchdog-${os}-${arch}${extension}`;
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
 // breeze-user-helper is the GUI-subsystem sibling of breeze-agent. The agent
@@ -110,10 +127,10 @@ export function getGithubWatchdogUrl(os: string, arch: string): string {
 // asset URL helpers and stays OS-general. It is a distinct release asset from
 // the Tauri "helper" app served by HELPER_FILENAMES — don't conflate the two
 // (#1878).
-export function getGithubUserHelperUrl(os: string, arch: string): string {
+export function getGithubUserHelperUrl(os: string, arch: string, version?: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-user-helper-${os}-${arch}${extension}`;
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
 export function getGithubRegularMsiUrl(): string {
@@ -138,10 +155,10 @@ export const HELPER_FILENAMES: Record<string, string> = {
   linux: 'breeze-helper-linux.AppImage',
 };
 
-export function getGithubHelperUrl(os: string): string {
+export function getGithubHelperUrl(os: string, version?: string): string {
   const filename = HELPER_FILENAMES[os];
   if (!filename) throw new Error(`Unknown helper OS: ${os}`);
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
 /**

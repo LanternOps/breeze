@@ -142,10 +142,51 @@ export const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID?.trim() ?? '';
 export const QBO_CLIENT_SECRET = process.env.QBO_CLIENT_SECRET?.trim() ?? '';
 export const QBO_REDIRECT_URI = process.env.QBO_REDIRECT_URI?.trim() ?? '';
 export const QBO_ENVIRONMENT = process.env.QBO_ENVIRONMENT?.trim() ?? '';
+// Intuit's shared-secret used to verify inbound CDC webhook signatures
+// (Phase D). '' when unset — a region without the Intuit webhook configured
+// relies entirely on the 15-minute reconcile sweep instead.
+export const QBO_WEBHOOK_VERIFIER_TOKEN = process.env.QBO_WEBHOOK_VERIFIER_TOKEN?.trim() ?? '';
 
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
+}
+
+export type IpClassifyProvider = 'ipinfo' | 'ipdata' | 'none';
+
+let warnedAboutIpClassifyConfig = false;
+
+/**
+ * Optional IP-classification provider configuration. Invalid or incomplete
+ * configuration deliberately degrades to the offline classifier: trust
+ * classification must never prevent API boot or block a request.
+ */
+export function ipClassifyProvider(
+  source: NodeJS.ProcessEnv = process.env,
+): IpClassifyProvider {
+  const raw = (source.IP_CLASSIFY_PROVIDER ?? '').trim().toLowerCase();
+  const key = (source.IP_CLASSIFY_API_KEY ?? '').trim();
+
+  if (raw === '' || raw === 'none') return 'none';
+  if (raw !== 'ipinfo' && raw !== 'ipdata') {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] Unknown provider ${JSON.stringify(raw)}; using offline fallback`);
+    }
+    return 'none';
+  }
+  if (!key) {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] ${raw} is configured without IP_CLASSIFY_API_KEY; using offline fallback`);
+    }
+    return 'none';
+  }
+  return raw;
+}
+
+export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): string {
+  return (source.IP_CLASSIFY_API_KEY ?? '').trim();
 }
 
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:
@@ -435,6 +476,86 @@ export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
 // runtime overrides don't need module re-evaluation.
 export function mfaForcePartnerAdmin(): boolean {
   return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
+}
+
+/**
+ * #1374 — when true (the DEFAULT), an L4 (critical-tier) approval requires the
+ * approver device's `platform_bound_basis` to be in
+ * `L4_TRUSTED_PLATFORM_BOUND_BASES` (services/authenticatorAssurance.ts), not
+ * merely `is_platform_bound = true`.
+ *
+ * DEFAULT TRUE, deliberately: pre-#1374 mobile registrations forced
+ * is_platform_bound = true with NO attestation of any kind, so leaving this off
+ * leaves a critical-tier bypass open. Set to `false` ONLY as a break-glass
+ * revert — it re-opens that bypass for every legacy mobile key, and the
+ * `breeze_authenticator_l4_basis_total{outcome="would_deny"}` series is what
+ * makes the resulting blast radius visible.
+ *
+ * Read at CALL time (like mfaForcePartnerAdmin / policyDecideEnabled above) so
+ * ops can flip it without a code change and tests need no module reload.
+ *
+ * Unlike a plain `envFlag(name, true)` this distinguishes "explicitly off" from
+ * "unrecognized" — same treatment as abuseSignalsEnabled() — because on a
+ * default-TRUE security gate, `envFlag`'s "anything not in the true-vocabulary
+ * is false" rule would let a typo (`=flase`) silently DISABLE enforcement.
+ * config/validate.ts additionally refuses boot on such a value.
+ */
+export function authenticatorAttestationEnforced(): boolean {
+  const raw = (process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED ?? '').trim();
+  if (raw === '') return true;
+  const normalized = raw.toLowerCase();
+  if (RECOGNIZED_TRUE_FLAG_VALUES.has(normalized)) return true;
+  if (RECOGNIZED_FALSE_FLAG_VALUES.has(normalized)) return false;
+  console.warn(
+    `[Authenticator] Ignoring unrecognized BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED value ${JSON.stringify(raw)} ` +
+      '— expected true/false, 1/0, yes/no or on/off. Keeping L4 attestation enforcement ON.',
+  );
+  return true;
+}
+
+/**
+ * Apple App Attest configuration (#1374 W03).
+ *
+ * `appId` is Apple's "<TeamID>.<bundle id>" form and is hashed into the
+ * attestation's rpIdHash, so a wrong value here rejects every genuine
+ * attestation rather than accepting a foreign one — fail-closed either way.
+ * Default matches the committed identifiers (apps/mobile/eas.json team
+ * D8W6N2JYMA, apps/mobile/app.json bundle com.breeze.rmm).
+ */
+export const APPLE_APP_ATTEST_APP_ID =
+  process.env.APPLE_APP_ATTEST_APP_ID?.trim() || 'D8W6N2JYMA.com.breeze.rmm';
+
+/**
+ * Which App Attest environment's aaguid sentinel is accepted.
+ *
+ * DEFAULTS TO `production`, and only the exact string `development` opts out.
+ * A typo, an empty value, or a missing variable must NOT silently accept
+ * development attestations: those come from any developer-signed build of the
+ * app, which would hand an attacker the very L4 basis this wave exists to
+ * protect. Read at call time so ops can flip it without a rebuild and tests
+ * need no module reload.
+ *
+ * Unlike a plain equality test this WARNS on an unrecognized value — same
+ * treatment as authenticatorAttestationEnforced() above, and for the same
+ * reason. The failure mode is asymmetric and nasty: a typo (`Development`,
+ * `dev`, a trailing space) resolves to production, and then EVERY genuine
+ * attestation from a development build fails check 8 forever, fleet-wide, in a
+ * way that is indistinguishable request-by-request from a forged blob. Failing
+ * safe is right; failing safe *silently* is what makes a misconfiguration take
+ * weeks to find. It stays a warning rather than a boot refusal because the
+ * wrong value can only ever reject, never admit.
+ */
+export function appleAppAttestEnvironment(): 'production' | 'development' {
+  const raw = process.env.APPLE_APP_ATTEST_ENVIRONMENT?.trim() ?? '';
+  if (raw === 'development') return 'development';
+  if (raw !== '' && raw !== 'production') {
+    console.warn(
+      `[Authenticator] Ignoring unrecognized APPLE_APP_ATTEST_ENVIRONMENT value ${JSON.stringify(raw)} ` +
+        '— expected exactly "production" or "development". Treating it as production, which will reject ' +
+        'every development-build App Attest attestation.',
+    );
+  }
+  return 'production';
 }
 
 // Delegant service configuration for M365 helpdesk agent capability.

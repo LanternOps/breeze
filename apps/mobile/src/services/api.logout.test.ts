@@ -76,7 +76,7 @@ describe('native logout generation fencing', () => {
       throw new Error(`stale issuer was sent: ${url}`);
     });
 
-    const staleMfa = verifyMfa('123456', 'temp-old');
+    const staleMfa = verifyMfa('123456', 'temp-old', 'totp');
     await vi.waitFor(() => expect(serverConfig.getServerUrl).toHaveBeenCalledTimes(1));
     await logout();
     releaseServerUrl('https://api.example.test');
@@ -105,7 +105,7 @@ describe('native logout generation fencing', () => {
       }))
       .mockResolvedValueOnce(response(204));
 
-    const staleMfa = verifyMfa('123456', 'temp-old');
+    const staleMfa = verifyMfa('123456', 'temp-old', 'totp');
     await writeStarted;
     const logoutRequest = logout();
     releaseBindingWrite();
@@ -132,10 +132,10 @@ describe('native logout generation fencing', () => {
       throw new Error(`unexpected request ${url}`);
     });
 
-    const staleA = verifyMfa('123456', 'temp-a');
+    const staleA = verifyMfa('123456', 'temp-a', 'totp');
     await vi.waitFor(() => expect(fetchWithTimeout).toHaveBeenCalledTimes(1));
     await logout();
-    await expect(verifyMfa('654321', 'temp-b')).resolves.toMatchObject({ token: 'access-b' });
+    await expect(verifyMfa('654321', 'temp-b', 'totp')).resolves.toMatchObject({ token: 'access-b' });
     releaseA(response(403, { error: 'CSRF token mismatch' }));
 
     await expect(staleA).rejects.toMatchObject({ code: 'session_superseded' });
@@ -163,7 +163,7 @@ describe('native logout generation fencing', () => {
       throw new Error(`unexpected request ${url}`);
     });
 
-    const staleMfa = verifyMfa('123456', 'temp-old');
+    const staleMfa = verifyMfa('123456', 'temp-old', 'totp');
     await vi.waitFor(() => expect(fetchWithTimeout).toHaveBeenCalledTimes(1));
     await logout();
     releaseMfa(new Response(JSON.stringify({ error: 'binding required' }), {

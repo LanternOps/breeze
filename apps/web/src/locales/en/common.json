@@ -1,4 +1,7 @@
 {
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
@@ -41,10 +44,12 @@
     "auditTrail": "Audit Trail",
     "eventLogs": "Event Logs",
     "partner": "Partner",
+    "billing": "Billing",
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
+    "aiImpact": "AI Impact",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -63,6 +68,7 @@
     "sectionSettings": "Settings",
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
+    "aiKillSwitch": "AI Kill Switch",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",
@@ -163,6 +169,19 @@
     "none": "None",
     "optional": "Optional",
     "required": "Required"
+  },
+  "runContext": {
+    "label": "Run as",
+    "scriptDefault": "Script default",
+    "scriptDefaultNamed": "Script default ({{context}})",
+    "system": "System",
+    "user": "Logged-in user",
+    "elevated": "Elevated",
+    "unknown": "Not recorded",
+    "userInSession": "Logged-in user (session {{session}})",
+    "sessionLabel": "Target session",
+    "sessionAny": "Any active session",
+    "effectiveLabel": "Run context"
   },
   "shared": {
     "accessDenied": {
@@ -354,6 +373,9 @@
       "criticalPending": "{{count}} critical patches pending",
       "criticalPending_one": "{{count}} critical patch pending",
       "criticalPending_other": "{{count}} critical patches pending",
+      "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
+      "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
+      "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet"
     },
     "vuln": {
@@ -2412,6 +2434,11 @@
     "link": "What's new"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}",
+    "approximateFailed": "≈ total unavailable — could not load exchange rates",
+    "approximateUnavailableMissing": "≈ total unavailable — no {{target}} exchange rate for {{codes}}",
+    "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
+    "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
   }
 }

@@ -6,6 +6,7 @@ import { intentOutbox } from '../db/schema/actionIntents';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
@@ -56,8 +57,10 @@ const PAM_ACTUATION_QUEUE_NAME = 'pam-actuation';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with publish_attempts > this are considered stuck: logged as an alarm
-// and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// and left alone rather than retried forever. Exported so
+// intentOutboxRetention.ts's prune cutoff stays in sync with this threshold
+// instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 type PublisherJobData = { type: 'publish-intent-outbox'; queuedAt: string };
 
@@ -345,6 +348,7 @@ export async function initializeIntentOutboxPublisher(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'intentOutboxPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[IntentOutboxPublisher] Worker error:', error);
     captureException(error);

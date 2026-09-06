@@ -445,6 +445,17 @@
       "feedbackFailed": "Could not save ticket triage feedback.",
       "feedbackSaved": "Ticket triage feedback saved"
     },
+    "aiDraft": {
+      "kindReply": "AI-drafted reply",
+      "kindResolutionNote": "AI-drafted resolution note",
+      "sendAsMe": "Send as me",
+      "sending": "Sending…",
+      "discard": "Discard",
+      "sendFailed": "Could not send the AI draft.",
+      "sent": "Draft sent",
+      "discardFailed": "Could not discard the AI draft.",
+      "discarded": "Draft discarded"
+    },
     "resolve": {
       "noteLabel": "Resolution note (visible to requester)",
       "submit": "Resolve ticket"

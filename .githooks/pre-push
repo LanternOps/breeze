@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# Breeze pre-push hook. Auto-installed by the root package.json "prepare"
+# script (sets core.hooksPath=.githooks on pnpm install), same as pre-commit.
+#
+# Runs one guard:
+#
+#   check-migration-naming.sh --against-ref origin/main — the commit-time
+#   pre-commit guard only ever compares a new migration against history
+#   already reachable from the branch's own HEAD, so it is blind to a
+#   migration that lands on origin/main AFTER the branch was cut. That
+#   happened for real (2026-10-03): a branch carrying
+#   2026-10-02-100001-… passed the commit-time guard clean, while
+#   origin/main had meanwhile gained a migration that sorted after it. CI's
+#   "Check Migrations" job (on the merge commit) would have caught it, but
+#   only after a push, a red run, a rename, and a re-push. This hook moves
+#   that failure back to push time, locally.
+#
+# We fetch origin/main ourselves first — the underlying script deliberately
+# does not fetch on its own (see its header), so a stale local origin/main
+# would otherwise make this check pass vacuously. If the fetch fails (e.g.
+# offline), we warn and skip rather than block the push: CI's Check
+# Migrations job still catches a real violation, just later.
+#
+# Bypass in a genuine emergency with `git push --no-verify` — CI runs the
+# same check again, so it cannot be smuggled past that way.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+run_guard() {
+  local script="$repo_root/scripts/$1"
+  shift
+  if [[ -x "$script" ]]; then
+    "$script" "$@"
+  else
+    bash "$script" "$@"
+  fi
+}
+
+if git fetch origin main --quiet 2>/dev/null; then
+  run_guard check-migration-naming.sh --against-ref origin/main
+else
+  echo "pre-push: could not fetch origin/main (offline?) — skipping the" >&2
+  echo "          migration-order-vs-origin/main check for this push." >&2
+  echo "          CI's Check Migrations job will still catch a real" >&2
+  echo "          violation, just later than here." >&2
+fi

@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Approve all ({{count}})",
     "declineAll": "Decline all ({{count}})",
-    "groupTitle": "{{count}} similar requests · {{tool}}"
+    "groupTitle": "{{count}} similar requests · {{tool}}",
+    "moreHostnames": "+{{count}} more",
+    "denyConfirmSummary": "This declines {{count}} requests for {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organization",
+    "allOrganizations": "All organizations ({{count}})",
+    "orgOption": "{{name}} ({{count}} pending)",
+    "searchLabel": "Search",
+    "searchPlaceholder": "Search by action, machine, or agent…",
+    "sortLabel": "Sort by",
+    "sortExpiringSoonest": "Expiring soonest",
+    "sortNewest": "Newest",
+    "showingLoaded": "Showing {{shown}} of {{loaded}} loaded",
+    "clearFilters": "Clear filters",
+    "noMatches": {
+      "title": "No approvals match your filters",
+      "description": "Try a different organization or search term, or clear your filters."
+    }
   },
   "risk": {
     "low": "Low risk",
@@ -31,6 +49,16 @@
   "deciding": "Submitting…",
   "expiresIn": "Expires in {{minutes}} min",
   "expiresSoon": "Expires in under a minute",
+  "expired": "Expired",
+  "unknownOrganization": "Unknown organization",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "Approved {{action}} for {{org}}",
+  "pagination": {
+    "showing": "Showing {{shown}} of {{total}}",
+    "showingCount": "Showing {{shown}}",
+    "loadMore": "Load more",
+    "loadMoreError": "Couldn't load more. Try again."
+  },
   "errors": {
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
@@ -39,7 +67,24 @@
     "expired": "This request expired before it could be decided.",
     "decisionFailed": "The decision could not be submitted. Try again.",
     "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
-    "batchNotHomogeneous": "These requests can no longer be decided together."
+    "batchNotHomogeneous": "These requests can no longer be decided together.",
+    "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups.",
+    "driftedFromBatch": "This request changed and must be decided on its own."
   },
-  "registerDevice": "Register device"
+  "registerDevice": "Register device",
+  "alwaysAllow": {
+    "button": "Approve and always allow",
+    "confirm": {
+      "title": "Approve and request pre-authorization",
+      "message": "This approves the request you're looking at right now. It also asks a second approver to pre-authorize {{opKey}} for this organization's agent, so it applies to future runs only and never authorizes this request or anything already waiting for a decision.",
+      "action": "Approve and request"
+    },
+    "toasts": {
+      "requested": "Approved. A second approver has to approve pre-authorization before this operation runs unattended, and it applies to future runs only."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Approved, but the pre-authorization request could not be sent. Try again from the agent's settings.",
+      "policyDecideDisabled": "Approved. Pre-authorization could not be requested because it is turned off for this deployment."
+    }
+  }
 }

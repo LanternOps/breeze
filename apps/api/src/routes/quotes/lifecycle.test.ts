@@ -24,10 +24,31 @@ vi.mock('../../services/permissions', async (importActual) => {
   };
 });
 
+// #3905 — /send and /resend are registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so
+// they open their OWN short transaction via withAuthDbAccessContext and run the
+// returned deferred after it commits. The real helper opens a Postgres
+// transaction; run the callback inline instead. Everything else in the auth
+// module (requireScope, requirePermission, hasPermission) stays REAL — this
+// file's whole point is driving the actual RBAC middleware.
+const { withAuthDbAccessContextMock } = vi.hoisted(() => ({
+  withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../../middleware/auth', async (importActual) => {
+  const actual = await importActual<typeof import('../../middleware/auth')>();
+  return { ...actual, withAuthDbAccessContext: withAuthDbAccessContextMock };
+});
+
 // Stub the services the route file imports so mounting it never touches the DB.
 vi.mock('../../services/quoteLifecycle', () => ({
-  sendQuote: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false, acceptUrl: 'http://x/quote/t' })),
-  resendQuote: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true, acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false })),
+  sendQuote: vi.fn(async () => ({
+    quote: { id: 'q1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+    deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false })),
+  })),
+  resendQuote: vi.fn(async () => ({
+    quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+    origin: 'reproduced', reissued: false,
+    deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true })),
+  })),
   getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
   getQuoteRecipients: vi.fn(async () => []),
 }));
@@ -38,13 +59,21 @@ vi.mock('../../jobs/quoteSendQueue', () => ({
   scheduleQuoteSend: vi.fn(),
   cancelQuoteSend: vi.fn(),
 }));
-vi.mock('../../services/quoteImageStorage', () => ({
-  writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
-  fetchRemoteImage: vi.fn(),
-  RemoteImageError: class RemoteImageError extends Error {
-    constructor(public reason: string, msg: string) { super(msg); this.name = 'RemoteImageError'; }
-  },
-}));
+// QUOTE_IMAGE_WEBP_REJECTED_MESSAGE comes from the REAL module (importActual)
+// rather than a hardcoded copy here — a hardcoded duplicate would let the
+// mock and the real constant drift apart silently, since every assertion
+// below compares the route's response against this same import.
+vi.mock('../../services/quoteImageStorage', async (importActual) => {
+  const actual = await importActual<typeof import('../../services/quoteImageStorage')>();
+  return {
+    writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
+    fetchRemoteImage: vi.fn(),
+    QUOTE_IMAGE_WEBP_REJECTED_MESSAGE: actual.QUOTE_IMAGE_WEBP_REJECTED_MESSAGE,
+    RemoteImageError: class RemoteImageError extends Error {
+      constructor(public reason: string, msg: string) { super(msg); this.name = 'RemoteImageError'; }
+    },
+  };
+});
 vi.mock('./quotes', () => ({
   quoteActorFrom: () => ({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: null }),
   handleServiceError: (_c: unknown, err: unknown) => { throw err; },
@@ -54,7 +83,7 @@ vi.mock('../../services/contractTemplateRender', () => ({ loadContractBlockRende
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
-import { fetchRemoteImage, writeQuoteImage, RemoteImageError } from '../../services/quoteImageStorage';
+import { fetchRemoteImage, writeQuoteImage, sniffImageMime, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
@@ -119,6 +148,101 @@ describe('POST /:id/send — composer body', () => {
   it('400s an unknown field (strict body)', async () => {
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ bcc: ['x@y.z'] }));
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * #3905 — the ordering contract, at the seam where it is actually decided.
+ *
+ * `sendQuote` writes the draft→sent claim and, on a revision, holds a
+ * `FOR UPDATE` lock on the PARENT quote. Those locks are released by the COMMIT
+ * of the transaction `withAuthDbAccessContext` opens — so the email must be
+ * delivered strictly after that call resolves, never inside it. Held the old
+ * way, a stalled mail server blocked the customer's own accept on the original
+ * quote and pinned a pooled connection for the whole round-trip.
+ *
+ * These assert the ORDER, not just that both happened: an implementation that
+ * awaited `deliverEmail()` inside the transaction callback would satisfy every
+ * other test in this file and reintroduce the exact bug.
+ */
+describe('POST /:id/send + /:id/resend — delivery happens after commit (#3905)', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+
+  /** Records the real interleaving of transaction commit vs. email delivery. */
+  function trace() {
+    const events: string[] = [];
+    withAuthDbAccessContextMock.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      events.push('tx:begin');
+      const value = await fn();
+      events.push('tx:commit');
+      return value;
+    });
+    return events;
+  }
+
+  it('runs the send transaction to completion BEFORE the deferred email', async () => {
+    const { sendQuote } = await import('../../services/quoteLifecycle');
+    const events = trace();
+    vi.mocked(sendQuote).mockImplementationOnce(async () => {
+      events.push('sendQuote');
+      return {
+        quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+        deliverEmail: async () => {
+          events.push('deliverEmail');
+          return { quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true };
+        },
+      } as never;
+    });
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(['tx:begin', 'sendQuote', 'tx:commit', 'deliverEmail']);
+  });
+
+  it('runs the re-send transaction to completion BEFORE the deferred email', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const events = trace();
+    vi.mocked(resendQuote).mockImplementationOnce(async () => {
+      events.push('resendQuote');
+      return {
+        quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+        origin: 'reproduced', reissued: false,
+        deliverEmail: async () => {
+          events.push('deliverEmail');
+          return { quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true };
+        },
+      } as never;
+    });
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(['tx:begin', 'resendQuote', 'tx:commit', 'deliverEmail']);
+  });
+
+  it('reports the delivery outcome on the response, so the #3502 banner still fires', async () => {
+    const { sendQuote } = await import('../../services/quoteLifecycle');
+    trace();
+    vi.mocked(sendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: null },
+      acceptUrl: 'http://x/quote/t',
+      deliverEmail: async () => ({
+        // The row the deferred persisted the reason onto — NOT the pre-delivery row.
+        quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: 'send_failed' },
+        emailed: false, emailReason: 'send_failed',
+      }),
+    } as never);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({
+      emailed: false,
+      emailReason: 'send_failed',
+      acceptUrl: 'http://x/quote/t',
+      quote: { id: 'q1', sendEmailReason: 'send_failed' },
+    });
   });
 });
 
@@ -268,9 +392,23 @@ describe('POST /:id/images — from URL (JSON body)', () => {
   });
 
   it('415s a URL whose bytes are not a supported image', async () => {
-    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', "That URL isn't a PNG, JPEG, or WebP image"));
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', "That URL isn't a PNG or JPEG image"));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/page.png'));
     expect(res.status).toBe(415);
+  });
+
+  // #3483: pdfkit (the quote PDF renderer) can't embed WebP — doc.image() threw
+  // and the render loop's catch-and-continue silently dropped the image from
+  // the exported PDF. fetchRemoteImage now rejects WebP explicitly (as
+  // RemoteImageError('not_image', ...)); this proves the route surfaces that
+  // as a visible 415 rather than accepting the image only to have it vanish
+  // from the PDF later.
+  it('415s a remote WebP image with a message telling the author to use PNG/JPEG', async () => {
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', QUOTE_IMAGE_WEBP_REJECTED_MESSAGE));
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/photo.webp'));
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE });
+    expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 
   it('502s an unreachable / blocked URL', async () => {
@@ -300,6 +438,54 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     vi.mocked(fetchRemoteImage).mockRejectedValue(new Error('boom'));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/a.png'));
     expect(res.status).toBe(500);
+    expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /:id/images — multipart file upload', () => {
+  const PERMS = ['quotes:read', 'quotes:write'];
+
+  function makeMultipart(bytes: Buffer, mime: string, filename: string): { body: BodyInit; headers: HeadersInit } {
+    const formData = new FormData();
+    const view = new Uint8Array(bytes.byteLength);
+    view.set(bytes);
+    formData.append('file', new Blob([view], { type: mime }), filename);
+    // Undici sets Content-Type (with boundary) automatically for a FormData body.
+    return { body: formData, headers: {} };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({ quote: { orgId: 'org-1' } } as never);
+    vi.mocked(writeQuoteImage).mockResolvedValue({ id: 'img-9', byteSize: 4, sha256: 'x' } as never);
+  });
+
+  it('accepts a sniffed PNG and writes it', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue('image/png');
+    const { body, headers } = makeMultipart(Buffer.from([1, 2, 3, 4]), 'image/png', 'a.png');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { imageId: 'img-9', mime: 'image/png', byteSize: 4 } });
+    expect(writeQuoteImage).toHaveBeenCalledWith(QUOTE_ID, 'org-1', 'image/png', expect.any(Buffer));
+  });
+
+  // #3483: the upload surface previously advertised (and accepted) WebP, but
+  // pdfkit can't embed it — the image silently vanished from the exported PDF.
+  // The route must now reject it visibly at upload time instead.
+  it('415s a WebP file with a message telling the author to use PNG/JPEG, and never persists it', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue('image/webp');
+    const { body, headers } = makeMultipart(Buffer.from([1, 2, 3, 4]), 'image/webp', 'photo.webp');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE });
+    expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+
+  it('415s bytes that sniff to no recognized image format', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue(null);
+    const { body, headers } = makeMultipart(Buffer.from('not an image'), 'image/png', 'fake.png');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(415);
     expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 });
@@ -405,9 +591,12 @@ describe('POST /:id/resend', () => {
     const { resendQuote } = await import('../../services/quoteLifecycle');
     const { writeRouteAudit } = await import('../../services/auditEvents');
     vi.mocked(resendQuote).mockResolvedValueOnce({
-      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: false,
-      emailReason: 'no_billing_contact', acceptUrl: 'http://x/quote/t',
-      origin: 'reproduced', reissued: false,
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' },
+      acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false,
+      deliverEmail: vi.fn(async () => ({
+        quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: 'no_billing_contact' },
+        emailed: false, emailReason: 'no_billing_contact',
+      })),
     } as never);
     await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -422,8 +611,9 @@ describe('POST /:id/resend', () => {
     const { resendQuote } = await import('../../services/quoteLifecycle');
     const { writeRouteAudit } = await import('../../services/auditEvents');
     vi.mocked(resendQuote).mockResolvedValueOnce({
-      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true,
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' },
       acceptUrl: 'http://x/quote/t', origin: 'minted_key_unavailable', reissued: true,
+      deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true })),
     } as never);
     await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({

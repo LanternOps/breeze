@@ -148,6 +148,112 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 }
 
+// buildInputCapabilities is the body of the input_capabilities reply.
+//
+// typeText says this agent understands the type_text control message at all.
+// Agents that predate it have no case for the request and no default branch, so
+// they never reply; the viewer reads "no reply" as "not supported" and keeps
+// using per-character key synthesis. That fallback is why an updated viewer
+// talking to an old agent still pastes the way it does today rather than
+// pasting nothing at all.
+func buildInputCapabilities() map[string]any {
+	return map[string]any{
+		"type":     "input_capabilities",
+		"typeText": true,
+	}
+}
+
+// typeTextResult reports a paste that did not fully land. There is no success
+// message: silence means the text was injected.
+//
+// Without this the operator has no way to know. The viewer's progress indicator
+// runs to completion on send, not on delivery, so a paste dropped at the login
+// window or truncated by a failing SendInput would finish looking identical to
+// one that worked — and the operator would go on believing the remote machine
+// holds what their clipboard holds.
+func typeTextResult(reason, detail string) map[string]any {
+	body := map[string]any{
+		"type":   "type_text_result",
+		"ok":     false,
+		"reason": reason,
+	}
+	if detail != "" {
+		body["error"] = detail
+	}
+	return body
+}
+
+// sendControlJSON marshals body and sends it on the control channel if the
+// viewer has attached one. Dropping the message when it has not is correct:
+// every control reply is an answer to something the viewer asked for.
+func (s *Session) sendControlJSON(body map[string]any) {
+	resp, err := json.Marshal(body)
+	if err != nil {
+		slog.Warn("Failed to marshal control message", "session", s.id, "type", body["type"], "error", err.Error())
+		return
+	}
+
+	s.mu.RLock()
+	dc := s.controlDC
+	s.mu.RUnlock()
+	if dc == nil {
+		return
+	}
+	if err := dc.SendText(string(resp)); err != nil {
+		slog.Debug("Failed to send control message", "session", s.id, "type", body["type"], "error", err.Error())
+	}
+}
+
+// handleTypeText injects a literal string on the remote machine — the viewer's
+// "Paste Text" action (issue #4089).
+//
+// Two deliberate departures from the surrounding code:
+//
+//  1. It rides the CONTROL channel, not the input channel. The input channel is
+//     created with maxRetransmits: 0 (apps/viewer/src/lib/webrtc.ts) so a lost
+//     datagram is never retransmitted; that is the right trade for a mouse move
+//     and the wrong one for a paste, where a single dropped message silently
+//     truncates a shell command. The control channel is reliable.
+//  2. It stamps the idle watchdog, which control traffic otherwise must not do
+//     (see onViewerDataChannelMessage). A paste is genuine operator presence,
+//     unlike the viewer's automated viewer_stats heartbeat.
+//
+// The text itself is never logged, and never echoed back to the viewer: a paste
+// can carry a password or a token.
+func (s *Session) handleTypeText(data []byte) {
+	// Same early drop as handleInputMessage — nothing can be injected at the
+	// macOS login window without IOHIDSystem. Unlike the input path, this one
+	// tells the viewer, because a paste that vanishes is not something the
+	// operator can notice on their own.
+	if !s.inputHandler.InputAvailable() {
+		s.sendControlJSON(typeTextResult("input_unavailable", ""))
+		return
+	}
+
+	var msg struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		slog.Warn("Failed to parse type_text message", "session", s.id, "error", err.Error())
+		s.sendControlJSON(typeTextResult("malformed", ""))
+		return
+	}
+	if msg.Text == "" {
+		return
+	}
+
+	s.recordInputActivity()
+	s.inputActive.Store(true)
+
+	if err := InjectText(s.inputHandler, msg.Text); err != nil {
+		// InjectText's messages are content-free by construction (see its doc
+		// comment), so this is safe to log and to return to the viewer.
+		slog.Warn("Text injection incomplete",
+			"session", s.id, "bytes", len(msg.Text), "error", err.Error())
+		s.sendControlJSON(typeTextResult("injection_failed", err.Error()))
+	}
+}
+
 // handleBlockLocalInput engages or releases blocking of the local physical
 // keyboard/mouse on the target for this session (issue #966) and reports the
 // outcome to the viewer via a block_local_input_result control message.
@@ -322,6 +428,10 @@ func (s *Session) handleControlMessage(data []byte) {
 		if dc != nil {
 			dc.SendText(string(resp))
 		}
+	case "input_capabilities":
+		s.sendControlJSON(buildInputCapabilities())
+	case "type_text":
+		s.handleTypeText(data)
 	case "toggle_audio":
 		enabled := msg.Value != 0
 		s.audioEnabled.Store(enabled)

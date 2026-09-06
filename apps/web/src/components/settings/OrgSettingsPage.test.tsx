@@ -42,6 +42,9 @@ vi.mock('./OrgRemoteAccessSettings', () => ({
   },
 }));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
+vi.mock('./ContactsCard', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="contacts-card">{orgId}</div>,
+}));
 vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
 vi.mock('../extensions/ExtensionSlotHost', () => ({
   default: (props: Record<string, unknown>) => (
@@ -406,6 +409,18 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
+  it('deep-links #contacts to the Contacts tab and hands it the tab organization (#3258 W04)', async () => {
+    window.location.hash = '#contacts';
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^contacts$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    // The card fetches for the org whose settings are open, NOT the globally
+    // selected one — the two differ whenever an admin opens one tenant while
+    // another is selected in the header.
+    expect(screen.getByTestId('contacts-card')).toHaveTextContent('org-1');
+  });
+
   it('offers the compact section select for narrow viewports', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
 
@@ -472,5 +487,52 @@ describe('OrgSettingsPage — archived organization (2026-08-28 pre-release swee
 
     // No PATCH should ever be issued for an archived org.
     expect(fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+
+  // #4166 — the same GET now also answers for an org mid-ARCHIVE drain
+  // (`status: 'offboarding'`, still flagged `archived: true`). That row is
+  // outside `accessibleOrgIds` exactly like a settled archived one, so every
+  // PATCH from this page 404s — but the read-only gate was keyed on
+  // `status === 'archived'`, which would have handed the operator a fully
+  // editable form that could only fail on Save.
+  describe('org mid-archive-drain', () => {
+    const drainingOrgDetails = {
+      ...archivedOrgDetails,
+      status: 'offboarding',
+      offboardingTarget: 'archive',
+    };
+
+    beforeEach(() => {
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        return Promise.resolve(makeJsonResponse(drainingOrgDetails));
+      });
+    });
+
+    it('goes read-only for a draining org too', async () => {
+      render(<OrgSettingsPage orgId="org-1" />);
+
+      await screen.findByTestId('org-name-input');
+
+      expect((screen.getByTestId('org-name-input') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('org-name-save') as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId('org-type-select') as HTMLSelectElement).disabled).toBe(true);
+      expect(fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+    });
+
+    // The banner is this page's primary explanation of what happened, and the
+    // whole point of #4166 is that the operator could not tell. Claiming the
+    // org "is archived" while its agents are still being uninstalled would be
+    // the same lie in a different place.
+    it('says the org is BEING archived, not that it already is', async () => {
+      render(<OrgSettingsPage orgId="org-1" />);
+
+      await screen.findByTestId('org-name-input');
+
+      const banner = screen.getByTestId('org-archived-banner');
+      expect(banner.textContent).toMatch(/being archived/i);
+      expect(banner.textContent).toMatch(/2026/);
+      expect(screen.getByTestId('org-archived-restore-link')).toBeInTheDocument();
+    });
   });
 });

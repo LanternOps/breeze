@@ -182,6 +182,7 @@ describe('patchJobService', () => {
         suppressAutomations: false,
         suppressScripts: false,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
@@ -197,6 +198,7 @@ describe('patchJobService', () => {
         suppressAutomations: false,
         suppressScripts: false,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(null);
 
@@ -212,6 +214,7 @@ describe('patchJobService', () => {
         suppressAutomations: false,
         suppressScripts: false,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -230,6 +233,7 @@ describe('patchJobService', () => {
         suppressAutomations: false,
         suppressScripts: false,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -253,6 +257,7 @@ describe('patchJobService', () => {
         suppressAutomations: true,
         suppressScripts: true,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -272,6 +277,7 @@ describe('patchJobService', () => {
         suppressAutomations: false,
         suppressScripts: false,
         rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -286,6 +292,7 @@ describe('patchJobService', () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false, suppressAlerts: false, suppressPatching: false,
         suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
       mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
@@ -308,6 +315,7 @@ describe('patchJobService', () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false, suppressAlerts: false, suppressPatching: false,
         suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
+        windowEndsAt: null,
       });
       vi.mocked(resolvePatchConfigForDevice).mockRejectedValue(new Error('DB connection lost'));
 

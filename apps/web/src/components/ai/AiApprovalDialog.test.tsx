@@ -558,3 +558,106 @@ describe('self-approve expiry countdown', () => {
     expect(props.onReject).toHaveBeenCalled();
   });
 });
+
+/**
+ * #4888 — the run-context row.
+ *
+ * Letting an assistant choose `runAs` is a privilege decision: it can launch a
+ * script whose saved default is the logged-in user as SYSTEM instead. The rule
+ * that makes that acceptable is that the human deciding the approval is TOLD
+ * which context the run will use — visibly, not buried in the collapsed
+ * parameter JSON, which is where an un-rendered `runAs` would otherwise land.
+ *
+ * These assert on rendered text, and specifically on text OUTSIDE the
+ * `<details>` blob: a card that "contains the word system" only because the
+ * raw input JSON happens to spell it is not the control this issue asked for.
+ */
+describe('AiApprovalDialog — script run context (#4888)', () => {
+  const scriptProps = {
+    ...baseProps,
+    toolName: 'run_script',
+    description: 'Run script abcd1234... on 1 device(s)',
+    input: { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d1'] },
+  };
+
+  it('names the SYSTEM context for an assistant-chosen system run', () => {
+    render(
+      <AiApprovalDialog
+        {...scriptProps}
+        scriptRunContext={{
+          effectiveRunAs: 'system',
+          scriptDefaultRunAs: 'system',
+          chosenByAssistant: true,
+          targetSessionId: null,
+        }}
+      />
+    );
+
+    const row = screen.getByTestId('approval-run-context');
+    expect(row).toHaveTextContent(/system/i);
+    expect(row).toHaveTextContent(/chosen by the assistant/i);
+  });
+
+  it('calls out an assistant override of the script’s saved default', () => {
+    render(
+      <AiApprovalDialog
+        {...scriptProps}
+        scriptRunContext={{
+          effectiveRunAs: 'system',
+          scriptDefaultRunAs: 'user',
+          chosenByAssistant: true,
+          targetSessionId: null,
+        }}
+      />
+    );
+
+    const row = screen.getByTestId('approval-run-context');
+    // Both halves have to be present: what it WILL run as, and what it
+    // normally runs as. Either alone leaves the approver unable to tell an
+    // escalation from business as usual.
+    expect(row).toHaveTextContent(/system/i);
+    expect(row).toHaveTextContent(/overriding the script/i);
+    expect(row).toHaveTextContent(/logged-in user/i);
+  });
+
+  it('says the context came from the script when the assistant chose nothing', () => {
+    render(
+      <AiApprovalDialog
+        {...scriptProps}
+        scriptRunContext={{
+          effectiveRunAs: 'user',
+          scriptDefaultRunAs: 'user',
+          chosenByAssistant: false,
+          targetSessionId: null,
+        }}
+      />
+    );
+
+    const row = screen.getByTestId('approval-run-context');
+    expect(row).toHaveTextContent(/logged-in user/i);
+    expect(row).toHaveTextContent(/saved default/i);
+    expect(row).not.toHaveTextContent(/chosen by the assistant/i);
+  });
+
+  it('names the pinned Windows session for a session-targeted user run', () => {
+    render(
+      <AiApprovalDialog
+        {...scriptProps}
+        scriptRunContext={{
+          effectiveRunAs: 'user',
+          scriptDefaultRunAs: 'system',
+          chosenByAssistant: true,
+          targetSessionId: 3,
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('approval-run-context')).toHaveTextContent(/session 3/i);
+  });
+
+  it('renders no run-context row for a non-script tool', () => {
+    render(<AiApprovalDialog {...baseProps} />);
+
+    expect(screen.queryByTestId('approval-run-context')).toBeNull();
+  });
+});

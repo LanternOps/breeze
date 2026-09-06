@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
 import { db } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
-import { redactLogFields, redactLogMessage } from '../../services/logRedaction';
+import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
 
 export const logsRoutes = new Hono();
@@ -112,8 +112,9 @@ logsRoutes.post(
     timestamp: new Date(log.timestamp),
     level: log.level,
     component: log.component,
-    message: redactLogMessage(log.message),
-    fields: log.fields ? redactLogFields(log.fields) : null,
+    // Ingest and every read path share one rule set — see redactAgentLogRow (#3109).
+    message: redactAgentLogMessage(log.message),
+    fields: log.fields ? redactAgentLogFields(log.fields) : null,
     agentVersion: log.agentVersion || null,
   }));
 

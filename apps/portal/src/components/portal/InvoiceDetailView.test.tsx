@@ -17,6 +17,7 @@ afterEach(() => cleanup());
 // the PDF the same customer downloads label a line the same way.
 function line(overrides: Partial<InvoiceLine> = {}): InvoiceLine {
   return {
+    ticketNumber: null,
     name: null,
     // The API serializes a NULL description as '' (invoiceService's
     // toCustomerInvoiceLine), so '' — not null — is the real absent-blurb shape.
@@ -85,5 +86,16 @@ describe('InvoiceDetailView line labels (#3319)', () => {
     renderDetail([line({ name: null, description: '' })]);
 
     expect(screen.getByText('—')).toBeTruthy();
+  });
+
+  it('renders a linked ticket number and omits it for an unlinked line', () => {
+    renderDetail([
+      line({ ticketNumber: 'T-100' }),
+      line({ ticketNumber: null }),
+    ]);
+    expect(screen.getByTestId('invoice-line-ticket-0').textContent).toBe(
+      'Ticket #T-100',
+    );
+    expect(screen.queryByTestId('invoice-line-ticket-1')).toBeNull();
   });
 });

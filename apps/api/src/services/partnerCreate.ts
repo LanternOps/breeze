@@ -10,6 +10,8 @@ import {
   sites,
 } from '../db/schema';
 import type { PartnerStatus } from '../db/schema/orgs';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import { applyNewPartnerDefaultSettings } from './partnerDefaultSettings';
 import { seedSystemTicketStatuses } from './ticketConfigService';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 
@@ -77,12 +79,22 @@ export async function createPartner(
         type: 'msp',
         plan: 'free',
         status: input.status,
+        // New partners get `probation` whenever trust evaluation is running at
+        // all (shadow OR enforce) — shadow mode needs the same starting state
+        // so its hard-deny/promotion evaluation produces real denial data,
+        // not just a no-op against partners that were never put in probation.
+        ...(partnerTrustMode() !== 'off' ? { trustState: 'probation' as const } : {}),
         billingEmail: normalizedEmail,
         mcpOrigin,
         mcpOriginIp: mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
         mcpOriginUserAgent: mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
         signupIp: !mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
         signupUserAgent: !mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
+        // Issue #3608 / #4520: new partners opt IN to inbound email-to-ticket.
+        // The shape (and the reasoning for leaving the readers alone) lives in
+        // services/partnerDefaultSettings.ts — shared with the platform-admin
+        // POST /orgs/partners route and the dev seed so no creation path drifts.
+        settings: applyNewPartnerDefaultSettings(),
       })
       .returning();
 
@@ -98,6 +110,12 @@ export async function createPartner(
         name: 'Partner Admin',
         description: 'Full access to partner and all organizations',
         isSystem: true,
+        // RMM-QA-164: the system Partner Admin role forces MFA on every
+        // creation path. A literal, not a copy of the global template: the
+        // template lookup happens after this insert, and the invariant is
+        // "system Partner Admin forces MFA", not "whatever the template says".
+        // MFA_FORCE_FOR_PARTNER_ADMIN=false is the only relief valve.
+        forceMfa: true,
       })
       .returning();
 

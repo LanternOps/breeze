@@ -13,7 +13,6 @@ import { asList } from '@/lib/asList';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
-type Device = { id: string; name: string };
 
 type AlertRuleEditPageProps = {
   ruleId?: string;
@@ -28,7 +27,6 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
   const [defaultValues, setDefaultValues] = useState<Partial<AlertRuleFormValues>>();
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const { currentOrgId } = useOrgStore();
 
@@ -102,24 +100,6 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
     }
   }, []);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (response.ok) {
-        const data = await response.json();
-        const deviceList = asList(data, 'devices');
-        setDevices(
-          deviceList.map((d: { id: string; hostname: string }) => ({
-            id: d.id,
-            name: d.hostname
-          }))
-        );
-      }
-    } catch {
-      // Silently fail
-    }
-  }, []);
-
   const fetchChannels = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/alerts/channels');
@@ -136,9 +116,8 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
     fetchRule();
     fetchSites();
     fetchGroups();
-    fetchDevices();
     fetchChannels();
-  }, [fetchRule, fetchSites, fetchGroups, fetchDevices, fetchChannels]);
+  }, [fetchRule, fetchSites, fetchGroups, fetchChannels]);
 
   const handleSubmit = async (values: AlertRuleFormValues) => {
     setSaving(true);
@@ -294,7 +273,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
         loading={saving}
         sites={sites}
         groups={groups}
-        devices={devices}
+        deviceOrgId={currentOrgId ?? undefined}
         notificationChannels={notificationChannels}
       />
     </div>

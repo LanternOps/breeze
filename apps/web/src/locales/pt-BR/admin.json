@@ -512,6 +512,53 @@
         "passed": "Aprovada",
         "failed": "Reprovada"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Interruptor de emergência de IA",
+      "description": "Parada de emergência em toda a plataforma para atividade não supervisionada de agentes de IA. Ativá-lo afeta todos os parceiros ao mesmo tempo — esta é uma operação de plataforma, não uma configuração por tenant.",
+      "refresh": "Atualizar",
+      "loading": "Carregando o estado do interruptor de emergência…",
+      "impactNote": "Ativar o interruptor interrompe as ações de IA não supervisionadas para todos os parceiros em cerca de 5 segundos. Ações já em andamento não são interrompidas.",
+      "platformAdmin": {
+        "title": "Acesso de administrador de plataforma necessário",
+        "description": "O interruptor de emergência de IA é um controle em toda a plataforma gerenciado pelos administradores de plataforma da Breeze. Sua conta não pode visualizá-lo ou alterá-lo."
+      },
+      "status": {
+        "active": "Ações de IA ativas",
+        "killed": "Ações de IA interrompidas"
+      },
+      "fields": {
+        "epoch": "Época",
+        "updatedBy": "Última alteração por",
+        "updatedAt": "Última alteração em",
+        "lastReason": "Último motivo",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Interromper ações de IA em toda a plataforma",
+        "restore": "Restaurar ações de IA"
+      },
+      "confirm": {
+        "killTitle": "Interromper ações de IA em toda a plataforma?",
+        "killDescription": "Isso interrompe imediatamente a atividade não supervisionada de agentes de IA para todos os parceiros na Breeze. Use apenas para um incidente ativo.",
+        "restoreTitle": "Restaurar ações de IA?",
+        "restoreDescription": "Isso reativa a atividade não supervisionada de agentes de IA para todos os parceiros na Breeze.",
+        "reasonLabel": "Motivo (obrigatório, para o registro de auditoria)",
+        "reasonPlaceholder": "Descreva o incidente ou o motivo desta alteração…",
+        "cancel": "Cancelar",
+        "killSubmit": "Interromper ações de IA",
+        "restoreSubmit": "Restaurar ações de IA"
+      },
+      "notice": {
+        "killed": "Ações de IA interrompidas em toda a plataforma.",
+        "restored": "Ações de IA restauradas em toda a plataforma."
+      },
+      "errors": {
+        "load": "Falha ao carregar o estado do interruptor de emergência",
+        "generic": "Ocorreu um erro",
+        "flip": "Falha ao atualizar o interruptor de emergência",
+        "mfaRequired": "Alternar o interruptor de emergência de IA requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      }
     }
   },
   "audit": {
@@ -687,80 +734,6 @@
         "previous": "Anterior",
         "page": "Página {{page}}",
         "next": "Próximo"
-      }
-    },
-    "complianceReport": {
-      "title": "Relatório de conformidade",
-      "description": "Gere resumos prontos para auditoria alinhados a controles de conformidade.",
-      "generateReport": "Gerar relatório",
-      "dataAccessAudit": "Auditoria de acesso a dados",
-      "sensitiveOperations": "Operações sensíveis",
-      "reviewRequired": "Revisão obrigatória",
-      "categories": {
-        "gdpr": {
-          "label": "GDPR"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Eventos de acesso a dados",
-          "dsarRequests": "Solicitações DSAR",
-          "retentionAlerts": "Alertas de retenção"
-        },
-        "soc2": {
-          "controlExceptions": "Exceções de controle",
-          "privilegedActions": "Ações privilegiadas",
-          "policyAttestations": "Atestações de política"
-        },
-        "hipaa": {
-          "phiAccessEvents": "Eventos de acesso a PHI",
-          "roleChanges": "Alterações de função",
-          "encryptionChecks": "Verificações de criptografia"
-        },
-        "helpers": {
-          "past30Days": "últimos 30 dias",
-          "pending2": "2 pendentes",
-          "overdue": "atrasados",
-          "last7Days": "últimos 7 dias",
-          "withinScope": "dentro do escopo",
-          "complete": "concluído",
-          "past14Days": "últimos 14 dias",
-          "requiresReview": "requer revisão",
-          "compliant": "em conformidade"
-        }
-      },
-      "table": {
-        "user": "Usuário",
-        "data": "Dados",
-        "purpose": "Finalidade",
-        "time": "Hora"
-      },
-      "data": {
-        "customerRecords": "Registros de clientes",
-        "adminPortal": "Portal administrativo",
-        "payrollRecords": "Registros de folha de pagamento",
-        "deviceGroupVip": "Grupo de dispositivos - VIP"
-      },
-      "purpose": {
-        "billingReview": "Revisão de faturamento",
-        "securityAudit": "Auditoria de segurança",
-        "complianceSampling": "Amostragem de conformidade",
-        "accessProvisioning": "Provisionamento de acesso"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Conjunto de dados de clientes exportado para CSV",
-        "mfaWindowReduced": "Janela de MFA reduzida para 15 minutos",
-        "roleChangedExternalContractor": "Função alterada para prestador externo"
-      },
-      "severity": {
-        "high": "Alta",
-        "medium": "Média"
       }
     },
     "userActivityReport": {

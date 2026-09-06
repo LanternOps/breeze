@@ -194,6 +194,28 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
   });
 
+  // #2787 item 4 — the retention job ("permanently delete removed devices N
+  // days after removal") measures the window from this stamp. `updated_at`
+  // cannot stand in for it: every unrelated write to the row afterwards would
+  // silently push the purge date out. If this write ever stops carrying
+  // `decommissionedAt`, the device is simply never purged (fail closed) and the
+  // feature quietly stops working for every device removed from then on.
+  it('stamps decommissionedAt alongside the status flip', async () => {
+    const { set } = rigDecommission(ONLINE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // First `set` on the shared counter is the tx status flip (see rigDecommission).
+    const setArg = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(setArg).sort()).toEqual(['decommissionedAt', 'status', 'updatedAt']);
+    expect(setArg.status).toBe('decommissioned');
+    expect(setArg.decommissionedAt).toBeInstanceOf(Date);
+  });
+
   it('does not tear down when the device is already decommissioned (400)', async () => {
     rigDecommission({ ...ONLINE_DEVICE, status: 'decommissioned' });
 
@@ -430,9 +452,31 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
 
   const DECOMMISSIONED_DEVICE = { ...ONLINE_DEVICE, status: 'decommissioned' as const };
 
+  /**
+   * `restoreRemovedDevice` (services/deviceLifecycle.ts) issues raw SQL before
+   * it touches drizzle: bound the lock wait, `SELECT ... FOR UPDATE` on the
+   * devices row, restore the bound. `onExecute` lets a test record the order
+   * those land in relative to the drizzle writes.
+   */
+  function rigLifecycleExecute(
+    lockRow: Record<string, unknown> | null,
+    onExecute?: (kind: string) => void,
+  ) {
+    return vi.fn(async (q: unknown) => {
+      const text = JSON.stringify(q);
+      if (text.includes('pg_settings')) return [{ prior_ms: '0' }];
+      if (text.includes('FOR UPDATE')) {
+        onExecute?.('lock-devices-row');
+        return lockRow ? [lockRow] : [];
+      }
+      return [];
+    });
+  }
+
   // getDeviceWithOrgAndSiteCheck issues db.select().from(devices).where(...)
-  // .limit(1); then the restore handler runs `releaseDeviceRemoveReason` and
-  // the `devices` status write inside ONE `db.transaction` (#3986 task 8 fix
+  // .limit(1); then the restore handler delegates to `restoreRemovedDevice`,
+  // which locks the devices row, runs `releaseDeviceRemoveReason` and the
+  // `devices` status write inside ONE `db.transaction` (#3986 task 8 fix
   // round 1 — release-then-flip must be atomic so the device can never be
   // observably restored while its uninstall is still pending). Same
   // `db.transaction` rigging trap as `rigDecommission`: it must actually
@@ -449,7 +493,10 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     const updWhere = vi.fn().mockReturnValue({ returning });
     const set = vi.fn().mockReturnValue({ where: updWhere });
 
-    const tx = { update: vi.fn().mockReturnValue({ set }) };
+    const tx = {
+      update: vi.fn().mockReturnValue({ set }),
+      execute: rigLifecycleExecute({ ...(device as object), status: 'decommissioned' }),
+    };
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
 
     return { tx, set };
@@ -586,6 +633,10 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
         callOrder.push('status-flip');
         return { set };
       }),
+      execute: rigLifecycleExecute(
+        { ...DECOMMISSIONED_DEVICE, status: 'decommissioned' },
+        (kind) => callOrder.push(kind),
+      ),
     };
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
 
@@ -600,8 +651,17 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     });
 
     expect(res.status).toBe(200);
-    // The dangerous ordering (flip-then-release) would record
-    // ['status-flip', 'release-device-remove-reason'] here instead.
-    expect(callOrder).toEqual(['release-device-remove-reason', 'status-flip']);
+    // Two orderings pinned at once, both load-bearing:
+    //  - the devices row is LOCKED first (#2787). The old route released the
+    //    uninstall reason — which locks device_commands rows — before touching
+    //    devices, opposite to the cascade's devices-first order: AB-BA, 40P01.
+    //  - release-then-flip within that lock. The dangerous ordering
+    //    (flip-then-release) would record 'status-flip' before
+    //    'release-device-remove-reason' here instead.
+    expect(callOrder).toEqual([
+      'lock-devices-row',
+      'release-device-remove-reason',
+      'status-flip',
+    ]);
   });
 });

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema';
 
 /**
@@ -39,27 +40,36 @@ type PartnerSettingsShape = {
  * `withDbAccessContext`, which early-returns when a context store already
  * exists, so inside a request it silently retains the caller's scope. Only
  * exiting the ALS store first opens a genuinely system-scoped transaction.
+ * `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts) is that escape,
+ * plus the availability skip: a caller that is ALREADY system-scoped reads in
+ * its own transaction instead of borrowing a SECOND pooled connection while
+ * the first is still held (#2776 round 4). That skip matters more since
+ * #3419 put this read on GET /devices/:id, which is a hot path.
  *
  * Escalating past RLS is only defensible here because every caller projects
- * the result through `toProviderSummaries` before it leaves the process. Do
+ * the result through `toProviderSummaries` before it leaves the process, or
+ * (the launcher) consumes it in-process and returns one substituted URL. Do
  * not return the raw settings from a route.
  *
- * See #3419 for the same gap in the launcher's own partner read.
+ * The lookup stays keyed on `orgId` alone. Escaping RLS here widens which
+ * COLUMNS of the owning partner are legible; it must never widen WHICH
+ * partner row can be selected, so callers must pass an org id that was
+ * already resolved under the caller's own RLS context (both current callers
+ * pass one that came out of an RLS-filtered device/route lookup) — never a
+ * raw client-supplied id.
  */
 export async function readPartnerRemoteAccessSettings(
   orgId: string,
 ): Promise<InheritableRemoteAccessSettings | undefined> {
-  const settings = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({ settings: partners.settings })
-        .from(partners)
-        .innerJoin(organizations, eq(organizations.partnerId, partners.id))
-        .where(eq(organizations.id, orgId))
-        .limit(1);
-      return (row?.settings ?? {}) as PartnerSettingsShape;
-    }),
-  );
+  const settings = await readWithPartnerAxisVisibility(async () => {
+    const [row] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .innerJoin(organizations, eq(organizations.partnerId, partners.id))
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    return (row?.settings ?? {}) as PartnerSettingsShape;
+  });
   return settings.remoteAccessProviders;
 }
 
@@ -67,16 +77,14 @@ export async function readPartnerRemoteAccessSettings(
 export async function readRemoteAccessSettingsForPartner(
   partnerId: string,
 ): Promise<InheritableRemoteAccessSettings | undefined> {
-  const settings = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({ settings: partners.settings })
-        .from(partners)
-        .where(eq(partners.id, partnerId))
-        .limit(1);
-      return (row?.settings ?? {}) as PartnerSettingsShape;
-    }),
-  );
+  const settings = await readWithPartnerAxisVisibility(async () => {
+    const [row] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+    return (row?.settings ?? {}) as PartnerSettingsShape;
+  });
   return settings.remoteAccessProviders;
 }
 

@@ -19,8 +19,9 @@
  * Task 7: portal comment edit/delete within until-staff-reply window.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── service mocks ─────────────────────────────────────────────────────────────
 
@@ -46,6 +47,14 @@ vi.mock('../../services/ticketService', () => ({
   }
 }));
 
+const { supportUsageForOrgMock } = vi.hoisted(() => ({
+  supportUsageForOrgMock: vi.fn(),
+}));
+
+vi.mock('../../services/portal/supportUsage', () => ({
+  supportUsageForOrg: supportUsageForOrgMock,
+}));
+
 // ── DB mock ───────────────────────────────────────────────────────────────────
 
 const { dbSelectMock } = vi.hoisted(() => ({
@@ -64,13 +73,14 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>): Promise<T> => fn()
 }));
 
-vi.mock('../../db/schema', () => ({
-  tickets: {
-    id: 'id', orgId: 'orgId', ticketNumber: 'ticketNumber',
-    subject: 'subject', description: 'description', status: 'status',
-    priority: 'priority', submittedBy: 'submittedBy', createdAt: 'createdAt',
-    updatedAt: 'updatedAt', statusId: 'statusId', deletedAt: 'deletedAt'
-  },
+// `tickets` is the REAL Drizzle table, everything else a plain-string stub.
+// Portal ticket ownership (#3258 W03) is expressed ENTIRELY as SQL — the route
+// has no JS branch to exercise — so the only discriminating assertion is the
+// compiled predicate, and a string-stub column compiles to a bound value
+// instead of a column reference (`$1 = $2`), which asserts nothing about which
+// column was filtered on.
+vi.mock('../../db/schema', async () => ({
+  tickets: (await vi.importActual<typeof import('../../db/schema/portal')>('../../db/schema/portal')).tickets,
   ticketComments: {
     id: 'id', ticketId: 'ticketId', authorName: 'authorName',
     content: 'content', isPublic: 'isPublic', deletedAt: 'deletedAt',
@@ -119,12 +129,29 @@ import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
 
-const PORTAL_USER = { id: 'pu-1', orgId: 'o-1', email: 'user@example.com', name: 'Test User' };
+const PORTAL_USER = { id: 'pu-1', orgId: 'o-1', email: 'user@example.com', name: 'Test User', contactId: null };
+// #3258 W03: the same login WITH a contact behind it. Every emailed ticket is
+// attributed to the contact and carries no submitted_by at all, so this is the
+// fixture that distinguishes "sees their own tickets" from "sees nothing".
+const CONTACT_ID = 'ct-11111111-2222-4333-8444-555566667777';
+const PORTAL_USER_WITH_CONTACT = { ...PORTAL_USER, contactId: CONTACT_ID };
 
-function buildApp() {
+/**
+ * Compile a captured `.where(...)` argument list to real SQL + params.
+ * A predicate assertion that reads the drizzle builder tree (JSON.stringify,
+ * property probing) cannot tell `requester_contact_id = $2` from
+ * `requester_contact_id = NULL`, and cannot see which column was filtered at
+ * all once a column stub is involved. The compiled text can.
+ */
+const portalDialect = new PgDialect();
+function compileWhere(args: unknown[]): { sql: string; params: unknown[] } {
+  return portalDialect.sqlToQuery(args[0] as never);
+}
+
+function buildApp(user: Record<string, unknown> = PORTAL_USER, timezone = 'UTC') {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user, token: 'tok-1', authMethod: 'bearer', timezone });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -337,9 +364,8 @@ describe('portal ticket soft-delete exclusion', () => {
     });
     expect(res.status).toBe(200);
 
-    const whereStr = JSON.stringify(capturedListWhere);
-    expect(whereStr).toContain('deletedAt');
-    expect(whereStr).toContain('is null');
+    const { sql: whereSql } = compileWhere(capturedListWhere);
+    expect(whereSql).toMatch(/"tickets"\."deleted_at" is null/i);
   });
 
   it('GET /tickets/:id: detail lookup WHERE includes isNull(tickets.deletedAt)', async () => {
@@ -376,9 +402,8 @@ describe('portal ticket soft-delete exclusion', () => {
     });
     expect(res.status).toBe(200);
 
-    const whereStr = JSON.stringify(capturedDetailWhere);
-    expect(whereStr).toContain('deletedAt');
-    expect(whereStr).toContain('is null');
+    const { sql: whereSql } = compileWhere(capturedDetailWhere);
+    expect(whereSql).toMatch(/"tickets"\."deleted_at" is null/i);
   });
 });
 
@@ -470,6 +495,68 @@ describe('GET /tickets/forms', () => {
   });
 });
 
+describe('GET /tickets/usage', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  afterEach(() => vi.useRealTimers());
+
+  const noDataUsage = {
+    asOf: '2026-09-02T12:00:00.000Z',
+    month: '2026-09',
+    timezone: 'America/Denver',
+    dataStatus: 'no_data',
+    totals: {
+      billed: { minutes: 0, hours: 0 },
+      toBeBilled: { minutes: 0, hours: 0 },
+      coveredByContract: { minutes: 0, hours: 0 },
+      pendingReview: { minutes: 0, hours: 0 },
+    },
+    tickets: [],
+  };
+
+  it('passes only the session org and portal user to the aggregator', async () => {
+    supportUsageForOrgMock.mockResolvedValue(noDataUsage);
+
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request(
+      '/tickets/usage?month=2026-09',
+    );
+
+    expect(response.status).toBe(200);
+    expect(supportUsageForOrgMock).toHaveBeenCalledWith({
+      orgId: 'o-1',
+      month: '2026-09',
+      timezone: 'America/Denver',
+      portalUserId: 'pu-1',
+    });
+  });
+
+  it('rejects an invalid month before calling the service', async () => {
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request(
+      '/tickets/usage?month=2026-13',
+    );
+
+    expect(response.status).toBe(400);
+    expect(supportUsageForOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('registers the literal route before /tickets/:id and defaults the month in the org timezone', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T05:30:00.000Z'));
+    supportUsageForOrgMock.mockResolvedValue(noDataUsage);
+
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request('/tickets/usage');
+
+    expect(response.status).toBe(200);
+    expect(supportUsageForOrgMock).toHaveBeenCalledWith({
+      orgId: 'o-1',
+      month: '2026-09',
+      timezone: 'America/Denver',
+      portalUserId: 'pu-1',
+    });
+    expect(supportUsageForOrgMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── GET /tickets/forms — mount-wiring regression (auth-prefix coverage) ───────
 //
 // routes/portal/index.ts protects the ticket router with
@@ -491,7 +578,7 @@ describe('GET /tickets/forms — index.ts mount wiring', () => {
       if (!c.req.header('Authorization')) {
         return c.json({ error: 'Authentication required' }, 401);
       }
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.route('/', ticketRoutes);
@@ -557,7 +644,7 @@ const CREATED_TICKET = {
 function buildPostApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -954,7 +1041,7 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
   function buildGatedApp() {
     const app = new Hono();
     app.use('/tickets/*', async (c, next) => {
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.use('/tickets/*', portalTicketsEnabledMiddleware);
@@ -1310,5 +1397,98 @@ describe('portal ticket attachments (W08 #3902)', () => {
       headers: { Authorization: 'Bearer t', 'X-Breeze-Permissions': 'tickets:manage' },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+// ── #3258 W03: portal ticket ownership is `login OR linked contact` ──────────
+//
+// Inbound email no longer mints a password-less portal_users row per sender —
+// an emailed ticket carries `requester_contact_id` and NO `submitted_by` at
+// all. Every read a portal customer performs therefore has to match on both,
+// and it has to do so at ALL FOUR sites: miss one and the customer can list a
+// ticket they cannot open, or open one they cannot comment on.
+//
+// Asserted on the COMPILED predicate. There is no JS branch here to exercise —
+// each rung of the ladder is a SQL condition against a mock that resolves its
+// fixture unconditionally — so a status-code test proves nothing, and a
+// builder-tree probe cannot tell `requester_contact_id = $3` from
+// `requester_contact_id = NULL` (which matches no row and reads like a working
+// filter).
+describe('portal ticket ownership — compiled WHERE at every read site', () => {
+  let wheres: unknown[][] = [];
+
+  /** One chain shape for every query in this file: each method returns the
+   *  node, `.where()` records its arguments, and awaiting resolves the row. */
+  function rigCapture() {
+    wheres = [];
+    dbSelectMock.mockImplementation(() => {
+      const node: Record<string, unknown> = {};
+      const passthrough = () => node;
+      Object.assign(node, {
+        from: passthrough,
+        leftJoin: passthrough,
+        innerJoin: passthrough,
+        orderBy: passthrough,
+        limit: passthrough,
+        offset: passthrough,
+        where: (...args: unknown[]) => {
+          wheres.push(args);
+          return node;
+        },
+        then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+          Promise.resolve([TICKET_ROW]).then(resolve, reject),
+      });
+      return node;
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rigCapture();
+  });
+
+  const AUTH = { headers: { Authorization: 'Bearer portal-token' } };
+
+  const sites: Array<[string, (app: ReturnType<typeof buildApp>) => unknown]> = [
+    ['list', (app) => app.request('/tickets', AUTH)],
+    ['detail', (app) => app.request(`/tickets/${TICKET_ID}`, AUTH)],
+    [
+      'comment POST',
+      (app) =>
+        app.request(`/tickets/${TICKET_ID}/comments`, {
+          method: 'POST',
+          headers: { ...AUTH.headers, ...portalJsonHeaders },
+          body: JSON.stringify({ content: 'thanks' }),
+        }),
+    ],
+    [
+      'attachment content',
+      (app) => app.request(`/tickets/${TICKET_ID}/attachments/${'aaaabbbb-cccc-4ddd-8eee-ffff00001111'}/content`, AUTH),
+    ],
+  ];
+
+  it.each(sites)('%s: matches the linked contact as well as the login', async (_name, run) => {
+    await run(buildApp(PORTAL_USER_WITH_CONTACT));
+
+    expect(wheres.length).toBeGreaterThan(0);
+    const { sql: predicate, params } = compileWhere(wheres[0]!);
+    expect(predicate).toMatch(/"tickets"\."submitted_by" = \$\d/);
+    expect(predicate).toMatch(/"tickets"\."requester_contact_id" = \$\d/);
+    expect(predicate).toMatch(/\bor\b/i);
+    // Bound to the SESSION's contact id — not to the ticket id, and not to a
+    // literal that would silently match nothing.
+    expect(params).toEqual(expect.arrayContaining([PORTAL_USER.id, CONTACT_ID]));
+  });
+
+  it.each(sites)('%s: omits the contact arm entirely for a contact-less login', async (_name, run) => {
+    await run(buildApp(PORTAL_USER));
+
+    expect(wheres.length).toBeGreaterThan(0);
+    const { sql: predicate, params } = compileWhere(wheres[0]!);
+    expect(predicate).toMatch(/"tickets"\."submitted_by" = \$\d/);
+    // `eq(col, null)` compiles to `= NULL`, which is never true: a dead OR arm
+    // that reads like a working filter to anyone auditing the query later.
+    expect(predicate).not.toMatch(/requester_contact_id/);
+    expect(params).not.toContain(null);
   });
 });

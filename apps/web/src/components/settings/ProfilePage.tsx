@@ -625,7 +625,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleMfaEnable = async (code: string, currentPassword: string) => {
+  /**
+   * #4413: returns FALSE when the write was rejected. MFASettings keeps the QR
+   * view (and the password behind it) open on `false`, so a mistyped code costs
+   * one retry instead of a whole re-enrollment against a fresh secret.
+   */
+  const handleMfaEnable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
@@ -637,7 +642,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // is the belt-and-braces half of the same rule.
       if (!currentPassword && !ssoReauthGrantId && isPasswordless) {
         setMfaError(t('profilePage.ssoReauthProofExpired'));
-        return;
+        return false;
       }
       const proof = currentPassword
         ? { currentPassword }
@@ -646,6 +651,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           : {};
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
+        // #4470 landed the durable API-side fix the #4413 stopgap was waiting
+        // for: a rejected TOTP or step-up proof is now 400 + a stable `code`,
+        // so it never reaches fetchWithAuth's 401 refresh-and-evict path and
+        // the opt-out flag is no longer needed. A 401 from here now means only
+        // "your bearer expired", which SHOULD refresh.
         body: JSON.stringify({ code, ...proof })
       });
 
@@ -666,16 +676,20 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // already spent.
       setSsoReauthGrantId(null);
       setSsoSetupReady(false);
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleMfaDisable = async (code: string, currentPassword: string) => {
+  const handleMfaDisable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
@@ -690,19 +704,42 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         );
       }
 
+      const data = await response.json();
+      // #4934: disabling MFA rotates the SESSION too — the API advances mfa_epoch
+      // and revokes every refresh family so no OTHER session survives the factor
+      // removal, and hands this caller a replacement in the same response. Adopt
+      // it before rendering success (the refresh/CSRF cookies came with it);
+      // keeping the pre-disable token means the next request 401s, its refresh
+      // fails against a revoked family, and the user is bounced to
+      // /login?reason=session-expired by the very action they just took.
+      // A refused commit (a logout raced the request) is not an error: MFA is
+      // already off, so the success message still has to be shown.
+      if (data.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
+      }
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleGenerateRecoveryCodes = async (currentPassword: string) => {
+  /**
+   * #4414: this endpoint REGENERATES — it invalidates every code the user
+   * already holds. MFASettings gates it behind an explicit confirm and only
+   * reveals codes when this resolves `true`, so a failed call can never
+   * re-display the previous set as though it were the new one.
+   */
+  const handleGenerateRecoveryCodes = async (currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
@@ -712,14 +749,28 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes'));
+        throw new Error(
+          errorData.error ?? errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes')
+        );
       }
 
       const data = await response.json();
+      // #4480: rotating the codes rotates the SESSION too — the API advances
+      // mfa_epoch and revokes every refresh family, so the token this page is
+      // holding is already dead and the only live one is in this response.
+      // Adopt it before revealing the codes; the refresh/CSRF cookies came with
+      // the same response. Refusal (stale generation) is not an error: the codes
+      // are already minted and the old set is already gone, so they still have
+      // to be shown — the user would otherwise be left with no working set at all.
+      if (data.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
+      }
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
@@ -761,6 +812,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         ? { ssoReauthGrantId }
         : { currentPassword: passkeyPassword };
       const verifyProof = isPasswordless ? { ssoReauthGrantId } : {};
+      // #4470: `/auth/passkeys/register/{options,verify}` and the delete below
+      // answer a rejected step-up password (or a stale registration challenge)
+      // with 400 + a stable `code`, so these calls need no 401 opt-out — a 401
+      // from them now means only that the bearer expired, which SHOULD refresh.
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
         body: JSON.stringify({ ...optionsProof, name: label })

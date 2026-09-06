@@ -14,6 +14,7 @@ import {
   FileCode,
   RotateCcw,
   Settings,
+  Shield,
   Trash2,
   Zap,
   Columns3,
@@ -44,6 +45,7 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -94,6 +96,10 @@ import {
 import { groupLinkedDevices } from "./linkedDevices";
 import { useOrgStore } from "@/stores/orgStore";
 import DecommissionedHiddenHint from "./DecommissionedHiddenHint";
+
+// DeviceCompare's selection limit (see DeviceCompare.tsx). Kept here so the
+// bulk menu can explain the cap instead of silently dropping the item.
+const COMPARE_MAX_DEVICES = 4;
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
@@ -167,6 +173,13 @@ export type Device = {
   lanIp?: string | null;
   // Discovered assets carry a MAC; agent rows leave it unset.
   macAddress?: string | null;
+  /**
+   * RMM-QA-176 manual maintenance lease end (ISO). `maintenanceUntil > now` —
+   * not `status` — is the truth of "a technician put this device into
+   * maintenance": the heartbeat overwrites `status` on every beat, so a device
+   * with a live lease can read back as `online`. Use `isInMaintenance`.
+   */
+  maintenanceUntil?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -183,6 +196,25 @@ export type Device = {
    */
   pendingReboot?: boolean;
   /**
+   * Scheduled end-user restart, denormalized from the agent heartbeat
+   * (#3207 W5, `devices.reboot_scheduled_at` and friends).
+   *
+   * Distinct from `pendingReboot` above: that is the OS saying a restart is
+   * required at some point; these say one is BOOKED for a specific instant and
+   * how much of the deferral budget the end user has spent on it.
+   *
+   * Absent on responses from older API versions, and null on every device that
+   * has no restart scheduled — including devices running an agent that
+   * predates reboot-status reporting. `rebootMaxDeferrals` is the one field
+   * where 0 and null differ meaningfully: 0 means this restart cannot be
+   * postponed, null means the agent never told us.
+   */
+  rebootScheduledAt?: string | null;
+  rebootDeadline?: string | null;
+  rebootSource?: string | null;
+  rebootDeferralsUsed?: number | null;
+  rebootMaxDeferrals?: number | null;
+  /**
    * Set when this row was created by a hostname-collision enrollment and may
    * be replacing an earlier device record (#2764,
    * `devices.possible_replacement_of_device_id`). Null/absent on every
@@ -191,6 +223,28 @@ export type Device = {
    * device page.
    */
   possibleReplacementOfDeviceId?: string | null;
+  /**
+   * What became of the agent-uninstall this device's Remove queued (#3987).
+   *
+   * Present ONLY on the `GET /devices/:id` detail payload, and only ever
+   * non-null for a `decommissioned` device. The three-way distinction is
+   * load-bearing for `UninstallStateBadge`:
+   *
+   *   undefined → this payload does not carry the field (a list row) — say
+   *               nothing, because we do not know.
+   *   null      → the Remove deliberately left the agent installed.
+   *   object    → an uninstall was queued; `state` says how far it got.
+   *
+   * `state: 'sent'` means the agent's handler acked the command, NOT that the
+   * teardown is confirmed — only `'completed'` claims that.
+   */
+  uninstall?: {
+    state: string;
+    queuedAt?: string | null;
+    sentAt: string | null;
+    completedAt?: string | null;
+    expiresAt: string | null;
+  } | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
@@ -339,11 +393,23 @@ type DeviceListProps = {
   // against it client-side (see mergedListFilter.ts).
   advancedFilter?: FilterConditionGroup | null;
   serverFilterLoading?: boolean;
+  // True when the last /filters/preview resolution failed (403 on a pinned
+  // orgId the caller can't access, 500, network error, …). `serverFilterIds`
+  // is an EMPTY set in this case (never null — see useAdvancedFilterIds), so
+  // the table already renders zero rows; this only drives the inline error
+  // message that explains why (#4732).
+  serverFilterError?: boolean;
   // When false (default), decommissioned devices are hidden — matching the old
   // default view (status='all' implicitly excluded them). DevicesPage sets this
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  /**
+   * Offered only while the rows are visible via the page-level showRemoved
+   * flag (not via an explicit Decommissioned status filter, where hiding
+   * would be a no-op) — renders the "N removed shown — hide" line (#5023).
+   */
+  onHideDecommissioned?: () => void;
   // Applies the Decommissioned status filter upstream (#2251) — the existing
   // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
   // tests) the "N decommissioned hidden — show" hint is not rendered.
@@ -588,10 +654,12 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onHideDecommissioned,
   onShowDecommissioned,
   serverFilterIds = null,
   advancedFilter,
   serverFilterLoading = false,
+  serverFilterError = false,
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
@@ -772,22 +840,26 @@ export default function DeviceList({
     setCurrentPage(1);
   }, [query, vpnFilter, serverFilterIds]);
 
-  const filteredDevices = useMemo(() => {
+  // Every filter EXCEPT the hidden-by-default decommissioned rule. Split out
+  // so the removed-hint counts (#2251/#5023) can be taken from the rows the
+  // tech's filters would actually let through — a decommissioned device the
+  // server filter or search already excludes is not "hidden by default" and
+  // must not be counted as showable.
+  const matchingDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter((device) => {
-      // Hide decommissioned by default — preserves the old list's hygiene
-      // (status='all' implicitly excluded them). Filtering FOR decommissioned
-      // via a status chip flips includeDecommissioned true upstream.
-      // Decommissioned rule, the server-resolved id set (agent rows), the
-      // client-side evaluator (network rows) and search all live in one
-      // shared predicate so the page-level class counts and the grid can
-      // never disagree with the rows rendered here.
+      // The server-resolved id set (agent rows), the client-side evaluator
+      // (network rows), the VPN facet and search all live in one shared
+      // predicate so the page-level class counts and the grid can never
+      // disagree with the rows rendered here.
       if (
         !matchesMergedListFilters(device, {
           serverFilterIds,
           advancedFilter,
-          includeDecommissioned,
+          // The decommissioned rule is applied one step later (filteredDevices)
+          // so decommissionedCount can see what "show" would reveal (#5023).
+          includeDecommissioned: true,
           query: normalizedQuery,
           vpn: vpnFilter,
         })
@@ -803,17 +875,35 @@ export default function DeviceList({
     vpnFilter,
     serverFilterIds,
     advancedFilter,
-    includeDecommissioned,
   ]);
 
-  // How many decommissioned devices the default view is hiding (#2251). Zero
-  // when they're already visible (includeDecommissioned) so the hint and the
-  // count math below stay consistent with what the table actually shows.
-  const hiddenDecommissionedCount = useMemo(
+  // Hide decommissioned by default — preserves the old list's hygiene
+  // (status='all' implicitly excluded them). Filtering FOR decommissioned via
+  // a status chip, or "show" on the hint, flips includeDecommissioned upstream.
+  const filteredDevices = useMemo(
     () =>
       includeDecommissioned
-        ? 0
-        : devices.filter(d => d.status === 'decommissioned').length,
+        ? matchingDevices
+        : matchingDevices.filter((d) => d.status !== "decommissioned"),
+    [matchingDevices, includeDecommissioned]
+  );
+
+  // Removed devices the current filters would let through (#2251/#5023) —
+  // the ones "show" can actually reveal / "hide" actually removes. Zero on
+  // the hidden side once they're visible (and vice versa) so the hint and
+  // the count line stay consistent with what the table actually shows.
+  const decommissionedCount = useMemo(
+    () => matchingDevices.filter((d) => d.status === "decommissioned").length,
+    [matchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  // Count-line denominator: the fleet minus every decommissioned row while
+  // they're hidden (regardless of whether the filters would admit them).
+  const countLineTotal = useMemo(
+    () =>
+      includeDecommissioned
+        ? devices.length
+        : devices.filter((d) => d.status !== "decommissioned").length,
     [devices, includeDecommissioned]
   );
 
@@ -1001,6 +1091,21 @@ export default function DeviceList({
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
+
+  /**
+   * #2787 — the bulk bar is SELECTION-AWARE. A selection of only removed
+   * devices gets Restore / Delete permanently and nothing else; every other
+   * selection (including a mixed one) gets the ordinary menu.
+   *
+   * Not merely cosmetic: the removed-only actions call APIs that require
+   * `status = 'decommissioned'`, so offering them for a mixed selection would
+   * reject every active device in the batch. The ordinary actions, by contrast,
+   * already SKIP removed devices via DECOMMISSION_BLOCKED_BULK_ACTIONS, so the
+   * mixed case degrades gracefully on the active menu and badly on the other.
+   */
+  const selectionKind = classifyBulkSelection(
+    devices.filter((d) => selectedIds.has(d.id)).map((d) => d.status),
+  );
 
   const allSelected =
     selectablePageDevices.length > 0 &&
@@ -1938,28 +2043,70 @@ export default function DeviceList({
     },
   };
 
+  // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
+  // so above that the item renders disabled with the cap as its label + title
+  // instead of disappearing (#5023 paper cut). Shared by the active and the
+  // all-removed branches of the menu.
+  const renderCompareItem = () => {
+    // Only agents can be compared, so the cap counts agents, not rows.
+    const overCap = selectedAgentCount > COMPARE_MAX_DEVICES;
+    const capLabel = t("deviceList.compareMaxDevices", { count: COMPARE_MAX_DEVICES });
+    return (
+      <button
+        type="button"
+        data-testid="bulk-compare"
+        disabled={overCap}
+        title={overCap ? capLabel : undefined}
+        onClick={() => handleBulkAction("compare")}
+        className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        {overCap ? capLabel : t("deviceList.compareSelected")}
+      </button>
+    );
+  };
+
   return (
     <div>
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             {filteredDevices.length} {t("deviceList.of")}{" "}
-            {devices.length - hiddenDecommissionedCount}{" "}
+            {countLineTotal}{" "}
             {t("deviceList.devices")}{" "}
-            {serverFilterIds !== null && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            {serverFilterError ? (
+              <span
+                className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
+                data-testid="device-filter-error"
+                role="alert"
+              >
                 <Filter className="h-3 w-3" />
-                {t("deviceList.advancedFilterActive")}{" "}
-                {serverFilterLoading && (
-                  <span className="ml-1 animate-pulse">...</span>
-                )}
+                {t("deviceList.advancedFilterFailed")}
               </span>
+            ) : (
+              serverFilterIds !== null && (
+                <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  <Filter className="h-3 w-3" />
+                  {t("deviceList.advancedFilterActive")}{" "}
+                  {serverFilterLoading && (
+                    <span className="ml-1 animate-pulse">...</span>
+                  )}
+                </span>
+              )
             )}
             {onShowDecommissioned && hiddenDecommissionedCount > 0 && (
               <span className="ml-2">
                 <DecommissionedHiddenHint
                   count={hiddenDecommissionedCount}
                   onShow={onShowDecommissioned}
+                />
+              </span>
+            )}
+            {onHideDecommissioned && includeDecommissioned && decommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  mode="shown"
+                  count={decommissionedCount}
+                  onHide={onHideDecommissioned}
                 />
               </span>
             )}
@@ -2134,6 +2281,8 @@ export default function DeviceList({
                 data-testid="bulk-actions-menu"
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
+                {selectionKind !== "removed" && (
+                  <>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("reboot")}
@@ -2195,18 +2344,10 @@ export default function DeviceList({
                   {t("deviceList.wakeSelected")}
                   {agentOnlySuffix}
                 </button>
-                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
-                    so the item only shows for a 2-4 selection. */}
-                {selectedAgentCount >= 2 && selectedAgentCount <= 4 && (
-                  <button
-                    type="button"
-                    data-testid="bulk-compare"
-                    onClick={() => handleBulkAction("compare")}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                  >
-                    {t("deviceList.compareSelected")}{" "}
-                  </button>
-                )}
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit).
+                    Above the cap the item stays put but disabled with the cap
+                    spelled out — it used to vanish silently (#5023). */}
+                {selectedAgentCount >= 2 && renderCompareItem()}
                 {selectedAgentCount >= 2 && (
                   <button
                     type="button"
@@ -2230,6 +2371,7 @@ export default function DeviceList({
                 <hr className="my-1" />
                 <button
                   type="button"
+                  data-testid="bulk-decommission"
                   onClick={() => handleBulkAction("decommission")}
                   disabled={agentOnlyDisabled}
                   title={agentOnlyTitle}
@@ -2238,6 +2380,33 @@ export default function DeviceList({
                   {t("deviceList.decommissionSelected")}
                   {agentOnlySuffix}
                 </button>
+                  </>
+                )}
+                {selectionKind === "removed" && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="bulk-restore"
+                      onClick={() => handleBulkAction("restore")}
+                      className="w-full px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                    >
+                      {t("deviceList.restoreSelected")}
+                    </button>
+                    {/* Same 2-4 cap as the active branch — DeviceCompare's own
+                        selection limit. A removed device is a legitimate (if
+                        approximate) comparison subject. */}
+                    {selectedAgentCount >= 2 && renderCompareItem()}
+                    <hr className="my-1" />
+                    <button
+                      type="button"
+                      data-testid="bulk-permanent-delete"
+                      onClick={() => handleBulkAction("permanent-delete")}
+                      className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      {t("deviceList.permanentDeleteSelected")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -2430,10 +2599,10 @@ export default function DeviceList({
                                 if (rowMenuOpenId !== device.id) {
                                   const rect =
                                     e.currentTarget.getBoundingClientRect();
-                                  // ~280px dropdown height (7 items × ~36px + padding/divider).
+                                  // ~320px dropdown height (8 items × ~36px + padding/divider).
                                   // Flip up when the space below the button is less than that.
                                   setRowMenuFlipUp(
-                                    window.innerHeight - rect.bottom < 300,
+                                    window.innerHeight - rect.bottom < 340,
                                   );
                                   setRowMenuAnchor({
                                     top: rect.top,
@@ -2568,6 +2737,48 @@ export default function DeviceList({
                                   >
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
+                                  </button>
+                                  {/* #4936: maintenance mode was reachable only
+                                      through Bulk Actions, so acting on ONE
+                                      device meant ticking its checkbox and
+                                      opening a bulk menu. This dispatches the
+                                      same `maintenance` action the page already
+                                      handled — a per-device POST for one id.
+
+                                      Gating: maintenance is a DB flag, not an
+                                      agent command, so it is NOT gated on
+                                      `online` (bulkActionGating.ts lists
+                                      `maintenance-*` as intentionally ungated) —
+                                      suppressing monitoring on a box that has
+                                      already gone dark is the point of it. The
+                                      API does refuse a REMOVED device
+                                      (commands.ts: "Cannot change maintenance
+                                      mode for a decommissioned device"), which
+                                      is exactly the set `isCommandQueueable`
+                                      excludes, so the shared predicate and its
+                                      tooltip are correct here rather than
+                                      borrowed (#3994: no surface should offer an
+                                      action the API rejects). */}
+                                  <button
+                                    type="button"
+                                    data-testid={`device-${device.id}-action-maintenance`}
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(device.status, t)}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      onAction?.("maintenance", device);
+                                      setRowMenuOpenId(null);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Shield className="h-4 w-4" />
+                                    {device.status === "maintenance"
+                                      ? t("deviceList.exitMaintenance")
+                                      : t("deviceList.enterMaintenance")}{" "}
                                   </button>
                                   <hr className="my-1" />
                                   {device.status === "decommissioned" ? (

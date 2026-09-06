@@ -313,15 +313,28 @@ export const agentNotifyRetryQueueJobDataSchema = z.object({
 
 /**
  * The `fix-watch` queue's payload (AI agents wave 6 PR 2, Task 3, #3828).
- * `phase` discriminates the two delayed checks a watch goes through — the
- * job body re-reads the watch (and the alert it references) fresh from the
- * DB by id, so the payload carries nothing beyond identity, same reasoning
- * as `agentNotifyRetryQueueJobDataSchema` above.
+ * `phase` discriminates the delayed checks a watch goes through — the job
+ * body re-reads the watch (and the alert it references) fresh from the DB by
+ * id, so the payload carries nothing beyond identity, same reasoning as
+ * `agentNotifyRetryQueueJobDataSchema` above.
+ *
+ * P2-5 (#4192) adds a THIRD variant, `recover`: the fleet-wide sweep that
+ * re-enqueues watches whose phase-1 job was lost between the row's commit and
+ * its `queue.add` (the enqueue is deliberately post-commit — `bullmqQueue.ts`
+ * forbids enqueueing inside a held DB context, #1105). It carries no
+ * `watchId` at all, which is why this became a DISCRIMINATED UNION rather
+ * than an optional field: a `recover` job with a watch id, or a phase job
+ * without one, is a producer bug and must be rejected as malformed rather
+ * than silently sweeping/checking the wrong thing. It rides the EXISTING
+ * `fix-watch` queue and `check-fix-watch` job name, so no new queue, no new
+ * `workerRegistry` entry, and — at a 2-minute interval, far below
+ * `COARSE_REPEAT_INTERVAL_MS` — no `scheduleRegistry` slot.
  */
-export const fixWatchQueueJobDataSchema = z.object({
-  phase: z.enum(['phase1', 'phase2']),
-  watchId: z.string().min(1),
-}).strict();
+export const fixWatchQueueJobDataSchema = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('phase1'), watchId: z.string().min(1) }).strict(),
+  z.object({ phase: z.literal('phase2'), watchId: z.string().min(1) }).strict(),
+  z.object({ phase: z.literal('recover') }).strict(),
+]);
 
 export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({

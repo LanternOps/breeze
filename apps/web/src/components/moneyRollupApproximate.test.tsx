@@ -12,10 +12,18 @@
  * Every surface is asserted in all five states:
  *   1. mixed book + rates available → segmentation UNCHANGED + the line renders
  *   2. single-currency book         → no line, shipped summary byte-identical
- *   3. a stale leg                  → segmentation only
- *   4. an uncovered pair            → segmentation only, and NO 1:1 figure and
- *                                     NO target-currency symbol anywhere
- *   5. endpoint 500                 → segmentation only, no toast
+ *   3. a stale leg                  → segmentation + the line SAYS the rate is
+ *                                     too old and names the currency
+ *   4. an uncovered pair            → segmentation + the line names the
+ *                                     currency, and NO 1:1 figure and NO
+ *                                     target-currency symbol anywhere
+ *   5. endpoint 500                 → segmentation + the line says it could not
+ *                                     load rates, and still no toast
+ *
+ * States 3-5 asserted the OPPOSITE until #4415: the line rendered nothing, so
+ * a self-hoster with no exchange-rate feed could not tell a broken conversion
+ * from a working one. Suppressing the FIGURE is the contract; suppressing the
+ * LINE was the bug — the fourth of its kind on this surface.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -288,39 +296,49 @@ describe.each(SURFACES)('$name — reporting-only approximate line', (surface) =
     expect(total.textContent).not.toContain('≈');
   });
 
-  it('3. a stale leg: segmentation only, no approximate line', async () => {
+  it('3. a stale leg: segmentation kept AND the line says the rate is too old', async () => {
     rates = () => json({ data: unavailable('stale') });
     surface.render();
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
       .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
-    await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
+    const line = await screen.findByTestId(surface.testId);
+    // Resolved through the SHIPPED en catalog, not a mocked template.
+    expect(line.textContent).toBe('≈ total unavailable — CAD exchange rate too old for EUR');
+    expect(line.dataset.approxState).toBe('unavailable');
   });
 
-  it('4. an uncovered pair: no 1:1 figure and no target-currency symbol anywhere', async () => {
+  it('4. an uncovered pair: the line names the currency, and still no 1:1 figure anywhere', async () => {
     rates = () => json({ data: unavailable('missing') });
     surface.render();
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
       .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
-    await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
-    // The no-silent-1:1 guard: the foreign group is neither converted at 1.0
-    // nor relabelled with the reporting currency.
+    const line = await screen.findByTestId(surface.testId);
+    expect(line.textContent).toBe('≈ total unavailable — no CAD exchange rate for EUR');
+    // The no-silent-1:1 guard, unchanged in substance: the foreign group is
+    // neither converted at 1.0 nor relabelled with the reporting currency. The
+    // explanation carries no figure at all, so it cannot be mistaken for one.
     expect(document.body.textContent).not.toContain(TARGET_SYMBOL);
     expect(document.body.textContent).not.toContain(NAIVE_SUM);
-    expect(document.body.textContent).not.toContain('≈');
+    expect(line.textContent).not.toMatch(/\d/);
   });
 
-  it('5. endpoint failure: segmentation unchanged, no line, no toast', async () => {
+  it('5. endpoint failure: segmentation unchanged, the line says so, still no toast', async () => {
     rates = () => json({ error: { code: 'BOOM' } }, false, 500);
     surface.render();
     await assertSegmentation(surface);
 
     await waitFor(() => expect(fetchWithAuth)
       .toHaveBeenCalledWith(expect.stringContaining('/billing/reporting-totals'), { skipOrgIdInjection: true }));
-    await waitFor(() => expect(screen.queryByTestId(surface.testId)).toBeNull());
+    const line = await screen.findByTestId(surface.testId);
+    expect(line.textContent).toBe('≈ total unavailable — could not load exchange rates');
+    expect(line.dataset.approxState).toBe('failed');
+    // Still inline and muted: an optional companion line never escalates to a
+    // toast, on seven surfaces that may each render several of them.
+    expect(line.className).toContain('text-muted-foreground');
     expect(showToast).not.toHaveBeenCalled();
   });
 });

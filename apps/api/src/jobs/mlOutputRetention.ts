@@ -11,8 +11,10 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 
@@ -206,6 +208,16 @@ export function createMlOutputRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[MlOutputRetention] Pruned ${result.deleted} ML output rows older than ${result.retentionDays} days (${detail}) in ${result.durationMs}ms`,
         );
+        // A capped sweep that reports hasMore and says nothing is how a table
+        // grows unbounded while its retention job reports success every night
+        // (#4343). The `+` marker in `detail` above is far too easy to miss.
+        for (const table of result.tables) {
+          warnOnRetentionBacklog('[MlOutputRetention]', table.table, table);
+        }
+        recordRetentionRun('ml_output_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },

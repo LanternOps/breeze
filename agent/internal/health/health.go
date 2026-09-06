@@ -37,6 +37,44 @@ type Check struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// AgentHealthState is the stable v1 wire state understood by the API.
+type AgentHealthState string
+
+const (
+	AgentHealthHealthy AgentHealthState = "healthy"
+	AgentHealthWarning AgentHealthState = "warning"
+	AgentHealthError   AgentHealthState = "error"
+	AgentHealthUnknown AgentHealthState = "unknown"
+)
+
+// AgentHealthComponent is an immutable component value in a v1 observation.
+type AgentHealthComponent struct {
+	State  AgentHealthState `json:"state"`
+	Reason string           `json:"reason,omitempty"`
+}
+
+// AgentHealthObservation is the versioned self-health snapshot sent by the
+// main agent. MetricsAvailable is intentionally not omitempty: nil serializes
+// as JSON null, preserving "not observed" separately from false.
+type AgentHealthObservation struct {
+	SchemaVersion    int                             `json:"schemaVersion"`
+	DeviceID         string                          `json:"deviceId,omitempty"`
+	AgentVersion     string                          `json:"agentVersion"`
+	Overall          AgentHealthState                `json:"overall"`
+	MetricsAvailable *bool                           `json:"metricsAvailable"`
+	Components       map[string]AgentHealthComponent `json:"components"`
+	ObservedAt       time.Time                       `json:"observedAt"`
+}
+
+// SnapshotMetadata binds one monitor snapshot to its producer and observation
+// time without making those transport concerns part of Monitor state.
+type SnapshotMetadata struct {
+	DeviceID         string
+	AgentVersion     string
+	MetricsAvailable *bool
+	ObservedAt       time.Time
+}
+
 // Monitor tracks health checks for multiple components.
 type Monitor struct {
 	mu     sync.RWMutex
@@ -117,23 +155,50 @@ func (m *Monitor) All() []Check {
 	return result
 }
 
-// Summary returns a JSON-friendly map for inclusion in heartbeat payloads.
-// Holds a single RLock across overall + components computation to ensure
-// atomic consistency.
-func (m *Monitor) Summary() map[string]any {
+// Snapshot returns a typed immutable copy for the heartbeat wire. It holds one
+// RLock across overall and component derivation, so readers never observe a
+// mixture of two monitor revisions.
+func (m *Monitor) Snapshot(meta SnapshotMetadata) AgentHealthObservation {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	overall := m.overallLocked()
-
-	components := make(map[string]string, len(m.checks))
+	components := make(map[string]AgentHealthComponent, len(m.checks))
 	for _, c := range m.checks {
-		components[c.Name] = string(c.Status)
+		components[c.Name] = AgentHealthComponent{
+			State:  toAgentHealthState(c.Status),
+			Reason: c.Message,
+		}
 	}
 
-	return map[string]any{
-		"status":     string(overall),
-		"components": components,
+	var metricsAvailable *bool
+	if meta.MetricsAvailable != nil {
+		value := *meta.MetricsAvailable
+		metricsAvailable = &value
+	}
+
+	return AgentHealthObservation{
+		SchemaVersion:    1,
+		DeviceID:         meta.DeviceID,
+		AgentVersion:     meta.AgentVersion,
+		Overall:          toAgentHealthState(m.overallLocked()),
+		MetricsAvailable: metricsAvailable,
+		Components:       components,
+		ObservedAt:       meta.ObservedAt.UTC(),
+	}
+}
+
+func toAgentHealthState(status Status) AgentHealthState {
+	switch status {
+	case Healthy:
+		return AgentHealthHealthy
+	case Degraded:
+		return AgentHealthWarning
+	case Unhealthy:
+		return AgentHealthError
+	case Unknown:
+		return AgentHealthUnknown
+	default:
+		return AgentHealthUnknown
 	}
 }
 

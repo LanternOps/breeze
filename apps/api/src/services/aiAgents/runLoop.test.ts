@@ -307,10 +307,28 @@ vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry })
 // Fix-held watch scheduling (Task 3, #3828) — same reasoning as the
 // notify-retry mock above: unmocked, this pulls in `jobs/fixWatchWorker.ts`'s
 // REAL bullmq/redis module graph, exactly what this suite's guardrail-hook
-// tests must stay free of (runLoop.ts's own header comment).
+// tests must stay free of (runLoop.ts's own header comment). P2-5 (#4192,
+// Task 5) widened the real return type to `Promise<string | null>` — default
+// resolves `null` ("no watch will ever verify this run") since most tests
+// here don't care; a test that DOES care overrides with
+// `mockResolvedValueOnce`.
 const scheduleFixWatch = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
+  vi.fn<(...args: unknown[]) => Promise<string | null>>(async () => null));
 vi.mock('../../jobs/fixWatchWorker', () => ({ scheduleFixWatch }));
+
+// Act-op evidence (P2-5, #4192, Task 6) — mocked at the module boundary for
+// the same reason as `scheduleFixWatch` above: this suite's `../../db` mock
+// (below) only stubs `select`, not `insert`, and pulling in the real
+// `opEvidence.ts` would need a real `db.insert(...).onConflictDoNothing(...)`
+// chain this file never builds. `actEvidenceSourceId` is kept REAL (pure,
+// deterministic) so assertions can compute the expected id the same way the
+// source does, rather than duplicating its format as a string literal.
+const insertOpEvidence = vi.hoisted(() =>
+  vi.fn<(rows: unknown[]) => Promise<number>>(async (rows) => rows.length));
+vi.mock('./opEvidence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./opEvidence')>();
+  return { ...actual, insertOpEvidence };
+});
 
 const resolveLlmConfigForOrg = vi.hoisted(() =>
   vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
@@ -1053,6 +1071,238 @@ describe('executeAgentRun', () => {
       expect(outcome.proposedActions).toHaveLength(1);
       expect(outcome.proposedActions[0]!.tool).toBe('execute_playbook');
       expect(outcome.executedActions).toEqual([]);
+    });
+  });
+
+  describe('finishRun — P2-5 act-execution op evidence (#4192, Task 6)', () => {
+    const ACT_CALL = {
+      tool: 'manage_services',
+      input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' },
+    };
+
+    function seedActRun() {
+      return seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['manage_services', 'disk_cleanup'] }),
+        modeAtStart: 'act',
+      });
+    }
+
+    it('an executed, verified action gets one "executed" row keyed by its index — no extra "verified" row when a watch was scheduled', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(insertOpEvidence).toHaveBeenCalledTimes(1);
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          orgId: ORG_ID, agentId: AGENT_ID, namespace: 'act_op', opKey: 'manage_services.restart',
+          ruleId: null, sourceKind: 'act_execution', sourceId: `${RUN_ID}:0`, metric: 'executed', runId: RUN_ID,
+        }),
+      ]);
+    });
+
+    it('when scheduleFixWatch returns null (no watch will ever verify this run), an executed action ALSO gets a "verified" row on the SAME source id', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce(null);
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({ metric: 'executed', sourceId: `${RUN_ID}:0`, opKey: 'manage_services.restart' }),
+        expect.objectContaining({ metric: 'verified', sourceId: `${RUN_ID}:0`, opKey: 'manage_services.restart' }),
+      ]);
+    });
+
+    it('two executed actions with distinct actOpKeys get the metric for THEIR OWN index — a wrong-index bug would surface here', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => {
+        const op = args.op as { key: string };
+        const target = op.key === 'manage_services.restart'
+          ? { kind: 'service' as const, serviceName: 'Spooler' }
+          : { kind: 'disk_cleanup' as const, paths: ['C:\\Temp'] };
+        return { ok: true, pin: { op, target } };
+      });
+      verifyActExecution.mockImplementation(async (args: Record<string, unknown>) => {
+        const pin = args.pin as { op: { key: string } };
+        return pin.op.key === 'manage_services.restart'
+          ? { execution: 'succeeded', verification: 'passed' }
+          : { execution: 'succeeded', verification: 'failed', verifyDetail: 'disk usage did not improve' };
+      });
+      scriptQuery({
+        toolCalls: [
+          ACT_CALL,
+          { tool: 'disk_cleanup', input: { action: 'execute', deviceId: DEVICE_ID, paths: ['C:\\Temp'] } },
+        ],
+        assistantText: 'Restarted the spooler service and cleaned up disk space.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      // `disk_cleanup.execute` dispatched successfully (`execution: 'succeeded'`)
+      // but its own verification failed — per plan line 84 (C4 amendment)
+      // `executed` and `failed` are independent rules, so it earns BOTH rows
+      // on the SAME sourceId, not `failed` alone.
+      expect(rows).toEqual([
+        expect.objectContaining({ opKey: 'manage_services.restart', metric: 'executed', sourceId: `${RUN_ID}:0` }),
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'executed', sourceId: `${RUN_ID}:1` }),
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'failed', sourceId: `${RUN_ID}:1` }),
+      ]);
+    });
+
+    it('a dispatch that succeeded but whose own verification failed gets BOTH "executed" and "failed" rows — never "executed" alone', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'disk_cleanup' as const, paths: ['C:\\Temp'] } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'disk usage did not improve',
+      });
+      scriptQuery({
+        toolCalls: [{ tool: 'disk_cleanup', input: { action: 'execute', deviceId: DEVICE_ID, paths: ['C:\\Temp'] } }],
+        assistantText: 'Attempted disk cleanup.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'executed', sourceId: `${RUN_ID}:0` }),
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'failed', sourceId: `${RUN_ID}:0` }),
+      ]);
+    });
+
+    it('when scheduleFixWatch returns null, a dispatch whose own verification failed is credited "failed" but NEVER "verified" even though it earns "executed"', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce(null);
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service did not stay up',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      const metrics = rows.map((r) => r.metric).sort();
+      expect(metrics).toEqual(['executed', 'failed']);
+      expect(rows.every((r) => r.sourceId === `${RUN_ID}:0`)).toBe(true);
+    });
+
+    it.each(['timeout', 'unknown'] as const)(
+      'an execution that %s gets a "failed" row — attempted but never resolved cleanly, per isFixWatchEligible\'s "not clean" rule',
+      async (executionState) => {
+        seedActRun();
+        revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+          ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+        }));
+        verifyActExecution.mockResolvedValue({ execution: executionState, verification: 'inconclusive' });
+        scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Attempted a restart.' });
+
+        await executeAgentRun(RUN_ID);
+
+        const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+        expect(rows).toEqual([
+          expect.objectContaining({ metric: 'failed', opKey: 'manage_services.restart', sourceId: `${RUN_ID}:0` }),
+        ]);
+      },
+    );
+
+    it('a failed execution gets a "failed" row, never "executed"', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'failed', verification: 'inconclusive' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Attempted a restart.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({ metric: 'failed', opKey: 'manage_services.restart', sourceId: `${RUN_ID}:0` }),
+      ]);
+    });
+
+    it('an inconclusive/skipped verification writes nothing extra beyond the base metric', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'inconclusive' });
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({ metric: 'executed', sourceId: `${RUN_ID}:0` }),
+      ]);
+    });
+
+    it('a run with no act-lane executions never calls insertOpEvidence', async () => {
+      seedRows();
+      scriptQuery({
+        toolCalls: [{ tool: 'query_devices', input: { status: 'online' } }],
+        assistantText: 'Queried devices.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('!moved (finishRun loses the terminal CAS) writes no op evidence', async () => {
+      seedActRun();
+      // First call is the queued->running CAS (must succeed so a session gets
+      // created); the second is finishRun's running->completed CAS, which
+      // loses to a competing executor here — same shape as the existing
+      // "still reconciles ... when finishRun loses the CAS" test above.
+      transitionRunStatus.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(scheduleFixWatch).not.toHaveBeenCalled();
+      expect(insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('an evidence-write failure is caught — the run still finishes "completed"', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      insertOpEvidence.mockRejectedValueOnce(new Error('db down'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(finalTransition()!.to).toBe('completed');
     });
   });
 

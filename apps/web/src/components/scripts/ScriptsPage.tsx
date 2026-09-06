@@ -4,7 +4,7 @@ import { extractApiError } from '@/lib/apiError';
 import { Plus, Download, Search, Upload, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import { ScriptBundleExportModal, ScriptBundleImportModal } from './ScriptBundleImport';
-import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
+import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
@@ -15,6 +15,10 @@ import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { cloneScript } from '@/lib/api/scripts';
+import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -46,7 +50,6 @@ type SystemScript = {
 export default function ScriptsPage() {
   const { t } = useTranslation('scripts');
   const [scripts, setScripts] = useState<ScriptWithDetails[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -57,6 +60,7 @@ export default function ScriptsPage() {
   const [systemScripts, setSystemScripts] = useState<SystemScript[]>([]);
   const [loadingLibrary, setLoadingLibrary] = useState(false);
   const [importingId, setImportingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
@@ -90,26 +94,6 @@ export default function ScriptsPage() {
     }
   }, [t]);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices?limit=10000');
-      if (response.ok) {
-        const data = await response.json();
-        const raw = asList(data, 'devices');
-        setDevices(raw.map((d: Record<string, unknown>) => ({
-          id: d.id as string,
-          hostname: (d.hostname ?? '') as string,
-          os: (d.osType ?? d.os ?? '') as Device['os'],
-          status: (d.status ?? 'offline') as Device['status'],
-          siteId: (d.siteId ?? '') as string,
-          siteName: (d.siteName ?? '') as string,
-        })));
-      }
-    } catch {
-      // Silently fail - devices will be empty
-    }
-  }, []);
-
   const fetchSites = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/orgs/sites');
@@ -124,19 +108,8 @@ export default function ScriptsPage() {
 
   useEffect(() => {
     fetchScripts();
-    fetchDevices();
     fetchSites();
-  }, [fetchScripts, fetchDevices, fetchSites]);
-
-  // Enrich devices with site names once both are loaded
-  const enrichedDevices = useMemo(() => {
-    if (sites.length === 0) return devices;
-    const siteMap = new Map(sites.map(s => [s.id, s.name]));
-    return devices.map(d => ({
-      ...d,
-      siteName: d.siteName || siteMap.get(d.siteId) || '',
-    }));
-  }, [devices, sites]);
+  }, [fetchScripts, fetchSites]);
 
   const handleRun = async (script: Script) => {
     // Fetch full script details including parameters
@@ -156,6 +129,27 @@ export default function ScriptsPage() {
 
   const handleEdit = (script: Script) => {
     void navigateTo(`/scripts/${script.id}`);
+  };
+
+  // #4887: one-click same-scope duplicate from the list row. Landing on the
+  // new draft (rather than refreshing the list in place) is the point of
+  // duplicating — the user is about to edit it.
+  const handleDuplicate = async (script: Script) => {
+    if (duplicatingId) return;
+    setDuplicatingId(script.id);
+    try {
+      const cloned = await runAction<{ id: string }>({
+        request: () => cloneScript(script.id),
+        errorFallback: t('scriptsPage.errors.duplicate'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      if (cloned?.id) void navigateTo(`/scripts/${cloned.id}`);
+      else await fetchScripts();
+    } catch (err) {
+      handleActionError(err, t('scriptsPage.errors.duplicate'));
+    } finally {
+      setDuplicatingId(null);
+    }
   };
 
   const handleDelete = (script: Script) => {
@@ -180,61 +174,31 @@ export default function ScriptsPage() {
       body: JSON.stringify({ deviceIds, parameters, runAs })
     });
 
-    const data = await response.json().catch(() => ({})) as {
-      error?: string;
-      lastRun?: string;
-      executedAt?: string;
-      startedAt?: string;
-      createdAt?: string;
-      execution?: {
-        lastRun?: string;
-        executedAt?: string;
-        startedAt?: string;
-        createdAt?: string;
-      };
-      executions?: Array<{
-        lastRun?: string;
-        executedAt?: string;
-        startedAt?: string;
-        createdAt?: string;
-      }>;
-    };
+    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
 
     if (!response.ok) {
       throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
-    const candidateTimestamps = [
-      data.lastRun,
-      data.executedAt,
-      data.startedAt,
-      data.createdAt,
-      data.execution?.lastRun,
-      data.execution?.executedAt,
-      data.execution?.startedAt,
-      data.execution?.createdAt,
-      data.executions?.[0]?.lastRun,
-      data.executions?.[0]?.executedAt,
-      data.executions?.[0]?.startedAt,
-      data.executions?.[0]?.createdAt
-    ];
-    const lastRunTime = candidateTimestamps.find(value => {
-      if (!value) return false;
-      return !Number.isNaN(new Date(value).getTime());
-    });
-
-    if (lastRunTime) {
-      setScripts(prev =>
-        prev.map(s =>
-          s.id === scriptId
-            ? { ...s, lastRun: lastRunTime }
-            : s
-        )
-      );
-      return;
+    const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
+    if (admittedTargets.length > 0) {
+      await fetchScripts();
+      // #4886 — a library run left the operator stranded on this (now stale)
+      // list with no way to see the result land. A single-device run goes to
+      // that device's Scripts tab (same hash-highlight convention DeviceDetails
+      // already uses for anomalies), where the new execution is expanded live;
+      // a multi-device run has no single "the" device, so it goes to the
+      // script's execution-history list instead.
+      // Keep partial admission results visible so the operator can inspect
+      // blocked or suppressed targets before leaving the execute flow.
+      if (admittedTargets.length !== data.targets.length) return data;
+      if (deviceIds.length === 1) {
+        void navigateTo(deviceScriptsHref(deviceIds[0]!, admittedTargets[0]?.executionId));
+      } else {
+        void navigateTo(scriptExecutionsHref(scriptId));
+      }
     }
-
-    await fetchScripts();
+    return data;
   };
 
   const handleConfirmDelete = async () => {
@@ -436,6 +400,7 @@ export default function ScriptsPage() {
           scripts={scripts}
           onRun={handleRun}
           onEdit={handleEdit}
+          onDuplicate={(script) => void handleDuplicate(script)}
           onDelete={handleDelete}
           organizations={organizations}
         />
@@ -445,7 +410,6 @@ export default function ScriptsPage() {
       {modalMode === 'execute' && selectedScript && (
         <ScriptExecutionModal
           script={selectedScript}
-          devices={enrichedDevices}
           sites={sites}
           isOpen={true}
           onClose={handleCloseModal}

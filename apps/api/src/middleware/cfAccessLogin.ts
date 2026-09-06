@@ -205,6 +205,13 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     // totp/sms. The helper fails closed, so a probe error just hides the
     // alternate rather than blocking this CF-Access MFA challenge.
     const passkeyAvailable = await userHasUsablePasskey(user.id);
+    // Mirror the password /login handler and the SSO handler (sso.ts): a
+    // pending record now requires recoveryAvailable (parsePendingMfa rejects
+    // any record missing it), so this CF-Access issuance path must compute
+    // and carry it too, or every real MFA completion here would be hard
+    // -rejected as a malformed/legacy record.
+    const recoveryAvailable = Array.isArray(user.mfaRecoveryCodes)
+      && user.mfaRecoveryCodes.length > 0;
     // SR2-06: bind the pending record to the live auth/mfa epochs + status +
     // effective allowed methods at issuance — same shape/rationale as the
     // password /login handler (login.ts), so the shared TOTP/SMS/passkey
@@ -244,6 +251,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
         userId: user.id,
         mfaMethod,
         passkeyAvailable,
+        recoveryAvailable,
         authEpoch: pendingEpochs.authEpoch,
         mfaEpoch: pendingEpochs.mfaEpoch,
         statusExpectation: user.status,
@@ -257,6 +265,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       tempToken,
       mfaMethod,
       passkeyAvailable,
+      recoveryAvailable,
       phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,
       tokens: null,

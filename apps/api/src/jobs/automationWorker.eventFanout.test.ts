@@ -9,7 +9,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { queueAddMock } = vi.hoisted(() => ({ queueAddMock: vi.fn() }));
+const { queueAddMock, workerCapture } = vi.hoisted(() => ({
+  queueAddMock: vi.fn(),
+  workerCapture: { processor: null as null | ((job: unknown) => Promise<unknown>) },
+}));
 
 vi.mock('bullmq', () => ({
   Queue: class {
@@ -20,6 +23,9 @@ vi.mock('bullmq', () => ({
     close = async () => undefined;
   },
   Worker: class {
+    constructor(_queue: string, processor: (job: unknown) => Promise<unknown>) {
+      workerCapture.processor = processor;
+    }
     on() { /* noop */ }
     close = async () => undefined;
   },
@@ -69,8 +75,10 @@ vi.mock('./workerObservability', () => ({
   attachWorkerObservability: vi.fn(),
 }));
 
+import * as dbModule from '../db';
 import { db } from '../db';
-import { queueEventTriggers } from './automationWorker';
+import { executeAutomationRun, executeConfigPolicyAutomationRun } from '../services/automationRuntime';
+import { createAutomationWorker, queueEventTriggers } from './automationWorker';
 import type { BreezeEvent } from '../services/eventBus';
 
 const PARTNER_WIDE_AUTOMATION = {
@@ -211,5 +219,55 @@ describe('queueEventTriggers — ticket events reach automations ONLY when expli
       }),
       expect.anything(),
     );
+  });
+});
+
+describe('automation execution DB context ownership', () => {
+  beforeEach(() => {
+    workerCapture.processor = null;
+    vi.mocked(dbModule.runOutsideDbContext).mockClear();
+    vi.mocked(dbModule.withSystemDbAccessContext).mockClear();
+    vi.mocked(executeAutomationRun).mockReset().mockResolvedValue({
+      status: 'running', devicesSucceeded: 0, devicesFailed: 0,
+    });
+    vi.mocked(executeConfigPolicyAutomationRun).mockReset().mockResolvedValue({
+      runId: 'run-2', status: 'running', devicesSucceeded: 0, devicesFailed: 0,
+    });
+  });
+
+  it.each([
+    [{
+      name: 'execute-run',
+      data: {
+        type: 'execute-run',
+        runId: '11111111-1111-4111-8111-111111111111',
+        targetDeviceIds: ['22222222-2222-4222-8222-222222222222'],
+      },
+    }, 0],
+    [{
+      name: 'execute-config-policy-run',
+      data: {
+        type: 'execute-config-policy-run',
+        configPolicyAutomationId: '33333333-3333-4333-8333-333333333333',
+        targetDeviceIds: ['22222222-2222-4222-8222-222222222222'],
+        triggeredBy: 'scheduler',
+      },
+    }, 1],
+  ])('runs %s outside the worker-wide system transaction', async (job, expectedShortSystemContexts) => {
+    if ('configPolicyAutomationId' in job.data) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: job.data.configPolicyAutomationId }]),
+          }),
+        }),
+      } as never);
+    }
+    createAutomationWorker();
+    expect(workerCapture.processor).not.toBeNull();
+    await workerCapture.processor!(job);
+
+    expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(expectedShortSystemContexts);
   });
 });

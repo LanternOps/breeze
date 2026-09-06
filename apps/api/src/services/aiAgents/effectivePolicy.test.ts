@@ -65,6 +65,8 @@ import {
 } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import {
+  loadPartnerBaselineCeiling,
+  loadPartnerBaselineKinds,
   mergeAgentPolicies,
   normalizeAgentPolicy,
   resolveEffectiveAgent,
@@ -365,13 +367,17 @@ describe('mergeAgentPolicies — tighten only', () => {
   });
 
   it('supervisedActionKeys narrows exactly like scriptIds: absent partner field, empty-partner-baseline stands alone', () => {
-    // No org override at all: effective === partner verbatim (the existing
-    // `if (!org) return { effective: partner, ... }` early return) — a
-    // partner-wide baseline row's own supervisedActionKeys is never
-    // intersected against anything.
+    // No org override at all (the `if (!org)` fast path): supervisedActionKeys
+    // resolves to `[]`, NOT the partner's own list (C3, ceiling not grant).
+    // Every other field on this fast path passes through the partner baseline
+    // unchanged — scriptIds included — but supervisedActionKeys is a ceiling
+    // (what an org MAY be granted), not a grant (what it HAS). Only an org
+    // row is a grant; promotion is the only writer that adds a key to one,
+    // demotion the only one that removes one. See mergeAgentPolicies'
+    // `if (!org)` branch docstring for the full rationale.
     const partnerOnly = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
     expect(mergeAgentPolicies(partnerOnly, null, { allowedModels: null }).effective.actAssets)
-      .toEqual({ scriptIds: [], supervisedActionKeys: [KEY_A] });
+      .toEqual({ scriptIds: [], supervisedActionKeys: [] });
 
     // Org narrows: intersection, never union — org's KEY_C (not on the
     // partner baseline) is dropped.
@@ -393,6 +399,20 @@ describe('mergeAgentPolicies — tighten only', () => {
     const orgWithKeys = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
     expect(mergeAgentPolicies(legacyPartner, orgWithKeys, { allowedModels: null }).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
+  });
+
+  it('toolAllowlist: an org row that scopes what the partner left bare keeps the scoped entries (not ∅)', () => {
+    const partner = policy({ toolAllowlist: ['manage_services', 'run_script'] });
+    const org = policy({ toolAllowlist: ['manage_services:restart', 'run_script'] });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.toolAllowlist)
+      .toEqual(['run_script', 'manage_services:restart']);
+  });
+
+  it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {
+    const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services'] } });
+    const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets.supervisedActionKeys)
+      .toEqual([KEY_A]);
   });
 });
 
@@ -561,6 +581,111 @@ describe('resolveEffectiveAgentSystem', () => {
 
     await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
 
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadPartnerBaselineKinds (#4170)', () => {
+  it('returns the empty set without querying when partnerId is null', async () => {
+    const result = await loadPartnerBaselineKinds(null);
+
+    expect(result).toEqual(new Set());
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('returns every kind with an active partner-wide row', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }, { kind: 'patch' }]];
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set(['triage', 'patch']));
+  });
+
+  it('returns the empty set when no partner-wide row exists for this partner', async () => {
+    dbMockState.aiAgentRows = [[]];
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set());
+  });
+
+  it('elevates the read the same way the resolver escapes for the partner-row lookup', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }]];
+
+    await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the escalation when already inside a system context', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }]];
+    dbMockState.ambientContext = { scope: 'system' };
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set(['triage']));
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
+  it('returns null without querying when partnerId is null', async () => {
+    const result = await loadPartnerBaselineCeiling(null, 'triage');
+
+    expect(result).toBeNull();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('returns null when no active partner-wide row exists for this kind', async () => {
+    dbMockState.aiAgentRows = [[]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toBeNull();
+  });
+
+  it('projects the toolAllowlist and supervisedActionKeys off the live baseline row', async () => {
+    dbMockState.aiAgentRows = [[{
+      toolAllowlist: ['manage_services', 'run_script:execute'],
+      actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+    }]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({
+      toolAllowlist: ['manage_services', 'run_script:execute'],
+      supervisedActionKeys: ['manage_services:restart'],
+      scriptIds: [],
+    });
+  });
+
+  it('defaults supervisedActionKeys to empty and toolAllowlist to empty on a bare row', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: null, actAssets: {} }]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
+  });
+
+  it('elevates the read the same way loadPartnerBaselineKinds does', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: [], actAssets: {} }]];
+
+    await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the escalation when already inside a system context', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: ['manage_services'], actAssets: {} }]];
+    dbMockState.ambientContext = { scope: 'system' };
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({ toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] });
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });

@@ -115,6 +115,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'aiBudgetAlertDeliveryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiBudgetAlertDelivery');
+      return { init: m.initializeAiBudgetAlertWorker, shutdown: m.shutdownAiBudgetAlertWorker };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {
@@ -342,6 +350,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4210 — prunes ticket_outbox rows once ticketOutboxPublisher has
+    // drained them (delivered or permanently stuck). No agent-socket-local
+    // dispatch dependency, so 'global'.
+    name: 'ticketOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketOutboxRetention');
+      return { init: m.initializeTicketOutboxRetention, shutdown: m.shutdownTicketOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for intent_outbox.
+    name: 'intentOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/intentOutboxRetention');
+      return { init: m.initializeIntentOutboxRetention, shutdown: m.shutdownIntentOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for metric_anomaly_incidents.
+    name: 'metricAnomalyIncidentRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/metricAnomalyIncidentRetention');
+      return {
+        init: m.initializeMetricAnomalyIncidentRetention,
+        shutdown: m.shutdownMetricAnomalyIncidentRetention,
+      };
+    },
+  },
+  {
     name: 'ipHistoryRetention',
     placement: 'global',
     load: async () => {
@@ -531,6 +571,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/orgMerge');
       return { init: m.initializeOrgMergeWorker, shutdown: m.shutdownOrgMergeWorker };
+    },
+  },
+  {
+    // #2787: async bulk permanent delete of removed devices.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Same class
+    // as orgMerge above. Do NOT flip this to 'global' without re-running
+    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
+    // and it fails the build on a wrong placement.
+    name: 'deviceBulkPurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceBulkPurge');
+      return { init: m.initializeDeviceBulkPurgeWorker, shutdown: m.shutdownDeviceBulkPurgeWorker };
+    },
+  },
+  {
+    // #2787 item 4: daily purge of removed devices past their org's
+    // device_lifecycle retention window.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
+    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
+    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    name: 'removedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/removedDevicePurge');
+      return { init: m.initializeRemovedDevicePurge, shutdown: m.shutdownRemovedDevicePurge };
     },
   },
   {
@@ -747,6 +819,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/peripheralJobs');
       return { init: m.initializePeripheralJobs, shutdown: m.shutdownPeripheralJobs };
+    },
+  },
+  {
+    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
+    // global: its closure reaches jobs/peripheralJobs.ts (via
+    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'deviceGroupJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceGroupJobs');
+      return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
     },
   },
   {
@@ -1075,6 +1159,64 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentSweepScheduler');
       return { init: m.initializeAiAgentSweepScheduler, shutdown: m.shutdownAiAgentSweepScheduler };
+    },
+  },
+  {
+    // QuickBooks Phase C, Task 4 (invoice push worker). `global`, verified by
+    // `workerEntrypointClosure.contract.test.ts`'s per-entry check: this
+    // module's runtime closure (accountingConnectionService, accountingTokens,
+    // accountingInvoicePush, the QuickBooks provider) never reaches
+    // `routes/agentWs.ts` or `services/agentCommandAwait.ts` — no socket
+    // ownership, no agent involvement at all.
+    name: 'accountingSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingSyncWorker');
+      return { init: m.initializeAccountingSyncWorkers, shutdown: m.shutdownAccountingSyncWorkers };
+    },
+  },
+  {
+    // QuickBooks Phase D, Task 4 (payment pull-back): the CDC reconcile worker
+    // plus its 15-minute sweep. `global`, and NOT copied from the sibling
+    // above on faith — `workerEntrypointClosure.contract.test.ts` re-derives
+    // this module's real runtime import closure per entry and is the authority.
+    name: 'accountingReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingReconcileWorker');
+      return { init: m.initializeAccountingReconcileWorkers, shutdown: m.shutdownAccountingReconcileWorkers };
+    },
+  },
+  {
+    // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
+    // impact rollup fan-out.
+    //
+    // `global`: its runtime import closure is `services/aiAgents/impactRollup.ts`
+    // (db + schema + the frozen IMPACT_FIX_TOOLS literal) — it never reaches
+    // `runService.createAndEnqueueAgentRun`, `routes/agentWs.ts` or
+    // `services/agentCommandAwait.ts`. Do NOT copy this value by analogy:
+    // `workerEntrypointClosure.contract.test.ts` is the mechanical authority
+    // and must be run for this entry (see CLAUDE.md — never relitigate
+    // placement by guessing).
+    name: 'aiAgentImpactRollup',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentImpactRollup');
+      return { init: m.initializeAiAgentImpactRollupWorker, shutdown: m.shutdownAiAgentImpactRollupWorker };
+    },
+  },
+  {
+    // Phase 2 wave P2-5 (#4192), Task 9: retention sweep for the
+    // `ai_agent_op_evidence` ledger. `global`, same reasoning as
+    // `aiUnattendedExposureRetention` above — this module's closure reaches
+    // only `db` + `services/retentionMetrics.ts`; it must never import
+    // `aiTools.ts` (the promotion executor lives there and would drag
+    // socket-local dispatch into what is otherwise a plain batched DELETE).
+    name: 'aiAgentGraduation',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentGraduationWorker');
+      return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
     },
   },
 ];

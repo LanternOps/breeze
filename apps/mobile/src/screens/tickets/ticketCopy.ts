@@ -1,4 +1,13 @@
-import type { TicketPriority, TicketStatus, TicketSummary } from '../../services/tickets';
+import type {
+  TicketComment,
+  TicketPriority,
+  TicketStatus,
+  TicketSummary,
+} from '../../services/tickets';
+// Value import, deliberately from the leaf module rather than services/tickets:
+// that module pulls `./api` (expo-secure-store, react-native) and would drag the
+// RN runtime into this otherwise node-testable copy module.
+import { SYSTEM_COMMENT_TYPES } from '../../services/ticketCommentTypes';
 // Import the pure token module rather than the `../../theme` barrel: the barrel
 // re-exports `useApprovalTheme`, which imports `useColorScheme` from react-native
 // and drags the RN runtime into this otherwise node-testable copy module.
@@ -44,14 +53,22 @@ export function priorityColor(priority: TicketPriority): string {
 }
 
 /**
- * `#1041` when the tenant has internal numbers, else a short id fallback.
- * `internalNumber` (not `ticketNumber`) is the display reference — it is what
- * the web queue renders, and it is a nullable varchar rather than an integer.
+ * `#1041` when the ticket has an internal number, else `null` so the caller
+ * hides the reference entirely.
+ *
+ * `internalNumber` (not `ticketNumber`) is the display reference: it is what the
+ * web queue renders, and it is a nullable varchar rather than an integer. The
+ * service allocates one on every create (`T-YYYY-NNNN`), so a production ticket
+ * always has one; only hand-inserted rows (fixtures, a seeded review tenant)
+ * lack it. Web renders nothing for those rather than inventing a reference, and
+ * so does mobile: an id-derived fallback either collides (seeded ids share a
+ * long prefix, so `id.slice(0, 8)` showed three tickets as the same "#11110000")
+ * or looks like a real number it is not.
  */
-export function ticketRef(ticket: Pick<TicketSummary, 'internalNumber' | 'id'>): string {
+export function ticketRef(ticket: Pick<TicketSummary, 'internalNumber'>): string | null {
   const n = ticket.internalNumber?.trim();
-  if (n) return n.startsWith('#') ? n : `#${n}`;
-  return `#${ticket.id.slice(0, 8)}`;
+  if (!n) return null;
+  return n.startsWith('#') ? n : `#${n}`;
 }
 
 export function isBreached(ticket: Pick<TicketSummary, 'slaBreachedAt'>): boolean {
@@ -92,4 +109,41 @@ export function emptyStateKind(
 ): 'none' | 'error' | 'empty' {
   if (loading) return 'none';
   return error ? 'error' : 'empty';
+}
+
+/**
+ * Whether an activity-feed row should be rendered at all.
+ *
+ * A system entry (status change, assignment, time entry) with blank
+ * `content` carries no information: the row has only `content` and a
+ * timestamp, no author chip or subject line to anchor it, so an empty one
+ * rendered as a lone "10w ago" with nothing to its left — observed live
+ * against a real tenant. Skip it rather than render it blank.
+ *
+ * A person comment always renders, even with empty content: it can
+ * legitimately be attachment-only, and its own render branch already has
+ * placeholder handling (soft-deleted / attachment-only) — that's not this
+ * function's call to make.
+ */
+export function isVisibleActivityEntry(
+  comment: Pick<TicketComment, 'commentType' | 'content'>
+): boolean {
+  const isSystem = Boolean(comment.commentType && SYSTEM_COMMENT_TYPES.has(comment.commentType));
+  if (!isSystem) return true;
+  return Boolean(comment.content && comment.content.trim());
+}
+
+/**
+ * Count of rows the "ACTIVITY" feed actually renders below its header.
+ *
+ * Must stay in lockstep with `isVisibleActivityEntry` above — the header
+ * previously counted only non-system comments while the list below also
+ * rendered every system row, so a tenant saw "ACTIVITY (1)" printed over
+ * five visible rows (four system rows plus one comment). Counting exactly
+ * what's rendered keeps the number honest.
+ */
+export function visibleActivityCount(
+  comments: ReadonlyArray<Pick<TicketComment, 'commentType' | 'content'>>
+): number {
+  return comments.filter(isVisibleActivityEntry).length;
 }

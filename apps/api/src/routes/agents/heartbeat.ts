@@ -4,6 +4,10 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
+  maybeDispatchEditionMigration,
+  shouldConsiderEditionMigration,
+} from '../../services/agentEditionAutoMigrate';
+import {
   devices,
   deviceMetrics,
   agentLogs,
@@ -34,6 +38,7 @@ import {
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
@@ -55,6 +60,7 @@ import {
   editionWithheldDetail,
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
+import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -385,10 +391,42 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     scope: 'organization' as const,
     orgId: agent.orgId,
     accessibleOrgIds: [agent.orgId],
+    // Partner-AXIS access (breeze_has_partner_access → writes) stays empty.
     accessiblePartnerIds: [],
-    // Agent path; no partner in scope and agents don't browse the catalog
-    // as org users. null disables the partner-wide read branch (safe).
-    currentPartnerId: null,
+    // #4673 W02 — this route opts out of agentAuthMiddleware's request-long
+    // wrap, so the partner id has to be carried over from the agent context
+    // rather than inherited. Without it the `breeze.current_partner_id` GUC is
+    // empty here and Wave 1's SELECT-only partner-wide branches can never match.
+    //
+    // Scope note, so nobody over-reads this: the field is still INERT on THIS
+    // route, and W03 did not change that — read the paragraph below before
+    // "cleaning up" the hoisted system contexts further down.
+    //
+    // W03 deleted the NESTED escapes (`withPartnerWideVisibility` and the
+    // direct `runOutsideDbContext(() => withSystemDbAccessContext(...))`
+    // wraps), so on every OTHER caller of these resolvers — agents/eventlogs,
+    // agents/commands, the backup routes, alertService, policyEvaluationService,
+    // pamBridge, the feature-link routes — the read now happens in the caller's
+    // own context and this GUC is exactly what carries it. The heartbeat is the
+    // one path where it does not, because the reads below are HOISTED into
+    // their own top-level system contexts (this route opts out of the
+    // request-long wrap). Those are not nested and cost no second connection,
+    // so W03 had no reason to touch them.
+    //
+    // Converting them to org-scoped contexts is a real follow-up — it would
+    // close the last RLS-bypass surface on the hottest path — but it is NOT a
+    // drop-in swap, which is why it is not in this wave:
+    // `buildPatchSourceConfigUpdate` reaches `resolveDeviceTimezone`, whose
+    // `partners` read is partner-AXIS and escapes through
+    // `readWithPartnerAxisVisibility` (#2822). Under a system wrapper that
+    // escape short-circuits; under an org wrapper it fires, uncached, once per
+    // heartbeat — turning one hoisted context into a genuinely NESTED
+    // double-hold on the fleet's hottest path, which is the #1105 shape this
+    // whole epic exists to remove. The timezone read has to be hoisted or
+    // batched first. Track it separately; do not do it by analogy with W03.
+    //
+    // Read-only widening to the device's own MSP; see agentAuth.ts.
+    currentPartnerId: agent.partnerId,
   };
 
   // Org > General > Agent update policy — governs whether we may hand the agent
@@ -800,8 +838,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.mainAgentSilentSince = null;
   }
 
-  // Only update deviceRole if agent provides one and current source is 'auto'
-  if (data.deviceRole && device.deviceRoleSource === 'auto') {
+  // Only update deviceRole if agent provides one, current source is 'auto',
+  // and it actually differs. The agent sends deviceRole on EVERY heartbeat and
+  // 'auto' is the fleet-wide default, so without the inequality check every
+  // steady-state heartbeat would look like a filterable change and trigger a
+  // dynamic-group re-evaluation (#4630 review).
+  if (data.deviceRole && device.deviceRoleSource === 'auto' && data.deviceRole !== device.deviceRole) {
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
@@ -857,6 +899,50 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.virtualizationPlatform = data.isVirtual
       ? (data.virtualizationPlatform ?? null)
       : null;
+  }
+
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // Three-way, matching the wire contract in schemas.ts:
+  //   undefined -> no news. A pre-#3207 agent omits `rebootStatus` entirely,
+  //                and the whole point of the isVirtual-style `!== undefined`
+  //                guard is that such an agent must not wipe a live schedule
+  //                out of the console on its next beat.
+  //   null      -> news: nothing is scheduled any more. Clear all five.
+  //   object    -> store the snapshot as a unit.
+  //
+  // The snapshot is written whole rather than column-by-column against the
+  // stored row. This UPDATE already fires on every heartbeat (lastSeenAt /
+  // status / updatedAt are unconditional above) and none of these columns is
+  // indexed, so re-assigning an unchanged value costs no extra tuple, no extra
+  // WAL record and no index maintenance — while a per-column diff would add
+  // Date-vs-Date comparison hazards for nothing. The one case worth skipping is
+  // the steady state, below: the overwhelming majority of the fleet has no
+  // restart scheduled and reports null forever, so a device whose columns are
+  // ALREADY clear contributes nothing to the SET list at all.
+  if (data.rebootStatus === null) {
+    const alreadyClear = [
+      device.rebootScheduledAt,
+      device.rebootDeadline,
+      device.rebootSource,
+      device.rebootDeferralsUsed,
+      device.rebootMaxDeferrals,
+    ].every((stored) => stored === null || stored === undefined);
+    if (!alreadyClear) {
+      deviceUpdates.rebootScheduledAt = null;
+      deviceUpdates.rebootDeadline = null;
+      deviceUpdates.rebootSource = null;
+      deviceUpdates.rebootDeferralsUsed = null;
+      deviceUpdates.rebootMaxDeferrals = null;
+    }
+  } else if (data.rebootStatus !== undefined) {
+    deviceUpdates.rebootScheduledAt = new Date(data.rebootStatus.scheduledAt);
+    deviceUpdates.rebootDeadline = data.rebootStatus.deadline
+      ? new Date(data.rebootStatus.deadline)
+      : null;
+    deviceUpdates.rebootSource = data.rebootStatus.source ?? null;
+    deviceUpdates.rebootDeferralsUsed = data.rebootStatus.deferralsUsed ?? null;
+    deviceUpdates.rebootMaxDeferrals = data.rebootStatus.maxDeferrals ?? null;
   }
 
   // Update hostname/OS version when agent reports changes
@@ -1007,6 +1093,28 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         resourceType: 'device',
         resourceId: device.id,
         details: { changes },
+      });
+    }
+
+    // #4630 — dynamic device group membership re-evaluation. Only the fields a
+    // filter can actually key on.
+    //
+    // NOT awaited, and deliberately no DB or Redis work here: this handler runs
+    // inside `withDbAccessContext`, i.e. a real transaction still holding this
+    // request's pooled Postgres connection and the `UPDATE devices` row lock.
+    // The evaluation itself is unbounded (one filter evaluation per dynamic
+    // group in the org, plus a peripheral-policy enqueue per membership flip),
+    // so it belongs on the queue — see jobs/deviceGroupJobs.ts for the full
+    // rationale. `requestDeviceGroupReevaluation` never rejects.
+    const filterableChangedFields = (['hostname', 'osVersion', 'osBuild', 'deviceRole'] as const)
+      .filter((field) => deviceUpdates[field] !== undefined);
+    if (filterableChangedFields.length > 0) {
+      void requestDeviceGroupReevaluation({
+        deviceId: device.id,
+        orgId: device.orgId,
+        eventType: 'device.updated',
+        changedFields: [...filterableChangedFields],
+        reason: 'heartbeat_device_change',
       });
     }
   }
@@ -1226,6 +1334,53 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       reportedEdition: data.agentEdition,
       agentVersion: data.agentVersion,
     });
+    // #4072 follow-up — automatic recovery for the stranded device behind the
+    // withhold above (default-off env flag; every precondition and the
+    // once-per-device claim live in the service). Fire-and-forget: the beat's
+    // response must not wait on script dispatch, and a dispatch failure must
+    // never fail the heartbeat. The service resolves the pin-honouring target
+    // with the SAME resolver as the offer path, so a holdback pin holds
+    // auto-migration too.
+    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
+    // non-candidate device) costs this hot path nothing beyond a few
+    // comparisons — no ALS exit, no system context, no second transaction.
+    if (
+      shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
+    ) {
+      // runOutsideDbContext + system context is load-bearing, not defensive:
+      // this promise is detached, and the surrounding org-scoped
+      // withDbAccessContext TRANSACTION commits when the handler returns — a
+      // detached query on the ambient context would run against the dead tx
+      // handle (same reason as the manifest-trust keyset at the top of this
+      // handler, #1105). System context is safe: everything dispatched was
+      // validated in the org-scoped block, the claim re-binds to the device's
+      // org and liveness, and dispatchScriptToDevice's org-equality invariant
+      // still applies.
+      runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          maybeDispatchEditionMigration({
+            device,
+            reportedAgentVersion: data.agentVersion,
+            normalizedArch,
+            updateGateAllows,
+            pin: versionPins.agent,
+            resolveTarget: () =>
+              resolvePinnedUpgradeTarget({
+                component: 'agent',
+                platform: device.osType,
+                architecture: normalizedArch,
+                pin: versionPins.agent,
+                agentId,
+              }),
+          }),
+        ),
+        // The service catches everything itself; this catch only exists so a
+        // future regression there can never surface as an unhandled rejection
+        // on the heartbeat hot path.
+      ).catch((err) => {
+        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
+      });
+    }
   } else if (acceptsServedEdition) {
     // Re-arm THIS branch's withhold warn: if the device later regresses to an
     // incompatible build (same process), that is a fresh episode and must log
@@ -1534,6 +1689,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
 
+  // Self-health is independent from reachability and is persisted only after
+  // the request's org-scoped transaction has released. A failed observation
+  // must never turn a valid heartbeat into an outage or roll back the device's
+  // online/last-seen update.
+  if (data.healthStatus) {
+    if (
+      data.healthStatus.deviceId !== undefined
+      && data.healthStatus.deviceId !== scoped.deviceId
+    ) {
+      const error = new Error('Agent health observation device identity mismatch');
+      console.error(
+        `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+        error,
+      );
+      captureException(error);
+    } else {
+      try {
+        await recordAgentHealthObservation({
+          device: { id: scoped.deviceId, orgId: scoped.deviceOrgId },
+          observation: data.healthStatus,
+          receivedAt: new Date(),
+        });
+      } catch (err) {
+        console.error(
+          `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+          err,
+        );
+        captureException(err);
+      }
+    }
+  }
+
   // The device heartbeat above has committed before rollback truth is
   // evaluated. This second short org context lets terminal `healthy` rely on
   // persisted live agent/companion versions without holding the main
@@ -1629,7 +1816,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #2930 — event_log / monitoring / pam / patch_source policy readers. These
   // used to run inside the org transaction, where a partner-wide policy
   // (org_id NULL) is RLS-invisible, so a partner-authored policy for any of the
-  // four never reached an agent. Same treatment as policyProbeConfig /
+  // four never reached an agent.
+  //
+  // #4673 W03 kept this hoist deliberately. The resolvers themselves no longer
+  // escape internally — they read partner-wide rows through the
+  // `*_partner_wide_select` branch in whatever context they are given — so an
+  // org-scoped wrapper here WOULD work for event_log / monitoring / pam. It is
+  // not applied because `buildPatchSourceConfigUpdate` shares this wrapper and
+  // reaches the partner-AXIS `partners` read in `resolveDeviceTimezone`, which
+  // would then take a nested `readWithPartnerAxisVisibility` escape once per
+  // heartbeat (see the long note at the `currentPartnerId` assignment above).
+  // Same treatment as policyProbeConfig /
   // onedriveSettings / helperSettings above: resolved after the org tx is
   // released, under a system context anchored to `scoped.deviceId` — an id
   // derived from the device the agent already authenticated as, so this cannot
@@ -1747,11 +1944,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   // #1105 — helper settings resolved OUTSIDE the org context too (same
   // guarantee as policyProbeConfig/onedriveSettings above): a partner-wide
-  // helper policy (org_id NULL) is invisible under the org-scoped RLS context
-  // (accessiblePartnerIds: [] there), so it must resolve under a system
-  // context anchored to this authenticated device's own org — cannot pivot
-  // tenants since both ids come from `scoped`, derived from the device the
-  // agent already authenticated as.
+  // helper policy (org_id NULL) was invisible under the org-scoped RLS context
+  // (accessiblePartnerIds: [] there), so it resolved under a system context
+  // anchored to this authenticated device's own org — cannot pivot tenants
+  // since both ids come from `scoped`, derived from the device the agent
+  // already authenticated as.
+  //
+  // #4673 W03: the invisibility half of that reason is gone —
+  // `config_policy_feature_links_partner_wide_select` covers the JSONB
+  // `inlineSettings` this resolves, and `buildHelperConfigUpdate` touches no
+  // partner-AXIS table, so this one IS a safe drop-in swap to an org-scoped
+  // context. It is left alone only so the heartbeat's five hoists are converted
+  // as ONE reviewable change with one integration proof each, rather than
+  // piecemeal. See the note at the `currentPartnerId` assignment above.
   let helperSettings: HelperSettings | null = null;
   try {
     helperSettings = await withSystemDbAccessContext(() =>

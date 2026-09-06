@@ -35,7 +35,11 @@ import {
   isInMaintenanceWindow,
 } from '../services/featureConfigResolver';
 import { queueCommandForExecution } from '../services/commandQueue';
-import { resolveRebootDelayMinutes } from '../services/patchRebootHandler';
+import {
+  computeRebootDeadline,
+  resolveRebootPlan,
+  type RebootDeferralSettings,
+} from '../services/patchRebootHandler';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -63,7 +67,20 @@ export type RebootCandidate = {
   osType: 'windows' | 'macos' | 'linux';
 };
 
-type WindowsRebootPayload = { delayMinutes: number; reason: string; source: string };
+type WindowsRebootPayload = {
+  delayMinutes: number;
+  reason: string;
+  source: string;
+  /**
+   * #3207. Always sent. `deadline` is the hard stop a deferral may not push
+   * past; with deferral off it is exactly the scheduled reboot time, which is
+   * also what an agent that ignores these keys already assumes.
+   */
+  deadline: string;
+  allowDeferral: boolean;
+  maxDeferrals: number;
+  deferralMinutes: number;
+};
 // `delay` is the on-the-wire payload key the agent reads
 // (tools.ShutdownDelayMinutes parses payload["delay"]), and its unit is MINUTES
 // on every platform. Do NOT rename it to delayMinutes for symmetry with
@@ -108,8 +125,21 @@ export function decideRebootCommand(params: {
    * (#3197).
    */
   delayMinutes: number;
+  /**
+   * End-user deferral budget resolved from the same patch policy as
+   * `delayMinutes` (#3207). Required rather than defaulted: forgetting it would
+   * silently ship a disabled budget on a policy that had enabled one, and the
+   * failure would be invisible until a user complained that Postpone never
+   * appeared.
+   */
+  deferral: RebootDeferralSettings;
+  /**
+   * Close of the maintenance window this reboot is firing inside. Caps the
+   * deadline so a postponement cannot run past the end of the window.
+   */
+  windowEndsAt?: Date | null;
 }): RebootDecision {
-  const { rebootIfPending, windowActive, osType, delayMinutes } = params;
+  const { rebootIfPending, windowActive, osType, delayMinutes, deferral, windowEndsAt } = params;
   if (!rebootWarranted({ rebootIfPending, windowActive, osType })) return null;
   if (osType === 'windows') {
     return {
@@ -118,10 +148,18 @@ export function decideRebootCommand(params: {
         delayMinutes,
         reason: 'Pending reboot — maintenance window',
         source: 'maintenance_window',
+        deadline: computeRebootDeadline(new Date(), delayMinutes, deferral, windowEndsAt).toISOString(),
+        allowDeferral: deferral.allowDeferral,
+        maxDeferrals: deferral.maxDeferrals,
+        deferralMinutes: deferral.deferralMinutes,
       },
     };
   }
   if (osType === 'linux') {
+    // Deliberately NOT extended with the deferral keys: this is the OS-scheduled
+    // `shutdown -r +N` path, which has no prompt to defer from. Linux parity is
+    // W4 of #3207 and will move this onto schedule_reboot rather than bolt a
+    // budget onto a command that cannot honour it.
     return { type: 'reboot', payload: { delay: delayMinutes } };
   }
   return null; // macOS / unknown — never rebooted
@@ -177,7 +215,7 @@ export async function processRebootCandidate(
     isInMaintenanceWindow,
     hasRecentRebootCommand,
     queueCommandForExecution,
-    resolveRebootDelayMinutes,
+    resolveRebootPlan,
     rebootWarranted,
     decideRebootCommand,
   },
@@ -185,10 +223,10 @@ export async function processRebootCandidate(
   const settings = await deps.resolveMaintenanceConfigForDevice(device.id);
   if (!settings) return { issued: false, reason: 'no-maintenance-policy' };
 
-  const windowActive = deps.isInMaintenanceWindow(settings).active;
+  const windowStatus = deps.isInMaintenanceWindow(settings);
   const gate = {
     rebootIfPending: settings.rebootIfPending,
-    windowActive,
+    windowActive: windowStatus.active,
     osType: device.osType,
   };
   if (!deps.rebootWarranted(gate)) return { issued: false, reason: 'no-action' };
@@ -198,9 +236,13 @@ export async function processRebootCandidate(
   }
 
   // Only now, once a reboot is actually going out, pay for the policy lookup.
+  // One walk answers both the grace period and the deferral budget (#3207).
+  const plan = await deps.resolveRebootPlan(device.id);
   const decision = deps.decideRebootCommand({
     ...gate,
-    delayMinutes: await deps.resolveRebootDelayMinutes(device.id),
+    delayMinutes: plan.delayMinutes,
+    deferral: plan.deferral,
+    windowEndsAt: windowStatus.windowEndsAt,
   });
   if (!decision) return { issued: false, reason: 'no-action' };
 

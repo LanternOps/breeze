@@ -1,30 +1,34 @@
 import { describe, it, expect } from 'vitest';
-import { encodeCursor, decodeCursor } from './mobile';
+import { encodeCursor, decodeCursor, decodeTimestampCursor } from './mobile';
 
 describe('mobile route cursor helpers', () => {
-  it('round-trips a valid (Date, id) pair', () => {
-    const ts = new Date('2026-05-17T23:45:00.000Z');
+  it('round-trips a (key, id) pair verbatim — never re-parses key', () => {
+    // A 6-digit-microsecond string is the whole point (#3770): a JS `Date`
+    // only holds milliseconds, so this only stays intact if encode/decode
+    // never routes `key` through one.
+    const key = '2026-05-17T23:45:00.123456';
     const id = 'd1f8e0c4-9c5d-4f8e-9c5d-4f8e9c5d4f8e';
-    const encoded = encodeCursor(ts, id);
+    const encoded = encodeCursor(key, id);
     expect(encoded).not.toBeNull();
     const decoded = decodeCursor(encoded ?? undefined);
-    expect(decoded).not.toBeNull();
-    expect(decoded?.id).toBe(id);
-    expect(decoded?.ts.toISOString()).toBe(ts.toISOString());
+    expect(decoded).toEqual({ key, id });
   });
 
-  it('accepts an ISO string for ts and re-emits the same timestamp', () => {
-    const iso = '2026-05-17T23:45:00.000Z';
+  it('round-trips a non-timestamp key (e.g. hostname) verbatim', () => {
+    const key = 'zz-last-host';
     const id = 'd1f8e0c4-9c5d-4f8e-9c5d-4f8e9c5d4f8e';
-    const encoded = encodeCursor(iso, id);
+    const encoded = encodeCursor(key, id);
     const decoded = decodeCursor(encoded ?? undefined);
-    expect(decoded?.ts.toISOString()).toBe(iso);
+    expect(decoded).toEqual({ key, id });
   });
 
-  it('returns null when ts or id is missing on encode', () => {
+  it('returns null when key or id is missing/empty on encode', () => {
     expect(encodeCursor(null, 'x')).toBeNull();
     expect(encodeCursor(undefined, 'x')).toBeNull();
-    expect(encodeCursor(new Date(), '')).toBeNull();
+    expect(encodeCursor('', 'x')).toBeNull();
+    expect(encodeCursor('k', null)).toBeNull();
+    expect(encodeCursor('k', undefined)).toBeNull();
+    expect(encodeCursor('k', '')).toBeNull();
   });
 
   it('returns null on undefined/empty input to decode', () => {
@@ -32,25 +36,57 @@ describe('mobile route cursor helpers', () => {
     expect(decodeCursor('')).toBeNull();
   });
 
-  it('returns null on garbage input', () => {
+  it('returns null on garbage or structurally-invalid input', () => {
     expect(decodeCursor('not-base64')).toBeNull();
     expect(decodeCursor(Buffer.from('not json', 'utf8').toString('base64url'))).toBeNull();
-    expect(decodeCursor(Buffer.from('{"ts":"not-a-date","id":"x"}', 'utf8').toString('base64url'))).toBeNull();
-    expect(decodeCursor(Buffer.from('{"ts":1234,"id":"x"}', 'utf8').toString('base64url'))).toBeNull();
-    expect(decodeCursor(Buffer.from('{"ts":"2026-05-17T00:00:00Z"}', 'utf8').toString('base64url'))).toBeNull();
+    expect(decodeCursor(Buffer.from('{"key":"","id":"x"}', 'utf8').toString('base64url'))).toBeNull();
+    expect(decodeCursor(Buffer.from('{"key":1234,"id":"x"}', 'utf8').toString('base64url'))).toBeNull();
+    expect(decodeCursor(Buffer.from('{"key":"2026-05-17T00:00:00Z"}', 'utf8').toString('base64url'))).toBeNull();
   });
 
   it('rejects a non-uuid id rather than letting it reach a uuid column', () => {
-    const encoded = encodeCursor(new Date('2026-05-17T23:45:00.000Z'), 'not-a-uuid');
+    const encoded = encodeCursor('2026-05-17T23:45:00.000Z', 'not-a-uuid');
     expect(decodeCursor(encoded ?? undefined)).toBeNull();
   });
 
   it('uses base64url (no + or /) so cursors are URL-safe', () => {
     // Force a payload likely to produce + and / in standard base64
-    const ts = new Date('2026-05-17T23:45:00.000Z');
+    const key = '2026-05-17T23:45:00.000Z';
     const id = '////++++>>>>!@#$';
-    const encoded = encodeCursor(ts, id);
+    const encoded = encodeCursor(key, id);
     expect(encoded).not.toBeNull();
     expect(encoded ?? '').not.toMatch(/[+/=]/);
+  });
+
+  describe('decodeTimestampCursor', () => {
+    it('accepts a structurally-valid cursor whose key parses as a timestamp', () => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const encoded = encodeCursor('2026-07-28T12:00:00.123456', id);
+      expect(decodeTimestampCursor(encoded ?? undefined)).toEqual({
+        key: '2026-07-28T12:00:00.123456',
+        id,
+      });
+    });
+
+    it('rejects a structurally-valid cursor whose key is not a timestamp — e.g. a hostname cursor replayed on the wrong route', () => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const encoded = encodeCursor('not-a-timestamp', id);
+      expect(decodeTimestampCursor(encoded ?? undefined)).toBeNull();
+    });
+
+    it('rejects a key that is a valid JS Date but out of Postgres timestamp range', () => {
+      // `new Date(-8640000000000000).toISOString()` — JS's own minimum
+      // representable date — parses fine as a `Date` (not NaN), but sits
+      // nowhere near Postgres `timestamp`'s actual range and would 500 the
+      // route on the `::timestamp` cast instead of failing cleanly here.
+      // A `Number.isNaN(new Date(key).getTime())` check alone does not catch
+      // this; the regex on the exact `to_char` output shape does.
+      const id = '11111111-1111-4111-8111-111111111111';
+      const extreme = new Date(-8640000000000000).toISOString();
+      expect(extreme).toBe('-271821-04-20T00:00:00.000Z');
+      expect(Number.isNaN(new Date(extreme).getTime())).toBe(false);
+      const encoded = encodeCursor(extreme, id);
+      expect(decodeTimestampCursor(encoded ?? undefined)).toBeNull();
+    });
   });
 });

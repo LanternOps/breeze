@@ -194,16 +194,18 @@ export async function mergeBillingContact(
  * Callers pass whatever the (unvalidated, `z.any()`) request body carried;
  * `readContactBlob` is what makes a non-object value safe here.
  *
- * ⚠️ NO PRODUCTION CALLER TODAY, deliberately. The org PATCH/PUT route needs a
- * guarded WHERE — it re-asserts partner-ownership and suspended-status in the
- * UPDATE itself (#2879) so a concurrent change cannot let a write land on an
- * org that stopped qualifying — and this function writes with a bare
+ * ⚠️ Production caller: ONLY `reprojectPrimaryContact` in `./crud` (#3258
+ * W02), which owns the `contacts` row and re-projects the org-level primary
+ * after every primary-affecting create/update/delete. The org PATCH/PUT route
+ * deliberately does NOT call this: it needs a guarded WHERE — it re-asserts
+ * partner-ownership and suspended-status in the UPDATE itself (#2879) so a
+ * concurrent change cannot let a write land on an org that stopped
+ * qualifying — and this function writes with a bare
  * `eq(organizations.id, orgId)`, which would silently drop that guard. That
  * route writes the column inside its own guarded UPDATE and then calls
- * `syncBillingContactRow`. Kept for the contact CRUD routes still to come
- * (#3258), which own the row rather than patching a guarded org update. If you
- * are reaching for this from a route that already has conditions on its
- * UPDATE, you want `syncBillingContactRow` instead.
+ * `syncBillingContactRow`. If you are reaching for this from a route that
+ * already has conditions on its UPDATE, you want `syncBillingContactRow`
+ * instead.
  */
 export async function replaceBillingContact(
   exec: ContactExecutor,
@@ -244,13 +246,14 @@ export async function syncBillingContactRow(
  * literal `contact:` token at the write site, so a grep-driven sweep does not
  * find it.
  *
- * ⚠️ NO PRODUCTION CALLER TODAY. That spread write is a single UPDATE whose
- * 0-row result is load-bearing (it detects an RLS rejection that the prior
- * SELECT missed), so the route keeps its own write and calls
- * `syncSiteContactRow` afterwards rather than issuing a second UPDATE here.
- * Kept for the contact CRUD routes still to come (#3258). Same rule as
- * `replaceBillingContact`: if your caller already writes the column, use the
- * `sync*` mirror instead of this.
+ * ⚠️ Production caller: ONLY `reprojectPrimaryContact` in `./crud` (#3258
+ * W02), re-projecting a site-level primary after a primary-affecting
+ * create/update/delete. The site PATCH route deliberately does NOT call this:
+ * that spread write is a single UPDATE whose 0-row result is load-bearing (it
+ * detects an RLS rejection that the prior SELECT missed), so the route keeps
+ * its own write and calls `syncSiteContactRow` afterwards rather than issuing
+ * a second UPDATE here. Same rule as `replaceBillingContact`: if your caller
+ * already writes the column, use the `sync*` mirror instead of this.
  */
 export async function replaceSiteContact(
   exec: ContactExecutor,

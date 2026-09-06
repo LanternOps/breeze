@@ -22,6 +22,7 @@
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",
     "test:agent-binary-signatures": "node --test scripts/security/check-agent-binary-signatures.test.mjs",
+    "test:pg-connect-env": "node --test scripts/lib/pg-connect-env.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
@@ -52,7 +53,7 @@
       "fast-xml-parser@<5.5.7": ">=5.5.7",
       "fast-xml-parser@<5.7.0": ">=5.7.0",
       "fast-xml-parser@<5.10.1": ">=5.10.1",
-      "fast-uri@>=3.0.0 <3.1.5": "3.1.5",
+      "fast-uri@>=3.0.0 <3.1.7": "3.1.7",
       "brace-expansion@<1.1.18": ">=1.1.18",
       "brace-expansion@>=2.0.0 <2.1.4": ">=5.0.9",
       "brace-expansion@>=4.0.0 <5.0.9": ">=5.0.9",
@@ -102,7 +103,8 @@
       "@grpc/grpc-js@<1.14.4": ">=1.14.4",
       "js-yaml@>=4.0.0 <4.3.1": ">=4.3.1 <5.0.0",
       "nanoid@<3.3.18": ">=3.3.18 <4.0.0",
-      "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0"
+      "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0",
+      "fast-uri": ">=3.1.6"
     },
     "patchedDependencies": {
       "postgres@3.4.9": "patches/postgres@3.4.9.patch"

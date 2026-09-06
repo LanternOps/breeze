@@ -4,7 +4,7 @@
  * React refs/state are threaded in via WebRTCDeps callbacks.
  */
 
-import { createWebRTCSession, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../webrtc';
+import { createWebRTCSession, AgentSessionError, SessionEndedError, WebRTCUnsupportedError, type AuthenticatedConnectionParams } from '../webrtc';
 import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
 
@@ -26,6 +26,15 @@ export interface WebRTCDeps {
   onClipboardChannel: (channel: RTCDataChannel) => void;
   onCursorChannelOpen: () => void;
   onCursorChannelClose: () => void;
+  /**
+   * This WebView cannot do WebRTC at all, so every future attempt is wasted.
+   *
+   * Needed because `connectWebRTC` returns `null` for BOTH "unsupported" and
+   * "attempt failed" — without this signal the discovery dies here and the
+   * component can never gate its notice or its toolbar affordances on it
+   * (issue #3410). Fires only for a permanent gap, never for a failed attempt.
+   */
+  onWebRTCUnsupported?: () => void;
 }
 
 export interface WebRTCSessionWrapper extends TransportSession {
@@ -195,6 +204,19 @@ export async function connectWebRTC(
     // dead sessionId and the viewer shows a terminal "session ended" state.
     if (err instanceof SessionEndedError) {
       throw err;
+    }
+    // This WebView has no WebRTC implementation at all (commonly a Linux
+    // webkit2gtk build without the GStreamer WebRTC plugins — issue #3410).
+    // That is a permanent capability gap, not a failed attempt, so say so
+    // plainly instead of logging it as a connection failure that a retry might
+    // clear. Returning null routes the caller to the WebSocket transport.
+    if (err instanceof WebRTCUnsupportedError) {
+      // Carry the error's own message rather than restating a cause: it may be
+      // a missing RTCPeerConnection global OR a constructor that exists and
+      // throws, and those point at different things to go fix.
+      console.warn(`WebRTC is unavailable in this WebView — using the WebSocket transport instead. ${err.message}`);
+      deps.onWebRTCUnsupported?.();
+      return null;
     }
     console.warn('WebRTC connection failed:', err);
     return null;

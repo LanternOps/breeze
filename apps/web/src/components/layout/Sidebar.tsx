@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -58,6 +59,8 @@ import {
   Puzzle,
   LayoutGrid,
   Cpu,
+  TrendingUp,
+  Power,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -212,6 +215,9 @@ export const navSections: NavSection[] = [
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
+      // time-saved report over the same runs, so it sits beside them.
+      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
@@ -302,6 +308,7 @@ export const navSections: NavSection[] = [
     icon: Building,
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
@@ -328,6 +335,12 @@ export const navSections: NavSection[] = [
       { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
       { name: 'LLM Provider Catalog', labelKey: 'nav.llmProviderCatalog', href: '/admin/llm-provider-catalog', icon: Cpu, platformAdminOnly: true },
       { name: 'Connected Apps', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      // #4208 — the platform-wide AI emergency stop's first UI. The
+      // write surface (routes/admin/aiKillState.ts) shipped in #3828/PR #4168
+      // with no console because production had zero platform admins; this
+      // adds the console path once one exists. The SQL fallback documented in
+      // docs/deploy/ai-kill-switch.md still works and remains the runbook.
+      { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
     ],
   },
 ];
@@ -713,7 +726,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
-          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+          'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
+          // Icon rail: no horizontal padding, center the icon in the full row so
+          // the highlight box and icon share the rail's centre line regardless
+          // of the available width.
+          labels ? 'px-3' : 'justify-center',
           isActive
             ? 'bg-primary text-primary-foreground'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -859,7 +876,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         </div>
       </div>
 
-      <nav ref={navScrollRef} data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
+      {/* Stable gutter only with labels: it stops the labels shifting when a
+          section expands and a scrollbar appears. In the 64px icon rail it
+          would eat ~15px of a 48px content box on classic scrollbars, pushing
+          the icons off-centre (see Sidebar.collapsedrail.test.tsx). */}
+      <nav
+        ref={navScrollRef}
+        data-tour="sidebar-nav"
+        className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2"
+        style={{ scrollbarGutter: showLabels ? 'stable' : 'auto' }}
+      >
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
         {extensionsSection && renderCollapsibleSection(extensionsSection)}

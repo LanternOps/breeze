@@ -11,7 +11,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'groupBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     // Make the chain awaitable: resolve to the next queued result (or []).
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
@@ -62,6 +62,20 @@ vi.mock('./invoiceAssembly', async (importOriginal) => ({
 // opens a BullMQ socket.
 vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
+// issueInvoice/voidInvoice also enqueue QuickBooks push/void jobs (Phase C,
+// Task 4) — same reason as the PDF render mock above.
+vi.mock('../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingInvoicePush: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The QBO payment-mapping cleanup voidPayment now performs inside its own
+// transaction (Phase D, Task 3). Mocked so these tests assert the DELEGATION
+// (handle + payment id), not a second copy of the applier's own suite.
+vi.mock('./accounting/accountingPaymentPull', () => ({
+  clearPaymentMappingForInvoicePayment: vi.fn().mockResolvedValue(0),
+}));
+
 import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
@@ -70,6 +84,13 @@ import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
+import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+
+const clearPaymentMappingMock = vi.mocked(clearPaymentMappingForInvoicePayment);
+
+const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
+const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
@@ -391,6 +412,46 @@ describe('invoiceService guards', () => {
     expect(result.invoice).not.toHaveProperty('partnerId');
   });
 
+  it('serializes ticketNumber without source metadata', () => {
+    expect(svc.toCustomerInvoiceLine({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    })).toEqual({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    });
+  });
+
+  it('joins tickets and scopes both sides to the invoice org', async () => {
+    queueResult([{
+      id: 'invoice-1', status: 'sent', orgId: 'org1', partnerId: 'p1',
+    }]);
+    queueResult([]);
+    await svc.getCustomerInvoice('invoice-1', 'org1');
+    const join = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.at(-1)![1];
+    const compiledJoin = new PgDialect().sqlToQuery(join as SQL);
+    expect(compiledJoin.sql).toContain(
+      '"tickets"."id" = "invoice_lines"."ticket_id"',
+    );
+    expect(compiledJoin.sql).toContain('"tickets"."org_id" =');
+    expect(compiledJoin.params).toContain('org1');
+
+    const where = (db as unknown as { where: Mock }).where.mock.calls.at(-1)![0];
+    const compiledWhere = new PgDialect().sqlToQuery(where as SQL);
+    expect(compiledWhere.sql).toContain('"invoice_lines"."org_id" =');
+    expect(compiledWhere.params).toContain('org1');
+  });
+
   it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     queueResult([{
@@ -416,9 +477,10 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
     expect(result.lines[0]).toEqual({
+      ticketNumber: null,
       // Legacy line (source row carries no `name`): description stays the title.
       name: null,
       description: 'Customer-facing work',
@@ -457,7 +519,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
   });
 
@@ -660,6 +722,20 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().documentLocale).toBe('en');
+  });
+
+  // Phase C, Task 4: issuance fires an accounting-sync push job post-commit,
+  // next to enqueueInvoicePdfRender.
+  it('enqueues an accounting push for the issued invoice, keyed off the locked row', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    await svc.issueInvoice('inv1', actor);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith('inv1', 'p1');
+  });
+
+  it('does not let a failed accounting-push enqueue fail the (already-committed) issuance', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    enqueueAccountingInvoicePushMock.mockRejectedValueOnce(new Error('boom'));
+    await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
   });
 });
 
@@ -1147,6 +1223,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([]);                  // recompute: update
     queueResult([draftRow(currencyCode)]); // getInvoice: owned invoice
     queueResult([]);                  // getInvoice: lines
+    queueResult([]);                  // getInvoice: grouped evidence counts
     queueResult([]);                  // getInvoice: stripe connection
   };
 
@@ -1342,7 +1419,9 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('exposes the cached account currency and a warn-dont-block mismatch warning when connected', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // invoice
     queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD', accountCountry: 'US' }]); // stripe_connect_accounts
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping row)
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(true);
     expect(out.stripeAccountCurrency).toBe('USD');
@@ -1354,7 +1433,9 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('no warning when the account settles in the document currency', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
+    queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'EUR', accountCountry: 'DE' }]);
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeAccountCurrency).toBe('EUR');
     expect(out.currencyWarning).toBeNull();
@@ -1363,7 +1444,9 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('connected but the account currency was never cached (pre-wave-5 row): explicit UNKNOWN warning, not "no warning" (review F6)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
+    queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: null, accountCountry: null }]);
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(true);
     expect(out.stripeAccountCurrency).toBeNull();
@@ -1375,11 +1458,94 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
   it('both null when the partner is not connected', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
+    queueResult([]);
     queueResult([]); // no connection row
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(false);
     expect(out.stripeAccountCurrency).toBeNull();
     expect(out.currencyWarning).toBeNull();
+  });
+});
+
+describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const partnerActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('surfaces the QuickBooks mapping row when a partner-scoped read can see it', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // invoice
+    queueResult([]); // lines
+    queueResult([]); // grouped evidence counts
+    queueResult([]); // stripe connection (not connected)
+    queueResult([{
+      syncStatus: 'synced',
+      lastSyncedAt: new Date('2026-09-01T12:00:00.000Z'),
+      lastError: null,
+      remoteDocNumber: '1042',
+    }]); // accounting_entity_mappings ⋈ accounting_connections
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toEqual({
+      provider: 'quickbooks',
+      syncStatus: 'synced',
+      lastSyncedAt: '2026-09-01T12:00:00.000Z',
+      lastError: null,
+      remoteDocNumber: '1042',
+      remoteDeleted: false,
+    });
+  });
+
+  // #4544: markInvoiceDeletedRemotely (accountingPaymentPull.ts) writes this
+  // exact lastError; getInvoiceAccountingSync must surface it as a typed
+  // boolean rather than making the web layer string-match lastError.
+  it('surfaces remoteDeleted: true when the mapping carries the remote-deleted marker', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([{
+      syncStatus: 'error',
+      lastSyncedAt: null,
+      lastError: 'Deleted in QuickBooks',
+      remoteDocNumber: null,
+    }]);
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toMatchObject({ syncStatus: 'error', remoteDeleted: true });
+  });
+
+  it('is null when the mapping read returns no row (never connected, or RLS hides a partner-axis table from an org-scoped read) — fail closed, no special-casing', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    // Simulates an org-scoped ambient RLS context on `accounting_entity_mappings`
+    // (a partner-axis table): the row exists, but the caller's context can't
+    // see it, so the query returns zero rows exactly like "no mapping at all".
+    queueResult([]);
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toBeNull();
+  });
+});
+
+describe('getInvoice — billing evidence counts (#3205 W07)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('#3205 W07 ruling 3: getInvoice adds deviceCount per line; listInvoices does NOT', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'l1' }, { id: 'l2' }]);
+    queueResult([{ lineId: 'l1', n: 3 }]);
+    queueResult([]); // Stripe connection
+    queueResult([]); // accounting sync
+    queueResult([{ id: 'i1', orgId: 'org1' }]); // listInvoices
+
+    const detail = await svc.getInvoice('i1', actor);
+    expect(detail.lines.every((l) => typeof l.deviceCount === 'number')).toBe(true);
+    expect(detail.lines.map((l) => l.deviceCount)).toEqual([3, 0]);
+    const list = await svc.listInvoices({ limit: 50 }, actor);
+    expect(list.some((i: Record<string, unknown>) => 'deviceCount' in i)).toBe(false);
+    // Exactly ONE grouped aggregate per detail view — never a per-row aggregate on
+    // the invoice index.
+    expect((db as unknown as { groupBy: { mock: { calls: unknown[][] } } }).groupBy.mock.calls).toHaveLength(1);
   });
 });
 
@@ -1512,6 +1678,18 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
   });
+
+  it('addContractLine rejects a fractional injected JPY costBasis', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]);
+    await expect(
+      svc.addContractLine('i1', {
+        description: 'Overage', quantity: '1', unitPrice: '100', costBasis: '40.5',
+        taxable: false, contractId: 'ct1',
+      }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
 });
 
 // ── overdue sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────
@@ -1552,5 +1730,111 @@ describe('runOverdueSweep tenant scope', () => {
     const { sql } = dialect.sqlToQuery(whereArg);
     expect(sql).toContain('"invoices"."due_date" <');
     expect(sql).toContain('"invoices"."balance" > 0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D (QuickBooks payment pull-back, Task 3): the payment-mapping cleanup
+// and the widened listPayments source tag.
+// ---------------------------------------------------------------------------
+
+describe('voidPayment clears the QuickBooks payment mapping', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  /** Queues the reads voidPayment issues, in order. */
+  function queueVoidPaymentReads(payment: Record<string, unknown>) {
+    queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
+    queueResult([payment]);                                                              // payment re-read under lock
+    queueResult([]);                                                                     // delete invoice_payments
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
+    queueResult([]);                                                                     // recompute: payment sum
+    queueResult([]);                                                                     // recompute: update invoice
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // final getOwnedInvoiceOr404
+  }
+
+  it('deletes the payment mapping row with the SAME transaction handle, before the payment row', async () => {
+    clearPaymentMappingMock.mockResolvedValueOnce(1);
+    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check', reference: '10441', recordedBy: null });
+
+    await svc.voidPayment('pay1', actor);
+
+    // The mocked db chain IS the tx handle the transaction callback receives, so
+    // asserting on it proves the cleanup runs inside the caller's transaction
+    // rather than escaping to a fresh connection.
+    expect(clearPaymentMappingMock).toHaveBeenCalledTimes(1);
+    expect(clearPaymentMappingMock).toHaveBeenCalledWith(db, 'pay1');
+    // Mapping first: breeze_entity_id is polymorphic with no FK to cascade, so
+    // deleting the payment row first would strand the mapping.
+    const clearOrder = clearPaymentMappingMock.mock.invocationCallOrder[0]!;
+    const deleteOrder = (db as unknown as { delete: Mock }).delete.mock.invocationCallOrder[0]!;
+    expect(clearOrder).toBeLessThan(deleteOrder);
+  });
+
+  it('does not throw when a manual payment has no mapping row to remove', async () => {
+    clearPaymentMappingMock.mockResolvedValueOnce(0);
+    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'cash', reference: null, recordedBy: 'u1' });
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '40.00', method: 'cash' });
+    await expect(clearPaymentMappingMock.mock.results[0]!.value).resolves.toBe(0);
+  });
+});
+
+describe('listPayments source tagging', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  /** invoice → payment rows → stripe links → quickbooks mapping rows. */
+  function queueListPayments(
+    payments: Array<Record<string, unknown>>,
+    stripeLinked: string[],
+    qboLinked: string[],
+  ) {
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult(payments);
+    queueResult(stripeLinked.map((id) => ({ invoicePaymentId: id })));
+    queueResult(qboLinked.map((id) => ({ breezeEntityId: id })));
+  }
+
+  it('tags a payment carrying a QuickBooks payment mapping as quickbooks', async () => {
+    queueListPayments([{ id: 'pay-qbo', method: 'check' }], [], ['pay-qbo']);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows).toEqual([expect.objectContaining({ id: 'pay-qbo', source: 'quickbooks' })]);
+  });
+
+  it('tags a succeeded Stripe mapping as stripe and everything else as manual', async () => {
+    queueListPayments(
+      [{ id: 'pay-stripe', method: 'card' }, { id: 'pay-manual', method: 'cash' }],
+      ['pay-stripe'],
+      [],
+    );
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows.map((r) => r.source)).toEqual(['stripe', 'manual']);
+  });
+
+  it('reports stripe when a row somehow carries BOTH links (stripe wins)', async () => {
+    // Structurally impossible today — asserted so the precedence is a decision
+    // in the code rather than an accident of Set-lookup order.
+    queueListPayments([{ id: 'pay-both', method: 'card' }], ['pay-both'], ['pay-both']);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]!.source).toBe('stripe');
+  });
+
+  it('does not query the accounting mappings at all when the invoice has no payments', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([]);
+
+    await expect(svc.listPayments('i1', actor)).resolves.toEqual([]);
   });
 });

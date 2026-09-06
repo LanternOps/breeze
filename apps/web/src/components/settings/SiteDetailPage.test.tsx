@@ -145,6 +145,16 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     });
   });
 
+  it('links the primary-contact editor to the organization contact list (#3258 W04)', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    const link = await screen.findByTestId('site-detail-all-contacts-link');
+    // The full list lives on the org settings Contacts tab; this editor still
+    // writes the site's single primary through the compatibility projection.
+    expect(link).toHaveAttribute('href', `/settings/organizations/${ORG_ID}#contacts`);
+  });
+
   it('marks the form dirty and PATCHes a newly picked zone', async () => {
     mockApi();
     render(<SiteDetailPage siteId={SITE_ID} />);

@@ -186,3 +186,6 @@ Confirm the profile arrived through MDM (`profiles list` should show it under a 
 
 **Remote desktop connects but shows a black screen.**
 Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.
+
+**Remote desktop is unavailable even though the device shows Online.**
+The desktop helper runs alongside the agent and can briefly lose its connection to it — after an agent update, or when the Mac sleeps and wakes. The helper now reconnects on its own when that happens, so this should clear within moments. Earlier agent versions left the helper stopped until it was relaunched or the user logged out and back in; if you are seeing that, update the agent.

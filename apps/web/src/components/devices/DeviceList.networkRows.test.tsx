@@ -220,7 +220,7 @@ describe('DeviceList — review round fixes', () => {
     expect(screen.getByTestId('bulk-selection-summary').textContent).toMatch(/1 selected/);
   });
 
-  it('offers Compare for 2 and 4 selected agents but not for 5', () => {
+  it('offers Compare for 2 and 4 selected agents and disables it at 5', () => {
     const agents = [1, 2, 3, 4, 5].map((n) => agent(`a0000000-0000-0000-0000-00000000000${n}`, `box-${n}`));
     render(<DeviceList devices={agents} pageSize={50} networkDevicesEnabled />);
     const check = (n: number) => fireEvent.click(screen.getByLabelText(`Select box-${n}`));
@@ -234,7 +234,7 @@ describe('DeviceList — review round fixes', () => {
     fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
     check(5);
     fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
-    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+    expect(screen.getByTestId('bulk-compare')).toBeDisabled();
   });
 
   it('hides the VPN facet when only network rows are on screen (it can never match them)', () => {

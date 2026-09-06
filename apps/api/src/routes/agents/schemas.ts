@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { softwareInventoryReportSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -116,6 +117,36 @@ const ipEntrySchema = z.object({
 // and negatives fail .min(0), so bad input is caught either way.
 const uint64Counter = z.number().min(0).refine(Number.isInteger, 'expected integer');
 
+const agentHealthStateSchema = z.enum(['healthy', 'warning', 'error', 'unknown']);
+const agentHealthComponentSchema = z.object({
+  state: agentHealthStateSchema,
+  reason: z.string().max(512).optional(),
+}).strict();
+const agentHealthComponentsSchema = z.record(
+  z.string().min(1).max(100),
+  agentHealthComponentSchema,
+).superRefine((components, ctx) => {
+  if (Object.keys(components).length > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 100,
+      inclusive: true,
+      origin: 'object',
+      message: 'Too many health components',
+    });
+  }
+});
+
+const agentHealthObservationWireV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  deviceId: z.string().uuid().optional(),
+  agentVersion: z.string().min(1).max(64),
+  overall: agentHealthStateSchema,
+  metricsAvailable: z.boolean().nullable(),
+  components: agentHealthComponentsSchema,
+  observedAt: z.string().datetime({ offset: true }),
+}).strict();
+
 export const heartbeatSchema = z.object({
   metrics: z.object({
     cpuPercent: z.number(),
@@ -149,6 +180,10 @@ export const heartbeatSchema = z.object({
     processCount: z.number().int().optional().catch(undefined)
   }).optional(),
   metricsAvailable: z.boolean().optional().catch(undefined),
+  // Self-health is independent from reachability. Old maps, malformed values,
+  // and future schema versions are dropped locally so they can never reject
+  // an otherwise valid heartbeat.
+  healthStatus: agentHealthObservationWireV1Schema.optional().catch(undefined),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
@@ -174,6 +209,43 @@ export const heartbeatSchema = z.object({
     detectedAt: z.string().datetime({ offset: true }).optional().catch(undefined)
   }).optional().catch(undefined),
   pendingReboot: z.boolean().optional().catch(undefined),
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // THREE-WAY on purpose, and the server persists each case differently:
+  //   absent  -> no news. A pre-#3207 agent omits the key entirely and must
+  //              never wipe the console's view of a live schedule.
+  //   null    -> news: nothing is scheduled any more (cancelled, or the
+  //              restart already fired). Clears the stored columns.
+  //   object  -> the current schedule.
+  // `.nullish()` (not `.optional()`) is what keeps null distinguishable from
+  // absent; the outer `.catch(undefined)` degrades a malformed snapshot to
+  // "no news" rather than 400-ing a heartbeat over an informational field.
+  //
+  // `scheduledAt` is the only REQUIRED member: it is the anchor of the whole
+  // snapshot, so a bad timestamp must invalidate the object rather than store
+  // a restart with no time. Every other member degrades to undefined (stored
+  // NULL) independently.
+  rebootStatus: z.object({
+    scheduledAt: z.string().datetime({ offset: true }),
+    deadline: z.string().datetime({ offset: true }).optional().catch(undefined),
+    // Bounded pattern rather than a hard enum. The agent echoes back whatever
+    // `source` the server put on the schedule_reboot command ('patch_job',
+    // 'maintenance_window', or the agent's own 'manual' default), so an enum
+    // here would silently drop the ENTIRE snapshot the first time a new
+    // server-side producer ships ahead of an API deploy — and it would buy no
+    // provenance anyway, since a compromised agent can claim any allowed
+    // value. The console maps known tokens to localized labels and falls back
+    // to a generic label for anything else, so this is never rendered raw.
+    // Width matches devices.reboot_source varchar(32).
+    source: z.string().regex(/^[a-z0-9_]{1,32}$/).optional().catch(undefined),
+    // Upper bound mirrors MAX_REBOOT_DEFERRALS in services/patchRebootHandler
+    // (10) — inlined rather than imported to keep this schema module free of
+    // the db-touching service graph. The devices CHECK constraints deliberately
+    // enforce only non-negativity, so raising that ceiling later is an API-side
+    // change, not a migration.
+    deferralsUsed: z.number().int().min(0).max(10).optional().catch(undefined),
+    maxDeferrals: z.number().int().min(0).max(10).optional().catch(undefined),
+  }).nullish().catch(undefined),
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
   deviceRole: z.enum(DEVICE_ROLES).optional().catch(undefined),
@@ -614,18 +686,7 @@ export const updateHardwareSchema = z.object({
   gpuModel: z.string().optional()
 });
 
-export const updateSoftwareSchema = z.object({
-  software: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    vendor: z.string().optional(),
-    installDate: z.string().optional(),
-    installLocation: z.string().optional(),
-    uninstallString: z.string().optional(),
-    fileHash: z.string().max(128).optional(),
-    hashAlgorithm: z.string().max(10).optional(),
-  })).max(10000)
-});
+export const updateSoftwareSchema = softwareInventoryReportSchema;
 
 export const updateDisksSchema = z.object({
   disks: z.array(z.object({

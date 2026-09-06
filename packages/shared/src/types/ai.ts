@@ -140,12 +140,39 @@ export interface AiTicketDraft {
 // SSE Event Types
 // ============================================
 
+/**
+ * Resolved run context for a script-launch approval (#4888).
+ *
+ * `effectiveRunAs` is what the run will actually execute as — the assistant's
+ * override when it supplied one, otherwise the script's saved default. Null
+ * only when the assistant chose nothing and the script row could not be read,
+ * in which case the card falls back to "the script's saved run context".
+ */
+export interface AiScriptRunContext {
+  effectiveRunAs: 'system' | 'user' | 'elevated' | null;
+  scriptDefaultRunAs: 'system' | 'user' | 'elevated' | null;
+  chosenByAssistant: boolean;
+  targetSessionId: number | null;
+}
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean }
+  /**
+   * The run context an approver is being asked to authorise for a script
+   * launch (#4888). Present only for `run_script` /
+   * `execute_script_on_device`; null/absent for every other tool.
+   *
+   * Exists as a STRUCTURED twin of the sentence the server also appends to
+   * `description`, so the web approval card can render a localized,
+   * always-visible run-context row instead of parsing English prose or
+   * leaving the value buried in the collapsed parameter JSON. Letting an
+   * assistant choose SYSTEM for a user-context script is a privilege
+   * decision, and the human deciding it has to be told.
+   */
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }

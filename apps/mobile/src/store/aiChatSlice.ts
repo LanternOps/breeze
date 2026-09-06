@@ -153,6 +153,34 @@ const aiChatSlice = createSlice({
       state.status = 'idle';
       state.error = null;
     },
+    /**
+     * Replace the transcript with the server's persisted rows for a turn whose
+     * live stream was lost (app suspended, socket dropped during an approval).
+     * The server keeps running the turn and writing rows regardless, so this
+     * is the phone catching up. `complete: false` keeps the streaming pulse
+     * and the RUNNING caption on the last assistant row so the UI reads as
+     * "still working" rather than "silently finished with a stub".
+     */
+    reconcileHistory(
+      state,
+      action: PayloadAction<{ sessionId: string; messages: ChatMessage[]; complete: boolean }>,
+    ) {
+      state.sessionId = action.payload.sessionId;
+      state.messages = action.payload.messages;
+      state.error = null;
+      const last = state.messages[state.messages.length - 1];
+      if (action.payload.complete || !last || last.role !== 'assistant') {
+        state.streamingMessageId = null;
+        state.inFlightTool = null;
+        state.status = action.payload.complete ? 'idle' : 'streaming';
+        return;
+      }
+      last.isStreaming = true;
+      state.streamingMessageId = last.id;
+      const running = last.toolEvents.find((t) => t.state === 'started');
+      state.inFlightTool = running ? { toolUseId: running.toolUseId, toolName: running.toolName } : null;
+      state.status = 'streaming';
+    },
   },
 });
 
@@ -170,6 +198,7 @@ export const {
   clearError,
   resetChat,
   loadHistory,
+  reconcileHistory,
 } = aiChatSlice.actions;
 
 export default aiChatSlice.reducer;

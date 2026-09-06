@@ -22,6 +22,7 @@ import {
   removeFeatureLink,
   listFeatureLinks,
   validateFeaturePolicyExists,
+  deviceLifecycleInlineSettingsSchema,
   pamInlineSettingsSchema,
   remoteAccessInlineSettingsSchema,
   canManagePartnerWidePolicies,
@@ -54,6 +55,29 @@ const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.res
 // partner-wide patch policy resolves and schedules end-to-end across every org
 // under the partner. See configPolicyPatching.ts.
 const ORG_SCOPED_ONLY_FEATURES: ReadonlySet<string> = ORG_SCOPED_ONLY_FEATURE_TYPES;
+
+/**
+ * Feature types whose feature link may only be authored (added or updated) by
+ * a session that has satisfied MFA.
+ *
+ * `patch` was here from the start: a patch link arms unattended installs and
+ * reboots. `maintenance` joins it (RMM-QA-176 D8) because a maintenance link
+ * is the CANONICAL monitoring-suppression source — every alert, patch, script
+ * and reboot consumer reads it via featureConfigResolver's
+ * checkDeviceMaintenanceWindow / resolveMaintenanceConfigForDevice. Gating
+ * POST /devices/:id/maintenance while leaving this open would have left the
+ * same capability reachable through a second door.
+ *
+ * Session-claim strength on purpose, NOT the operation-bound step-up grant the
+ * device route requires (RMM-QA-176 D1): a policy-level window is authored
+ * CONFIGURATION, not a per-device actuation, and parity with the adjacent
+ * patch gate is the shape that stays consistent as more types are added.
+ *
+ * REMOVAL IS DELIBERATELY NOT GATED (the DELETE route keeps its patch-only
+ * check): removing a maintenance link ENDS suppression — the safe direction,
+ * the same reasoning that keeps maintenance EXIT un-gated on the device route.
+ */
+export const MFA_GATED_FEATURE_TYPES: ReadonlySet<string> = new Set(['patch', 'maintenance']);
 
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(
@@ -104,7 +128,7 @@ featureLinkRoutes.post(
       );
     }
 
-    if (data.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
+    if (MFA_GATED_FEATURE_TYPES.has(data.featureType) && !hasSatisfiedMfa(auth)) {
       return c.json({ error: 'MFA required' }, 403);
     }
 
@@ -159,6 +183,17 @@ featureLinkRoutes.post(
       if (!parsed.success) {
         return c.json(
           zodValidationErrorBody('Invalid pam settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
+    if (data.featureType === 'device_lifecycle' && data.inlineSettings) {
+      const parsed = deviceLifecycleInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
           400
         );
       }
@@ -283,7 +318,7 @@ featureLinkRoutes.patch(
       return c.json({ error: 'Feature link not found' }, 404);
     }
 
-    if (existingLink.featureType === 'patch' && !hasSatisfiedMfa(auth)) {
+    if (MFA_GATED_FEATURE_TYPES.has(existingLink.featureType) && !hasSatisfiedMfa(auth)) {
       return c.json({ error: 'MFA required' }, 403);
     }
 
@@ -338,6 +373,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid pam settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'device_lifecycle') {
+        const parsed = deviceLifecycleInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
             400
           );
         }

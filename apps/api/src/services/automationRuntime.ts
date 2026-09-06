@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
   alerts,
@@ -43,13 +43,194 @@ import {
   type AutomationReferenceOwner,
   type ResolvedAutomationReferences,
 } from './automationReferenceAuthorization';
+import {
+  recordAutomationActionDispatch,
+  reconcileAutomationRun,
+  seedAutomationActionResults,
+} from './automationActionResults';
+import {
+  assertRunNotCancelled,
+  isRunCancelledError,
+} from './automationRunCancellation';
+// scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
+// the same reason softwareDeployment is below: it pulls the
+// agentWs → commandQueue → configurationPolicy chain in at module load.
 // softwareDeployment and softwareCurrency are imported lazily inside
 // executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
 // import chain into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+/** What a runner reports back to its caller (#3525 W05 added `cancelled`). */
+export type AutomationRunOutcomeStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type AutomationOwnerAxes = { orgId: string | null; partnerId: string | null };
+
+function withAutomationRuntimeDb<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+function recordAutomationRuntimeActionDispatch(
+  input: Parameters<typeof recordAutomationActionDispatch>[0],
+): Promise<boolean> {
+  // Runtime callers can be invoked beneath a request/test transaction. Keep
+  // action-result locks and reconciliation publications out of that ambient
+  // transaction, just like the action-side writes they describe.
+  return withAutomationRuntimeDb(() => recordAutomationActionDispatch(input));
+}
+
+/**
+ * #3525 W05 — the dispatch fence, CHECK-BEFORE half.
+ *
+ * A cheap early exit, not the correctness guarantee: this runs on the pooled
+ * `db`, so the `FOR SHARE` lock lives only for the length of this one
+ * statement and is gone before the dispatch it guards begins. What it buys is
+ * that a job for a run cancelled earlier does no work at all. The guarantee
+ * that nothing is left RUNNING comes from `cancelDispatchIfRunCancelled`
+ * below — see the header of `automationRunCancellation.ts`.
+ *
+ * Throws `RunCancelledError`. Every dispatch-side caller either returns
+ * quietly on it or lets it reach `executeAutomationRun`'s handler — it must
+ * NEVER be recorded as an action failure, because nothing failed.
+ */
+function assertRunNotCancelledInRuntime(runId: string): Promise<void> {
+  return withAutomationRuntimeDb(() => assertRunNotCancelled(db, runId));
+}
+
+/**
+ * What the compensating cancel achieved for ONE racing dispatch.
+ *
+ * Deliberately not a boolean. The caller writes a line into the run log that
+ * an MSP tech reads, so "we asked" and "it stopped" and "we could not even
+ * ask" must not collapse into one value — that is precisely the dishonesty
+ * the whole cancellation design exists to prevent.
+ */
+type DispatchCompensation =
+  /** No race: the run is live, or the dispatch produced nothing stoppable. */
+  | 'not_needed'
+  /** Nothing is running any more: retracted, already terminal, or recovered. */
+  | 'settled'
+  /** A `script_cancel` is queued. The device has NOT confirmed. Not stopped. */
+  | 'requested'
+  /** We could not even ask. The script may still be running on the device. */
+  | 'failed';
+
+/**
+ * The other half of the fence.
+ *
+ * This is where the "nothing is left running" guarantee actually lives — NOT
+ * in the `FOR SHARE` check above, whose lock is released before the dispatch
+ * begins (it cannot be held across a command insert and a WebSocket send for
+ * five devices at a time without pinning the pool). So on every dispatch there
+ * is a window in which a cancel commits, its fan-out reads the executions
+ * table, and only THEN this dispatcher's own execution row lands — invisible
+ * to that sweep and running on the device.
+ *
+ * Re-reading the run after the dispatch has committed closes it, with no lock
+ * needed: whichever of {the cancel's sweep, this re-read} runs second sees the
+ * other's committed write. If the run is cancelled by now, the execution we
+ * just created is stopped here instead.
+ *
+ * Delete this and the race reopens.
+ */
+async function cancelDispatchIfRunCancelled(
+  runId: string,
+  deviceId: string,
+  result: ActionExecutionResult,
+): Promise<DispatchCompensation> {
+  // Only a script execution can be stopped after the fact, so only a dispatch
+  // that produced one pays for the extra read. `execute_command` and
+  // deployments have no agent-side stop at all — they are reported to the
+  // operator as uncancellable instead (automationRunCancellation.ts).
+  const executionId = 'scriptExecutionId' in result.outcome ? result.outcome.scriptExecutionId : undefined;
+  if (!executionId) return 'not_needed';
+
+  const cancelled = await withAutomationRuntimeDb(async () => {
+    const [row] = await db
+      .select({ status: automationRuns.status })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, runId))
+      .limit(1);
+    return row?.status === 'cancelled';
+  });
+  if (!cancelled) return 'not_needed';
+
+  try {
+    const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+    const outcome = await cancelScriptExecution({
+      executionId,
+      actorId: null,
+      actorLabel: 'automation run cancellation',
+    });
+    switch (outcome.kind) {
+      case 'cancelling':
+        // POST-COMMIT delivery, same contract as every other cancel caller.
+        if (!outcome.alreadyQueued) {
+          await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+        }
+        return 'requested';
+      // Retracted is a server-side PROOF; the other two mean the execution
+      // closed (or is closing) on its own evidence. Nothing is left running.
+      case 'retracted':
+      case 'recovered':
+      case 'already_terminal':
+      case 'idempotent':
+        return 'settled';
+      // The execution vanished, or has no paired script command. Absence is
+      // not proof that nothing is running — fail loud.
+      case 'not_found':
+      case 'inconsistent':
+        console.error('[automationRuntime] could not stop an execution dispatched into a cancelled run', {
+          runId,
+          deviceId,
+          executionId,
+          outcome: outcome.kind,
+        });
+        captureException(
+          new Error(`automation cancel compensation refused: ${outcome.kind}`),
+          undefined,
+          { runId, deviceId, executionId },
+        );
+        return 'failed';
+      default: {
+        // A new CancelOutcome variant must be classified deliberately rather
+        // than silently reported as a stop. This fails the build instead.
+        const unhandled: never = outcome;
+        throw new Error(`unhandled CancelOutcome kind: ${(unhandled as { kind: string }).kind}`);
+      }
+    }
+  } catch (err) {
+    // Losing the compensation must not turn a cancelled run into a thrown
+    // BullMQ job — but it MUST be visible, because it is the one path that can
+    // leave a script running after a cancel.
+    console.error('[automationRuntime] failed to cancel an execution dispatched into a cancelled run', {
+      runId,
+      deviceId,
+      executionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { runId, deviceId, executionId });
+    return 'failed';
+  }
+}
+
+/** The run-log line for each compensation outcome. Never overstates. */
+const DISPATCH_COMPENSATION_LOG: Record<
+  Exclude<DispatchCompensation, 'not_needed'>,
+  { level: LogLevel; message: string }
+> = {
+  settled: {
+    level: 'warning',
+    message: 'Action dispatched into a run that was cancelled; the execution was stopped',
+  },
+  requested: {
+    level: 'warning',
+    message: 'Action dispatched into a run that was cancelled; a stop was requested but the device has not confirmed it',
+  },
+  failed: {
+    level: 'error',
+    message: 'Action dispatched into a run that was cancelled and the stop could NOT be requested; the script may still be running on the device',
+  },
+};
 
 /**
  * Ownership → org fan-out (#2133). An org-owned automation targets devices in
@@ -110,7 +291,17 @@ export type RunScriptAction = {
   // #3409 PR2 Task 7: matches scriptParametersSchema's inferred value type —
   // canonicalized to strings once, downstream, at scriptDispatch.ts.
   parameters?: Record<string, string | number | boolean>;
-  runAs?: 'system' | 'user' | 'elevated' | string;
+  /**
+   * Run-context override for this action. Absent = the script's saved default
+   * (`executeRunScriptAction` resolves `action.runAs ?? script.runAs`).
+   *
+   * #4888 narrowed this from `… | string`: the automation form now exposes the
+   * control, so an unrecognised value is a bug rather than a shape the type
+   * has to keep representing. `normalizeAutomationActions` drops anything
+   * outside the enum back to `undefined` — see the note there for why it
+   * drops rather than throws.
+   */
+  runAs?: 'system' | 'user' | 'elevated';
 };
 
 export type SendNotificationAction = {
@@ -207,6 +398,27 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Narrows a stored `run_script` action's run context to the `script_run_as`
+ * enum (#4888).
+ *
+ * DROPS rather than throws on an unrecognised value, deliberately.
+ * `normalizeAutomationActions` is not only the write validator — it also runs
+ * over ALREADY-STORED rows every time an automation EXECUTES:
+ * `createAutomationRunRecord` (via `normalizeAutomationInput`) and
+ * `executeConfigPolicyAutomationRun` both normalize the loaded row, and both
+ * are driven by `jobs/automationWorker.ts` on the scheduled/event path (plus
+ * the manual-trigger routes in `routes/automations.ts`). Throwing here would
+ * therefore not reject a bad edit — it would take a live automation offline
+ * mid-run over a value that has been forwarded harmlessly for as long as the
+ * field has existed. Falling back to `undefined` means "the script's saved
+ * default", which is the conservative outcome and exactly what an action with
+ * no run context has always done.
+ */
+function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
+  return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -369,7 +581,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         type: 'run_script',
         scriptId,
         parameters,
-        runAs: asString(action.runAs),
+        runAs: asRunAs(action.runAs),
       });
       continue;
     }
@@ -1072,8 +1284,17 @@ export async function loadAutomationRunVariableScope(
   return loadTenantVariableScope(anyScriptUsesVariables ? [...new Set(deviceOrgIds)] : []);
 }
 
+type ActionExecutionOutcome =
+  | {
+      status: 'queued' | 'delivered' | 'running';
+      commandId?: string;
+      scriptExecutionId?: string;
+    }
+  | { status: 'succeeded' }
+  | { status: 'failed'; message?: string };
+
 type ActionExecutionResult = {
-  success: boolean;
+  outcome: ActionExecutionOutcome;
   log: AutomationLogEntry;
 };
 
@@ -1138,7 +1359,7 @@ export async function executeRunScriptAction(
   const script = context.scriptsById.get(action.scriptId);
   if (!script) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: 'Script not found' },
       log: logEntry('Script not found for run_script action', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1150,7 +1371,7 @@ export async function executeRunScriptAction(
 
   if (!script.osTypes.includes(context.device.osType)) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: 'Script OS type does not match target device' },
       log: logEntry('Script OS type does not match target device', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1188,18 +1409,18 @@ export async function executeRunScriptAction(
     triggerType: 'automation',
     triggeredBy: context.automation.createdBy ?? null,
     createdBy: context.automation.createdBy ?? null,
-    // action.runAs is unchecked user input (RunScriptAction widens the literal
-    // union to `string`, since normalizeAutomationActions has no enum
-    // validation) — preserve the pre-existing runtime behavior of forwarding
-    // whatever value was configured rather than adding new validation here.
-    runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
+    // #4888 — `action.runAs` is now narrowed to the `script_run_as` enum by
+    // normalizeAutomationActions (anything else becomes undefined), so this no
+    // longer forwards unchecked user input and needs no cast. The `??` is the
+    // whole contract the automation form's "Script default" option relies on.
+    runAs: action.runAs ?? script.runAs,
     requireOnline: true,
     variableScope,
   });
 
   if (!dispatch.ok) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: dispatch.error },
       log: logEntry('Failed to queue run_script action command', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1222,7 +1443,11 @@ export async function executeRunScriptAction(
   }
 
   return {
-    success: true,
+    outcome: {
+      status: dispatch.delivered ? 'delivered' : 'queued',
+      commandId: dispatch.commandId,
+      ...(dispatch.executionId ? { scriptExecutionId: dispatch.executionId } : {}),
+    },
     log: logEntry('Queued run_script action', 'info', {
       actionType: action.type,
       actionIndex,
@@ -1291,7 +1516,7 @@ async function executeCommandAction(
 
   if (!dispatch.ok) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: dispatch.error },
       log: logEntry('Failed to queue execute_command action', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1302,7 +1527,10 @@ async function executeCommandAction(
   }
 
   return {
-    success: true,
+    outcome: {
+      status: dispatch.delivered ? 'delivered' : 'queued',
+      commandId: dispatch.commandId,
+    },
     log: logEntry('Queued execute_command action', 'info', {
       actionType: action.type,
       actionIndex,
@@ -1419,7 +1647,7 @@ async function executeSendNotificationAction(
   const channel = context.channelsById.get(action.notificationChannelId);
   if (!channel) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: 'Notification channel not found' },
       log: logEntry('Notification channel not found for send_notification action', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1447,7 +1675,7 @@ async function executeSendNotificationAction(
 
   if (!sendResult.success) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: sendResult.error },
       log: logEntry('send_notification action failed', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1459,7 +1687,7 @@ async function executeSendNotificationAction(
   }
 
   return {
-    success: true,
+    outcome: { status: 'succeeded' },
     log: logEntry('send_notification action completed', 'info', {
       actionType: action.type,
       actionIndex,
@@ -1503,7 +1731,7 @@ async function executeCreateAlertAction(
 
   if (!createdAlert?.id) {
     return {
-      success: false,
+      outcome: { status: 'failed', message: 'Failed to create alert' },
       log: logEntry('Failed to create alert from create_alert action', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1529,7 +1757,7 @@ async function executeCreateAlertAction(
   );
 
   return {
-    success: true,
+    outcome: { status: 'succeeded' },
     log: logEntry('create_alert action created alert successfully', 'info', {
       actionType: action.type,
       actionIndex,
@@ -1565,9 +1793,10 @@ async function executeAiTriageAction(
 ): Promise<ActionExecutionResult> {
   const agentId = context.automation.managedByAgentId;
   if (!agentId) {
+    const message = 'ai_triage action on an unmanaged automation — refusing';
     return {
-      success: false,
-      log: logEntry('ai_triage action on an unmanaged automation — refusing', 'error', {
+      outcome: { status: 'failed', message },
+      log: logEntry(message, 'error', {
         actionType: 'ai_triage',
         actionIndex,
         deviceId: context.device.id,
@@ -1632,9 +1861,10 @@ async function executeAiTriageAction(
     // the alert is never triaged. The manual trigger route answers 503 on this
     // exact signal; the automation's equivalent is a failed action.
     if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
+      const message = 'ai_triage agent run was created but could not be enqueued';
       return {
-        success: false,
-        log: logEntry('ai_triage agent run was created but could not be enqueued', 'error', {
+        outcome: { status: 'failed', message },
+        log: logEntry(message, 'error', {
           actionType: 'ai_triage',
           actionIndex,
           deviceId: context.device.id,
@@ -1646,11 +1876,12 @@ async function executeAiTriageAction(
       };
     }
 
-    // Like run_script, success means queued, not finished. The agent run
-    // completes out-of-band and reports through ai.agent.run.* events and 3c
-    // recipient notifications.
+    // The child agent run completes out-of-band and reports through
+    // ai.agent.run.* events and 3c recipient notifications. The parent
+    // automation action has no action-result correlation to that child run,
+    // so its terminal contract is successful enqueue (not child completion).
     return {
-      success: true,
+      outcome: { status: 'succeeded' },
       log: logEntry('ai_triage queued agent run', 'info', {
         actionType: 'ai_triage',
         actionIndex,
@@ -1661,13 +1892,12 @@ async function executeAiTriageAction(
   }
 
   const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
+  const message = `ai_triage skipped: ${result.skipped}`;
   return {
-    success: !hardFailure,
-    log: logEntry(
-      `ai_triage skipped: ${result.skipped}`,
-      hardFailure ? 'error' : 'info',
-      { actionType: 'ai_triage', actionIndex, deviceId: context.device.id },
-    ),
+    outcome: hardFailure ? { status: 'failed', message } : { status: 'succeeded' },
+    log: logEntry(message, hardFailure ? 'error' : 'info', {
+      actionType: 'ai_triage', actionIndex, deviceId: context.device.id,
+    }),
   };
 }
 
@@ -1697,12 +1927,63 @@ async function executeAction(
   }
 
   return {
-    success: false,
+    outcome: { status: 'failed', message: 'Unsupported action type' },
     log: logEntry(`Unsupported action type ${(action as { type?: string }).type ?? 'unknown'}`, 'error', {
       actionIndex,
       deviceId: context.device.id,
     }),
   };
+}
+
+async function persistActionExecutionOutcome(
+  runId: string,
+  deviceId: string,
+  actionIndex: number,
+  result: ActionExecutionResult,
+): Promise<void> {
+  const { outcome } = result;
+  await recordAutomationRuntimeActionDispatch({
+    runId,
+    deviceId,
+    actionIndex,
+    status: outcome.status,
+    ...('commandId' in outcome && outcome.commandId ? { commandId: outcome.commandId } : {}),
+    ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
+      ? { scriptExecutionId: outcome.scriptExecutionId }
+      : {}),
+    message: outcome.status === 'failed'
+      ? outcome.message ?? result.log.message
+      : result.log.message,
+  });
+}
+
+async function skipTrailingAutomationActions(
+  runId: string,
+  deviceId: string,
+  actions: readonly AutomationAction[],
+  failedActionIndex: number,
+): Promise<void> {
+  for (let actionIndex = failedActionIndex + 1; actionIndex < actions.length; actionIndex += 1) {
+    await recordAutomationRuntimeActionDispatch({
+      runId,
+      deviceId,
+      actionIndex,
+      status: 'skipped',
+      message: 'Skipped after an earlier automation action failed',
+    });
+  }
+}
+
+async function seedDeviceAutomationActions(
+  runId: string,
+  device: { id: string; orgId: string },
+  actions: readonly AutomationAction[],
+): Promise<void> {
+  await withAutomationRuntimeDb(() => seedAutomationActionResults({
+    runId,
+    device,
+    actions: actions.map((action, actionIndex) => ({ actionIndex, actionType: action.type })),
+  }));
 }
 
 async function sendOnFailureNotifications(
@@ -1785,6 +2066,8 @@ async function runWithConcurrency<T>(
  */
 export async function executeDeploySoftwareActions(args: {
   actions: AutomationAction[];
+  /** Restrict a batched pass to these original normalized action indexes. */
+  actionIndexes?: ReadonlySet<number>;
   // Devices carry their own orgId: deployments are org-owned child rows, so a
   // partner-wide automation (#2133) creates ONE deployment per device org.
   // For an org-owned automation every device shares its org — one deployment,
@@ -1794,9 +2077,11 @@ export async function executeDeploySoftwareActions(args: {
   runId: string;
   resolvedReferences?: ResolvedAutomationReferences;
 }): Promise<{ logs: AutomationLogEntry[]; deployedDeviceIds: Set<string>; failedDeviceIds: Set<string>; failed: boolean }> {
-  const deployActions = args.actions.filter(
-    (a): a is DeploySoftwareAction => a.type === 'deploy_software',
-  );
+  const deployActions = args.actions
+    .map((action, actionIndex) => ({ action, actionIndex }))
+    .filter((entry): entry is { action: DeploySoftwareAction; actionIndex: number } =>
+      entry.action.type === 'deploy_software'
+      && (!args.actionIndexes || args.actionIndexes.has(entry.actionIndex)));
   const logs: AutomationLogEntry[] = [];
   const deployedDeviceIds = new Set<string>();
   // Devices whose deployment dispatch FAILED — used to reconcile per-device
@@ -1819,14 +2104,24 @@ export async function executeDeploySoftwareActions(args: {
   // remains for isolated legacy callers of this exported batch helper only.
   const latest = args.resolvedReferences
     ? latestVersionsFromResolvedAutomationReferences(args.resolvedReferences)
-    : await resolveLatestVersionsByCatalogId(
-      [...new Set(deployActions.map((a) => a.catalogId))],
-    );
+    : await withAutomationRuntimeDb(() => resolveLatestVersionsByCatalogId(
+      [...new Set(deployActions.map(({ action }) => action.catalogId))],
+    ));
 
-  for (const [actionIndex, action] of deployActions.entries()) {
+  for (const { actionIndex, action } of deployActions) {
     const info = latest.get(action.catalogId);
     if (!info) {
       failed = true;
+      for (const device of args.devices) {
+        failedDeviceIds.add(device.id);
+        await recordAutomationRuntimeActionDispatch({
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex,
+          status: 'failed',
+          message: 'No latest software version is available',
+        });
+      }
       logs.push(logEntry('deploy_software has no latest version for catalog', 'error', {
         actionType: action.type,
         actionIndex,
@@ -1842,6 +2137,13 @@ export async function executeDeploySoftwareActions(args: {
     const eligibleByOrg = new Map<string, string[]>();
     for (const device of args.devices) {
       if (supportedOs.length > 0 && !supportedOs.includes(device.osType)) {
+        await recordAutomationRuntimeActionDispatch({
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex,
+          status: 'skipped',
+          message: 'Software is not supported on this device OS',
+        });
         logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
           actionType: action.type,
           actionIndex,
@@ -1850,7 +2152,15 @@ export async function executeDeploySoftwareActions(args: {
         }));
         continue;
       }
-      if (await isDeviceSoftwareCurrent(device.id, action.catalogId, info.catalogName, info.version.version)) {
+      if (await withAutomationRuntimeDb(() =>
+        isDeviceSoftwareCurrent(device.id, action.catalogId, info.catalogName, info.version.version))) {
+        await recordAutomationRuntimeActionDispatch({
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex,
+          status: 'skipped',
+          message: 'Software is already current',
+        });
         logs.push(logEntry(`Skipped ${info.catalogName}: already current`, 'info', {
           actionType: action.type,
           actionIndex,
@@ -1866,7 +2176,7 @@ export async function executeDeploySoftwareActions(args: {
     if (eligibleByOrg.size === 0) continue;
 
     for (const [orgId, eligible] of eligibleByOrg) {
-      const result = await createSoftwareDeployment({
+      const result = await withAutomationRuntimeDb(() => createSoftwareDeployment({
         orgId,
         softwareVersionId: info.version.id,
         deploymentType: 'install',
@@ -1874,10 +2184,39 @@ export async function executeDeploySoftwareActions(args: {
         scheduleType: 'immediate',
         createdBy: args.createdBy,
         name: `Automation: deploy ${info.catalogName}`,
-      });
+      }));
+      const exactDeviceResults = result.deviceResults ?? [];
+      for (const deviceResult of exactDeviceResults) {
+        await recordAutomationRuntimeActionDispatch({
+          runId: args.runId,
+          deviceId: deviceResult.deviceId,
+          actionIndex,
+          status: deviceResult.status,
+          deploymentResultId: deviceResult.deploymentResultId,
+          ...(deviceResult.deviceCommandId ? { commandId: deviceResult.deviceCommandId } : {}),
+          ...(deviceResult.message ? { message: deviceResult.message } : {}),
+        });
+        if (deviceResult.status === 'failed') {
+          failed = true;
+          failedDeviceIds.add(deviceResult.deviceId);
+        } else {
+          deployedDeviceIds.add(deviceResult.deviceId);
+        }
+      }
       if (result.status === 'failed') {
         failed = true;
-        for (const id of eligible) failedDeviceIds.add(id);
+        for (const id of eligible) {
+          if (!exactDeviceResults.some((deviceResult) => deviceResult.deviceId === id)) {
+            failedDeviceIds.add(id);
+            await recordAutomationRuntimeActionDispatch({
+              runId: args.runId,
+              deviceId: id,
+              actionIndex,
+              status: 'failed',
+              message: result.message ?? 'Software deployment dispatch failed',
+            });
+          }
+        }
         logs.push(logEntry(`deploy_software failed: ${result.message ?? 'unknown error'}`, 'error', {
           actionType: action.type,
           actionIndex,
@@ -1898,6 +2237,214 @@ export async function executeDeploySoftwareActions(args: {
     }
   }
   return { logs, deployedDeviceIds, failedDeviceIds, failed };
+}
+
+type OrderedAutomationDevice = ActionExecutionContext['device'];
+
+async function executeAutomationActionsInOrder(args: {
+  actions: AutomationAction[];
+  devices: OrderedAutomationDevice[];
+  automation: AutomationRow;
+  runId: string;
+  scriptsById: ActionExecutionContext['scriptsById'];
+  channelsById: ActionExecutionContext['channelsById'];
+  variableScope: TenantVariableScope;
+  trigger: AutomationTriggerContext | undefined;
+  onFailure: 'stop' | 'continue' | 'notify';
+  notificationTargets?: NotificationTargets;
+  createdBy: string | null;
+  resolvedReferences: ResolvedAutomationReferences;
+}): Promise<{
+  logs: AutomationLogEntry[];
+  devicesSucceeded: number;
+  devicesFailed: number;
+  hasNonterminalActions: boolean;
+  /** True when the run was cancelled part-way and dispatch stopped early. */
+  cancelled: boolean;
+}> {
+  const logs: AutomationLogEntry[] = [];
+  const activeDeviceIds = new Set(args.devices.map((device) => device.id));
+  const failedDeviceIds = new Set<string>();
+  let hasNonterminalActions = false;
+  let cancelled = false;
+
+  const handleFailure = async (
+    device: OrderedAutomationDevice,
+    actionIndex: number,
+    message: string,
+  ): Promise<void> => {
+    failedDeviceIds.add(device.id);
+    if (args.onFailure === 'notify') {
+      try {
+        logs.push(...await sendOnFailureNotifications(
+          args.automation,
+          args.channelsById,
+          args.notificationTargets,
+          {
+            runId: args.runId,
+            deviceId: device.id,
+            deviceOrgId: device.orgId,
+            message,
+          },
+        ));
+      } catch (err) {
+        // A best-effort failure notification must not strand later action rows
+        // in pending or abort dispatch for unrelated devices.
+        captureException(err);
+        logs.push(logEntry('On-failure notification threw', 'error', {
+          actionIndex,
+          deviceId: device.id,
+          details: { error: err instanceof Error ? err.message : String(err) },
+        }));
+      }
+    }
+    if (args.onFailure === 'stop' || args.onFailure === 'notify') {
+      await skipTrailingAutomationActions(args.runId, device.id, args.actions, actionIndex);
+      activeDeviceIds.delete(device.id);
+    }
+  };
+
+  // Execute action-major, not device-major. Deployment dispatch is batched
+  // across the still-active devices for one normalized action at a time. This
+  // preserves both batching and stop/notify ordering: a refusal at action N is
+  // known before action N+1 can dispatch on that device.
+  for (const [actionIndex, action] of args.actions.entries()) {
+    const activeDevices = args.devices.filter((device) => activeDeviceIds.has(device.id));
+    if (activeDevices.length === 0) break;
+
+    // Fence, once per action: a long run stops between actions, not only
+    // between devices. Checked before the deployment batch too, which
+    // dispatches for every active device at once.
+    try {
+      await assertRunNotCancelledInRuntime(args.runId);
+    } catch (err) {
+      if (!isRunCancelledError(err)) throw err;
+      cancelled = true;
+      logs.push(logEntry('Automation run cancelled; remaining actions were not dispatched', 'warning', {
+        actionIndex,
+      }));
+      break;
+    }
+
+    if (action.type === 'deploy_software') {
+      try {
+        const deployOutcome = await executeDeploySoftwareActions({
+          actions: args.actions,
+          actionIndexes: new Set([actionIndex]),
+          devices: activeDevices.map((device) => ({
+            id: device.id,
+            osType: device.osType,
+            orgId: device.orgId,
+          })),
+          createdBy: args.createdBy,
+          runId: args.runId,
+          resolvedReferences: args.resolvedReferences,
+        });
+        logs.push(...deployOutcome.logs);
+        if (deployOutcome.deployedDeviceIds.size > 0) hasNonterminalActions = true;
+        for (const device of activeDevices) {
+          if (deployOutcome.failedDeviceIds.has(device.id)) {
+            await handleFailure(device, actionIndex, 'Software deployment dispatch failed');
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[automationRuntime] software action threw during dispatch', {
+          actionIndex,
+          error: err,
+        });
+        captureException(err);
+        for (const device of activeDevices) {
+          await recordAutomationRuntimeActionDispatch({
+            runId: args.runId,
+            deviceId: device.id,
+            actionIndex,
+            status: 'failed',
+            message,
+          });
+          await handleFailure(device, actionIndex, message);
+        }
+        logs.push(logEntry(`Automation action threw: ${message}`, 'error', { actionIndex }));
+      }
+      continue;
+    }
+
+    await runWithConcurrency(activeDevices, 5, async (device) => {
+      try {
+        // Fence, per device: a run cancelled while the previous device was
+        // being dispatched must not reach this one.
+        await assertRunNotCancelledInRuntime(args.runId);
+        const result = await withAutomationRuntimeDb(() => executeAction(action, actionIndex, buildActionExecutionContext({
+          automation: args.automation,
+          runId: args.runId,
+          scriptsById: args.scriptsById,
+          channelsById: args.channelsById,
+          variableScope: args.variableScope,
+          trigger: args.trigger,
+        }, device)));
+        logs.push(result.log);
+        await persistActionExecutionOutcome(args.runId, device.id, actionIndex, result);
+        const compensation = await cancelDispatchIfRunCancelled(args.runId, device.id, result);
+        if (compensation !== 'not_needed') {
+          cancelled = true;
+          const line = DISPATCH_COMPENSATION_LOG[compensation];
+          logs.push(logEntry(line.message, line.level, {
+            actionIndex,
+            deviceId: device.id,
+          }));
+          return;
+        }
+        if (
+          result.outcome.status === 'queued'
+          || result.outcome.status === 'delivered'
+          || result.outcome.status === 'running'
+        ) {
+          hasNonterminalActions = true;
+        }
+        if (result.outcome.status === 'failed') {
+          await handleFailure(device, actionIndex, result.log.message);
+        }
+      } catch (err) {
+        if (isRunCancelledError(err)) {
+          // Nothing failed — an operator stopped the run. Recording a failure
+          // here would report a stop as an automation defect.
+          cancelled = true;
+          logs.push(logEntry('Automation run cancelled before this device was dispatched', 'warning', {
+            actionIndex,
+            deviceId: device.id,
+          }));
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[automationRuntime] action threw during device dispatch', {
+          deviceId: device.id,
+          actionIndex,
+          error: err,
+        });
+        captureException(err);
+        logs.push(logEntry(`Automation action threw: ${message}`, 'error', {
+          actionIndex,
+          deviceId: device.id,
+        }));
+        await recordAutomationRuntimeActionDispatch({
+          runId: args.runId,
+          deviceId: device.id,
+          actionIndex,
+          status: 'failed',
+          message,
+        });
+        await handleFailure(device, actionIndex, message);
+      }
+    });
+  }
+
+  return {
+    logs,
+    devicesSucceeded: args.devices.length - failedDeviceIds.size,
+    devicesFailed: failedDeviceIds.size,
+    hasNonterminalActions,
+    cancelled,
+  };
 }
 
 export async function createAutomationRunRecord(options: {
@@ -2033,61 +2580,6 @@ async function seedAutomationDeviceResults(
     });
 }
 
-/** Mark a device's result row `running` and stamp its start time. */
-async function markDeviceResultRunning(
-  runId: string,
-  deviceId: string,
-  startedAt: Date,
-): Promise<void> {
-  await db
-    .update(automationRunDeviceResults)
-    .set({ status: 'running', startedAt, updatedAt: new Date() })
-    .where(
-      and(
-        eq(automationRunDeviceResults.runId, runId),
-        eq(automationRunDeviceResults.deviceId, deviceId),
-      ),
-    );
-}
-
-/**
- * Finalize a device's result row with its terminal status, completion time,
- * accumulated per-device output, and (on failure) the first error message.
- * Output is capped so a chatty run can't bloat the row.
- */
-async function finalizeDeviceResult(
-  runId: string,
-  deviceId: string,
-  outcome: {
-    status: 'success' | 'failed' | 'skipped';
-    startedAt: Date;
-    completedAt: Date;
-    output: string;
-    error: string | null;
-  },
-): Promise<void> {
-  const MAX_OUTPUT_CHARS = 16_000;
-  const trimmedOutput = outcome.output.length > MAX_OUTPUT_CHARS
-    ? `${outcome.output.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`
-    : outcome.output;
-  await db
-    .update(automationRunDeviceResults)
-    .set({
-      status: outcome.status,
-      startedAt: outcome.startedAt,
-      completedAt: outcome.completedAt,
-      output: trimmedOutput.length > 0 ? trimmedOutput : null,
-      error: outcome.error,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(automationRunDeviceResults.runId, runId),
-        eq(automationRunDeviceResults.deviceId, deviceId),
-      ),
-    );
-}
-
 /**
  * Best-effort recovery when executeAutomationRun throws (#2023): a run left in
  * `running` (and its seeded device rows left `pending`/`running`) would show as
@@ -2119,14 +2611,21 @@ export async function executeAutomationRun(
   targetDeviceIdsFromQueue?: string[],
   triggerContext?: AutomationTriggerContext,
 ): Promise<{
-  status: 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
   try {
     return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue, triggerContext);
   } catch (err) {
-    await markAutomationRunFailedAfterError(runId, err).catch((cleanupErr) => {
+    // #3525 W05 — a cancelled run is NOT an execution error. Falling through
+    // would call markAutomationRunFailedAfterError, which flips every seeded
+    // device row to `failed`, and would rethrow so BullMQ retries a run an
+    // operator deliberately stopped.
+    if (isRunCancelledError(err)) {
+      return { status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+    }
+    await withAutomationRuntimeDb(() => markAutomationRunFailedAfterError(runId, err)).catch((cleanupErr) => {
       console.error(
         `[AutomationRuntime] failed to mark run ${runId} failed after execution error:`,
         cleanupErr,
@@ -2161,15 +2660,15 @@ async function executeAutomationRunInner(
   targetDeviceIdsFromQueue?: string[],
   triggerContext?: AutomationTriggerContext,
 ): Promise<{
-  status: 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
-  const [run] = await db
+  const [run] = await withAutomationRuntimeDb(() => db
     .select()
     .from(automationRuns)
     .where(eq(automationRuns.id, runId))
-    .limit(1);
+    .limit(1));
 
   if (!run) {
     throw new Error('Automation run not found');
@@ -2178,12 +2677,13 @@ async function executeAutomationRunInner(
   if (!run.automationId) {
     throw new Error('Automation run is not linked to a standalone automation (may be a config policy run)');
   }
+  const automationId = run.automationId;
 
-  const [automation] = await db
+  const [automation] = await withAutomationRuntimeDb(() => db
     .select()
     .from(automations)
-    .where(eq(automations.id, run.automationId))
-    .limit(1);
+    .where(eq(automations.id, automationId))
+    .limit(1));
 
   if (!automation) {
     throw new Error('Automation definition not found');
@@ -2199,22 +2699,22 @@ async function executeAutomationRunInner(
 
   // A queued job is not authorization. Re-check the active binding snapshot
   // and live resource ownership before any dispatch-side write.
-  const resolvedReferences = await db.transaction((tx) =>
-    resolveStandaloneAutomationReferencesForAdmission(tx, automation, normalized));
+  const resolvedReferences = await withAutomationRuntimeDb(() => db.transaction((tx) =>
+    resolveStandaloneAutomationReferencesForAdmission(tx, automation, normalized)));
 
   const targetDeviceIds = targetDeviceIdsFromQueue && targetDeviceIdsFromQueue.length > 0
     ? targetDeviceIdsFromQueue
-    : await resolveAutomationTargetDeviceIds(automation);
+    : await withAutomationRuntimeDb(() => resolveAutomationTargetDeviceIds(automation));
 
-  await db
+  await withAutomationRuntimeDb(() => db
     .update(automationRuns)
     .set({
       devicesTargeted: targetDeviceIds.length,
     })
-    .where(eq(automationRuns.id, run.id));
+    .where(eq(automationRuns.id, run.id)));
 
   const deviceRows = targetDeviceIds.length > 0
-    ? await db
+    ? await withAutomationRuntimeDb(() => db
       .select({
         id: devices.id,
         orgId: devices.orgId,
@@ -2230,21 +2730,31 @@ async function executeAutomationRunInner(
         customFields: devices.customFields,
       })
       .from(devices)
-      .where(inArray(devices.id, targetDeviceIds))
+      .where(inArray(devices.id, targetDeviceIds)))
     : [];
 
   const scriptsById = resolvedReferences.scriptsById;
   const channelsById = resolvedReferences.notificationChannelsById;
 
+  // #3525 W05 — a queued job is not permission to dispatch. The run may have
+  // been cancelled between enqueue and pickup, and neither runner checked
+  // before this wave: the job ran to completion regardless.
+  try {
+    await assertRunNotCancelledInRuntime(run.id);
+  } catch (err) {
+    if (!isRunCancelledError(err)) throw err;
+    return { status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+  }
+
   // Seed a per-device result row (pending) for every targeted device so the
   // execution-history UI can show live progress as each device finishes (#2023).
-  await seedAutomationDeviceResults(run.id, deviceRows);
+  await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  for (const device of deviceRows) {
+    await seedDeviceAutomationActions(run.id, device, normalized.actions);
+  }
 
   const existingLogs = getExistingLogs(run.logs);
   const logs: AutomationLogEntry[] = [...existingLogs];
-  let devicesSucceeded = 0;
-  let devicesFailed = 0;
-
   // ONE preload for the whole run, over the distinct org set of every device
   // this run targets (#3409 PR3 P2) — never inside the concurrency loop below.
   const variableScope = await loadAutomationRunVariableScope(
@@ -2253,144 +2763,24 @@ async function executeAutomationRunInner(
     deviceRows.map((device) => device.orgId),
   );
 
-  await runWithConcurrency(deviceRows, 5, async (device) => {
-    let deviceFailed = false;
-    const deviceStartedAt = new Date();
-    const deviceOutput: string[] = [];
-    let deviceError: string | null = null;
-
-    try {
-      await markDeviceResultRunning(run.id, device.id, deviceStartedAt);
-
-      for (const [actionIndex, action] of normalized.actions.entries()) {
-        // deploy_software is handled by the batched executeDeploySoftwareActions pass below
-        if (action.type === 'deploy_software') continue;
-        const result = await executeAction(action, actionIndex, buildActionExecutionContext({
-          automation,
-          runId: run.id,
-          scriptsById,
-          channelsById,
-          variableScope,
-          trigger: triggerContext,
-        }, device));
-
-        logs.push(result.log);
-        deviceOutput.push(`[${result.log.level}] ${result.log.message}`);
-
-        if (!result.success) {
-          deviceFailed = true;
-          if (deviceError === null) deviceError = result.log.message;
-
-          if (normalized.onFailure === 'notify') {
-            const failureLogs = await sendOnFailureNotifications(
-              automation,
-              channelsById,
-              normalized.notificationTargets,
-              {
-                runId: run.id,
-                deviceId: device.id,
-                deviceOrgId: device.orgId,
-                message: result.log.message,
-              },
-            );
-            logs.push(...failureLogs);
-          }
-
-          if (normalized.onFailure === 'stop' || normalized.onFailure === 'notify') {
-            break;
-          }
-        }
-      }
-    } catch (err) {
-      // An action (or a notify hook) threw instead of returning
-      // {success:false}. Treat it as a device-level failure rather than letting
-      // it reject runWithConcurrency's Promise.all and abort the whole run —
-      // which would strand every other device's result row (#2023).
-      //
-      // This catch logs into the run's own log entries, but that's a DB
-      // column, not Sentry — a genuine infra fault during automated dispatch
-      // (DB blip, dispatch core throw, etc.) would otherwise be invisible
-      // outside someone reading this specific run's logs. Surface it.
-      deviceFailed = true;
-      const message = err instanceof Error ? err.message : String(err);
-      if (deviceError === null) deviceError = message;
-      console.error('[automationRuntime] action threw during device dispatch', { deviceId: device.id, error: err });
-      captureException(err);
-      const errLog = logEntry(`Automation action threw: ${message}`, 'error', { deviceId: device.id });
-      logs.push(errLog);
-      deviceOutput.push(`[error] ${errLog.message}`);
-    } finally {
-      if (deviceFailed) {
-        devicesFailed += 1;
-      } else {
-        devicesSucceeded += 1;
-      }
-
-      // Guard the finalize write too: a throw here would otherwise reject the
-      // worker and abort sibling devices. Worst case the row stays `running`
-      // and the outer catch reconciles it.
-      try {
-        await finalizeDeviceResult(run.id, device.id, {
-          status: deviceFailed ? 'failed' : 'success',
-          startedAt: deviceStartedAt,
-          completedAt: new Date(),
-          output: deviceOutput.join('\n'),
-          error: deviceError,
-        });
-      } catch (finalizeErr) {
-        console.error(
-          `[AutomationRuntime] failed to finalize device result run=${run.id} device=${device.id}:`,
-          finalizeErr,
-        );
-      }
-    }
-  });
-
-  // Batched deploy_software pass — runs once per automation run, after the per-device loop
-  const deployOutcome = await executeDeploySoftwareActions({
+  const actionOutcome = await executeAutomationActionsInOrder({
     actions: normalized.actions,
-    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
+    devices: deviceRows,
+    automation,
     createdBy: automation.createdBy ?? null,
     runId: run.id,
+    scriptsById,
+    channelsById,
+    variableScope,
+    trigger: triggerContext,
+    onFailure: normalized.onFailure,
+    notificationTargets: normalized.notificationTargets,
     resolvedReferences,
   });
-  logs.push(...deployOutcome.logs);
-  // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
-  if (deployOutcome.failed) {
-    devicesFailed += 1;
-  }
+  logs.push(...actionOutcome.logs);
+  const { devicesSucceeded, devicesFailed, hasNonterminalActions } = actionOutcome;
 
-  // Reconcile device result rows for deploy dispatch failures (#2023): the
-  // per-device loop skips deploy_software and finalized those devices as
-  // `success`, but a device whose deployment failed to dispatch must not read
-  // as success. Only flip rows still marked `success` (never clobber a device
-  // that already failed a non-deploy action and carries its own error).
-  if (deployOutcome.failedDeviceIds.size > 0) {
-    await db
-      .update(automationRunDeviceResults)
-      .set({
-        status: 'failed',
-        error: 'Software deployment dispatch failed',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(automationRunDeviceResults.runId, run.id),
-          eq(automationRunDeviceResults.status, 'success'),
-          inArray(automationRunDeviceResults.deviceId, [...deployOutcome.failedDeviceIds]),
-        ),
-      );
-  }
-
-  const status: 'completed' | 'failed' | 'partial' =
-    devicesFailed === 0
-      ? 'completed'
-      : devicesSucceeded === 0
-        ? 'failed'
-        : 'partial';
-
-  logs.push(logEntry(`Automation run finished with status ${status}`, status === 'completed' ? 'info' : 'warning', {
+  logs.push(logEntry('Automation dispatch phase finished', devicesFailed > 0 ? 'warning' : 'info', {
     details: {
       devicesSucceeded,
       devicesFailed,
@@ -2398,48 +2788,30 @@ async function executeAutomationRunInner(
     },
   }));
 
-  await db
-    .update(automationRuns)
-    .set({
-      status,
-      devicesSucceeded,
-      devicesFailed,
+  await withAutomationRuntimeDb(() => db.update(automationRuns).set({ logs }).where(eq(automationRuns.id, run.id)));
+  await withAutomationRuntimeDb(() => reconcileAutomationRun(run.id));
+  if (deviceRows.length === 0 || normalized.actions.length === 0) {
+    await withAutomationRuntimeDb(() => db.update(automationRuns).set({
+      status: 'completed',
+      devicesSucceeded: 0,
+      devicesFailed: 0,
       completedAt: new Date(),
-      logs,
-    })
-    .where(eq(automationRuns.id, run.id));
-
-  // Same shape as automation.started: an org-owned automation publishes to
-  // its own org; a partner-wide one publishes per distinct target-device org.
-  const completionOrgIds = automation.orgId
-    ? [automation.orgId]
-    : [...new Set(deviceRows.map((device) => device.orgId))];
-  if (completionOrgIds.length === 0) {
-    console.warn(
-      `[AutomationRuntime] partner-wide automation ${automation.id} run ${run.id} finished (${status}) with zero target devices — no completion event published`,
-    );
+    }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))));
   }
-  for (const eventOrgId of completionOrgIds) {
-    await publishEvent(
-      status === 'completed' ? 'automation.completed' : 'automation.failed',
-      eventOrgId,
-      {
-        automationId: automation.id,
-        runId: run.id,
-        triggeredBy: run.triggeredBy,
-        status,
-        devicesTargeted: targetDeviceIds.length,
-        devicesSucceeded,
-        devicesFailed,
-      },
-      'automation-runtime',
-    );
-  }
+  const status: AutomationRunOutcomeStatus = actionOutcome.cancelled
+    ? 'cancelled'
+    : hasNonterminalActions
+      ? 'running'
+      : devicesFailed === 0
+        ? 'completed'
+        : devicesSucceeded === 0
+          ? 'failed'
+          : 'partial';
 
   return {
     status,
-    devicesSucceeded,
-    devicesFailed,
+    devicesSucceeded: hasNonterminalActions ? 0 : devicesSucceeded,
+    devicesFailed: hasNonterminalActions ? 0 : devicesFailed,
   };
 }
 
@@ -2570,7 +2942,7 @@ export async function executeConfigPolicyAutomationRun(
   triggeredBy: string,
 ): Promise<{
   runId: string;
-  status: 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
@@ -2581,13 +2953,13 @@ export async function executeConfigPolicyAutomationRun(
     // Legacy/corrupt rows still produce an observable failed run, matching the
     // pre-authorization runtime contract. No action can be dispatched because
     // parsing failed, so this branch deliberately skips reference resolution.
-    const admission = await admitConfigPolicyAutomationRun(
+    const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
       { automation, targetDeviceIds, triggeredBy },
       null,
       true,
-    );
+    ));
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    await db
+    await withAutomationRuntimeDb(() => db
       .update(automationRuns)
       .set({
         status: 'failed',
@@ -2597,7 +2969,7 @@ export async function executeConfigPolicyAutomationRun(
           logEntry(`Failed to parse automation actions: ${errorMsg}`, 'error'),
         ],
       })
-      .where(eq(automationRuns.id, admission.run.id));
+      .where(eq(automationRuns.id, admission.run.id)));
 
     return {
       runId: admission.run.id,
@@ -2606,11 +2978,11 @@ export async function executeConfigPolicyAutomationRun(
       devicesFailed: targetDeviceIds.length,
     };
   }
-  const admission = await admitConfigPolicyAutomationRun(
+  const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
     { automation, targetDeviceIds, triggeredBy },
     actions,
     true,
-  );
+  ));
   if (!admission.resolvedReferences) {
     throw new Error('Config policy automation admission did not resolve references');
   }
@@ -2621,7 +2993,7 @@ export async function executeConfigPolicyAutomationRun(
 
   // Load target devices
   const deviceRows = targetDeviceIds.length > 0
-    ? await db
+    ? await withAutomationRuntimeDb(() => db
       .select({
         id: devices.id,
         orgId: devices.orgId,
@@ -2636,8 +3008,23 @@ export async function executeConfigPolicyAutomationRun(
         customFields: devices.customFields,
       })
       .from(devices)
-      .where(inArray(devices.id, targetDeviceIds))
+      .where(inArray(devices.id, targetDeviceIds)))
     : [];
+  // #3525 W05 fence — see the standalone runner. Config-policy runs are out of
+  // scope for the cancel ROUTE (OD10-B: automation_runs' config-policy RLS arm
+  // makes partner-owned policy runs invisible), but the fence is unconditional
+  // so a run cancelled through any future door still stops here.
+  try {
+    await assertRunNotCancelledInRuntime(run.id);
+  } catch (err) {
+    if (!isRunCancelledError(err)) throw err;
+    return { runId: run.id, status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+  }
+
+  await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  for (const device of deviceRows) {
+    await seedDeviceAutomationActions(run.id, device, actions);
+  }
 
   const notificationChannelIds = new Set<string>();
   for (const action of actions) {
@@ -2661,9 +3048,6 @@ export async function executeConfigPolicyAutomationRun(
 
   const existingLogs = getExistingLogs(run.logs);
   const logs: AutomationLogEntry[] = [...existingLogs];
-  let devicesSucceeded = 0;
-  let devicesFailed = 0;
-
   // ONE preload for the whole run (#3409 PR3 P2) — see the standalone runner.
   const variableScope = await loadAutomationRunVariableScope(
     actions,
@@ -2671,80 +3055,27 @@ export async function executeConfigPolicyAutomationRun(
     deviceRows.map((device) => device.orgId),
   );
 
-  await runWithConcurrency(deviceRows, 5, async (device) => {
-    let deviceFailed = false;
-
-    for (const [actionIndex, action] of actions.entries()) {
-      // deploy_software is handled by the batched executeDeploySoftwareActions pass below
-      if (action.type === 'deploy_software') continue;
-      const result = await executeAction(action, actionIndex, {
-        automation: syntheticAutomation,
-        runId: run.id,
-        device,
-        scriptsById,
-        channelsById,
-        variableScope,
-      });
-
-      logs.push(result.log);
-
-      if (!result.success) {
-        deviceFailed = true;
-
-        if (onFailure === 'notify') {
-          const notifyTargets: NotificationTargets | undefined =
-            notificationChannelIds.size > 0
-              ? { channelIds: [...notificationChannelIds] }
-              : undefined;
-          const failureLogs = await sendOnFailureNotifications(
-            syntheticAutomation as AutomationRow,
-            channelsById,
-            notifyTargets,
-            {
-              runId: run.id,
-              deviceId: device.id,
-              deviceOrgId: device.orgId,
-              message: result.log.message,
-            },
-          );
-          logs.push(...failureLogs);
-        }
-
-        if (onFailure === 'stop' || onFailure === 'notify') {
-          break;
-        }
-      }
-    }
-
-    if (deviceFailed) {
-      devicesFailed += 1;
-    } else {
-      devicesSucceeded += 1;
-    }
-  });
-
-  // Batched deploy_software pass — runs once per config-policy automation run, after the per-device loop
-  const deployOutcome = await executeDeploySoftwareActions({
+  const notifyTargets: NotificationTargets | undefined = notificationChannelIds.size > 0
+    ? { channelIds: [...notificationChannelIds] }
+    : undefined;
+  const actionOutcome = await executeAutomationActionsInOrder({
     actions,
-    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
+    devices: deviceRows,
+    automation: syntheticAutomation as AutomationRow,
     createdBy: null,
     runId: run.id,
+    scriptsById,
+    channelsById,
+    variableScope,
+    trigger: undefined,
+    onFailure,
+    notificationTargets: notifyTargets,
     resolvedReferences: admission.resolvedReferences,
   });
-  logs.push(...deployOutcome.logs);
-  // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
-  if (deployOutcome.failed) {
-    devicesFailed += 1;
-  }
+  logs.push(...actionOutcome.logs);
+  const { devicesSucceeded, devicesFailed, hasNonterminalActions } = actionOutcome;
 
-  const status: 'completed' | 'failed' | 'partial' =
-    devicesFailed === 0
-      ? 'completed'
-      : devicesSucceeded === 0
-        ? 'failed'
-        : 'partial';
-
-  logs.push(logEntry(`Config policy automation run finished with status ${status}`, status === 'completed' ? 'info' : 'warning', {
+  logs.push(logEntry('Config policy automation dispatch phase finished', devicesFailed > 0 ? 'warning' : 'info', {
     details: {
       devicesSucceeded,
       devicesFailed,
@@ -2752,38 +3083,31 @@ export async function executeConfigPolicyAutomationRun(
     },
   }));
 
-  await db
-    .update(automationRuns)
-    .set({
-      status,
-      devicesSucceeded,
-      devicesFailed,
+  await withAutomationRuntimeDb(() => db.update(automationRuns).set({ logs }).where(eq(automationRuns.id, run.id)));
+  await withAutomationRuntimeDb(() => reconcileAutomationRun(run.id));
+  if (deviceRows.length === 0 || actions.length === 0) {
+    await withAutomationRuntimeDb(() => db.update(automationRuns).set({
+      status: 'completed',
+      devicesSucceeded: 0,
+      devicesFailed: 0,
       completedAt: new Date(),
-      logs,
-    })
-    .where(eq(automationRuns.id, run.id));
-
-  await publishEvent(
-    status === 'completed' ? 'automation.completed' : 'automation.failed',
-    orgId,
-    {
-      configPolicyAutomationId: automation.id,
-      configItemName: automation.name,
-      runId: run.id,
-      triggeredBy,
-      status,
-      devicesTargeted: targetDeviceIds.length,
-      devicesSucceeded,
-      devicesFailed,
-    },
-    'automation-runtime',
-  );
+    }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))));
+  }
+  const status: AutomationRunOutcomeStatus = actionOutcome.cancelled
+    ? 'cancelled'
+    : hasNonterminalActions
+      ? 'running'
+      : devicesFailed === 0
+        ? 'completed'
+        : devicesSucceeded === 0
+          ? 'failed'
+          : 'partial';
 
   return {
     runId: run.id,
     status,
-    devicesSucceeded,
-    devicesFailed,
+    devicesSucceeded: hasNonterminalActions ? 0 : devicesSucceeded,
+    devicesFailed: hasNonterminalActions ? 0 : devicesFailed,
   };
 }
 
@@ -2793,4 +3117,9 @@ export const __testOnly = {
   buildActionExecutionContext,
   executeAction,
   executeAiTriageAction,
+  // #3525 W05 — the two halves of the dispatch fence. Exported so the
+  // compensating path (the ONLY thing standing between a mid-flight cancel and
+  // a script that keeps running) is provable without driving a full mocked run.
+  cancelDispatchIfRunCancelled,
+  executeAutomationActionsInOrder,
 };

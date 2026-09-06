@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   encodeFilterToHash,
   decodeFilterFromHash,
@@ -72,5 +72,32 @@ describe('isFiltersV2Enabled flag (hash, not query param)', () => {
     // Value present, no flag → still enabled, and the value still decodes.
     expect(isFiltersV2Enabled()).toBe(true);
     expect(decodeFilterFromHash(window.location.hash)).toEqual(sampleFilter);
+  });
+});
+
+describe('toBase64Url is isomorphic (#3205 W06)', () => {
+  it('encodes identically with and without window, for ASCII and non-ASCII', () => {
+    const nonAscii: FilterConditionGroup = {
+      operator: 'AND',
+      conditions: [{ field: 'tags', operator: 'contains', value: 'café — 東京' }],
+    };
+    const before = [encodeFilterToHash(sampleFilter), encodeFilterToHash(nonAscii)];
+    vi.stubGlobal('window', undefined);
+    try {
+      expect([encodeFilterToHash(sampleFilter), encodeFilterToHash(nonAscii)]).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(before[0]).not.toBe('');
+    // Unpadded base64url alphabet only.
+    expect(before[1]!.replace('filtersV2=', '')).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it('still round-trips what the new encoder produces', () => {
+    const nonAscii: FilterConditionGroup = {
+      operator: 'AND',
+      conditions: [{ field: 'tags', operator: 'contains', value: 'café — 東京' }],
+    };
+    expect(decodeFilterFromHash(`#${encodeFilterToHash(nonAscii)}`)).toEqual(nonAscii);
   });
 });

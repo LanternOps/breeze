@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, check, foreignKey } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { scripts } from './scripts';
@@ -8,13 +8,27 @@ import { aiAgents } from './aiAgents';
 
 export const automationTriggerTypeEnum = pgEnum('automation_trigger_type', ['schedule', 'event', 'webhook', 'manual']);
 export const automationOnFailureEnum = pgEnum('automation_on_failure', ['stop', 'continue', 'notify']);
-export const automationRunStatusEnum = pgEnum('automation_run_status', ['running', 'completed', 'failed', 'partial']);
+// `cancelled` (#3525 W05) is APPENDED, matching the migration's ADD VALUE order
+// — drizzle-kit compares enum value order, so inserting it mid-list here would
+// report phantom drift. A run reaches `cancelled` the moment a stop is
+// REQUESTED (that write is the dispatch fence); its children keep closing
+// honestly underneath and `completed_at` is stamped only once they are all
+// terminal.
+export const automationRunStatusEnum = pgEnum('automation_run_status', ['running', 'completed', 'failed', 'partial', 'cancelled']);
 export const automationResourceKindEnum = pgEnum('automation_resource_kind', ['script', 'software_catalog', 'notification_channel']);
 export const automationResourceBindingStateEnum = pgEnum('automation_resource_binding_state', ['active', 'quarantined']);
 // Per-device outcome within a single automation run (#2023). `pending` = row
 // seeded before the device is processed; `running` = actively executing;
-// terminal states are success/failed/skipped.
-export const automationDeviceResultStatusEnum = pgEnum('automation_device_result_status', ['pending', 'running', 'success', 'failed', 'skipped']);
+// terminal states are success/failed/skipped/cancelled. `cancelled` (#3525 W05)
+// is appended last for the same drift reason as automation_run_status above.
+export const automationDeviceResultStatusEnum = pgEnum('automation_device_result_status', ['pending', 'running', 'success', 'failed', 'skipped', 'cancelled']);
+export const automationActionResultStatusEnum = pgEnum('automation_action_result_status', [
+  'pending', 'queued', 'delivered', 'running',
+  'succeeded', 'failed', 'skipped', 'timed_out', 'cancelled',
+]);
+export const automationActionTerminalSourceEnum = pgEnum('automation_action_terminal_source', [
+  'command', 'script_execution', 'deployment_result', 'timeout', 'cancellation', 'reaper', 'dispatch',
+]);
 export const policyEnforcementEnum = pgEnum('policy_enforcement', ['monitor', 'warn', 'enforce']);
 export const complianceStatusEnum = pgEnum('compliance_status', ['compliant', 'non_compliant', 'pending', 'error']);
 
@@ -106,6 +120,10 @@ export const automationRuns = pgTable('automation_runs', {
   devicesTargeted: integer('devices_targeted').notNull().default(0),
   devicesSucceeded: integer('devices_succeeded').notNull().default(0),
   devicesFailed: integer('devices_failed').notNull().default(0),
+  // #3525 W05 — devices whose work was PROVEN stopped, not devices asked to
+  // stop. Maintained by the reconciler as child rows terminalise as
+  // `cancelled`; a cancel request on its own never moves it.
+  devicesCancelled: integer('devices_cancelled').notNull().default(0),
   startedAt: timestamp('started_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
   logs: jsonb('logs').default([]),
@@ -143,6 +161,50 @@ export const automationRunDeviceResults = pgTable('automation_run_device_results
   orgIdIdx: index('ardr_org_id_idx').on(table.orgId),
   runDeviceUnique: uniqueIndex('ardr_run_device_unique').on(table.runId, table.deviceId),
 }));
+
+// One durable row per normalized action/device pair. Accepted asynchronous
+// dispatch is deliberately nonterminal; command/script/deployment result paths
+// advance these rows through guarded state transitions in the action-result
+// service. org_id is copied from and pinned to the authoritative device so
+// partner-wide automation runs remain directly tenant scoped.
+export const automationActionResults = pgTable('automation_action_results', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => automationRuns.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  actionIndex: integer('action_index').notNull(),
+  actionType: varchar('action_type', { length: 64 }).notNull(),
+  status: automationActionResultStatusEnum('status').notNull().default('pending'),
+  terminalSource: automationActionTerminalSourceEnum('terminal_source'),
+  commandId: uuid('command_id'),
+  scriptExecutionId: uuid('script_execution_id'),
+  deploymentResultId: uuid('deployment_result_id'),
+  message: text('message'),
+  output: text('output'),
+  error: text('error'),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'automation_action_results_device_org_fkey',
+  }).onUpdate('cascade').onDelete('cascade'),
+  check('automation_action_results_action_index_chk', sql`${table.actionIndex} >= 0`),
+  uniqueIndex('automation_action_results_run_device_action_uq')
+    .on(table.runId, table.deviceId, table.actionIndex),
+  uniqueIndex('automation_action_results_command_uq')
+    .on(table.commandId).where(sql`${table.commandId} IS NOT NULL`),
+  uniqueIndex('automation_action_results_script_execution_uq')
+    .on(table.scriptExecutionId).where(sql`${table.scriptExecutionId} IS NOT NULL`),
+  uniqueIndex('automation_action_results_deployment_result_uq')
+    .on(table.deploymentResultId).where(sql`${table.deploymentResultId} IS NOT NULL`),
+  index('automation_action_results_run_idx').on(table.runId),
+  index('automation_action_results_device_idx').on(table.deviceId),
+  index('automation_action_results_org_idx').on(table.orgId),
+  index('automation_action_results_status_updated_idx').on(table.status, table.updatedAt),
+]);
 
 // An automation policy (the config-policy "compliance" feature's rule-set
 // table) is owned by EITHER an org (orgId set, partnerId NULL — the original
@@ -184,4 +246,19 @@ export const automationPolicyCompliance = pgTable('automation_policy_compliance'
 }, (table) => ({
   configPolicyIdIdx: index('apc_config_policy_id_idx').on(table.configPolicyId),
   deviceIdIdx: index('apc_device_id_idx').on(table.deviceId),
+  // Two shapes share this table and exactly one axis is populated per row, so
+  // uniqueness is two PARTIAL indexes rather than table constraints (#4122).
+  // `policyEvaluationService.ts` names these predicates verbatim as the
+  // `targetWhere` of its ON CONFLICT arbiter — Postgres only infers a partial
+  // index when the statement's predicate implies the index's, so the three
+  // copies (here, migration 2026-09-29-100000, and the service) move together.
+  policyDeviceUq: uniqueIndex('apc_policy_device_uq')
+    .on(table.policyId, table.deviceId)
+    .where(sql`${table.policyId} IS NOT NULL`),
+  // config_item_name is nullable and NULLs never collide in a btree unique
+  // index, so a row without one cannot be keyed — it stays outside the index
+  // rather than being silently treated as a distinct key.
+  configPolicyItemDeviceUq: uniqueIndex('apc_config_policy_item_device_uq')
+    .on(table.configPolicyId, table.configItemName, table.deviceId)
+    .where(sql`${table.configPolicyId} IS NOT NULL AND ${table.configItemName} IS NOT NULL`),
 }));

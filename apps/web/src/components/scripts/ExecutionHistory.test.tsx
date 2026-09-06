@@ -134,3 +134,51 @@ describe('ExecutionHistory', () => {
     expect(onViewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }));
   });
 });
+
+// A `pending` execution has no `started_at` yet (the API returns NULL until
+// the agent picks it up); the STARTED column must not misrender that as an
+// epoch date, and DURATION must be computed from real timestamps rather than
+// a `duration` field the API never returns.
+describe('ExecutionHistory pending/duration rendering', () => {
+  it('does not render an epoch date in the STARTED column for a pending execution', () => {
+    const pendingRow = {
+      id: 'p1',
+      scriptId: 's1',
+      scriptName: 'Pending Script',
+      deviceId: 'd1',
+      deviceHostname: 'gamma-03',
+      status: 'pending',
+      startedAt: null,
+    } as unknown as ScriptExecution;
+
+    render(<ExecutionHistory executions={[pendingRow]} />);
+
+    const row = bodyRows()[0];
+    // Columns: script, device, status, STARTED, duration, exit code, actions.
+    const startedCell = row.querySelectorAll('td')[3];
+    // Pre-fix, `new Date(null)` is epoch (Jan 1 1970 UTC) and formats as a
+    // real-looking date/time ("Dec 31, 05:00 PM") since the STARTED column's
+    // format string carries no year to give the bug away numerically — the
+    // placeholder is the only reliable signal that it was NOT formatted.
+    expect(startedCell).toHaveTextContent('—');
+  });
+
+  it('computes the DURATION column from startedAt/completedAt when the API omits `duration`', () => {
+    const completedRow = {
+      id: 'c1',
+      scriptId: 's1',
+      scriptName: 'Timed Script',
+      deviceId: 'd1',
+      deviceHostname: 'delta-04',
+      status: 'completed',
+      startedAt: '2026-08-10T10:00:00.000Z',
+      completedAt: '2026-08-10T10:01:00.000Z',
+      // no `duration` field — exactly what the API returns today
+    } as unknown as ScriptExecution;
+
+    render(<ExecutionHistory executions={[completedRow]} />);
+
+    const row = bodyRows()[0];
+    expect(within(row).getByText('1m 0s')).toBeInTheDocument();
+  });
+});

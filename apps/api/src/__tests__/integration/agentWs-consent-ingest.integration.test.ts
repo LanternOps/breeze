@@ -38,11 +38,12 @@ async function sendDeskStartResult(
   agentId: string,
   deviceId: string,
   orgId: string,
+  partnerId: string,
   sessionId: string,
   result: Record<string, unknown>,
   status: 'completed' | 'failed' = 'completed',
 ): Promise<void> {
-  const handlers = createAgentWsHandlers(agentId, { deviceId, orgId });
+  const handlers = createAgentWsHandlers(agentId, { deviceId, orgId, partnerId });
   const event = {
     data: JSON.stringify({
       type: 'command_result',
@@ -130,7 +131,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const dev = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
 
-    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, sessionId, {
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
       event: 'consent_denied',
       sessionId,
       reason: 'user',
@@ -147,7 +148,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const dev = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
 
-    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, sessionId, {
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
       event: 'consent_denied',
       sessionId,
       reason: 'no_user',
@@ -170,7 +171,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const sessionId = await insertSession({ deviceId: devA.id, orgId: env.organization.id, userId: env.user.id });
 
     // devB's agent reports a denial for devA's session.
-    await sendDeskStartResult(devB.agentId, devB.id, env.organization.id, sessionId, {
+    await sendDeskStartResult(devB.agentId, devB.id, env.organization.id, env.partner.id, sessionId, {
       event: 'consent_denied',
       sessionId,
       reason: 'user',
@@ -188,7 +189,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const dev = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id, status: 'active' });
 
-    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, sessionId, {
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
       event: 'consent_denied',
       sessionId,
       reason: 'user',
@@ -206,7 +207,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     const dev = await insertDevice(env.organization.id, env.site.id);
     const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
 
-    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, sessionId, {
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
       sessionId,
       answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n', // minimal SDP-ish string
       consentReason: 'user',

@@ -91,6 +91,7 @@ complianceRoutes.get(
             compliantDevices: 0,
             criticalSummary: { total: 0, patched: 0, pending: 0 },
             importantSummary: { total: 0, patched: 0, pending: 0 },
+            unratedSummary: { total: 0, patched: 0, pending: 0 },
             devicesNeedingPatches: []
           }
         });
@@ -114,6 +115,7 @@ complianceRoutes.get(
           compliantDevices: 0,
           criticalSummary: { total: 0, patched: 0, pending: 0 },
           importantSummary: { total: 0, patched: 0, pending: 0 },
+          unratedSummary: { total: 0, patched: 0, pending: 0 },
           devicesNeedingPatches: []
         }
       });
@@ -193,6 +195,7 @@ complianceRoutes.get(
             compliantDevices: deviceIds.length,
             criticalSummary: { total: 0, patched: 0, pending: 0 },
             importantSummary: { total: 0, patched: 0, pending: 0 },
+            unratedSummary: { total: 0, patched: 0, pending: 0 },
             devicesNeedingPatches: [],
             ringId: query.ringId ?? null
           }
@@ -345,10 +348,21 @@ complianceRoutes.get(
 
     const severityMap: Record<string, { total: number; patched: number; pending: number }> = {};
     for (const row of severityCounts) {
+      // NULL severity and the literal 'unknown' sentinel both coalesce to the
+      // 'unknown' key here, but Postgres GROUP BY emits them as separate rows
+      // (NULL != 'unknown'), so this must accumulate rather than overwrite or
+      // whichever row is processed last silently wins and undercounts.
       const key = row.severity ?? 'unknown';
       const patched = Number(row.installed);
       const pending = Number(row.outstanding);
-      severityMap[key] = { total: patched + pending, patched, pending };
+      const existing = severityMap[key];
+      severityMap[key] = existing
+        ? {
+            total: existing.total + patched + pending,
+            patched: existing.patched + patched,
+            pending: existing.pending + pending
+          }
+        : { total: patched + pending, patched, pending };
     }
 
     // Device-level compliance: a device is compliant if it has zero outstanding
@@ -363,6 +377,7 @@ complianceRoutes.get(
         compliantDevices: compliantDeviceCount,
         criticalSummary: severityMap['critical'] ?? { total: 0, patched: 0, pending: 0 },
         importantSummary: severityMap['important'] ?? { total: 0, patched: 0, pending: 0 },
+        unratedSummary: severityMap['unknown'] ?? { total: 0, patched: 0, pending: 0 },
         devicesNeedingPatches,
         filters: {
           source: query.source ?? null,

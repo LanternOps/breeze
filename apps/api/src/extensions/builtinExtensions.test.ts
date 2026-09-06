@@ -350,6 +350,64 @@ describe('loadBuiltinExtensions', () => {
     expect((await stateStore.get(NAME))?.enabled).toBe(false);
   });
 
+  // Regression for #3468: `activeVersion` must be written to
+  // `installed_extensions` only AFTER `registry.activate()` succeeds, not
+  // observed alongside `configuredVersion` before it runs. Two real built-ins
+  // registered, the second sharing the first's `routeNamespace` so
+  // `ExtensionContributionRegistry.activate` genuinely throws (a real
+  // namespace-collision failure, not a mocked one) partway through the second
+  // builtin's staged pipeline.
+  it('a mid-pipeline activation failure on the second built-in leaves the first correctly active and records no phantom activeVersion for the second', async () => {
+    const NAME_2 = 'demo-builtin-2';
+    const VERSION_2 = '2.0.0';
+    const ENABLE_ENV_VAR_2 = 'BREEZE_DEMO_BUILTIN_2_ENABLED';
+    const builtin2 = fixtureBuiltin({
+      name: NAME_2,
+      enableEnvVar: ENABLE_ENV_VAR_2,
+      // Same NAMESPACE as the first builtin (fixtureManifest's default) —
+      // ExtensionContributionRegistry.activate() throws a real "route
+      // namespace already owned" error for this, once the first builtin is
+      // already active.
+      manifest: fixtureManifest({ name: NAME_2, version: VERSION_2 }),
+    });
+
+    process.env[ENABLE_ENV_VAR_2] = 'true';
+    try {
+      const h = createHarness({ builtins: [fixtureBuiltin(), builtin2] });
+
+      await expect(h.load()).rejects.toThrow(/route namespace .* is already owned by extension "demo-builtin"/i);
+
+      // Full pipeline ran for builtin 1, and got as far as 'activate' (where
+      // it throws) for builtin 2 — nothing downstream of that ran for it.
+      expect(h.calls).toEqual([
+        'migration', 'tenancy', 'stage', 'validate', 'activate', 'web',
+        'migration', 'tenancy', 'stage', 'validate', 'activate',
+      ]);
+
+      // Built-in 1: unaffected by built-in 2's later failure — still
+      // correctly activated with its real active version recorded.
+      const snapshot1 = h.registry.get(NAME);
+      expect(snapshot1?.enabled).toBe(true);
+      expect(snapshot1?.version).toBe(VERSION);
+      const row1 = await h.stateStore.get(NAME);
+      expect(row1?.activeVersion).toBe(VERSION);
+      expect(row1?.lifecycleState).toBe('active');
+
+      // Built-in 2: activate() threw, so it never reached the registry, and
+      // — this is the bug this test guards against — `installed_extensions`
+      // must NOT claim an active version that was never actually activated.
+      // upsertObserved ran (before activate) and seeded configuredVersion,
+      // but recordActive (after activate) never ran.
+      expect(h.registry.get(NAME_2)).toBeUndefined();
+      const row2 = await h.stateStore.get(NAME_2);
+      expect(row2?.configuredVersion).toBe(VERSION_2);
+      expect(row2?.activeVersion).toBeNull();
+      expect(row2?.lifecycleState).toBe('discovered');
+    } finally {
+      delete process.env[ENABLE_ENV_VAR_2];
+    }
+  });
+
   it('registers agent rate-limit skip prefixes when agentRoutes is true', async () => {
     const h = createHarness();
     await h.load();

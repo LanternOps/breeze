@@ -1,27 +1,87 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { getTableName, is, Table } from 'drizzle-orm';
+
+const { evaluateCapability, requireCapability } = vi.hoisted(() => {
+  const evaluateCapability = vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true }));
+  return {
+    evaluateCapability,
+    requireCapability: vi.fn((capability: string) => async (c: any, next: any) => {
+      const auth = c.get('auth');
+      if (!auth?.partnerId) return next();
+      const decision = await evaluateCapability(capability, {
+        partnerId: auth.partnerId,
+        userId: auth.user?.id,
+        orgId: auth.orgId ?? undefined,
+      });
+      if (!decision.allow) {
+        return c.json({
+          error: decision.code,
+          capability: decision.capability,
+          reason: decision.reason,
+          reviewRequested: false,
+          meetingUrl: null,
+        }, 403);
+      }
+      return next();
+    }),
+  };
+});
+
+vi.mock('../../services/partnerTrust', () => ({ evaluateCapability, requireCapability }));
 
 // Hold a configurable partner-settings value the mocked select chain returns.
 // Each test mutates this before calling app.request().
 let mockPartnerSettings: unknown = {};
 
+// A fully chainable, table-aware query-builder stub. Every chain method
+// (from/innerJoin/where/orderBy/limit) returns the same node so any call
+// shape core.ts's GET /devices/:id handler exercises (hardware, network
+// interfaces, metrics, memberships, site, org, partner settings) resolves
+// without throwing, instead of crashing partway through on an unmocked
+// chain shape (which previously meant the GET handler never reached the
+// launcher-availability code at all -- see #3402). The only query that
+// needs a real answer is the partner-settings lookup keyed off `.from(partners)`;
+// everything else safely resolves to an empty array.
+function makeSelectMock() {
+  return vi.fn(() => {
+    let fromTableName: string | null = null;
+    const resolveRows = (): unknown[] =>
+      fromTableName === 'partners' ? [{ settings: mockPartnerSettings }] : [];
+    const node: any = {
+      from: vi.fn((table: unknown) => {
+        try {
+          fromTableName = is(table, Table) ? getTableName(table as Table) : null;
+        } catch {
+          fromTableName = null;
+        }
+        return node;
+      }),
+      innerJoin: vi.fn(() => node),
+      where: vi.fn(() => node),
+      orderBy: vi.fn(() => node),
+      limit: vi.fn(async () => resolveRows()),
+      then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(resolveRows()).then(resolve, reject),
+    };
+    return node;
+  });
+}
+
+// `getCurrentDbAccessContext` is named on purpose: the partner-settings read
+// now goes through `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts),
+// which imports all three context helpers BY NAME. Omitting any of them makes
+// this suite fail with "No <name> export is defined on the mock" rather than
+// silently skipping the RLS escape and reintroducing #3419. Returning
+// `undefined` models a request-scoped (non-system) caller, so the escape is
+// taken — which is the shape every route under test actually runs in.
 vi.mock('../../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        innerJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => [{ settings: mockPartnerSettings }])
-          }))
-        })),
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => [])
-        }))
-      }))
-    })),
+    select: makeSelectMock(),
   }
 }));
 
@@ -30,13 +90,22 @@ vi.mock('../../db/schema', async (importOriginal) => {
   return { ...actual };
 });
 
+// Wraps the REAL decryptForColumn so existing behavior (encrypt-at-rest
+// no-op for plaintext) is unchanged, while letting tests assert on whether
+// it was invoked at all -- the whole point of #3402's availability/issuance
+// split.
+vi.mock('../../services/secretCrypto', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, decryptForColumn: vi.fn(actual.decryptForColumn as (...args: unknown[]) => unknown) };
+});
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: '11111111-1111-1111-1111-111111111111', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-123',
-      partnerId: null,
+      partnerId: '33333333-3333-4333-8333-333333333333',
       accessibleOrgIds: ['org-123'],
       // This route is reached by a person clicking Connect, so the mocked
       // context carries the same discriminator the real one would. The
@@ -97,6 +166,7 @@ import { getDeviceWithOrgCheck, getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { requirePermission, requireMfa } from '../../middleware/auth';
+import { decryptForColumn } from '../../services/secretCrypto';
 
 // Snapshot mock.calls captured at module-load time (i.e. when core.ts ran its
 // route registrations). beforeEach() clears mock state, so we cannot read these
@@ -117,9 +187,34 @@ describe('POST /devices/:id/remote-access-launch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    evaluateCapability.mockResolvedValue({ allow: true });
     mockPartnerSettings = {};
     app = new Hono();
     app.route('/devices', coreRoutes);
+  });
+
+  it('returns 403 before resolving a credential-bearing URL when remote control is denied', async () => {
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+
+    const res = await app.request(`/devices/${deviceId}/remote-access-launch`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+    }));
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.objectContaining({
+      partnerId: '33333333-3333-4333-8333-333333333333',
+    }));
+    expect(getDeviceWithOrgAndSiteCheck).not.toHaveBeenCalled();
   });
 
   // Registration-time gate test. The launcher POST issues URLs that may carry
@@ -203,6 +298,7 @@ describe('POST /devices/:id/remote-access-launch', () => {
       headers: { Authorization: 'Bearer token' }
     });
     expect(res.status).toBe(200);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.any(Object));
     const body = await res.json() as { launchUrl?: string; scheme?: string; providerId?: string };
     expect(body.launchUrl).toBe('rustdesk://294064193?password=p%23x');
     expect(body.scheme).toBe('rustdesk');
@@ -318,13 +414,138 @@ describe('POST /devices/:id/remote-access-launch', () => {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
     });
-    // The GET handler does multiple DB lookups we haven't fully mocked here
-    // (deviceMetrics, sites, organizations), so the status may be 500. What
-    // matters for this test is that even if it somehow returned 200, the
-    // response body MUST NOT contain remoteAccessLaunchUrl.
     if (res.status === 200) {
       const body = await res.json() as Record<string, unknown>;
       expect(body).not.toHaveProperty('remoteAccessLaunchUrl');
     }
+  });
+
+  // -----------------------------------------------------------------------
+  // #3402: GET /devices/:id must resolve `hasRemoteAccessLauncher` via the
+  // availability-only path (no decrypt, no substitution), while POST
+  // /devices/:id/remote-access-launch (issuance) still decrypts to build
+  // the real launch URL. decryptForColumn is wrapped (not stubbed) at the
+  // top of this file so real behavior is unchanged and we can assert on
+  // invocation.
+  // -----------------------------------------------------------------------
+  describe('#3402 — availability (GET) never decrypts; issuance (POST) does', () => {
+    const provider = {
+      id: 'rustdesk',
+      name: 'RustDesk',
+      urlTemplate: 'rustdesk://{id}?password={password}',
+      customFieldKey: 'rustdesk_id',
+      password: 'p#x',
+      enabled: true,
+    };
+
+    it('GET /devices/:id resolves hasRemoteAccessLauncher=true WITHOUT ever calling decryptForColumn', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        siteId: 'site-1',
+        customFields: { rustdesk_id: '294064193' }
+      } as never);
+      setPartnerSettings({
+        remoteAccessProviders: { defaultProviderId: 'rustdesk', providers: [provider] }
+      });
+
+      const res = await app.request(`/devices/${deviceId}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hasRemoteAccessLauncher?: boolean; remoteAccessLaunchSkipReason?: unknown };
+      expect(body.hasRemoteAccessLauncher).toBe(true);
+      expect(body.remoteAccessLaunchSkipReason).toBeNull();
+
+      // The whole point of the split: the GET path must never touch the
+      // password-bearing decrypt call.
+      expect(decryptForColumn).not.toHaveBeenCalled();
+    });
+
+    it('GET /devices/:id sets skipReason=missing_device_identifier without decrypting, matching what POST would report', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        siteId: 'site-1',
+        customFields: {}
+      } as never);
+      setPartnerSettings({
+        remoteAccessProviders: { defaultProviderId: 'rustdesk', providers: [provider] }
+      });
+
+      const res = await app.request(`/devices/${deviceId}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hasRemoteAccessLauncher?: boolean; remoteAccessLaunchSkipReason?: unknown };
+      expect(body.hasRemoteAccessLauncher).toBe(false);
+      expect(body.remoteAccessLaunchSkipReason).toBe('missing_device_identifier');
+      expect(decryptForColumn).not.toHaveBeenCalled();
+    });
+
+    it('POST /devices/:id/remote-access-launch (issuance) DOES call decryptForColumn to build the URL', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        siteId: 'site-1',
+        customFields: { rustdesk_id: '294064193' }
+      } as never);
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        customFields: { rustdesk_id: '294064193' }
+      } as never);
+      setPartnerSettings({
+        remoteAccessProviders: { defaultProviderId: 'rustdesk', providers: [provider] }
+      });
+
+      const res = await app.request(`/devices/${deviceId}/remote-access-launch`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect(decryptForColumn).toHaveBeenCalledWith('partners', 'settings', 'p#x');
+    });
+
+    it('GET availability and POST issuance agree on skip reason for the same missing-provider config', async () => {
+      const missingConfig = { remoteAccessProviders: {} };
+
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        siteId: 'site-1',
+        customFields: { rustdesk_id: '294064193' }
+      } as never);
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        customFields: { rustdesk_id: '294064193' }
+      } as never);
+      setPartnerSettings(missingConfig);
+
+      const getRes = await app.request(`/devices/${deviceId}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(getRes.status).toBe(200);
+      const getBody = await getRes.json() as { remoteAccessLaunchSkipReason?: unknown };
+      expect(getBody.remoteAccessLaunchSkipReason).toBe('no_provider_configured');
+
+      const postRes = await app.request(`/devices/${deviceId}/remote-access-launch`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(postRes.status).toBe(404);
+      const postBody = await postRes.json() as { code?: string };
+      expect(postBody.code).toBe('no_provider_configured');
+    });
   });
 });

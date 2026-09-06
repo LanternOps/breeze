@@ -57,6 +57,11 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       insertedActionIntentValues: [] as Record<string, unknown>[],
       insertedApprovalRequestsValues: [] as unknown[],
       insertedOutboxValues: [] as Record<string, unknown>[],
+      // Set to inject a failure on the NEXT intent_outbox insert only (auto
+      // clears itself) — proves the transaction-catch path in
+      // cancelActionIntent without giving every other outbox-writing test a
+      // footgun to forget to reset.
+      outboxInsertError: null as Error | null,
       updateActionIntentsSets: [] as Record<string, unknown>[],
       updateActionIntentsWheres: [] as unknown[],
       selectAgentRunsResults: [] as unknown[][],
@@ -149,6 +154,11 @@ vi.mock('../../db', () => ({
           };
         }
         if (table === schema.intentOutboxTbl) {
+          if (dbState.outboxInsertError) {
+            const err = dbState.outboxInsertError;
+            dbState.outboxInsertError = null;
+            return Promise.reject(err);
+          }
           dbState.insertedOutboxValues.push(values as Record<string, unknown>);
           return Promise.resolve(undefined);
         }
@@ -316,6 +326,7 @@ const RUN_ID = '77777777-7777-4777-8777-777777777777';
 const RUN_ID_2 = '88888888-8888-4888-8888-888888888888';
 const DEVICE_ID = '99999999-9999-4999-8999-999999999999';
 const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTHER_ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }) {
   return {
@@ -346,6 +357,7 @@ function resetDbState() {
   dbState.insertedActionIntentValues.length = 0;
   dbState.insertedApprovalRequestsValues.length = 0;
   dbState.insertedOutboxValues.length = 0;
+  dbState.outboxInsertError = null;
   dbState.updateActionIntentsSets.length = 0;
   dbState.updateActionIntentsWheres.length = 0;
   dbState.selectAgentRunsResults.length = 0;
@@ -559,6 +571,61 @@ describe('createActionIntent — tier gating', () => {
       code: 'tool_blocked',
     });
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2-5 (#4192): manage_ai_agents's orgId ARGUMENT is pinned to the intent's org
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — manage_ai_agents orgId argument', () => {
+  const promoteInput = (orgId?: unknown) => baseInput({
+    toolName: 'manage_ai_agents',
+    input: {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      ...(orgId === undefined ? {} : { orgId }),
+    },
+  });
+
+  it('refuses an orgId argument that names a different organization', async () => {
+    await expect(createActionIntent(makeAuth(), promoteInput(OTHER_ORG_ID))).rejects.toMatchObject({
+      code: 'org_argument_mismatch',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('refuses a missing orgId argument — the digest resolver has nothing to pin without it', async () => {
+    await expect(createActionIntent(makeAuth(), promoteInput())).rejects.toMatchObject({
+      code: 'org_argument_mismatch',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('accepts the argument when it names the organization the intent resolved to', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-promote' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-promote' }]);
+
+    const snap = await createActionIntent(
+      makeAuth(),
+      promoteInput(ORG_ID),
+    );
+
+    expect(snap.id).toBe('intent-promote');
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+  });
+
+  it('leaves the orgId argument of every OTHER tool alone', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-other-tool' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-other-tool' }]);
+
+    const snap = await createActionIntent(
+      makeAuth(),
+      baseInput({ input: { scriptId: 'script-1', orgId: OTHER_ORG_ID } }),
+    );
+
+    expect(snap.id).toBe('intent-other-tool');
   });
 });
 
@@ -2124,6 +2191,57 @@ describe('cancelActionIntent', () => {
     dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
     const result = await cancelActionIntent(makeAuth(), 'intent-1');
     expect(result).toEqual({ ok: false, status: 'completed' });
+  });
+
+  // #4798: a requester who already received the "approved and now running"
+  // outcome notification was never told a subsequent cancel happened — the
+  // CAS committed with no outbox row, so intentReleaseWorker.ts had nothing
+  // to deliver. Mirrors createActionIntent's intent_created/intent_approved
+  // outbox write: an event row in the SAME successful-CAS branch, ids only.
+  it('writes an intent_cancelled outbox row when the CAS succeeds', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', orgId: ORG_ID, requestedByUserId: REQUESTER_ID }),
+    ]);
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    const result = await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(result).toEqual({ ok: true, status: 'cancelled' });
+    expect(dbState.insertedOutboxValues).toEqual([
+      { intentId: 'intent-1', eventType: 'intent_cancelled', payload: { intentId: 'intent-1', orgId: ORG_ID } },
+    ]);
+  });
+
+  // Mirrors the "reports the lost race" test above: a lost CAS must not
+  // write an outbox row for a cancellation that never actually happened.
+  it('writes no outbox row when the CAS loses the race', async () => {
+    dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
+    dbState.updateActionIntentsResults.push([]); // CAS lost
+    dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
+    await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(dbState.insertedOutboxValues).toEqual([]);
+  });
+
+  // Review finding (#4798): a failed outbox insert must surface as a typed,
+  // logged failure — same posture as createActionIntent's transaction catch
+  // — rather than a bare exception. The CAS and the insert share ONE
+  // withSystemDbAccessContext transaction, so Postgres would roll the status
+  // flip back with it; nothing here claims otherwise.
+  it('wraps a failed outbox insert as a typed ActionIntentError, not a bare exception', async () => {
+    dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID })]);
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    dbState.outboxInsertError = new Error('connection reset');
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(cancelActionIntent(makeAuth(), 'intent-1')).rejects.toMatchObject({
+        message: expect.stringContaining('Failed to cancel action intent'),
+        code: 'cancel_failed',
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[intentService] cancel action intent transaction failed (rolled back):',
+        expect.any(Error),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 

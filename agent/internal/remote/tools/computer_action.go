@@ -175,22 +175,13 @@ func executeInputAction(action string, x, y int, text, key string, modifiers []s
 		if text == "" {
 			return fmt.Errorf("text field is required for type action")
 		}
-		// Prefer TypeChar (Unicode input) for each character — handles all
-		// characters including ":", "!", "@", non-ASCII, etc. Fall back to
-		// SendKeyPress for platforms without TypeChar support.
-		typer, hasTyper := input.(desktop.TypeCharHandler)
-		for _, ch := range text {
-			if hasTyper {
-				if err := typer.TypeChar(ch); err != nil {
-					return fmt.Errorf("failed typing character %q: %w", string(ch), err)
-				}
-			} else {
-				if err := input.SendKeyPress(string(ch), nil); err != nil {
-					return fmt.Errorf("failed typing character %q: %w", string(ch), err)
-				}
-			}
-		}
-		return nil
+		// InjectText picks the most faithful primitive the platform offers —
+		// literal Unicode injection where available, per-character key
+		// synthesis only as a last resort. Sharing it with the viewer's Paste
+		// Text path means macOS AI typing also stops round-tripping through the
+		// US-ANSI keycode table (issue #4089), and newlines in the text become
+		// real Return presses instead of literal U+000A.
+		return desktop.InjectText(input, text)
 
 	default:
 		return fmt.Errorf("unknown action: %s", action)

@@ -26,9 +26,14 @@ vi.mock('./fetchWithTimeout', () => ({
 
 // api.ts pulls in Sentry/installation-id modules that don't exist in the node
 // test environment — mock the whole module, we only need refreshToken.
-vi.mock('./api', () => ({
-  refreshToken: vi.fn(),
-}));
+vi.mock('./api', async () => {
+  // Mock the low-level POST, but build the single-flight refresher from the
+  // real factory around it, so these cases exercise the shared refresh logic
+  // (persist, generation guard, null on failure) rather than a stand-in.
+  const { createTokenRefresher } = await import('./tokenRefresh');
+  const refreshToken = vi.fn();
+  return { refreshToken, refreshAccessToken: createTokenRefresher(refreshToken) };
+});
 
 vi.mock('./auth', () => ({
   storeToken: vi.fn().mockResolvedValue(undefined),

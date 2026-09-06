@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   deviceCommandsTable: {
@@ -72,6 +72,7 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     completedAt: 'script_execution_batches.completed_at',
   },
   queueBackupStopCommandMock: vi.fn(),
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('bullmq', () => ({
@@ -115,6 +116,11 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 vi.mock('../services/commandQueue', async (importOriginal) => {
@@ -249,6 +255,12 @@ describe('stale command reaper', () => {
     expect(reaped).toBe(4);
     expect(deviceCommandReturning).toHaveBeenCalledTimes(4);
     expect(restoreWhere).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      commandId: 'cmd-restore',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
@@ -458,7 +470,7 @@ describe('reapStaleBackupJobs', () => {
         errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
       })
     );
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-stall' });
   });
 
   it('reaps a running job whose device went offline (rule B) and does NOT queue a stop command', async () => {
@@ -526,7 +538,7 @@ describe('reapStaleBackupJobs', () => {
         errorLog: 'previous warning\n[stale-backup-reaper] Backup timed out (no completion after 24h)',
       })
     );
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-3', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-3', { jobId: 'job-legacy' });
   });
 
   it('does not reap a healthy running job with recent progress', async () => {
@@ -653,7 +665,7 @@ describe('reapStaleBackupJobs', () => {
 
     expect(reaped).toBe(2);
     expect(queueBackupStopCommandMock).toHaveBeenCalledTimes(1);
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-online', {});
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-online', { jobId: 'job-online' });
   });
 
   it('does not double-count or queue a stop command when a concurrent completion wins (terminal-status guard)', async () => {
@@ -790,9 +802,13 @@ describe('reapStaleBackupJobs', () => {
       .mockReturnValueOnce(selectChain([
         {
           id: 'job-pending-dead',
+          deviceId: 'device-queued',
           errorLog: null,
           createdAt: minutesAgo(90),
           lastProgressAt: minutesAgo(20), // > 15min stall window → not "alive"
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.110.0',
         },
       ]));
 
@@ -809,6 +825,78 @@ describe('reapStaleBackupJobs', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ errorLog: '[stale-backup-reaper] Backup dispatch never completed' })
     );
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-queued', { jobId: 'job-pending-dead' });
+  });
+
+  // The queued admission ack can be lost on the agent WS after the helper has
+  // already parked the ticket. last_progress_at stays NULL, but the helper
+  // still holds the job and would run it after the row is failed. A
+  // queue-capable helper must get the targeted stop regardless.
+  it('cancels a reaped pending job on a queue-capable helper even when no admission ack was persisted', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-lost-ack',
+          deviceId: 'device-queued',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: null,
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.110.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-lost-ack' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-queued', { jobId: 'job-pending-lost-ack' });
+  });
+
+  // A pre-queue helper ignores jobId and treats backup_stop as device-wide,
+  // so a stop for a never-delivered pending row would kill whatever backup is
+  // actually running on that device. Only a persisted ack (which proves the
+  // helper speaks the queue protocol) may trigger a stop there.
+  it('does NOT send backup_stop for a reaped pending job on an older helper with no persisted ack', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-legacy',
+          deviceId: 'device-legacy',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: null,
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.109.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-legacy' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT queue a backup_stop for a reaped pending job whose device is offline', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'job-pending-offline',
+          deviceId: 'device-offline',
+          errorLog: null,
+          createdAt: minutesAgo(90),
+          lastProgressAt: minutesAgo(20),
+          deviceStatus: 'offline',
+          deviceLastSeenAt: minutesAgo(30),
+          deviceBackupVersion: '0.110.0',
+        },
+      ]));
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'job-pending-offline' }]));
+
+    expect(await reapStaleBackupJobs()).toBe(1);
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
   });
 });
 
@@ -964,6 +1052,12 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     );
     // Delivered rows never touch device_commands
     expect(commandSet).not.toHaveBeenCalled();
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(3);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      deploymentResultId: 'reaped',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
@@ -1124,6 +1218,11 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
 
     expect(reaped).toBe(1);
     expect(execSet).toHaveBeenCalledTimes(1);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      scriptExecutionId: 'exec-1',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // Pins the `running` reference-time branch, which had no coverage anywhere in

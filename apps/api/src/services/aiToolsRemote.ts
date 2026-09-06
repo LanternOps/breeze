@@ -21,6 +21,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { getToolTimeout } from './toolTimeouts';
+import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -381,20 +382,27 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       // Insert new remote session
-      const [session] = await db
-        .insert(remoteSessions)
-        .values({
+      let session: { id: string; status: string };
+      try {
+        session = await createRemoteSession('remote', {
           deviceId,
           orgId: access.device.orgId,
           userId: auth.user.id,
           type: sessionType as 'terminal' | 'file_transfer',
-          status: 'pending',
-        })
-        .returning({ id: remoteSessions.id, status: remoteSessions.status });
+        });
+      } catch (e) {
+        if (e instanceof RemoteSessionDeniedError) {
+          return JSON.stringify({
+            error: e.code,
+            message: 'Remote control is not available until this account is verified.',
+          });
+        }
+        throw e;
+      }
 
       return JSON.stringify({
-        id: session!.id,
-        status: session!.status,
+        id: session.id,
+        status: session.status,
         deviceId,
         type: sessionType,
       });

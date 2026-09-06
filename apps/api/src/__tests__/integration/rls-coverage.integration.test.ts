@@ -1,5 +1,5 @@
 import { afterAll, describe, it, expect } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
@@ -10,9 +10,18 @@ import {
 import { partnerAbuseSignals, abuseScriptHosts } from '../../db/schema/abuseSignals';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
-import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
+import { scripts, scriptExecutionBatches, scriptTags, scriptToTags, scriptVersions } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
+import {
+  coveredCommands,
+  predicateCoversOrgAxis,
+  predicateCoversParents,
+  type Cmd,
+  type ParentRule,
+  type PolicyRow,
+  type PredicateSlot,
+} from '../../db/rlsPolicyShape';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -205,6 +214,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_orders', 'partner_id'],
   ['pax8_order_lines', 'partner_id'],
   ['accounting_connections', 'partner_id'],
+  ['accounting_entity_mappings', 'partner_id'],
   ['network_known_guests', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
@@ -314,7 +324,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // breeze_has_partner_access (partner-wide) branch. CHECK
   // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
   // forge proof: aiAgentsPartnerRls.integration.test.ts.
-  'ai_agents',
   // ai_agent_schedules (Phase 2 wave P2-2, #4189): a schedule is org-scoped
   // (org_id set, an override of a partner baseline) OR partner-wide
   // (partner_id set, org_id NULL, the baseline). Created dual-axis from day
@@ -324,7 +333,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // asserts the breeze_has_partner_access (partner-wide) branch. CHECK
   // ai_agent_schedules_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: aiAgentSchedulesPartnerRls.integration.test.ts.
-  'ai_agent_schedules',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
@@ -336,7 +344,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // breeze_has_org_access), so this entry is the only guard that asserts the
   // partner-axis (breeze_has_partner_access) branch — the dual-axis blindspot.
   // A functional breeze_app insert test lives in client-ai-templates-rls.integration.test.ts.
-  'client_ai_prompt_templates',
   // configuration_policies (#1724): a policy is org-scoped (org_id set,
   // partner_id NULL — the original shape) OR partner-wide (partner_id set,
   // org_id NULL — "all orgs"). Converted from org-only to dual-axis in
@@ -554,6 +561,95 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'psa_connections',
 ]);
 
+// Wave 4 of #4673: the subset of DUAL_AXIS_TENANT_TABLES whose ownership
+// shape is org_id XOR partner_id — a config-ish "define once, apply
+// partner-wide" table. Excluded (present above but NOT this XOR shape):
+// `users` (three-way: org OR partner OR self), `deployment_invites`
+// (org_id AND partner_id together via the composite FK
+// deployment_invites_org_partner_fk — a row carries BOTH, not one or the
+// other), and `software_policy_audit` / `software_remediation_requests`
+// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` IS
+// included below even though it has no DB-level CHECK: its own migration
+// (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
+// "mutually exclusive, so no composite FK applies", and it is app-enforced
+// only. As of #3257 W02 it is the LAST such example — the two tables this
+// comment used to group it with are both DB-enforced and were verified
+// against pg_constraint on a live database:
+//   - client_ai_prompt_templates_scope_check CHECK (num_nonnulls(org_id,
+//     partner_id) = 1), shipped 2026-06-12-b, never dropped. (This half of
+//     the comment was wrong before this wave touched it.)
+//   - custom_field_definitions_one_owner_chk, added by
+//     2026-10-10-100300 (#3257 W02).
+// Membership in this set has never depended on having a CHECK — it only
+// drives the partner-wide SELECT-branch assertions below — so nothing else
+// changes. If access_reviews ever gains a CHECK, this note has no examples
+// left and should be deleted rather than patched.
+const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  'access_reviews',
+  'custom_field_definitions',
+  'configuration_policies',
+  'cis_baselines',
+  'software_catalog',
+  'software_policies',
+  'security_policies',
+  'alert_rules',
+  'alert_templates',
+  'automation_policies',
+  'automation_resource_bindings',
+  'automations',
+  'sensitive_data_policies',
+  'peripheral_policies',
+  'maintenance_windows',
+  'notification_channels',
+  'notification_routing_rules',
+  'escalation_policies',
+  'sso_providers',
+  'ticket_forms',
+  'tenant_variables',
+  'backup_profiles',
+  'config_policy_backup_settings',
+  'contract_templates',
+  'contract_template_versions',
+  'psa_connections',
+]);
+
+// Every XOR_OWNERSHIP_DUAL_AXIS_TABLES entry is expected to carry a FOR
+// SELECT (or FOR ALL) policy that ORs in `breeze_current_partner_id()` — the
+// read branch (#4673) that lets an ORG-scoped session see its own partner's
+// partner-wide rows for this feature without the app-layer #1105 escalation
+// (CLAUDE.md "Partner-Wide First" step 3, superseded by this branch). Three
+// tables predate the convention (cis_baselines, alert_templates,
+// tenant_variables); Wave 1 of #4673 added it to the configuration_policies
+// chain (configuration_policies, backup_profiles,
+// config_policy_backup_settings). Every other entry below is a REAL,
+// already-shipped gap, not a design choice — filed as one follow-up issue per
+// table against #4673 (see PR body for the list). This map is a ratchet:
+// shrink it as each gap is closed; never add a table here to make an
+// unrelated red pass, and never add one for a table that doesn't actually
+// need the branch (add it to XOR_OWNERSHIP_DUAL_AXIS_TABLES's exclusion
+// comment instead, with rationale). Shrink-only is ENFORCED by the ceiling +
+// frozen name set directly below — the same pattern this file already uses
+// for UNREVIEWED_RLS_CLASSIFICATION_DEBT, added there after an independent
+// review found "documented shrink-only, nothing enforces it" let a future
+// author add an entry and go green.
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
+  ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
+]);
+
+// Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
+// UNREVIEWED_RLS_CLASSIFICATION_DEBT's guard above). Fixed at the 2026-09-05
+// review (Wave 4 of #4673). LOWER the ceiling and remove the name from the
+// frozen set when a table's follow-up issue lands and it leaves the map;
+// NEVER raise the ceiling or add a name to the frozen set — a table new to
+// XOR_OWNERSHIP_DUAL_AXIS_TABLES that lacks the branch must get its own filed
+// follow-up issue, not a free ride into an already-frozen exemption. Both
+// constants are asserted by 'the partner-wide SELECT branch exemption map
+// only shrinks' below.
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 1;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
+  'custom_field_definitions',
+]);
+
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
 // RLS policies join through `devices` to reach the org boundary.
 // Policies must contain both `FROM devices` and `breeze_has_org_access`
@@ -640,6 +736,14 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access(parent.org_id) join would be WRONG because the
   // parent's org_id is NULL for the partner-wide forms this table scopes.
   ['ticket_form_org_links', ['ticket_forms']],
+  // RMM-QA-220: script_versions (script content history) and script_to_tags
+  // (script↔tag join) shipped in the baseline with NO rls and reach their
+  // tenant only through scripts (dual-axis, nullable org_id, is_system) and
+  // script_tags (dual-axis). See apps/api/migrations/2026-10-01-100000-script-children-rls.sql.
+  // script_to_tags additionally carries a per-command both-parents overlay
+  // (PARENT_FK_REQUIRED_PARENTS_PER_COMMAND below).
+  ['script_versions', ['scripts']],
+  ['script_to_tags', ['scripts', 'script_tags']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().
@@ -724,6 +828,122 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // branch lets the bounded retry worker drain work for every user.
   'oauth_revocation_retries',
 ]);
+
+// Platform bookkeeping tables that hold no tenant data and are not a tenancy
+// shape. Exactly one entry today. Adding here requires the same justification
+// as INTENTIONAL_UNSCOPED (a plan-doc entry per CLAUDE.md "Intentionally
+// system-scoped").
+const PLATFORM_INFRASTRUCTURE_TABLES: ReadonlySet<string> = new Set<string>([
+  'breeze_migrations', // autoMigrate's applied-migration ledger (filename + checksum). No tenant data. See apps/api/src/db/autoMigrate.ts MIGRATION_TABLE.
+]);
+
+// Tables that carry NO tenancy classification in this catalog (most also
+// have no row-level security at all; two carry policies but sit in no
+// allowlist) and were NOT reviewed by RMM-QA-220. Inclusion is a TRACKING FACT, not a
+// security review, and not a blessing: each name is a candidate finding
+// handed to QA. The bucket is shrink-only — an entry may leave ONLY by moving
+// the table into a real bucket (a shape allowlist, INTENTIONAL_UNSCOPED with
+// a plan-doc entry, or PLATFORM_INFRASTRUCTURE_TABLES). A stale name (table
+// dropped) fails the test so the list cannot rot. Shrink-only is ENFORCED by
+// the ceiling + frozen name set directly below.
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<string, string>([
+  // Surfaced by RMM-QA-220's exhaustive classification (2026-09). Candidate
+  // findings handed to QA — NOT reviewed, NOT blessed. Descriptions are the
+  // column / catalog facts that a reviewer needs, nothing more.
+  ['device_software', 'device_id-keyed inventory rows, no RLS; candidate shape 5 (device-join) or denormalised org_id.'],
+  ['mobile_sessions', 'user_id / refresh-token session rows, no RLS; candidate shape 6 (breeze_current_user_id). Deferred in 2026-04-11-bucket-c-dead-cleanup-rls.sql.'],
+  ['software_compliance_status', 'device_id + policy_id rows, no RLS; candidate shape 5 (device-join).'],
+  ['agent_versions', 'Global agent release reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['cis_check_catalog', 'Global CIS benchmark check catalog; RLS OFF, so its 3 system-only write policies are inert; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['patches', 'Global patch reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['permissions', 'Global permission catalog, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['plugin_catalog', 'Global plugin catalog, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['script_templates', 'Global script template library, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  // The two below DO have RLS enabled + forced with four policies each but
+  // appear in no allowlist, so no per-shape assertion in this file checks them.
+  ['sessions', 'user_id + token_hash session rows; RLS on/forced, policies user_id = breeze_current_user_id() OR system scope; in no allowlist — candidate USER_ID_SCOPED_TABLES after review.'],
+  ['snmp_alert_thresholds', 'device_id -> snmp_devices rows; RLS on/forced, join-through-snmp_devices policies (2026-04-11-bucket-c-dead-cleanup-rls.sql); in no allowlist — candidate PARENT_FK_JOIN_POLICY_TABLES (snmp_devices) after review.'],
+]);
+
+// Enforced shrink-only ratchet for the bucket above (independent-review
+// finding on RMM-QA-220: "documented shrink-only, nothing enforces it"). The
+// ceiling and the frozen name set were fixed at the 2026-09-01 review. LOWER
+// the ceiling when a table leaves the bucket; NEVER raise it, and NEVER add a
+// name to the frozen set — a table that is new to this catalog must be
+// classified into a real bucket (see the D5 failure message), not parked
+// here. Both constants are asserted by 'the unreviewed classification debt
+// bucket only shrinks' below.
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 11;
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
+  'device_software',
+  'mobile_sessions',
+  'software_compliance_status',
+  'agent_versions',
+  'cis_check_catalog',
+  'patches',
+  'permissions',
+  'plugin_catalog',
+  'script_templates',
+  'sessions',
+  'snmp_alert_thresholds',
+]);
+
+// Per-command parent requirements that are STRICTER than PARENT_FK_JOIN_
+// POLICY_TABLES' default "helper on any one declared parent alias". Keyed by
+// table, then command, then predicate slot. A slot that is absent falls back
+// to the default any-of rule over the table's declared parents.
+//
+// script_to_tags (RMM-QA-220, advisor quorum §9 point 6): a link is readable
+// only when BOTH the script and the tag are visible, insertable only when the
+// script is writable AND the tag is visible, re-pointable (UPDATE WITH CHECK)
+// under the same both-parent rule, but unlinkable (UPDATE USING / DELETE) on
+// script write authority alone — tag visibility must not confer unlink rights
+// on another org's script.
+type PerCommandParentRules = Readonly<Partial<Record<Cmd, Readonly<Partial<Record<PredicateSlot, ParentRule>>>>>>;
+// Explicit type arguments on `new Map` keep the 'all-of' / 'any-of' string
+// literals narrow inside the nested object literals (otherwise TS widens them
+// to `string` and the assignment to ParentRule fails).
+const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandParentRules> = new Map<string, PerCommandParentRules>([
+  [
+    'script_to_tags',
+    {
+      SELECT: { qual: { kind: 'all-of', parents: ['scripts', 'script_tags'] } },
+      INSERT: { with_check: { kind: 'all-of', parents: ['scripts', 'script_tags'] } },
+      UPDATE: {
+        qual: { kind: 'any-of', parents: ['scripts'] },
+        with_check: { kind: 'all-of', parents: ['scripts', 'script_tags'] },
+      },
+      DELETE: { qual: { kind: 'any-of', parents: ['scripts'] } },
+    },
+  ],
+]);
+
+async function loadPublicPolicies(): Promise<Map<string, PolicyRow[]>> {
+  const rows = (await db.execute(sql`
+    SELECT tablename, policyname, cmd, permissive, qual, with_check
+    FROM pg_policies
+    WHERE schemaname = 'public'
+    ORDER BY tablename, policyname;
+  `)) as unknown as Array<PolicyRow & { tablename: string }>;
+  const byTable = new Map<string, PolicyRow[]>();
+  for (const r of rows) {
+    const list = byTable.get(r.tablename) ?? [];
+    list.push({ policyname: r.policyname, cmd: r.cmd, permissive: r.permissive, qual: r.qual, with_check: r.with_check });
+    byTable.set(r.tablename, list);
+  }
+  return byTable;
+}
+
+/** relname -> relrowsecurity for every public base table (r/p). Absent name = table missing. */
+async function loadRlsState(): Promise<Map<string, boolean>> {
+  const rows = (await db.execute(sql`
+    SELECT c.relname AS table_name, c.relrowsecurity AS rls_on
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p');
+  `)) as unknown as Array<{ table_name: string; rls_on: boolean }>;
+  return new Map(rows.map((r) => [r.table_name, r.rls_on]));
+}
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
 
@@ -946,6 +1166,96 @@ describe('RLS coverage contract', () => {
     ).toEqual([]);
   });
 
+  // RMM-QA-220: every assertion above enumerates ONE shape at a time, so a
+  // tenant child that is in no allowlist and has no org_id column (the exact
+  // way script_versions / script_to_tags shipped) is invisible to all of them.
+  // This test enumerates every public base table and demands a classification.
+  it('every public base table is classified by exactly one tenancy bucket', async () => {
+    // relkind 'r' (ordinary) + 'p' (partitioned parent, e.g. metric_rollups);
+    // NOT relispartition — metric_rollups partitions are created at runtime
+    // by breeze_ensure_metric_rollup_partition and would make this
+    // non-deterministic. The partitioned parent is classified once.
+    const rows = (await db.execute(sql`
+      SELECT
+        c.relname AS table_name,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns col
+          WHERE col.table_schema = n.nspname AND col.table_name = c.relname AND col.column_name = 'org_id'
+        ) AS has_org_id
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND NOT c.relispartition
+      ORDER BY c.relname;
+    `)) as unknown as Array<{ table_name: string; has_org_id: boolean }>;
+
+    const existing = new Map(rows.map((r) => [r.table_name, r.has_org_id]));
+    const shapeLists: ReadonlyArray<{ has(name: string): boolean }> = [
+      ORG_ID_KEYED_TENANT_TABLES,
+      PARTNER_TENANT_TABLES,
+      DUAL_AXIS_TENANT_TABLES,
+      DEVICE_ID_JOIN_POLICY_TABLES,
+      PARENT_FK_JOIN_POLICY_TABLES,
+      USER_ID_SCOPED_TABLES,
+      INTENTIONAL_UNSCOPED,
+      EXEMPT_TABLES,
+    ];
+    const classifiedByShape = (name: string): boolean =>
+      (existing.get(name) ?? false) || shapeLists.some((list) => list.has(name));
+
+    const unclassified = rows
+      .map((r) => r.table_name)
+      .filter((name) => !classifiedByShape(name))
+      .filter((name) => !PLATFORM_INFRASTRUCTURE_TABLES.has(name))
+      .filter((name) => !UNREVIEWED_RLS_CLASSIFICATION_DEBT.has(name));
+
+    const bucketNames = [...PLATFORM_INFRASTRUCTURE_TABLES, ...UNREVIEWED_RLS_CLASSIFICATION_DEBT.keys()];
+    // Shrink-only ratchet: a name that no longer exists must be removed.
+    const stale = bucketNames.filter((name) => !existing.has(name));
+    // Buckets 3 and 4 are disjoint from every shape list and from each other.
+    const overlapping = [
+      ...bucketNames.filter((name) => existing.has(name) && classifiedByShape(name)),
+      ...[...PLATFORM_INFRASTRUCTURE_TABLES].filter((name) => UNREVIEWED_RLS_CLASSIFICATION_DEBT.has(name)),
+    ];
+
+    expect(
+      { unclassified, stale, overlapping },
+      `Every public base table must be classified. Unclassified tables have neither an org_id column nor an ` +
+        `entry in any shape allowlist (ORG_ID_KEYED / PARTNER / DUAL_AXIS / DEVICE_ID_JOIN / PARENT_FK_JOIN / ` +
+        `USER_ID_SCOPED), INTENTIONAL_UNSCOPED, EXEMPT_TABLES or PLATFORM_INFRASTRUCTURE_TABLES. ` +
+        `Fix: pick a shape (CLAUDE.md "Six tenancy shapes"), add policies in a migration, and register the table. ` +
+        `UNREVIEWED_RLS_CLASSIFICATION_DEBT is frozen (shrink-only, enforced) and is NOT a valid destination for a ` +
+        `new table. 'stale' names no longer exist and must be removed; 'overlapping' names are in a ` +
+        `debt/infrastructure bucket AND a real bucket — remove them from the debt bucket.\n` +
+        JSON.stringify({ unclassified, stale, overlapping }, null, 2)
+    ).toEqual({ unclassified: [], stale: [], overlapping: [] });
+  });
+
+  // RMM-QA-220 review finding: the debt bucket was documented shrink-only but
+  // nothing enforced it, so a future author facing `unclassified: [x]` could
+  // add one Map entry and go green — the same silent-omission class this
+  // contract exists to close. No database needed: this is a pure ratchet on
+  // the two constants above.
+  it('the unreviewed classification debt bucket only shrinks', () => {
+    const names = [...UNREVIEWED_RLS_CLASSIFICATION_DEBT.keys()];
+    const added = names.filter((name) => !UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES.has(name));
+    expect(
+      { added, size: names.length, ceiling: UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING },
+      `UNREVIEWED_RLS_CLASSIFICATION_DEBT is shrink-only. Names not in the frozen 2026-09-01 set: ` +
+        `${JSON.stringify(added)}. A table new to this catalog must be classified into a real bucket ` +
+        `(a shape allowlist, INTENTIONAL_UNSCOPED with a plan-doc entry, or PLATFORM_INFRASTRUCTURE_TABLES) — ` +
+        `never parked here. When a table leaves the bucket, remove it from both the Map and the frozen set ` +
+        `and LOWER the ceiling; never raise it.`
+    ).toEqual({ added: [], size: names.length, ceiling: UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING });
+    expect(names.length).toBeLessThanOrEqual(UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING);
+    // The frozen set must not outgrow the ceiling either (guards against
+    // "add the name to both places" without touching the number).
+    expect(UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES.size).toBeLessThanOrEqual(
+      UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING
+    );
+  });
+
   it('deployment_invites has a database invariant tying org_id to partner_id', async () => {
     const rows = (await db.execute(sql`
       SELECT
@@ -1124,6 +1434,63 @@ describe('RLS coverage contract', () => {
     ).toEqual([]);
   });
 
+  // RMM-QA-220 (D6b): command-specific version of the org-axis assertion
+  // above, over the SAME table set (org_id tables minus
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES, plus ORG_ID_KEYED_TENANT_TABLES, minus
+  // EXEMPT_TABLES via offendersFrom's filter). Requires
+  // breeze_has_org_access([<table>.]org_id) — or ([<table>.]id) for id-keyed
+  // tables — in USING for SELECT/DELETE, WITH CHECK for INSERT, both for UPDATE.
+  it('every org-tenant public table has command-specific USING/WITH CHECK coverage by breeze_has_org_access on its own org_id', async () => {
+    const idKeyedList = Array.from(ORG_ID_KEYED_TENANT_TABLES);
+    const rows = (await db.execute(sql`
+      WITH org_id_tables AS (
+        SELECT DISTINCT c.relname, c.relrowsecurity, false AS id_keyed
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = n.nspname AND col.table_name = c.relname
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND col.column_name = 'org_id'
+          AND c.relname <> ALL(${sql.raw(
+            `ARRAY[${Array.from(ORG_AXIS_POLICY_EXCLUDED_TABLES).map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      ),
+      id_keyed_tables AS (
+        SELECT c.relname, c.relrowsecurity, true AS id_keyed
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ANY(${sql.raw(
+            `ARRAY[${idKeyedList.map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      )
+      SELECT relname AS table_name, relrowsecurity AS rls_on, id_keyed FROM org_id_tables
+      UNION ALL
+      SELECT relname AS table_name, relrowsecurity AS rls_on, id_keyed FROM id_keyed_tables
+      ORDER BY 1;
+    `)) as unknown as Array<{ table_name: string; rls_on: boolean; id_keyed: boolean }>;
+
+    const policiesByTable = await loadPublicPolicies();
+    const tableRows: TableRow[] = rows.map((r) => {
+      const covered = coveredCommands(policiesByTable.get(r.table_name) ?? [], (pred) =>
+        predicateCoversOrgAxis(pred, r.table_name, r.id_keyed),
+      );
+      return { table_name: r.table_name, rls_on: r.rls_on, covered_cmds: [...covered] };
+    });
+    const offenders = offendersFrom(tableRows);
+
+    expect(
+      offenders,
+      `Org-tenant tables whose policies do not call breeze_has_org_access on the table's own org_id (or id) in the ` +
+        `slot Postgres evaluates for each command:\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: USING for SELECT/DELETE, WITH CHECK for INSERT, both for UPDATE; the argument must be this table's ` +
+        `org_id (id for ORG_ID_KEYED_TENANT_TABLES). A table whose tenancy axis is NOT its org_id column belongs in ` +
+        `ORG_AXIS_POLICY_EXCLUDED_TABLES with a comment (see ticket_form_org_links). Matcher: src/db/rlsPolicyShape.ts.`
+    ).toEqual([]);
+  });
+
   it('every partner-tenant public table has RLS on and all four DML commands covered by breeze_has_partner_access', async () => {
     const partnerTables = Array.from(PARTNER_TENANT_TABLES.keys());
 
@@ -1231,6 +1598,88 @@ describe('RLS coverage contract', () => {
         `Fix: each DML command must be covered by a policy referencing at least one of ` +
         `breeze_has_org_access or breeze_has_partner_access. See 2026-04-11-users-rls.sql ` +
         `for the users table template (the canonical dual-axis case with a self-read branch).`
+    ).toEqual([]);
+  });
+
+  // Wave 4 of #4673: makes the NEXT partner-wide table's missing read branch
+  // fail loud instead of shipping the same org-token blindness #2468 (the
+  // design issue behind this epic) documents — see CLAUDE.md "Partner-Wide
+  // First" step 3. Deliberately independent of the assertion
+  // above: a table can pass "all four DML commands covered" via
+  // breeze_has_partner_access alone and still be blind to an ORG-scoped
+  // session reading its own partner's partner-wide rows, which is exactly
+  // the gap breeze_current_partner_id() closes.
+  it('every org_id-XOR-partner_id dual-axis table has a breeze_current_partner_id() partner-wide SELECT branch', async () => {
+    const tables = Array.from(XOR_OWNERSHIP_DUAL_AXIS_TABLES).filter(
+      (t) => !PARTNER_WIDE_SELECT_BRANCH_EXEMPT.has(t),
+    );
+    // Floor guard: if every XOR table were ever moved into the exempt map,
+    // `tables` would degenerate to [] and the assertion below would pass
+    // vacuously (zero rows checked). At least the six tables Wave 1 and its
+    // precedents already covered must remain provably checked here.
+    expect(tables.length).toBeGreaterThan(0);
+
+    const rows = (await db.execute(sql`
+      SELECT DISTINCT p.tablename AS table_name
+      FROM pg_policies p
+      WHERE p.schemaname = 'public'
+        AND p.permissive = 'PERMISSIVE'
+        AND (p.cmd = 'SELECT' OR p.cmd = 'ALL')
+        AND COALESCE(p.qual, '') LIKE '%breeze_current_partner_id%'
+        AND p.tablename = ANY(${sql.raw(
+          `ARRAY[${tables.map((t) => `'${t}'`).join(',')}]::text[]`,
+        )});
+    `)) as unknown as Array<{ table_name: string }>;
+
+    const covered = new Set(rows.map((r) => r.table_name));
+    const offenders = tables.filter((t) => !covered.has(t));
+
+    expect(
+      offenders,
+      `These org_id-XOR-partner_id dual-axis tables have no FOR SELECT (or FOR ALL) policy ` +
+        `referencing breeze_current_partner_id(), so an org-scoped session cannot see its own ` +
+        `partner's partner-wide rows for this feature without the #1105 escalation pattern ` +
+        `(CLAUDE.md "Partner-Wide First" step 3):\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: add a migration creating a FOR SELECT policy (name it <table>_partner_wide_select) ` +
+        `\`USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id())\` — see ` +
+        `2026-10-05-110000-config-policy-partner-wide-select.sql for the template. If this is a ` +
+        `deliberate, reviewed exception rather than a gap, add it to ` +
+        `PARTNER_WIDE_SELECT_BRANCH_EXEMPT with a reason instead of silencing this failure.`
+    ).toEqual([]);
+  });
+
+  // Independent-review finding on this PR: an allowlist documented
+  // "shrink-only" with nothing enforcing it is the exact silent-omission
+  // class UNREVIEWED_RLS_CLASSIFICATION_DEBT's ratchet exists to close — so
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT gets the same guard. No database
+  // needed: this is a pure ratchet on the two constants above.
+  it('the partner-wide SELECT branch exemption map only shrinks', () => {
+    const names = [...PARTNER_WIDE_SELECT_BRANCH_EXEMPT.keys()];
+    const added = names.filter((name) => !PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES.has(name));
+    expect(
+      { added, size: names.length, ceiling: PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING },
+      `PARTNER_WIDE_SELECT_BRANCH_EXEMPT is shrink-only. Names not in the frozen 2026-09-05 set: ` +
+        `${JSON.stringify(added)}. A table new to XOR_OWNERSHIP_DUAL_AXIS_TABLES that lacks the ` +
+        `breeze_current_partner_id() branch needs its own filed follow-up issue (see the PR that ` +
+        `introduced this file for the pattern), never a silent addition here. When a table's ` +
+        `follow-up lands, remove it from both the Map and the frozen set and LOWER the ceiling; ` +
+        `never raise it.`
+    ).toEqual({ added: [], size: names.length, ceiling: PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING });
+    expect(names.length).toBeLessThanOrEqual(PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING);
+    // The frozen set must not outgrow the ceiling either (guards against
+    // "add the name to both places" without touching the number).
+    expect(PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES.size).toBeLessThanOrEqual(
+      PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING
+    );
+    // Every exempt entry must actually be one of the tables this contract
+    // covers — an entry for a table not in XOR_OWNERSHIP_DUAL_AXIS_TABLES
+    // (e.g. a typo, or a table since reclassified) would silently exempt
+    // nothing while looking like real coverage.
+    const orphaned = names.filter((name) => !XOR_OWNERSHIP_DUAL_AXIS_TABLES.has(name));
+    expect(
+      orphaned,
+      `These PARTNER_WIDE_SELECT_BRANCH_EXEMPT keys are not in XOR_OWNERSHIP_DUAL_AXIS_TABLES, so ` +
+        `they exempt nothing real: ${JSON.stringify(orphaned)}. Fix the table name or remove the entry.`
     ).toEqual([]);
   });
 
@@ -1352,6 +1801,40 @@ describe('RLS coverage contract', () => {
         `breeze_has_org_access(parent.org_id), e.g.: ` +
         `EXISTS (SELECT 1 FROM automations a WHERE a.id = automation_runs.automation_id AND breeze_has_org_access(a.org_id)). ` +
         `See 2026-05-30-fk-child-tables-rls.sql for the canonical shape and the PARENT_FK_JOIN_POLICY_TABLES allowlist.`
+    ).toEqual([]);
+  });
+
+  // RMM-QA-220 (D6a): command-specific version of the assertion above. The
+  // legacy check accepts a helper NAME anywhere in qual OR with_check plus
+  // `LIKE '%FROM parent%'`; this one requires, per command, the helper on the
+  // declared parent's alias in the slot Postgres actually evaluates
+  // (SELECT/DELETE: USING; INSERT: WITH CHECK; UPDATE: both). Either
+  // breeze_has_org_access(<alias>.org_id) or breeze_has_partner_access(
+  // <alias>.partner_id) counts, so dual-axis parents fit. Tables in
+  // PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy their overlay.
+  it('every parent-FK join-policy table has command-specific USING/WITH CHECK coverage on the declared parent alias', async () => {
+    const policiesByTable = await loadPublicPolicies();
+    const rlsState = await loadRlsState();
+    const offenders: Array<{ table: string; rls_on: boolean; missing_cmds: string[] }> = [];
+
+    for (const [table, parents] of PARENT_FK_JOIN_POLICY_TABLES) {
+      const overlay = PARENT_FK_REQUIRED_PARENTS_PER_COMMAND.get(table);
+      const covered = coveredCommands(policiesByTable.get(table) ?? [], (pred, cmd, slot) => {
+        const rule: ParentRule = overlay?.[cmd]?.[slot] ?? { kind: 'any-of', parents };
+        return predicateCoversParents(pred, rule);
+      });
+      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const rlsOn = rlsState.get(table) ?? false;
+      if (!rlsOn || missing.length > 0) offenders.push({ table, rls_on: rlsOn, missing_cmds: missing });
+    }
+
+    expect(
+      offenders,
+      `Parent-FK join-policy tables whose policies do not guard each command in the slot Postgres evaluates:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: SELECT/DELETE need the parent-alias helper in USING, INSERT in WITH CHECK, UPDATE in BOTH. ` +
+        `Tables listed in PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy every parent in their all-of rules. ` +
+        `Shape reference: 2026-05-30-fk-child-tables-rls.sql; matcher: src/db/rlsPolicyShape.ts.`
     ).toEqual([]);
   });
 
@@ -3857,6 +4340,56 @@ describe('device_mtls_certificates RLS — direct-org auto-discovery (Shape 1)',
   });
 });
 
+describe('fleet evidence RLS — direct-org auto-discovery (Shape 1)', () => {
+  it.each([
+    'agent_health_observations',
+    'automation_action_results',
+    'device_agent_health_latest',
+    'device_software_inventory_state',
+    'software_inventory_observations',
+  ])(
+    '%s is direct-org and has forced four-command policy coverage',
+    async (tableName) => {
+      expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+      expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+      expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+      const rows = (await db.execute(sql`
+        SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+               ARRAY(
+                 SELECT DISTINCT p.cmd
+                 FROM pg_policies p
+                 WHERE p.schemaname = 'public'
+                   AND p.tablename = ${tableName}
+                   AND (
+                     COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                     OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                   )
+                 ORDER BY 1
+               ) AS covered_cmds
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = n.nspname AND col.table_name = c.relname
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ${tableName}
+          AND col.column_name = 'org_id'
+      `)) as unknown as Array<{
+        rls_on: boolean;
+        rls_forced: boolean;
+        covered_cmds: string[];
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rls_on).toBe(true);
+      expect(rows[0]?.rls_forced).toBe(true);
+      expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+    },
+  );
+});
+
 /**
  * m365 communications-delegated (user axis) — structural enforcement.
  *
@@ -3975,4 +4508,314 @@ describe('m365 communications-delegated RLS — structural enforcement', () => {
       expect(def).not.toMatch(/'active'::text\s*\]?\)?\s*\)?\s*AND vault_ref IS NULL/);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// script_versions / script_to_tags — parent-join forge test (RMM-QA-220)
+// ---------------------------------------------------------------------------
+// Both tables reach their tenant only through `scripts` (dual-axis, nullable
+// org_id, is_system) and `script_tags` (dual-axis). Migration under test:
+// apps/api/migrations/2026-10-01-100000-script-children-rls.sql. Runs as `breeze_app` under real
+// contexts, modelled on the scripts partner-wide block above: self-contained
+// fixtures seeded under system scope, cleanup by id in afterAll.
+//
+// Actors: org A1 (partner A), org B1 (partner B), org A1 with a MIS-SET own
+// partner (B), partner A, partner B. Rows marked "positive" pass on main too —
+// they guard against an over-tight policy; every negative row is RED on main.
+describe('script_versions / script_to_tags RLS — parent-join forge enforcement (Org A/B, Partner A/B)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let partnerAId: string;
+  let partnerBId: string;
+  let orgA1Id: string;
+  let orgB1Id: string;
+  let sA1Id: string; // org A1 script
+  let sB1Id: string; // org B1 script
+  let sPAId: string; // partner-wide script of partner A (org_id NULL)
+  let sSysId: string; // system script (is_system, org NULL, partner NULL)
+  let tA1Id: string; // org A1 tag
+  let tB1Id: string; // org B1 tag
+  let tPAId: string; // partner-wide tag of partner A
+  let vSysId: string; // seeded version on sSys
+  let vPAId: string; // seeded version on sPA
+  let vA1Id: string | null = null; // version org A1 creates in the positive test
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const seededPartners = await db.insert(partners).values([
+        { name: `RLS ScriptChildren A ${runSuffix}`, slug: `rls-sc-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS ScriptChildren B ${runSuffix}`, slug: `rls-sc-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      partnerAId = seededPartners[0]!.id;
+      partnerBId = seededPartners[1]!.id;
+
+      const seededOrgs = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partnerAId, name: `RLS SC Org A1 ${runSuffix}`, slug: `rls-sc-org-a1-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partnerBId, name: `RLS SC Org B1 ${runSuffix}`, slug: `rls-sc-org-b1-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      orgA1Id = seededOrgs[0]!.id;
+      orgB1Id = seededOrgs[1]!.id;
+
+      const base = { osTypes: ['windows'], language: 'powershell' as const, content: 'echo seed' };
+      const seededScripts = await db.insert(scripts).values([
+        { ...base, orgId: orgA1Id, partnerId: partnerAId, name: `sc-sA1-${runSuffix}` },
+        { ...base, orgId: orgB1Id, partnerId: partnerBId, name: `sc-sB1-${runSuffix}` },
+        { ...base, orgId: null, partnerId: partnerAId, name: `sc-sPA-${runSuffix}` },
+        { ...base, orgId: null, partnerId: null, isSystem: true, name: `sc-sSys-${runSuffix}` },
+      ]).returning({ id: scripts.id });
+      sA1Id = seededScripts[0]!.id;
+      sB1Id = seededScripts[1]!.id;
+      sPAId = seededScripts[2]!.id;
+      sSysId = seededScripts[3]!.id;
+
+      const seededTags = await db.insert(scriptTags).values([
+        { orgId: orgA1Id, partnerId: partnerAId, name: `tA1-${runSuffix}` },
+        { orgId: orgB1Id, partnerId: partnerBId, name: `tB1-${runSuffix}` },
+        { orgId: null, partnerId: partnerAId, name: `tPA-${runSuffix}` },
+      ]).returning({ id: scriptTags.id });
+      tA1Id = seededTags[0]!.id;
+      tB1Id = seededTags[1]!.id;
+      tPAId = seededTags[2]!.id;
+
+      // created_by is nullable (0001-baseline.sql:5216) — no users rows needed.
+      const seededVersions = await db.insert(scriptVersions).values([
+        { scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
+        { scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
+      ]).returning({ id: scriptVersions.id });
+      vSysId = seededVersions[0]!.id;
+      vPAId = seededVersions[1]!.id;
+    });
+  }
+
+  afterAll(async () => {
+    if (!partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const scriptIds = [sA1Id, sB1Id, sPAId, sSysId];
+      await db.delete(scriptVersions).where(inArray(scriptVersions.scriptId, scriptIds));
+      await db.delete(scriptToTags).where(inArray(scriptToTags.scriptId, scriptIds));
+      await db.delete(scripts).where(inArray(scripts.id, scriptIds));
+      await db.delete(scriptTags).where(inArray(scriptTags.id, [tA1Id, tB1Id, tPAId]));
+      await db.delete(organizations).where(inArray(organizations.id, [orgA1Id, orgB1Id]));
+      await db.delete(partners).where(inArray(partners.id, [partnerAId, partnerBId]));
+    });
+  });
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null, currentPartnerId: partnerId };
+  }
+
+  // ORGANIZATION scope: no partner-axis write access (accessiblePartnerIds []),
+  // currentPartnerId = the caller's own partner so the read-only own-partner
+  // branch of the parents' SELECT policies applies.
+  function orgContext(orgId: string, ownPartnerId: string | null) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: ownPartnerId, userId: null };
+  }
+
+  async function expectRlsViolation(table: 'script_versions' | 'script_to_tags', fn: () => Promise<unknown>): Promise<void> {
+    let caught: unknown;
+    try {
+      await fn();
+    } catch (err) {
+      caught = err;
+    }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message, `expected an RLS violation on ${table}; got: ${message || '<no error>'}`).toMatch(
+      new RegExp(`new row violates row-level security policy for table "${table}"`),
+    );
+  }
+
+  const versionsOf = (scriptId: string) =>
+    db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.scriptId, scriptId));
+  const linksOf = (scriptId: string) =>
+    db.select({ tagId: scriptToTags.tagId }).from(scriptToTags).where(eq(scriptToTags.scriptId, scriptId));
+
+  // 1 (positive)
+  it('org A1 can INSERT and SELECT a version of its own script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.insert(scriptVersions).values({ scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
+    );
+    expect(inserted).toHaveLength(1);
+    vA1Id = inserted[0]!.id;
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => versionsOf(sA1Id));
+    expect(visible.map((r) => r.id)).toEqual([vA1Id]);
+  });
+
+  // 2 (positive)
+  it('org A1 can INSERT and SELECT a link between its own script and its own tag', async () => {
+    await ensureFixtures();
+    await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tA1Id })
+    );
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => linksOf(sA1Id));
+    expect(visible.map((r) => r.tagId)).toEqual([tA1Id]);
+  });
+
+  // 3
+  it("org B1 cannot SELECT org A1's versions or links", async () => {
+    await ensureFixtures();
+    const versions = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => versionsOf(sA1Id));
+    const links = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => linksOf(sA1Id));
+    expect(versions).toEqual([]);
+    expect(links).toEqual([]);
+  });
+
+  // 4
+  it("org B1 INSERT of a version onto org A1's script is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 5
+  it('org B1 cannot pair (own script, A tag) nor (A script, own tag)', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sB1Id, tagId: tA1Id }))
+    );
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tB1Id }))
+    );
+  });
+
+  // 6
+  it("org B1 UPDATE/DELETE on org A1's version and DELETE on its link affect 0 rows and leave the rows intact", async () => {
+    await ensureFixtures();
+    if (!vA1Id) throw new Error('positive test must run first');
+    const updated = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.update(scriptVersions).set({ changelog: 'tampered' }).where(eq(scriptVersions.id, vA1Id!)).returning({ id: scriptVersions.id })
+    );
+    const deletedVersions = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.delete(scriptVersions).where(eq(scriptVersions.id, vA1Id!)).returning({ id: scriptVersions.id })
+    );
+    const deletedLinks = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(updated).toEqual([]);
+    expect(deletedVersions).toEqual([]);
+    expect(deletedLinks).toEqual([]);
+
+    const intact = await withSystemDbAccessContext(async () =>
+      db.select({ changelog: scriptVersions.changelog }).from(scriptVersions).where(eq(scriptVersions.id, vA1Id!))
+    );
+    expect(intact).toEqual([{ changelog: 'org A1' }]);
+    const linkIntact = await withSystemDbAccessContext(async () => linksOf(sA1Id));
+    expect(linkIntact.map((r) => r.tagId)).toEqual([tA1Id]);
+  });
+
+  // 7
+  it("partner B cannot SELECT org A1's version and cannot INSERT a version onto partner A's partner-wide script", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(partnerContext(partnerBId), async () => versionsOf(sA1Id));
+    expect(visible).toEqual([]);
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(partnerContext(partnerBId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 8 (positive)
+  it('partner A can INSERT a version and a link on its own partner-wide script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.insert(scriptVersions).values({ scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
+    );
+    expect(inserted).toHaveLength(1);
+    await withDbAccessContext(partnerContext(partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sPAId, tagId: tPAId }));
+    const links = await withDbAccessContext(partnerContext(partnerAId), async () => linksOf(sPAId));
+    expect(links.map((r) => r.tagId)).toEqual([tPAId]);
+  });
+
+  // 9
+  it("org A1 can SELECT its MSP's partner-wide version (read branch) but cannot INSERT one", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.id, vPAId))
+    );
+    expect(visible.map((r) => r.id)).toEqual([vPAId]);
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 10
+  it("org A1 whose own partner is mis-set to B CANNOT SELECT partner A's partner-wide version", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerBId), async () =>
+      db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.id, vPAId))
+    );
+    expect(visible).toEqual([]);
+  });
+
+  // 11 (positive)
+  it("org A1 can link its own script to its MSP's partner-wide tag (tag read branch)", async () => {
+    await ensureFixtures();
+    await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tPAId }));
+    const links = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => linksOf(sA1Id));
+    expect(links.map((r) => r.tagId).sort()).toEqual([tA1Id, tPAId].sort());
+  });
+
+  // 12
+  it("org B1 cannot link its own script to partner A's partner-wide tag", async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sB1Id, tagId: tPAId }))
+    );
+  });
+
+  // 13 (positive, bound parameter through the extended protocol)
+  it("org A1 can SELECT a system script's version by bound script_id (is_system read branch)", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => versionsOf(sSysId));
+    expect(visible.map((r) => r.id)).toEqual([vSysId]);
+  });
+
+  // 14
+  it('neither org A1 nor partner A can INSERT a version onto a system script (no is_system in any write predicate)', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(partnerContext(partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 16 — runs BEFORE 15 because 15 deletes the (sA1, tA1) link this test re-points.
+  it('org A1 UPDATE re-pointing its own link at org B1\'s tag is rejected by the UPDATE WITH CHECK tag leg', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.update(scriptToTags).set({ tagId: tB1Id }).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id)))
+      )
+    );
+    const intact = await withSystemDbAccessContext(async () => linksOf(sA1Id));
+    expect(intact.map((r) => r.tagId).sort()).toEqual([tA1Id, tPAId].sort());
+  });
+
+  // 15
+  it("org A1 can DELETE its own link but DELETE on the partner-wide link affects 0 rows (unlink needs script WRITE)", async () => {
+    await ensureFixtures();
+    const own = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(own.map((r) => r.tagId)).toEqual([tA1Id]);
+    const partnerWide = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sPAId), eq(scriptToTags.tagId, tPAId))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(partnerWide).toEqual([]);
+    const intact = await withSystemDbAccessContext(async () => linksOf(sPAId));
+    expect(intact.map((r) => r.tagId)).toEqual([tPAId]);
+  });
 });

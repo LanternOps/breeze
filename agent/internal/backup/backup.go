@@ -280,6 +280,11 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 // never go through Stop() (#2452 follow-up: backup_stop must actually cancel
 // payload-manager runs, not just agent.yaml-manager runs).
 func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string) (*BackupJob, error) {
+	ctx, release, err := AcquireExecution(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if excludes == nil {
 		excludes = m.config.Excludes
 	}

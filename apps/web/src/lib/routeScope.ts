@@ -87,6 +87,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // /devices below. The agent CONFIG surface (/settings/ai-agents) stays
   // partner-settings — this is fleet execution state, not catalog config.
   { pattern: /^\/ai-agents\/runs(\/.*)?$/, kind: 'org-or-all' },
+  // P2-6 (#4193): fleet value accounting — honours the org switcher (single
+  // org) and aggregates across accessible orgs in All-organizations view.
+  { pattern: /^\/ai-agents\/impact$/, kind: 'org-or-all' },
   { pattern: /^\/devices(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },

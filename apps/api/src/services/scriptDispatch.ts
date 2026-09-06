@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
 import {
   claimPendingCommandForDelivery,
@@ -116,6 +116,14 @@ export type DispatchScriptResult =
       // action is validated without consulting the referenced script's
       // definitions and so literally cannot pre-validate against a binding.
       ignoredParameters: string[];
+      // The run context this dispatch RESOLVED to — `input.runAs` when the
+      // caller overrode it, otherwise the saved script default (#4888). One
+      // source of truth for every caller that has to report or echo what
+      // actually ran: recomputing `input.runAs ?? script.runAs` at the call
+      // site is how a UI ends up disagreeing with the payload it sent.
+      runAs: 'system' | 'user' | 'elevated';
+      /** The Windows session a `runAs: 'user'` dispatch was pinned to, if any. */
+      targetSessionId: number | null;
     }
   | {
       ok: false;
@@ -353,16 +361,36 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // one lookup on whichever is present settles both writes. `createdBy` is
   // preferred as the probe candidate since it is the one that always reaches
   // queueCommand.
+  //
+  // #4299: the probe must ESCAPE the caller's context before opening the
+  // system one. `withDbAccessContext` short-circuits when a store already
+  // exists, so `withSystemDbAccessContext` on its own is a no-op inside a
+  // request — the "system" probe silently inherits the caller's scope. Under
+  // the org-scoped, user-less context `dbAccessContextFromAuth` builds for an
+  // `ai_agent` principal, a partner-level human (`users.org_id IS NULL`)
+  // matches NO branch of the RLS SELECT policy on `users` (partner access is
+  // not granted to an org-scoped caller, the org branch is skipped on a NULL
+  // `org_id`, and `breeze_current_user_id()` is null), so the probe reads zero
+  // rows and degrades a REAL human to NULL on both columns. This path is
+  // FK-safe, so that damage is silent — no 23503, just attribution quietly
+  // lost. `runOutsideDbContext` clears both stores, which is what lets the
+  // nested `withSystemDbAccessContext` open a genuinely fresh system-scoped
+  // transaction. Mirrors the fix shipped for `resolveCommandCreatedBy` in
+  // commandQueue.ts (#4292); note the directly-imported `runOutsideDbContext`
+  // is used, never `db.runOutsideDbContext` (the `db` proxy delegates to the
+  // active transaction, which has no such method).
   const actorCandidateId = input.createdBy ?? input.triggeredBy ?? null;
   const actorIsRealUser = actorCandidateId
-    ? await withSystemDbAccessContext(async () => {
-        const [userRow] = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.id, actorCandidateId))
-          .limit(1);
-        return Boolean(userRow);
-      })
+    ? await runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          const [userRow] = await db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.id, actorCandidateId))
+            .limit(1);
+          return Boolean(userRow);
+        }),
+      )
     : true;
   const safeTriggeredBy = actorIsRealUser ? input.triggeredBy ?? null : null;
   const safeCreatedBy = actorIsRealUser ? input.createdBy ?? null : null;
@@ -391,6 +419,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // can answer "which variable fed this run" without carrying what it
         // was worth.
         parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
+        // #4888 — stamp the RESOLVED run context onto the execution row so
+        // history can answer "SYSTEM or the logged-in user?" without reading
+        // the (sanitised, independently reaped) command payload.
+        runAs,
+        targetSessionId: input.targetSessionId ?? null,
         status: 'pending',
       })
       .returning({ id: scriptExecutions.id });
@@ -599,7 +632,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

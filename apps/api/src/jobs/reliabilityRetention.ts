@@ -11,8 +11,11 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -103,6 +106,12 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[ReliabilityRetention] Pruned ${result.deleted} reliability history rows older than ${result.retentionDays} days (batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
         );
+        // `hasMore=true` buried in an info line is not an alert (#4343).
+        warnOnRetentionBacklog('[ReliabilityRetention]', 'device_reliability_history', result);
+        recordRetentionRun('reliability_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },
@@ -116,6 +125,7 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
 export async function initializeReliabilityRetention(): Promise<void> {
   try {
     retentionWorker = createReliabilityRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'reliabilityRetention');
     retentionWorker.on('error', (error) => {
       console.error('[ReliabilityRetention] Worker error:', error);
       captureException(error);

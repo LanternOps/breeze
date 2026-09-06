@@ -17,9 +17,9 @@ Design docs:
 - `worker` (new, opt-in) runs `node dist/worker.cjs`: the same image, hardcoded
   `BREEZE_ROLE=worker`, no HTTP route graph, no agent sockets. It owns the
   global-placement background workers (retention jobs, sync workers, most
-  scheduled jobs) and exposes a slim health surface (`/health`,
-  `/health/ready`) on the same `API_PORT` (default 3001) inside its own
-  container.
+  scheduled jobs) and exposes a slim health + metrics surface (`/health`,
+  `/health/ready`, `/metrics`) on the same `API_PORT` (default 3001) inside
+  its own container.
 - Socket-owner workers (anything whose import closure or runtime reaches
   agent-socket dispatch — see the plan's Task 5 classification) **stay on the
   `api` container** this wave. `BREEZE_ROLE=all` (the default, both
@@ -30,6 +30,45 @@ Design docs:
   `worker` service always sees the same env the `api` container does (Redis,
   DB, encryption keys, feature flags, …), with only `BREEZE_ROLE` hardcoded
   differently per service.
+
+## Observability (#4143)
+
+The `worker` container publishes its own Prometheus series on
+`http://<worker>:3001/metrics` — **a separate scrape target from the api
+container's `/api/metrics/scrape`**. Before #4143 its series were not stale or
+zero, they were ABSENT, and `up` for it did not exist at all.
+
+**Scrape wiring (#4523):**
+
+- The local/optional monitoring stack (`docker-compose.monitoring.yml`) scrapes
+  it out of the box as the `breeze-worker` job in `monitoring/prometheus.yml`
+  — no action needed once you `docker compose --profile worker-split up -d
+  worker` on the same host; Prometheus resolves `worker:3001` over the shared
+  `breeze` Docker network.
+- For a **remote** multi-region Prometheus (the droplet pattern), the worker
+  is NOT scraped automatically — it has no host port published by default and
+  isn't proxied through Caddy. See the "(A2) WORKER TARGET" block in
+  `deploy/prometheus-remote-scrape.example.yml` for the Tailscale bind-publish
+  + job config needed on each droplet that adopts the split.
+
+- **Auth is the same gate as the api role's `/api/metrics/scrape`**:
+  `METRICS_SCRAPE_TOKEN` as a bearer token (503 when unset), the optional
+  `METRICS_SCRAPE_IP_ALLOWLIST` (403), then the token compare (401). Both come
+  from the shared `x-api-env` anchor, so the worker already has them.
+- **One deliberate difference:** the worker's IP allowlist matches the
+  **direct peer** and ignores `X-Forwarded-For`, because this port has no
+  trusted-proxy configuration to validate forwarded headers against. If you put
+  a proxy in front of it, allowlist the *proxy's* address, not the scraper's.
+- **What it publishes** is the role-agnostic runtime set — event-loop lag
+  (#3022) and Postgres pool health (#3214) — which is precisely the
+  instrumentation that matters most on the container running the heavy jobs.
+  It does NOT publish the api's HTTP/business/fleet series, because a
+  worker-role process does not serve requests; expect those only from the api
+  target, and do not alert on their absence here.
+- **Sentry events from this container carry `breeze_role: worker`** (the api
+  container's carry `api`, an unsplit one `all`). Before that tag, both
+  containers reported under the same DSN, release and environment with nothing
+  to tell them apart.
 
 ## Prerequisites
 
@@ -83,6 +122,18 @@ Design docs:
    failure shape that left `portal` unrolled for 11 days. Confirm
    `/health/ready` returns 200 with `{"ready": true, ...}` before proceeding;
    a `migrations-pending` or `redis`/`db` reason means do not proceed.
+   Since the readiness port (#4007) this verdict is **true consumer
+   readiness**, not a boot snapshot: `200` means every queue consumer the
+   `worker` role starts is attached with a connected Redis client, and the
+   body's `consumerSummary` carries aggregate counts (`required`, `runnable`,
+   `unavailable`, `optionalRunning`, `optionalDisabled`). A `workers-pending`
+   reason that persists past the worker's `start_period` (60 s) means a
+   required consumer failed to initialize or lost Redis — check
+   `docker logs breeze-worker` for `[CRITICAL][worker] Failed to initialize
+   <name>` before proceeding. Feature-gated consumers (`EVENT_DISPATCH_MODE`,
+   `BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are declared optional
+   when their flag is off. The abuse-signals consumer is required when either
+   abuse signals or partner trust is enabled; both must be off to disable it.
 4. **Flip the API to `api`-only role:**
    ```bash
    ssh root@<droplet> "cd /opt/breeze && \
@@ -105,9 +156,9 @@ Design docs:
      `docker logs breeze-api` after the flip.
    - Durable event dispatch consumers (if `EVENT_DISPATCH_MODE` is enabled)
      are being consumed from `worker`, not `api`.
-6. **Soak.** Watch both containers' logs and `/health/ready` for at least one
-   full cycle of your slowest scheduled job before repeating on the second
-   region.
+6. **Soak.** Watch both containers' logs and `/health/ready` (the worker's
+   body's `consumerSummary.unavailable` must stay 0) for at least one full
+   cycle of your slowest scheduled job before repeating on the second region.
 
 ## Rollback
 

@@ -15,6 +15,11 @@ vi.mock('./aiTools', () => ({
       manage_configuration_policy: 1,
       get_configuration_policy: 1,
       configuration_policy_compliance: 1,
+      // RMM-QA-176 D9: real base tier is 2 (aiToolsConfigPolicy.ts registerTool
+      // { tier: 2, name: 'manage_policy_feature_link' }). Without it here,
+      // checkGuardrails short-circuits on "Unknown tool" at tier 4 and every
+      // assertion below would be vacuous.
+      manage_policy_feature_link: 2,
       // Playbook tools
       list_playbooks: 1,
       execute_playbook: 3,
@@ -35,6 +40,9 @@ vi.mock('./aiTools', () => ({
       manage_catalog: 2,
       manage_contracts: 2,
       manage_quotes: 2,
+      // P2-5 (#4192): mirrors the real registry entry
+      // (`aiAgentSdkTools.ts` TOOL_TIERS.manage_ai_agents = 3).
+      manage_ai_agents: 3,
     };
     return tiers[toolName];
   }),
@@ -627,6 +635,58 @@ describe('buildApprovalDescription — manage_tickets copy (P2-4, #4191)', () =>
   });
 });
 
+// Final review (P2-5, #4192): approving a promotion does more than grant one
+// key. `cloneValuesFromEffective` (supervisedKeyGrant.ts) materializes the
+// partner's CURRENT policy as a per-org `ai_agents` row whenever the org has
+// none — which, under partner-wide-first, is the COMMON case. From that
+// moment the org follows the partner only where the merge is tighten-only: a
+// partner that later WIDENS (a new tool in the allowlist, a raised limit, a
+// new recipient) no longer reaches that org. The audit row records
+// `clonedFromEffective` AFTER the fact; the consent text the second approver
+// reads is the only place that can say it BEFORE.
+describe('buildApprovalDescription — manage_ai_agents copy (P2-5, #4192)', () => {
+  const OVERRIDE_CLAUSE =
+    '(creates a per-organization agent policy override if this organization does not already have one)';
+
+  it('authorize_supervised_key names the op key AND the per-org policy override the approval creates', () => {
+    const result = checkGuardrails('manage_ai_agents', {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      orgId: '44444444-4444-4444-4444-444444444444',
+    });
+
+    expect(result.description).toBe(
+      'Authorize the AI agent to run "manage_services:restart" without an approval '
+      + `for this organization in future runs ${OVERRIDE_CLAUSE}`,
+    );
+  });
+
+  it('states the override side effect even when opKey is missing (no arg echo beyond the key)', () => {
+    const result = checkGuardrails('manage_ai_agents', { action: 'authorize_supervised_key' });
+
+    expect(result.description).toContain('"unknown"');
+    expect(result.description).toContain(OVERRIDE_CLAUSE);
+  });
+
+  it('never echoes anything but the op key — kind and org id stay out of the approval text', () => {
+    const result = checkGuardrails('manage_ai_agents', {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      orgId: '44444444-4444-4444-4444-444444444444',
+    });
+
+    expect(result.description).not.toContain('44444444');
+    expect(result.description).not.toContain('triage');
+  });
+
+  it('other manage_ai_agents actions keep the generic description shape (no regression)', () => {
+    const result = checkGuardrails('manage_ai_agents', { action: 'rotate_something' });
+    expect(result.description).toBe('manage_ai_agents: rotate_something');
+  });
+});
+
 describe('checkGuardrails — billing and proposal action tier escalation', () => {
   it.each([
     ['manage_invoices', 'issue'],
@@ -909,5 +969,76 @@ describe('tier action tables are pairwise disjoint per tool', () => {
       }
     }
     expect(dupes).toEqual([]);
+  });
+});
+
+// ─── RMM-QA-176 D9: manage_policy_feature_link maintenance escalation ────────
+
+describe('manage_policy_feature_link maintenance escalation (RMM-QA-176 D9)', () => {
+  it('escalates add of a maintenance link to tier 3, supervised', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.requiresApproval).toBe(true);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('escalates update of a maintenance link to tier 3, supervised', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('leaves every OTHER feature type at the tool base tier 2 — the gate stays narrow', () => {
+    for (const featureType of ['patch', 'monitoring', 'backup', 'alert_rule']) {
+      const check = checkGuardrails('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType,
+      });
+      expect(check.tier, `${featureType} must not escalate`).toBe(2);
+      expect(check.requiresApproval).toBe(false);
+    }
+  });
+
+  it('leaves list at tier 2 and remove at its existing tier 3', () => {
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'list', configPolicyId: 'p1' }).tier).toBe(2);
+    const remove = checkGuardrails('manage_policy_feature_link', { action: 'remove', configPolicyId: 'p1', featureLinkId: 'l1' });
+    expect(remove.tier).toBe(3);
+    expect(remove.approvalScope).toBe('supervised');
+  });
+
+  it('a READ action is never escalated by a stray featureType argument', () => {
+    // The predicate's action guard, not its ordering, is what protects reads:
+    // `list` carries no write capability, so a caller passing
+    // featureType:'maintenance' alongside it must not be pushed into an
+    // approval that the MCP transport then denies outright. Drops of the
+    // `action === 'add' || action === 'update'` clause turn this red.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'list', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(2);
+    expect(check.requiresApproval).toBe(false);
+  });
+
+  it('fails CLOSED on a non-string featureType rather than falling through to tier 2', () => {
+    // A caller sending featureType: { $ne: 'maintenance' } or an array must not
+    // slip past the predicate into auto-execute. Strict === 'maintenance' means
+    // anything else stays tier 2 — which is the correct outcome ONLY because a
+    // non-'maintenance' value cannot create a maintenance link either (the
+    // handler's own featureType is what addFeatureLink writes). Pinned so a
+    // future loosening of the predicate is a deliberate act.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: ['maintenance'],
+    });
+    expect(check.tier).toBe(2);
+  });
+
+  it('names the feature type in the approval description', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.description).toContain('maintenance');
   });
 });

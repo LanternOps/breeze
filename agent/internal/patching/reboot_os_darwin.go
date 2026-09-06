@@ -4,8 +4,6 @@ package patching
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -15,12 +13,7 @@ import (
 // non-zero grace for the same reason: the closing desktop toast needs to render
 // before the session goes away.
 func execOSReboot(grace time.Duration) error {
-	args := unixRebootArgs(grace)
-	out, err := exec.Command("shutdown", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("shutdown %s: %w (%s)", strings.Join(args, " "), err, string(out))
-	}
-	return nil
+	return runRebootCommand("shutdown", unixRebootArgs(grace)...)
 }
 
 // abortOSReboot cannot be honoured on macOS: BSD shutdown(8) has no cancel

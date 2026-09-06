@@ -217,6 +217,15 @@ export function serialize(
   /** The linked intent's org, so a partner-scope inbox can group by customer
    *  without a second fetch. Null for a row with no intent. */
   orgId: string | null = null,
+  /**
+   * The `orgId` organization's display name, resolved server-side (#4187 UI
+   * critique) so a client never has to bulk-fetch `/orgs/organizations` and
+   * map names itself. Null for a row with no intent (no `orgId` to resolve)
+   * or when the org row no longer exists. Resolved by the caller (which
+   * batches ONE `inArray(organizations.id, …)` read per page, mirroring
+   * `customerTenant`'s batching); this function stays I/O-free.
+   */
+  orgName: string | null = null,
 ) {
   const isAgentOriginated = attribution?.requestingAgentRunId != null;
   const actionArguments = r.actionArguments as Record<string, unknown> | null;
@@ -235,6 +244,7 @@ export function serialize(
     // is not action-multiplexed or the value is not a plain string.
     action: typeof actionArguments?.action === 'string' ? actionArguments.action : null,
     orgId,
+    orgName,
     targetDevice,
     riskTier: r.riskTier,
     riskSummary: r.riskSummary,

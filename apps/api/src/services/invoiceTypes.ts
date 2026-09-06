@@ -30,6 +30,8 @@ export type InvoiceServiceErrorCode =
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
+  | 'INVOICE_LINE_NOT_FOUND'
+  | 'INVALID_CURSOR'
   | 'CURRENCY_MISMATCH'
   // Draft currency immutability (#3774): the change-currency op refused because
   // monetary lines exist and the caller didn't opt into clearLines.
@@ -81,7 +83,11 @@ export type InvoiceServiceErrorCode =
   | 'STRIPE_NOT_CONNECTED'
   | 'STRIPE_NO_URL'
   | 'STRIPE_INIT_FAILED'
-  | 'STRIPE_CURRENCY_UNSUPPORTED';
+  | 'STRIPE_CURRENCY_UNSUPPORTED'
+  // #3205 W07: the draft-guarded device-appendix override in
+  // routes/invoices/lifecycle.ts matched 0 rows — the invoice was not (or no
+  // longer) a draft when POST /:id/send tried to persist includeDeviceAppendix.
+  | 'INVOICE_ALREADY_ISSUED';
 
 export class InvoiceServiceError extends Error {
   constructor(

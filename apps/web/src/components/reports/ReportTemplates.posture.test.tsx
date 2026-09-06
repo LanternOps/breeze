@@ -148,3 +148,19 @@ describe('ReportTemplates — builder-representable templates', () => {
     expect(navigateTo).not.toHaveBeenCalledWith('/reports');
   });
 });
+
+describe('ReportTemplates — no aliased templates', () => {
+  it('does not advertise report templates that alias unrelated report types', async () => {
+    mockTemplatesFetch(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({}),
+    }));
+    render(<ReportTemplates />);
+
+    expect((await screen.findAllByText('Executive Summary')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Patch Compliance Report')).not.toBeInTheDocument();
+    expect(screen.queryByText('Technician Activity Report')).not.toBeInTheDocument();
+    expect(screen.queryByText('SLA Compliance Report')).not.toBeInTheDocument();
+    expect(screen.queryByText('Billing/Usage Report')).not.toBeInTheDocument();
+  });
+});

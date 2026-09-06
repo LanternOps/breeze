@@ -72,9 +72,11 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
+import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { assertReportExecutionPreflight } from './reportGenerationService';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -91,6 +93,7 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
+  type UserReportExecutionAuthority,
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -154,11 +157,11 @@ async function aiLiveReportAuthority(
   orgId: string,
   action: ReportAction,
 ): Promise<
-  (Omit<ReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
+  (Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
 > {
   const result = await resolveRequestReportAuthority(auth, orgId, action);
   if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
-  return result.authority as Omit<ReportExecutionAuthority, 'scope'> & {
+  return result.authority as Omit<UserReportExecutionAuthority, 'scope'> & {
     scope: LiveSiteScopeV1;
   };
 }
@@ -1256,16 +1259,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
-        const affectedMemberships = await db.select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .where(eq(deviceGroupMemberships.groupId, existing.id));
-
-        await db.transaction(async (tx) => {
-          await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
-          await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
-          await tx.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
-        });
-        await scheduleAiGroupPeripheralReconciliation(affectedMemberships.map(({ deviceId }) => deviceId));
+        let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+        try {
+          result = await deleteDeviceGroup(existing.id, existing.orgId);
+        } catch (err) {
+          if (err instanceof DeviceGroupDeleteError) return JSON.stringify({ error: err.message, code: err.code });
+          throw err;
+        }
+        await scheduleAiGroupPeripheralReconciliation(result.affectedDeviceIds);
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
@@ -1387,6 +1388,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      // NOTE (#3654): the create/update/delete blocks further down are dead —
+      // this guard and the `action` enum both exclude them. If they are ever
+      // re-enabled they MUST route through
+      // `checkMaintenanceTargetsWithinSiteScope` (services/maintenanceSiteScope),
+      // exactly as routes/maintenance.ts does: `maintenanceWindowWhere` below is
+      // org/partner only and does not defend the site axis.
       if (action === 'create' || action === 'update' || action === 'delete') {
         return JSON.stringify({
           error: `Action "${action}" is disabled. Maintenance windows must be managed through configuration policies. Use manage_policy_feature_link with featureType "maintenance" to configure maintenance windows on a policy.`,
@@ -1399,6 +1406,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (oc) conditions.push(oc);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        // The SQL limit lands before the site filter, so a site-restricted
+        // caller scans a wider (still bounded) page and the result is sliced to
+        // `limit` after filtering — otherwise other sites' windows crowd out the
+        // ones actually suppressing this caller's own fleet (#3654).
+        const scanLimit = auth.allowedSiteIds ? Math.min(Math.max(limit * 5, 100), 500) : limit;
         const rows = await db.select({
           id: maintenanceWindows.id,
           name: maintenanceWindows.name,
@@ -1409,12 +1421,22 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           status: maintenanceWindows.status,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(maintenanceWindows.startTime))
-          .limit(limit);
+          .limit(scanLimit);
 
-        return JSON.stringify({ windows: rows, showing: rows.length });
+        // `maintenanceWindowWhere` is org/partner only; narrow to the caller's
+        // sites the same way GET /maintenance/windows does (#3654).
+        const visibleRows = (await filterWindowsToSiteScope(rows, { allowedSiteIds: auth.allowedSiteIds })).slice(0, limit);
+        const windows = visibleRows.map(({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest);
+
+        return JSON.stringify({ windows, showing: windows.length });
       }
 
       if (action === 'get') {
@@ -1426,13 +1448,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [win] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!win) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
+        // Site axis (#3654): a window reaching none of the caller's sites is not
+        // theirs to read, and its occurrences would disclose it too. A visible
+        // one comes back with its target arrays narrowed to the caller's scope.
+        const scopedWin = await scopeWindowForRead(win, { allowedSiteIds: auth.allowedSiteIds });
+        if (!scopedWin) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
+
         const occurrences = await db.select()
           .from(maintenanceOccurrences)
           .where(eq(maintenanceOccurrences.windowId, win.id))
           .orderBy(desc(maintenanceOccurrences.startTime))
           .limit(10);
 
-        return JSON.stringify({ window: win, occurrences });
+        return JSON.stringify({ window: scopedWin, occurrences });
       }
 
       if (action === 'active_now') {
@@ -1453,6 +1481,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetType: maintenanceWindows.targetType,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(and(...conditions));
 
@@ -1473,10 +1506,25 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetType: maintenanceWindows.targetType,
           suppressAlerts: maintenanceWindows.suppressAlerts,
           suppressPatching: maintenanceWindows.suppressPatching,
+          // Site-axis inputs (#3654) — stripped from the reply below.
+          orgId: maintenanceWindows.orgId,
+          siteIds: maintenanceWindows.siteIds,
+          groupIds: maintenanceWindows.groupIds,
+          deviceIds: maintenanceWindows.deviceIds,
         }).from(maintenanceWindows)
           .where(and(...scheduledConditions));
 
-        return JSON.stringify({ activeWindows: [...active, ...scheduled], count: active.length + scheduled.length });
+        // `maintenanceWindowWhere` is org/partner only; narrow to the caller's
+        // sites (#3654) before reporting what is suppressing their fleet.
+        const visibleActive = await filterWindowsToSiteScope(
+          [...active, ...scheduled],
+          { allowedSiteIds: auth.allowedSiteIds },
+        );
+        const activeWindows = visibleActive.map(
+          ({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest,
+        );
+
+        return JSON.stringify({ activeWindows, count: activeWindows.length });
       }
 
       if (action === 'create') {
@@ -2185,6 +2233,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               return JSON.stringify({ error: 'Report not found or access denied' });
             }
             executionAuthority = {
+              principalKind: 'user',
               scope: effectiveScope,
               principalUserId: access.authority.principalUserId,
               capturedAt: access.authority.capturedAt,
@@ -2220,6 +2269,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const [run] = await db.insert(reportRuns).values({
             reportId,
             status: 'pending',
+            requestedByKind: 'user',
+            requestedByUserId: auth.user.id,
+            requestedByPortalUserId: null,
             ...persistedSiteScopeValues(executionAuthority),
           }).returning();
           runId = run?.id ?? null;

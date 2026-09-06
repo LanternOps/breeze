@@ -244,23 +244,26 @@ test.describe('quote + contract proposal lifecycle', () => {
       await expect(publicPage.getByTestId('public-quote-signer')).toBeVisible();
       await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
+      // Hydration guard (#3906): the portal dev server used to emit the Astro/
+      // Vite module URLs these `client:load` islands fetch (e.g.
+      // `/src/components/portal/PublicQuoteView.tsx`) without the `/portal`
+      // prefix, so the worktree stack's path-routed Caddy sent them to the web
+      // catch-all — the hydration module 404'd and PublicQuoteView never
+      // mounted. The SSR'd markup above looked correct while every button on
+      // the page was inert. The portal dev server now serves its whole module
+      // graph under the base path (apps/portal/astro.config.mjs +
+      // src/middleware.ts), so this island MUST hydrate; if that (or the
+      // island) regresses, fail loud here instead of only being caught by the
+      // console 404 nobody reads.
+      await waitForHydration(publicPage, 'public-quote-accept');
+
       // Accept via the same public endpoint the "Accept & sign" button calls
-      // (POST /quotes/public/:token/accept, { signerName }), NOT by clicking
-      // it: PublicQuoteView is a `client:load` island served under the
-      // portal's `/portal` base path, and Astro dev-mode has a documented
-      // base-path-in-dev gotcha where the island's hydration module 404s
-      // (browser requests `/src/components/portal/PublicQuoteView.tsx`,
-      // missing the `/portal` prefix — confirmed via console/network capture:
-      // "[astro-island] Error hydrating ... Failed to fetch dynamically
-      // imported module"). See project memory
-      // portal_dev_island_hydration_404.md: dev-only, already known, and
-      // CI's smoke-test job builds the portal from a production bundle
-      // (serves islands under /portal/_astro/*) where hydration is expected
-      // to work. Every button on this page is therefore inert in THIS stack
-      // regardless of selector/timing — calling the endpoint directly
-      // exercises the real accept path (quoteAcceptService: converts the
-      // quote, auto-creates the recurring billing Contract, snapshots the
-      // executed contract_documents row) without depending on hydration.
+      // (POST /quotes/public/:token/accept, { signerName }) rather than by
+      // clicking it, so this assertion stays deterministic regardless of the
+      // signer-name input's exact UI validation: exercises the real accept
+      // path (quoteAcceptService: converts the quote, auto-creates the
+      // recurring billing Contract, snapshots the executed
+      // contract_documents row) independent of form-fill timing.
       const acceptResponse = await publicPage.request.post(
         `${origin}/api/v1/quotes/public/${token}/accept`,
         { data: { signerName: 'Jordan Rivers' } },

@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils';
 import type { TriggerType } from './AutomationList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
+import { RunContextSelect } from '../common/RunContext';
 
 type ScriptsT = TFunction<'scripts'>;
 
@@ -61,6 +62,15 @@ const createAutomationSchema = (t: ScriptsT) => {
   const actionSchema = z.object({
     type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command', 'deploy_software']),
     scriptId: z.string().optional(),
+    // Absent means "use the script's own saved default" — the default MUST
+    // stay absent so an existing automation that never set this is
+    // byte-identical on save (#4888).
+    //
+    // `'elevated'` is accepted (though the control never offers it) so a
+    // stored elevated override survives an unrelated edit instead of being
+    // stripped by the schema on the way through — RunContextSelect renders it
+    // as a disabled option.
+    runAs: z.enum(['system', 'user', 'elevated']).optional(),
     notificationChannelId: z.string().optional(),
     alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     alertMessage: z.string().optional(),
@@ -94,7 +104,7 @@ export type ActionFormValues = AutomationFormValues['actions'][number];
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
-type Script = { id: string; name: string };
+type Script = { id: string; name: string; runAs?: 'system' | 'user' | 'elevated' };
 type NotificationChannel = { id: string; name: string; type: string };
 type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
@@ -687,6 +697,24 @@ export default function AutomationForm({
                             </option>
                           ))}
                         </select>
+                        <label
+                          htmlFor={`action-${index}-run-as`}
+                          className="text-xs font-medium text-muted-foreground"
+                        >
+                          {t('automationForm.fields.runAs')}
+                        </label>
+                        <RunContextSelect
+                          allowScriptDefault
+                          scriptDefault={
+                            scripts.find(s => s.id === watchActions?.[index]?.scriptId)?.runAs ?? null
+                          }
+                          value={watchActions?.[index]?.runAs ?? null}
+                          onChange={next =>
+                            setValue(`actions.${index}.runAs`, next ?? undefined, { shouldDirty: true })
+                          }
+                          id={`action-${index}-run-as`}
+                          testId={`action-${index}-run-as-select`}
+                        />
                       </div>
                     )}
 

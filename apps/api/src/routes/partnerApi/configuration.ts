@@ -53,6 +53,9 @@ const PATCH_NORMALIZED_MATERIAL_KEYS = [
   'scheduleDayOfMonth',
   'rebootPolicy',
   'rebootDelayMinutes',
+  'rebootAllowDeferral',
+  'rebootMaxDeferrals',
+  'rebootDeferralMinutes',
   'exclusiveWindowsUpdate',
 ] as const;
 const PATCH_NORMALIZED_MATERIAL_KEY_SET = new Set<string>(PATCH_NORMALIZED_MATERIAL_KEYS);
@@ -429,16 +432,30 @@ function customFieldValueSource(principal: PartnerApiPrincipalContext, query: Ex
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-field-values')}),
     value_rows AS (
+      -- Reads the normalized value table (#3257 W05). The previous shape joined
+      -- the flat, string-keyed devices.custom_fields jsonb to the DUAL-AXIS
+      -- definitions table on field_key, so one datum stored under a key that an
+      -- org-owned AND a partner-wide definition both declared produced TWO
+      -- records, each under a different synthetic id (the identity hash includes
+      -- the definition id). W03 forbids new collisions; reading the value table
+      -- makes the duplication structurally impossible, because the ROW is the
+      -- datum and UNIQUE (device_id, definition_id) bounds it.
+      --
+      -- The identity_hash input is deliberately UNCHANGED — still
+      -- md5(device_id || ':' || definition_id) — so shipped partner-API
+      -- consumers do not see every record's id churn and re-sync.
       SELECT d.id AS device_id, d.site_id, d.created_at AS device_created_at,
-        f.id AS definition_id, f.created_at AS definition_created_at,
-        f.name, f.field_key, f.type, d.custom_fields->f.field_key AS value,
+        v.definition_id, f.created_at AS definition_created_at,
+        f.name, v.field_key, f.type,
+        COALESCE(to_jsonb(v.value_text), to_jsonb(v.value_number),
+                 to_jsonb(v.value_bool), to_jsonb(v.value_date::text),
+                 'null'::jsonb) AS value,
         eo.id AS org_id, eo.material_updated_at,
-        md5(d.id::text || ':' || f.id::text) AS identity_hash
-      FROM public.devices d
+        md5(d.id::text || ':' || v.definition_id::text) AS identity_hash
+      FROM public.device_custom_field_values v
+      JOIN public.devices d ON d.id = v.device_id
       JOIN effective_orgs eo ON eo.id = d.org_id
-      JOIN public.custom_field_definitions f
-        ON (f.org_id = eo.id OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid))
-       AND d.custom_fields ? f.field_key
+      JOIN public.custom_field_definitions f ON f.id = v.definition_id
     )
     SELECT (
         substr(identity_hash, 1, 8) || '-' || substr(identity_hash, 9, 4) || '-5' ||

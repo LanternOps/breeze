@@ -15,6 +15,8 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import type { Baseline } from './BaselineFormModal';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 
 type ApplyApproval = {
   id: string;
@@ -34,13 +36,6 @@ type ApplyApproval = {
   consumedAt: string | null;
   createdAt: string;
   updatedAt: string;
-};
-
-type Device = {
-  id: string;
-  hostname: string;
-  osType: string;
-  status: string;
 };
 
 type Props = {
@@ -64,8 +59,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
   );
   const [approvals, setApprovals] = useState<ApplyApproval[]>([]);
   const [approvalsLoading, setApprovalsLoading] = useState(true);
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [deviceSearch, setDeviceSearch] = useState('');
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
   const [dryRunResult, setDryRunResult] = useState<{
     skipped: Array<{ deviceId: string; hostname: string; reason: string }>;
@@ -73,6 +67,13 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [decisionSubmitting, setDecisionSubmitting] = useState<string | null>(null);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    orgId: currentOrgId ?? undefined,
+    osType: baseline?.osType,
+    includeIds: Array.from(selectedDeviceIds),
+    enabled: step === 'select' && !!baseline,
+  });
 
   const fetchApprovals = useCallback(async () => {
     try {
@@ -94,60 +95,12 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
     }
   }, [currentOrgId, baseline]);
 
-  const fetchDevices = useCallback(async () => {
-    if (!baseline) return;
-    try {
-      setDevicesLoading(true);
-      const params = new URLSearchParams();
-      if (currentOrgId) params.set('orgId', currentOrgId);
-      const response = await fetchWithAuth(`/devices?${params.toString()}`);
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => null);
-        throw new Error(extractApiError(errBody, t('auditBaselinesBaselineApplyTab.messages.fetchDevicesFailed')));
-      }
-      const data = await response.json();
-      const allDevices: Device[] = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-      // Filter to matching OS type
-      setDevices(allDevices.filter((d) => d.osType === baseline.osType));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
-    } finally {
-      setDevicesLoading(false);
-    }
-  }, [currentOrgId, baseline]);
-
   useEffect(() => {
     fetchApprovals();
   }, [fetchApprovals]);
 
-  useEffect(() => {
-    if (step === 'select' && baseline) {
-      fetchDevices();
-    }
-  }, [step, baseline, fetchDevices]);
-
-  const handleToggleDevice = (deviceId: string) => {
-    setSelectedDeviceIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(deviceId)) {
-        next.delete(deviceId);
-      } else {
-        next.add(deviceId);
-      }
-      return next;
-    });
-  };
-
-  const handleToggleAll = () => {
-    if (selectedDeviceIds.size === devices.length) {
-      setSelectedDeviceIds(new Set());
-    } else {
-      setSelectedDeviceIds(new Set(devices.map((d) => d.id)));
-    }
-  };
-
   const handleDryRun = async () => {
-    if (!baseline || selectedDeviceIds.size === 0) return;
+    if (!baseline || selectedDeviceIds.size === 0 || !deviceOptions.canSubmit) return;
     setSubmitting(true);
     setError(undefined);
     try {
@@ -307,77 +260,29 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       {/* Step: Select Devices */}
       {step === 'select' && (
         <div className="space-y-4">
-          {devicesLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            </div>
-          ) : devices.length === 0 ? (
-            <div className="rounded-lg border bg-card p-6 text-center shadow-xs">
-              <p className="text-sm text-muted-foreground">
-                {t('auditBaselinesBaselineApplyTab.noDevices', { osType: baseline?.osType })}
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="rounded-lg border bg-card shadow-xs">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/40">
-                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      <th className="px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedDeviceIds.size === devices.length && devices.length > 0}
-                          onChange={handleToggleAll}
-                          className="h-4 w-4 rounded border"
-                        />
-                      </th>
-                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.hostname')}</th>
-                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.os')}</th>
-                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.status')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {devices.map((device) => (
-                      <tr key={device.id} className="border-b last:border-0 hover:bg-muted/20">
-                        <td className="px-4 py-3">
-                          <input
-                            type="checkbox"
-                            checked={selectedDeviceIds.has(device.id)}
-                            onChange={() => handleToggleDevice(device.id)}
-                            className="h-4 w-4 rounded border"
-                          />
-                        </td>
-                        <td className="px-4 py-3 font-medium">{device.hostname}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{device.osType}</td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={cn(
-                              'inline-flex rounded-full border px-2 py-0.5 text-xs font-medium',
-                              device.status === 'online'
-                                ? 'bg-green-500/15 text-green-700 border-green-500/30'
-                                : 'bg-gray-500/15 text-gray-600 border-gray-500/30'
-                            )}
-                          >
-                            {device.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <>
+              <div className="rounded-lg border bg-card p-4 shadow-xs">
+                <DeviceOptionPicker
+                  result={deviceOptions}
+                  selectedIds={Array.from(selectedDeviceIds)}
+                  onSelectedIdsChange={(ids) => setSelectedDeviceIds(new Set(ids))}
+                  search={deviceSearch}
+                  onSearchChange={setDeviceSearch}
+                  showSelectAll
+                />
               </div>
 
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">
                   {t('auditBaselinesBaselineApplyTab.selectedDevices', {
                     selected: selectedDeviceIds.size,
-                    total: devices.length,
+                    total: deviceOptions.page?.total ?? deviceOptions.options.length,
                   })}
                 </p>
                 <button
                   type="button"
                   onClick={handleDryRun}
-                  disabled={selectedDeviceIds.size === 0 || submitting}
+                  disabled={selectedDeviceIds.size === 0 || submitting || !deviceOptions.canSubmit}
                   className={cn(
                     'inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90',
                     'disabled:cursor-not-allowed disabled:opacity-60'
@@ -388,7 +293,6 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                 </button>
               </div>
             </>
-          )}
         </div>
       )}
 

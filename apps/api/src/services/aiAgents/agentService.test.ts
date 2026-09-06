@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   insertedValues: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
   selectWhere: undefined as unknown,
+  selectFor: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
   validateRecipients: vi.fn(),
@@ -47,8 +48,21 @@ vi.mock('../../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn((condition: unknown) => {
           state.selectWhere = condition;
+          const rows = state.currentRow ? [state.currentRow] : [];
           return ({
-          limit: vi.fn(async () => state.currentRow ? [state.currentRow] : []),
+          // `.limit(n)` must itself be awaitable (getAgent/createAgent's
+          // duplicate check both `await` it directly with no further
+          // chaining) AND support a chained `.for('update')` (withAgentRowLocked)
+          // — a plain Promise is a valid target for an extra method since
+          // promises are ordinary objects.
+          limit: vi.fn(() => {
+            const result = Promise.resolve(rows) as Promise<unknown[]> & { for: (mode: string) => Promise<unknown[]> };
+            result.for = vi.fn((mode: string) => {
+              state.selectFor = mode;
+              return Promise.resolve(rows);
+            });
+            return result;
+          }),
           orderBy: vi.fn(async () => state.listRows),
         });
         }),
@@ -131,15 +145,19 @@ vi.mock('./effectivePolicy', () => ({
   }),
 }));
 
+import { db } from '../../db';
 import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
   InvalidSupervisedActionKeysError,
+  SupervisedKeysGrantOnlyError,
   UnsupportedAgentModeError,
+  assertOrgRowSupervisedKeysGrantOnly,
   createAgent,
   disableAgent,
   listAgents,
   updateAgent,
+  withAgentRowLocked,
 } from './agentService';
 
 function auth(over: Partial<AuthContext> = {}): AuthContext {
@@ -241,6 +259,7 @@ beforeEach(() => {
   state.returnedRow = null;
   state.insertedValues = null;
   state.updatedValues = null;
+  state.selectFor = undefined;
 });
 
 describe('assertAgentWriteAllowed', () => {
@@ -667,12 +686,41 @@ describe('agent mutations', () => {
       expect(state.audit).not.toHaveBeenCalled();
     });
 
-    it('accepts a create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
-      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } };
+    it('refuses an org-owned create adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the insert runs', async () => {
+      // Value-validation alone (validateAuthorizationKeys) would accept this
+      // key — it is a real POLICY_DECIDABLE_TIER3 key. What must still refuse
+      // it is the separate grant-only rule: an ORG row may only go from not
+      // having a key to having one via the four-eyes grant executor
+      // (supervisedKeyGrant.ts), never through create/update.
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'manage_services:restart', reason: 'grant_only' },
+      ]);
+      expect(state.insertedValues).toBeNull();
+      expect(state.audit).not.toHaveBeenCalled();
+    });
+
+    // A partner-owned row is the CEILING and is edited directly (never
+    // through the grant executor), so this fixture must own the row at the
+    // partner axis, not the org axis — an org-owned create with the same
+    // supervisedActionKeys patch is now refused by the grant-only rule above.
+    it('accepts a partner-owned create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
+      state.returnedRow = {
+        ...storedRow,
+        orgId: null,
+        partnerId: 'p1',
+        actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] },
+      };
 
       await createAgent(
         auth(),
-        { orgId: 'o1', partnerId: null },
+        { orgId: null, partnerId: 'p1' },
         { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
       );
 
@@ -706,9 +754,13 @@ describe('agent mutations', () => {
       expect(state.updatedValues).toBeNull();
     });
 
-    it('accepts an update whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
-      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
-      state.returnedRow = storedRow;
+    // A partner-owned row is the CEILING and is edited directly, so this
+    // fixture must own the row at the partner axis, not the org axis — an
+    // org-owned update adding a key it does not already hold is now refused
+    // by the grant-only rule (spec §4.4), covered separately below.
+    it('accepts an update to a partner-owned row whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
+      state.currentRow = { ...storedRow, orgId: null, partnerId: 'p1', actAssets: { scriptIds: ['s-1'] } };
+      state.returnedRow = { ...storedRow, orgId: null, partnerId: 'p1' };
 
       await updateAgent(auth(), 'a1', {
         actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
@@ -717,6 +769,36 @@ describe('agent mutations', () => {
       expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['security_scan:quarantine']);
       expect(state.updatedValues).toMatchObject({
         actAssets: { scriptIds: ['s-1'], supervisedActionKeys: ['security_scan:quarantine'] },
+      });
+    });
+
+    it('refuses an org-owned update adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the update runs', async () => {
+      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
+
+      const err = await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
+      } as never).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'security_scan:quarantine', reason: 'grant_only' },
+      ]);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('allows an org-owned update that keeps or removes an already-held supervisedActionKeys entry', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: [] } };
+
+      await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: [] },
+      } as never);
+
+      expect(state.updatedValues).toMatchObject({
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
       });
     });
 
@@ -808,6 +890,114 @@ describe('agent mutations', () => {
   });
 });
 
+// Task 8 (#4192): a read-modify-write of `actAssets` (the jsonb A2's
+// promote/demote executors will also patch) without a row lock loses a
+// concurrent key append. `withAgentRowLocked` is the one place every writer
+// of that column is meant to route through — updateAgent here, promote/demote
+// in a later PR.
+describe('withAgentRowLocked', () => {
+  it('locks one row FOR UPDATE, bound by the same accessible-agent predicate as getAgent', async () => {
+    state.currentRow = storedRow;
+
+    const seen = await withAgentRowLocked(auth(), 'a1', async (row) => row);
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    // Walk the bound predicate the same way the create-conflict tests do
+    // above — asserting only that a row came back would pass even with the
+    // org/id predicate silently dropped.
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('throws AgentAccessDeniedError instead of running fn when the predicate excludes the row', async () => {
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(withAgentRowLocked(auth(), 'missing', fn)).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1/5 (Critical): the system-caller (auth: null) branch used to
+  // drop the tenancy predicate to `id` alone. It must now bind `id + org_id`
+  // from opts, the same way the auth branch binds `id + accessibleAgentCondition`.
+  it('system caller (auth: null) binds id + org_id from opts, not id alone', async () => {
+    state.currentRow = storedRow; // storedRow.orgId === 'o1'
+
+    const seen = await withAgentRowLocked(null, 'a1', async (row) => row, { orgId: 'o1' });
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('system caller with a mismatched orgId throws AgentAccessDeniedError rather than returning the row', async () => {
+    // The mock's `where` returns state.currentRow unconditionally (there is
+    // no real SQL engine here), so a predicate miss is simulated the same
+    // way as the auth-bound "excludes the row" test above. The assertion on
+    // state.selectWhere below is what actually proves the mismatched orgId
+    // was bound into the predicate rather than silently ignored.
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(
+      withAgentRowLocked(null, 'a1', fn, { orgId: 'wrong-org' }),
+    ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('wrong-org');
+  });
+
+  it('system caller without opts.orgId throws AgentInvariantError before issuing any SELECT', async () => {
+    state.currentRow = storedRow;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    // @ts-expect-error — exercising the runtime guard behind the overload that
+    // makes this uncallable at compile time.
+    await expect(withAgentRowLocked(null, 'a1', fn)).rejects.toThrow(/requires opts\.orgId/);
+    expect(fn).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateAgent row lock', () => {
+  it('acquires the lock before validating recipients or issuing the UPDATE', async () => {
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+
+    await updateAgent(auth(), 'a1', { recipients: { userIds: ['u1'], roleIds: [] } } as never);
+
+    const selectOrder = vi.mocked(db.select).mock.invocationCallOrder[0] as number;
+    const validateOrder = state.validateRecipients.mock.invocationCallOrder[0] as number;
+    const updateOrder = vi.mocked(db.update).mock.invocationCallOrder[0] as number;
+    expect(selectOrder).toBeLessThan(validateOrder);
+    expect(selectOrder).toBeLessThan(updateOrder);
+    // Fix round 1/5 (Important): call-order alone is satisfied by the
+    // pre-refactor select-then-validate-then-update code too (no FOR UPDATE
+    // involved) — it does not prove updateAgent is actually routing through
+    // withAgentRowLocked's lock. This is the one assertion that does: the
+    // mock's `.for()` chain only gets invoked by withAgentRowLocked's own
+    // `.limit(1).for('update')` call, never by a plain `getAgent`-style read.
+    expect(state.selectFor).toBe('update');
+  });
+
+  it('a disabled row seen inside the lock still throws AgentAccessDeniedError', async () => {
+    state.currentRow = { ...storedRow, disabledAt: new Date('2026-08-01T00:00:00Z') };
+
+    await expect(updateAgent(auth(), 'a1', { name: 'Renamed' })).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(state.updatedValues).toBeNull();
+    expect(state.validateRecipients).not.toHaveBeenCalled();
+  });
+});
+
 describe('listAgents', () => {
   it('binds a tenant predicate — RLS is not the only defence', async () => {
     // Previously this asserted back the rows the mock supplied, which is true
@@ -828,5 +1018,31 @@ describe('listAgents', () => {
     state.selectWhere = undefined;
     await listAgents(auth({ scope: 'organization', orgId: 'o1', partnerOrgAccess: null }));
     expect(JSON.stringify(state.selectWhere ?? {})).not.toContain('p1');
+  });
+});
+
+describe('assertOrgRowSupervisedKeysGrantOnly (spec §4.4)', () => {
+  const org = { orgId: 'org-1', partnerId: 'p-1' };
+  const partner = { orgId: null, partnerId: 'p-1' };
+
+  it('rejects an org row adding a key it does not already hold', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, [], ['manage_services:restart']))
+      .toThrow(SupervisedKeysGrantOnlyError);
+    try {
+      assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:stop'], ['manage_services:stop', 'manage_services:restart']);
+      expect.fail('expected SupervisedKeysGrantOnlyError to throw');
+    } catch (e) {
+      expect((e as SupervisedKeysGrantOnlyError).rejected).toEqual([{ key: 'manage_services:restart', reason: 'grant_only' }]);
+    }
+  });
+
+  it('allows an org row to keep or remove keys', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], ['manage_services:restart'])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], [])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], undefined)).not.toThrow();
+  });
+
+  it('leaves partner rows alone (their keys are the ceiling, edited directly)', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(partner, [], ['manage_services:restart'])).not.toThrow();
   });
 });

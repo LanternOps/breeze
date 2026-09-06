@@ -20,3 +20,10 @@ export const INVOICE_LINE_SOURCE_TYPES = [
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export type InvoiceLineSourceType = (typeof INVOICE_LINE_SOURCE_TYPES)[number];
+
+/** #3205 W07: how a device was counted on the invoice line it is evidence for.
+ *  `included` = inside the allowance (or no allowance); `overage` = billed on the
+ *  sibling overage line; `flagged` = above the allowance under `flag` mode and
+ *  therefore NOT billed. Order mirrors the shipped Postgres enum. */
+export const INVOICE_LINE_DEVICE_COUNTED_AS = ['included', 'overage', 'flagged'] as const;
+export type InvoiceLineDeviceCountedAs = (typeof INVOICE_LINE_DEVICE_COUNTED_AS)[number];

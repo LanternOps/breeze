@@ -13,7 +13,12 @@ import {
   type AssuranceDecision,
 } from '../authenticatorAssurance';
 import { decideApprovalRequest, type DecideApprovalResult } from './decideApprovalRequest';
-import type { ApprovalProof, RiskTier } from '@breeze/shared';
+import {
+  APPROVAL_BATCH_MAX,
+  approvalBatchGroupKey,
+  type ApprovalProof,
+  type RiskTier,
+} from '@breeze/shared';
 
 /**
  * P2-2 (#4189): decide MANY approval cards with ONE assertion ceremony.
@@ -45,8 +50,12 @@ import type { ApprovalProof, RiskTier } from '@breeze/shared';
  */
 
 /** Hard cap on one batch. Matches the inbox page size (`PENDING_PAGE_MAX`),
- *  so "select everything on this page" is always expressible in one call. */
-export const BATCH_MAX = 50;
+ *  so "select everything on this page" is always expressible in one call.
+ *  Re-exported under the historical local name — the value itself lives in
+ *  `@breeze/shared`'s `APPROVAL_BATCH_MAX` so the web inbox's client-side
+ *  guard (#4460) can import the exact same number instead of a copy that
+ *  could drift. */
+export const BATCH_MAX = APPROVAL_BATCH_MAX;
 
 /**
  * The `approvalId` namespace ONE ceremony is minted and verified under, so the
@@ -87,30 +96,28 @@ export type DecideApprovalBatchResult =
 const RISK_TIER_ORDER: RiskTier[] = ['low', 'medium', 'high', 'critical'];
 
 /**
- * The multiplexed tools' `action` discriminator (`manage_services:restart`,
- * `manage_patches:install`, …), lower-cased and trimmed so a purely cosmetic
- * difference in how two intents spelled the same action does not split an
- * otherwise identical set. Null for a tool that is not action-multiplexed —
- * which is itself a group of its own, so a set that mixes "has an action" with
- * "has none" is heterogeneous.
+ * `(orgId, actionToolName, normalized action)` — the whole homogeneity key, for
+ * ONE loaded batch member.
  *
- * Deliberately the same projection `serialize` emits as `action`: the group the
- * server enforces is the group the approver saw on the cards.
+ * The rule itself lives in `@breeze/shared`'s `approvalBatchGroupKey` (#4457),
+ * NOT here: the web inbox groups its cards with that exact function, so the set
+ * the server will accept and the set the approver was offered can no longer
+ * drift apart. This wrapper only says which fields of a loaded row feed it — in
+ * particular that `action` comes from the row's RAW `action_arguments`, which is
+ * deliberately the same value `serialize` projects as the DTO's `action`, so the
+ * group the server enforces is the group the approver saw on the cards.
+ *
+ * Exported for the cross-equivalence cases in `batchDecide.test.ts`, which
+ * drive one fixture through this AND through `serialize` -> the shared key, and
+ * assert the two agree.
  */
-function normalizedAction(row: typeof approvalRequests.$inferSelect): string | null {
-  const args = row.actionArguments as Record<string, unknown> | null;
-  const action = args?.action;
-  return typeof action === 'string' ? action.trim().toLowerCase() : null;
-}
-
-/** `(orgId, actionToolName, normalized action)` — the whole homogeneity key.
- *  NUL-separated so no value can forge a boundary. */
-function groupKey(row: BatchRow): string {
-  return [
-    row.intent.orgId,
-    row.approval.actionToolName,
-    normalizedAction(row.approval) ?? '',
-  ].join('\u0000');
+export function batchGroupKey(row: BatchRow): string {
+  const args = row.approval.actionArguments as Record<string, unknown> | null;
+  return approvalBatchGroupKey({
+    orgId: row.intent.orgId,
+    actionToolName: row.approval.actionToolName,
+    action: args?.action,
+  });
 }
 
 /**
@@ -199,9 +206,9 @@ export async function loadHomogeneousBatch(
   // reported so the client can deselect precisely.
   const anchor = rows[0];
   if (anchor) {
-    const anchorKey = groupKey(anchor);
+    const anchorKey = batchGroupKey(anchor);
     for (const row of rows) {
-      if (groupKey(row) !== anchorKey) offending.push(row.approval.id);
+      if (batchGroupKey(row) !== anchorKey) offending.push(row.approval.id);
     }
   }
 

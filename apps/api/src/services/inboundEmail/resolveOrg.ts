@@ -1,7 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { customerEmailDomains, partners } from '../../db/schema';
-import { portalUsers } from '../../db/schema/portal';
+import { contacts, customerEmailDomains, partners } from '../../db/schema';
+import { createContact, matchContactByEmail, normalizeContactEmail } from '../contacts/crud';
 
 /** Lowercased domain part of an email address, or null if malformed. */
 function domainOf(address: string): string | null {
@@ -41,36 +41,99 @@ export async function resolveOrgBySenderDomain(
 }
 
 /**
- * Find an existing portal user by (org, email) or create a password-less
- * contact for attribution + future thread matching. A null passwordHash is
- * inherently non-login (mirrors the Entra path's password-less rows); this is
- * NOT an auth-capable account. Returns the portal user id.
+ * The inbound sender's identity, resolved onto `contacts` (#3258 W03).
  *
- * SELECT-then-INSERT is not atomic and `portal_users` has no (org_id, email)
- * unique index (the login path already tolerates duplicates — see
- * portal/auth.ts). The inbound worker processes one message per transaction, so
- * the only way to double-insert is two distinct first-time emails from the SAME
- * new sender arriving concurrently — rare, and the dup is benign (both rows point
- * at the same org; attribution binds to one). A real fix is a partial unique index
- * on portal_users, which is a broader, auth-table change tracked separately.
+ * The non-contact outcome is DISCRIMINATED, not a bare "nothing": each reason
+ * is a different operator story and the caller writes it verbatim into
+ * `ticket_email_inbound.error` (which already carries notes, e.g. "lost
+ * message-id claim ..."). Before that, a shared mailbox and a malformed From
+ * were indistinguishable at the audit row — the ticket simply arrived
+ * unattributed and nothing anywhere said why.
+ *
+ *  - 'unusable-address' — the From address is empty/whitespace. Nothing can
+ *    identify anyone; not an error, the ticket is still created.
+ *  - 'shared-mailbox'   — several contacts hold this address. A legitimate
+ *    state (`support@`, `ap@`): `contacts_org_email_idx` is deliberately
+ *    non-unique and there is no honest way to pick one. Picking by display
+ *    name would key attribution off a header the sender controls (see
+ *    inboundEmailService's spoofable-From note); picking oldest or newest is a
+ *    coin flip wearing a rule.
+ *  - 'vanished'         — the single match was deleted between the probe and
+ *    the FOR KEY SHARE pin.
+ *
+ * In every case the ticket is still created and still carries the snapshotted
+ * submitter name/email — it just does not claim to know WHICH person wrote it.
  */
-export async function findOrCreateEmailContact(
+export type EmailRequesterResolution =
+  | { kind: 'contact'; contactId: string }
+  | { kind: 'none'; reason: 'unusable-address' | 'shared-mailbox' | 'vanished' };
+
+/**
+ * Advisory-lock namespace for "resolve this (org, address) to a contact".
+ *
+ * The two-argument `pg_advisory_xact_lock(ns, key)` form the rest of the repo
+ * uses (services/discoveryJobCreation.ts, c2cJobCreation.ts, aiBudgetAlerts.ts):
+ * the one-argument form puts every caller in the process into ONE 64-bit key
+ * space, so an unrelated feature hashing a colliding string would block
+ * ingest for a tenant with no way to trace why.
+ *
+ * Exported because the INVITE path (routes/orgPortalUsers.ts) resolves the
+ * same (org, address) to the same contact and must take the SAME lock — an
+ * invite racing a first email from that address would otherwise each see "no
+ * contact" and each create one.
+ */
+export const INBOUND_CONTACT_LOCK_NAMESPACE = 'inbound-email-contact';
+
+/**
+ * Resolve an inbound sender to the org's contact for that address, creating
+ * one when the address is new. Caller is the inbound worker, in a SYSTEM DB
+ * context; `orgId` has ALREADY been partner-validated by the caller
+ * (resolveOrgBySenderDomain + createFromEmail's org re-assertion) and MUST NOT
+ * be re-derived from the sender here.
+ *
+ * This replaces `findOrCreateEmailContact`, which minted a password-less
+ * `portal_users` row per unknown sender. No path here writes to `portal_users`
+ * at all: a portal user is a LOGIN, and an emailing customer has none.
+ *
+ * Concurrency: the worker runs at concurrency 5 and the check-then-insert
+ * below is not atomic, so two first-time messages from the SAME new sender
+ * arriving together would each see "no contact" and each create one —
+ * `contacts_org_email_idx` is deliberately NON-unique (shared mailboxes), so
+ * the database will not stop it. The advisory lock is taken FIRST, keyed on
+ * (org, normalized address), which serialises exactly those two and nothing
+ * else.
+ *
+ * The lock is TRANSACTION-scoped, and the worker wraps the whole of
+ * `processInboundEmail` in one transaction — so it is held until that
+ * transaction ends, which includes `maybeSendAutoresponse`'s in-transaction
+ * send. That is deliberate (a duplicate contact is worse than a briefly held
+ * per-address lock) but it does mean the lock's hold time includes an SMTP
+ * round trip for the FIRST message from a new sender.
+ */
+export async function resolveEmailRequester(
   orgId: string,
   email: string,
   name: string | null,
-): Promise<string> {
-  const lower = email.toLowerCase();
-  const existing = await db
-    .select({ id: portalUsers.id })
-    .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, lower)))
-    .limit(1);
-  if (existing[0]) return existing[0].id;
-  const inserted = await db
-    .insert(portalUsers)
-    .values({ orgId, email: lower, name, passwordHash: null, authMethod: 'password', status: 'active' })
-    .returning({ id: portalUsers.id });
-  return inserted[0]!.id;
+): Promise<EmailRequesterResolution> {
+  const normalized = normalizeContactEmail(email);
+  // An empty/whitespace From cannot identify anyone, and locking on `<org>:`
+  // would serialise every malformed message in the org against each other for
+  // the rest of the worker transaction. Bail BEFORE the lock.
+  if (!normalized) return { kind: 'none', reason: 'unusable-address' };
+
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalized}`}))`,
+  );
+
+  const found = await matchContactByEmail(db, orgId, normalized);
+  if (found.kind === 'no-match') {
+    // roles: [] — an emailing customer has demonstrated nothing except that
+    // they email. 'portal' is claimed by the invite path, which is where
+    // someone deliberately grants portal access.
+    const created = await createContact(db, { orgId, email: normalized, name, roles: [] }, { userId: null });
+    return { kind: 'contact', contactId: created.id };
+  }
+  return found;
 }
 
 /**

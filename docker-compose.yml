@@ -122,6 +122,10 @@ x-api-env: &api-env
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
+  # Agent diagnostic log retention (worker role; all optional, see .env.example).
+  AGENT_LOG_RETENTION_DAYS: ${AGENT_LOG_RETENTION_DAYS:-}
+  AGENT_LOG_RETENTION_BATCH_SIZE: ${AGENT_LOG_RETENTION_BATCH_SIZE:-}
+  AGENT_LOG_RETENTION_MAX_BATCHES: ${AGENT_LOG_RETENTION_MAX_BATCHES:-}
   METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
   # Platform-operator abuse alerts (all optional; unset = feature disabled)
   OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
@@ -276,6 +280,9 @@ x-api-env: &api-env
   # apps/api/src/config/envComposeParity.test.ts.
   # Auth / security / session
   ENABLE_2FA: ${ENABLE_2FA:-}
+  # RMM-QA-164 relief valve (see .env.example). Empty when unset → envFlag
+  # default true; mapped so a locked-out self-hoster can actually flip it.
+  MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
   # present only in .env is inert unless it is listed here.
@@ -298,6 +305,12 @@ x-api-env: &api-env
   INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
   ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
   ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
+  # Partner API enrollment-key minting (enrollment-keys:write). Same
+  # compose-interpolation requirement as everything else in this block —
+  # documented in .env.example, but silently inert unless mapped here.
+  PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: ${PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES:-}
+  PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT:-}
+  PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
   # Email — SMTP extras + Mailgun provider
   SMTP_FROM: ${SMTP_FROM:-}
@@ -306,6 +319,12 @@ x-api-env: &api-env
   MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
   MAILGUN_FROM: ${MAILGUN_FROM:-}
   MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+  # #3905 — transport deadlines. Optional: unset falls back to the in-code
+  # defaults (SMTP 30s inactivity, Mailgun 120s whole-request). Mapped here so
+  # an operator can tune them without a code change (compose interpolation only
+  # happens for vars listed in this block).
+  SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+  MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
@@ -381,13 +400,49 @@ x-api-env: &api-env
   BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
   BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
   BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+  # QuickBooks Online accounting integration. All optional: unset leaves the
+  # integration dark. Mapped explicitly because Compose only interpolates vars
+  # listed in this block — a value in .env alone is never seen by the API
+  # (the IS_HOSTED / #570 failure mode; Phase C's sandbox walkthrough needed a
+  # manual override for exactly this).
+  QBO_CLIENT_ID: ${QBO_CLIENT_ID:-}
+  QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET:-}
+  QBO_REDIRECT_URI: ${QBO_REDIRECT_URI:-}
+  QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-}
+  # Intuit's app-level webhook verifier token. Unset -> the webhook route
+  # answers 503 and the 15-minute reconcile sweep is the only pull path.
+  QBO_WEBHOOK_VERIFIER_TOKEN: ${QBO_WEBHOOK_VERIFIER_TOKEN:-}
   # Reporting-only FX (#3779). Empty === unset for both readers, so the
   # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
   EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
   FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
+  # Readiness cache + dependency-probe bounds. Empty === unset, so the
+  # `${VAR:-}` form keeps the clamped code defaults (5000 / 3000 ms). Both
+  # MUST be listed here: compose only interpolates vars named in this block,
+  # so a value set in .env alone is a silent no-op.
+  READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
+  READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
+  # Offline-detector mark-worker concurrency (1-20, code default 5). Empty === unset.
+  OFFLINE_DETECTOR_WORKER_CONCURRENCY: ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}
+  # Outbox / anomaly-incident retention (#4210). Read by the three daily
+  # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
+  # in the worker role — the worker service inherits this same *api-env
+  # anchor, so mapping them here reaches both containers. Empty === unset for
+  # every reader, so the `${VAR:-}` form keeps the code defaults
+  # (14 days / 5000 rows per batch / 50 batches per run).
+  TICKET_OUTBOX_RETENTION_DAYS: ${TICKET_OUTBOX_RETENTION_DAYS:-}
+  TICKET_OUTBOX_RETENTION_BATCH_SIZE: ${TICKET_OUTBOX_RETENTION_BATCH_SIZE:-}
+  TICKET_OUTBOX_RETENTION_MAX_BATCHES: ${TICKET_OUTBOX_RETENTION_MAX_BATCHES:-}
+  INTENT_OUTBOX_RETENTION_DAYS: ${INTENT_OUTBOX_RETENTION_DAYS:-}
+  INTENT_OUTBOX_RETENTION_BATCH_SIZE: ${INTENT_OUTBOX_RETENTION_BATCH_SIZE:-}
+  INTENT_OUTBOX_RETENTION_MAX_BATCHES: ${INTENT_OUTBOX_RETENTION_MAX_BATCHES:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_DAYS: ${METRIC_ANOMALY_INCIDENT_RETENTION_DAYS:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE: ${METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE:-}
+  METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES: ${METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+  AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
   ENABLE_API_DOCS_UI: ${ENABLE_API_DOCS_UI:-}
   PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-}
 
@@ -412,6 +467,11 @@ services:
     environment:
       CADDY_SITE_ADDRESS: "${BREEZE_DOMAIN:-:80}"
       ACME_EMAIL: ${ACME_EMAIL:-}
+      # Empty (the default) leaves Caddy on Let's Encrypt. Set to `local_certs`
+      # in .env when BREEZE_DOMAIN is a name Let's Encrypt cannot reach, so
+      # Caddy issues from its internal CA instead of failing the ACME order and
+      # then aborting the TLS handshake (ERR_SSL_PROTOCOL_ERROR in the browser).
+      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}
       CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-127.0.0.1/32 ::1/128}"
       CADDY_CLIENT_IP_HEADERS: "${CADDY_CLIENT_IP_HEADERS:-CF-Connecting-IP X-Forwarded-For}"
       REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
@@ -476,6 +536,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # LIVENESS, deliberately not /ready. Compose has one dependency condition —
+    # `service_healthy` — and it is a STARTUP gate, so whatever runs here also
+    # decides whether dependents are allowed to start at all. caddy, web and
+    # portal all declare `depends_on: api: condition: service_healthy`, so
+    # probing /ready here promotes an admission signal into a hard startup
+    # dependency: a required queue consumer that cannot attach on a first boot
+    # or a full recreation leaves the API unhealthy, Compose gives up after the
+    # grace below, and caddy never starts — an internal worker problem becomes
+    # loss of ingress for the whole fleet. /ready belongs on the deploy
+    # admission gate and any external load balancer, which can drain traffic
+    # without preventing a process from starting. See docs/operations/health-probes.md.
     healthcheck:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
@@ -745,11 +816,16 @@ secrets:
   turn_secret:
     environment: TURN_SECRET
   # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
-  # target attributes. /dev/null keeps dark deployments optional; when enabled,
-  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  # target attributes. docker/secrets/.empty-jwk (a tracked empty regular file)
+  # keeps dark deployments optional; when enabled, the source JWK must already
+  # have numeric owner 1001:1001 and mode 0400. Do NOT default this to
+  # /dev/null: bind-mounting that character device and remounting it read-only
+  # inside overlayfs is rejected by the kernel on some host kernel/storage-
+  # driver combinations, failing `docker compose up` for anyone who never
+  # touched this feature (#2991). See docker/secrets/README.md.
   m365_graph_read_executor_signing_private_jwk:
-    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}
   m365_graph_actions_executor_signing_private_jwk:
-    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}
   m365_comms_executor_signing_private_jwk:
-    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-./docker/secrets/.empty-jwk}

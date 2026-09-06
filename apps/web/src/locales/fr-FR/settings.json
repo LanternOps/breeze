@@ -1,4 +1,86 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Mise à jour en direct"
+    },
+    "list": {
+      "clearFilters": "Effacer les filtres",
+      "emptyDescription": "Les exécutions déclenchées par des alertes, des horaires, des tickets et des actions manuelles apparaîtront ici une fois qu'un agent les aura exécutées.",
+      "emptyFilteredDescription": "Aucune exécution ne correspond à ces filtres. Essayez un autre agent ou statut.",
+      "emptyConfigureLink": "Configurer les agents IA",
+      "columns": {
+        "started": "Démarré",
+        "duration": "Durée"
+      },
+      "showCost": "Afficher le coût",
+      "hideCost": "Masquer le coût"
+    },
+    "detail": {
+      "notFoundDescription": "Cette exécution a peut-être été supprimée, ou le lien est obsolète.",
+      "pageTitle": "{{agent}} · {{started}} · Exécution | Breeze RMM",
+      "header": {
+        "title": "Exécution de {{agent}}",
+        "startedLabel": "Démarré",
+        "machineVerdict": "Verdict de la machine : {{verdict}}"
+      },
+      "summary": {
+        "title": "Ce que l'agent a constaté"
+      },
+      "findings": {
+        "badge_one": "{{count}} constat à examiner",
+        "badge_other": "{{count}} constats à examiner"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Disque",
+          "serviceName": "Nom du service",
+          "configName": "Tâche de sauvegarde",
+          "usedPercent": "Utilisé (%)",
+          "percentUsed": "Utilisé (%)",
+          "freeGb": "Libre (Go)",
+          "totalGb": "Capacité (Go)",
+          "lastSeenAt": "Vu pour la dernière fois",
+          "lastSeenDays": "Jours depuis le dernier contact",
+          "checkedAt": "Vérifié",
+          "cveIds": "ID de CVE",
+          "cveCount": "Nombre de CVE",
+          "cveId": "CVE",
+          "cvssScore": "Score CVSS",
+          "osType": "Type de SE",
+          "openCriticalCount": "CVE critiques ouvertes"
+        }
+      },
+      "sweep": {
+        "caption": "Une ligne par problème relevé par ce balayage, avec l'action proposée.",
+        "reviewPermissions": "Examiner les autorisations de l'agent",
+        "checksLabel": "Contrôles :"
+      },
+      "trace": {
+        "description": "Chaque appel d'outil proposé, exécuté ou refusé à l'agent, dans l'ordre.",
+        "emptyDescription": "Les appels d'outils que l'agent propose ou exécute seront répertoriés ici."
+      },
+      "ledger": {
+        "description": "Seulement les appels réellement exécutés, avec leur durée et toute erreur.",
+        "emptyDescription": "Les outils réellement invoqués par l'agent seront répertoriés ici.",
+        "collapsedSummary": "Exécutions d'outils ({{count}}) — identiques à la trace ci-dessus",
+        "statuses": {
+          "pending": "En attente",
+          "approved": "Approuvé",
+          "executing": "En cours d'exécution",
+          "completed": "Terminé",
+          "failed": "Échoué",
+          "rejected": "Rejeté"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Les approbations demandées par cette exécution seront répertoriées ici."
+      },
+      "triage": {
+        "categoryLabel": "Catégorie",
+        "categoryUnresolved": "Suggéré — nom non disponible dans cette vue"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
     "description": "Gérez les identités machines au niveau du partenaire et leurs clés d'accès.",
@@ -18,6 +100,7 @@
     "principalDescription": "Description",
     "scopes": "Portées",
     "sourceCidrs": "IP ou CIDR sources (une par ligne)",
+    "writeScopeRestrictionsRequired": "La portée enrollment-keys:write exige une date d'expiration et au moins une IP ou un CIDR source.",
     "expiresAt": "Expire le",
     "save": "Enregistrer",
     "cancel": "Annuler",
@@ -119,7 +202,9 @@
     "maxTurns": "Nombre maximal de tours par session",
     "messagesPerMinute": "Messages par minute et utilisateur",
     "messagesPerHour": "Messages par heure et par organisation",
-    "notSet": "Non défini — les organisations se configurent individuellement",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un e-mail pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
+    "notSet": "Non défini, les organisations se configurent individuellement",
     "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
@@ -127,6 +212,9 @@
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
   },
   "partnerAiProvider": {
     "title": "Fournisseur d'IA",
@@ -743,6 +831,28 @@
       "unavailable": "Aucune politique disponible."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Conservation des journaux d'audit",
+    "description": "Détermine la durée de conservation du journal d'audit de cette organisation avant la suppression des entrées les plus anciennes.",
+    "loading": "Chargement de la politique de conservation...",
+    "errors": {
+      "load": "Échec du chargement de la politique de conservation des audits.",
+      "save": "Échec de l'enregistrement de la politique de conservation des audits."
+    },
+    "toasts": {
+      "saved": "Politique de conservation des audits enregistrée."
+    },
+    "unconfiguredWarning": "Aucune politique de conservation n'est encore configurée pour cette organisation — les journaux d'audit ne sont jamais purgés tant que vous n'en enregistrez pas une.",
+    "retentionDays": "Durée de conservation (jours)",
+    "readOnly": "Vous n'avez pas la permission de modifier ce paramètre.",
+    "lastCleanup": "Dernier nettoyage exécuté le {{date}}",
+    "actions": {
+      "save": "Enregistrer"
+    },
+    "issues": {
+      "range": "Entrez un nombre entier de jours entre 1 et 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Image de marque",
     "description": "Personnalisez l’expérience du portail pour {{organization}}.",
@@ -1004,6 +1114,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilité",
+      "description": "Choisissez les informations de service que ce client peut voir dans le portail.",
+      "enableAll": "Activer toute la visibilité",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Tableau de bord",
+          "description": "Affiche un résumé de l'état du service à la connexion."
+        },
+        "enableSecurity": {
+          "label": "Sécurité",
+          "description": "Affiche la posture de sécurité, la protection, les menaces et les vulnérabilités."
+        },
+        "enableBackups": {
+          "label": "Sauvegardes",
+          "description": "Affiche la couverture des sauvegardes, la vérification, les tests de restauration et l'état de préparation."
+        },
+        "enableReports": {
+          "label": "Rapports",
+          "description": "Permet aux clients de générer et de télécharger les rapports approuvés."
+        },
+        "enableSupportUsage": {
+          "label": "Utilisation du support",
+          "description": "Affiche le total du temps de support facturable du mois en cours."
+        }
+      }
+    },
     "support": {
       "title": "Contact support",
       "description": "Montré aux clients dans le portail.",
@@ -1048,6 +1185,7 @@
     },
     "toasts": {
       "inviteSent": "Invitation envoyée",
+      "inviteSentAmbiguousContact": "Invitation envoyée, mais aucun contact n'a pu être lié — plusieurs contacts partagent cette adresse e-mail. Cet utilisateur ne verra pas les tickets reçus par e-mail tant qu'un contact ne sera pas lié.",
       "pendingInvited": "Invité {{count}} utilisateur(s) en attente",
       "inviteResent": "Invitation résignée",
       "reactivated": "Utilisateur réactivé",
@@ -1294,6 +1432,13 @@
     "monthlyBudget": "Budget mensuel ($)",
     "noLimit": "Aucune limite",
     "dailyBudget": "Budget quotidien ($)",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
+    "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
+    "periodLabel": {
+      "daily": "quotidienne",
+      "monthly": "mensuelle"
+    },
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",
@@ -1321,7 +1466,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}} — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze"
+    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
+    "creditsRemaining": "Crédits IA Breeze restants"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1339,7 +1485,7 @@
       "deleteOverride": "Retirer la dérogation",
       "confirmDelete": "Confirmer la suppression",
       "cron": "Expression cron",
-      "cronHint": "Cinq champs : minute heure jour-du-mois mois jour-de-la-semaine. Par exemple, 0 3 * * * s'exécute chaque jour à 03h00.",
+      "cronHint": "Cinq champs : minute heure jour-du-mois mois jour-de-la-semaine. Par exemple, 0 3 * * * s'exécute chaque jour à 03h00. Le champ des minutes doit être un nombre littéral ou une liste séparée par des virgules (sans *, / ni plage -) — les planifications s'exécutent au plus une fois par heure.",
       "cronInvalid": "Saisissez une expression cron valide à cinq champs avant d'enregistrer.",
       "timezone": "Fuseau horaire",
       "kinds": {
@@ -1359,6 +1505,10 @@
       "tightenOnly": "Une dérogation ne peut que restreindre la référence : elle peut désactiver le balayage ou retirer des contrôles, jamais en ajouter.",
       "noKinds": "Aucun contrôle",
       "lastRun": "Dernière exécution {{at}} · {{admitted}} organisations balayées sur {{total}}, {{skipped}} ignorées.",
+      "nextRun": "Prochaine exécution {{at}} ({{timezone}})",
+      "nextRunInvalid": "Planification invalide",
+      "nextRunNone": "Aucune exécution dans l’année qui vient.",
+      "useMyTimezone": "Utiliser mon fuseau horaire",
       "kindLabels": {
         "disk_pressure": "Pression disque",
         "stale_agents": "Agents obsolètes",
@@ -1391,10 +1541,72 @@
     "title": "Agents IA",
     "description": "Des travailleurs IA nommés, dotés d’une politique. Les partenaires définissent la référence ; les organisations peuvent seulement la restreindre.",
     "empty": "Aucun agent pour l’instant.",
+    "kindHints": {
+      "triage": "Examine les nouvelles alertes et propose la marche à suivre.",
+      "patch": "Passe en revue les correctifs manquants et propose ceux à installer.",
+      "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes."
+    },
+    "emptyState": {
+      "title": "Aucun agent pour l’instant",
+      "description": "Un agent est une politique enregistrée, pas un processus en cours : il surveille les alertes, les correctifs ou les tickets que vous choisissez, enquête avec les outils que vous autorisez, puis propose une correction ou l’applique. Commencez en mode ombre, où l’agent propose et une personne approuve, afin que rien n’atteigne un appareil avant que vous le décidiez.",
+      "action": "Créer votre premier agent"
+    },
+    "modeChoice": {
+      "legend": "Ce que cet agent peut faire",
+      "off": "Désactivé",
+      "offConsequence": "Rien ne s’exécute.",
+      "shadow": "Ombre",
+      "shadowConsequence": "Observe et propose ; une personne approuve tout.",
+      "act": "Action",
+      "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
+      "actUnavailable": "Pas encore disponible pour cet agent."
+    },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
     "stateEnabled": "Activé",
     "stateDisabled": "Désactivé",
+    "runningBadge": {
+      "running": "En cours d’exécution",
+      "notRunning": "Ne s’exécute pas"
+    },
+    "reenableNote": "Restauré, mais désactivé. Consultez sa politique avant de l’activer.",
+    "chipLabels": {
+      "kind": "Type",
+      "ownership": "Propriété",
+      "mode": "Mode",
+      "running": "Statut",
+      "baseline": "Référence du partenaire",
+      "lastRunStatus": "Résultat de la dernière exécution"
+    },
+    "inertBadge": {
+      "label": "Inactif",
+      "hint": "Aucune référence à l’échelle du partenaire n’existe encore pour ce type. Un agent propre à l’organisation ne fait que remplacer une référence : il n’a donc aucun effet tant qu’aucune n’est créée."
+    },
+    "lastRun": {
+      "never": "Jamais exécuté",
+      "at": "Dernière exécution {{at}}"
+    },
+    "disableDialog": {
+      "title": "Désactiver {{name}} ?",
+      "message": "Les exécutions futures s’arrêtent, les planifications rattachées cessent de se déclencher et les dérogations d’organisation de cet agent cessent de s’appliquer. Une exécution déjà en cours se poursuit jusqu’à sa limite de temps.",
+      "retained": "L’historique d’exécution et les preuves sont conservés. Vous pourrez réactiver l’agent plus tard depuis la liste des agents désactivés ; il revient éteint."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Enregistrez ou annulez la planification en cours de modification avant de fermer cet éditeur.",
+      "discardTitle": "Abandonner la planification non enregistrée ?",
+      "discardMessage": "La planification que vous modifiiez n’a pas été enregistrée. Fermer l’éditeur abandonne ces modifications. L’agent lui-même reste inchangé.",
+      "discardConfirm": "Abandonner la planification"
+    },
+    "disabledSection": {
+      "title": "Désactivés",
+      "hint": "Conservés pour leur historique d’exécution. Un agent réactivé revient éteint, ce qui vous laisse vérifier sa politique avant qu’il ne s’exécute de nouveau.",
+      "disabledAt": "Désactivé le {{at}}"
+    },
+    "allDisabled": {
+      "title": "Tous les agents sont désactivés",
+      "description": "Rien ne s’exécute en ce moment.",
+      "reenableCta": "Réactiver un agent"
+    },
     "errors": {
       "load": "Impossible de charger les agents.",
       "kindExists": "Un agent de ce type existe déjà pour ce propriétaire. Modifiez l’agent existant ou désactivez-le d’abord.",
@@ -1403,7 +1615,9 @@
       "actMissingRecipient": "Ajoutez au moins un destinataire de notification avant d’activer le mode Agir.",
       "actMissingTool": "Autorisez au moins un outil éligible au mode Agir, ou autorisez un script, avant de l’activer.",
       "invalidSupervisedActionKeys": "Une ou plusieurs actions sélectionnées ne peuvent pas être autorisées par la politique.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Cet agent est déjà actif.",
+      "actRecipientsUnreachable": "Les rôles de notification sélectionnés n'ont aucun membre actif, personne ne pourrait donc être sollicité. Choisissez un rôle comptant des membres avant d'activer le mode Agir."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -1411,19 +1625,24 @@
       "save": "Enregistrer",
       "cancel": "Annuler",
       "disable": "Désactiver",
-      "confirmDisable": "Confirmer la désactivation"
+      "confirmDisable": "Confirmer la désactivation",
+      "reenable": "Réactiver",
+      "runs": "Exécutions"
     },
     "toasts": {
       "saved": "Agent enregistré",
       "saveFailed": "Impossible d’enregistrer l’agent.",
       "disabled": "Agent désactivé",
-      "disableFailed": "Impossible de désactiver l’agent."
+      "disableFailed": "Impossible de désactiver l’agent.",
+      "reenabled": "Agent réactivé",
+      "reenableFailed": "Impossible de réactiver l’agent."
     },
     "issues": {
       "name": "Donnez un nom à l’agent.",
       "severities": "Sélectionnez au moins une gravité d’alerte.",
       "org": "Sélectionnez une organisation avant de créer un agent appartenant à l’organisation.",
-      "allKindsTaken": "Chaque type d’agent possède déjà un agent pour ce propriétaire. Modifiez plutôt un agent existant."
+      "allKindsTaken": "Chaque type d’agent possède déjà un agent pour ce propriétaire. Modifiez plutôt un agent existant.",
+      "unsavedSchedule": "Vous avez une planification non enregistrée. Enregistrez-la ou annulez-la avant d’enregistrer l’agent."
     },
     "editor": {
       "newTitle": "Nouvel agent",
@@ -1436,8 +1655,11 @@
     "sections": {
       "scope": "Quand il s’exécute",
       "permissions": "Autorisations",
+      "permissionsDescription": "Ce que cet agent peut toucher. La liste d’outils élargit ce qu’il peut faire ; les ressources protégées la restreignent et l’emportent toujours.",
       "policyDecide": "Autorisation de politique sans surveillance",
       "limits": "Limites",
+      "limitsBudget": "Budget et portée",
+      "limitsTiming": "Durées",
       "notifications": "Notifications",
       "instructions": "Consignes"
     },
@@ -1487,13 +1709,53 @@
       "maxFleetPercentPerDay": "Part max. du parc par jour (%)",
       "cooldownSeconds": "Délai de repos par appareil (secondes)",
       "recipientRolesHint": "Rôles notifiés lorsque cet agent formule une proposition.",
+      "recipientRolesPartner": "Rôles du partenaire",
+      "recipientRolesOrganization": "Rôles de l’organisation",
       "recipientRolesEmpty": "Aucun rôle disponible.",
       "instructionsHint": "Simples consignes — ton, ce qu’il faut vérifier en premier, conventions internes. N’accorde jamais d’autorisations.",
       "charactersLeft": "{{count}} caractères restants",
       "recipientRolesFailed": "Impossible de charger les rôles ; les destinataires des notifications ne peuvent pas être modifiés pour le moment.",
       "supervisedActionKeysHint": "Opérations que cet agent peut exécuter SANS qu’un humain clique sur approuver, lorsqu’une politique correspondante existe et que le plafond d’exposition de l’organisation le permet. Chacune passe tout de même par les garde-fous en direct, l’interrupteur d’arrêt et les plafonds par organisation au moment de l’exécution.",
       "supervisedActionKeysEmpty": "Aucune action décidable par politique n’est enregistrée.",
-      "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment."
+      "supervisedActionKeysNoneHeld": "Cet agent n'a pas encore d'opérations préautorisées.",
+      "supervisedActionKeysCeilingSummary_one": "Plafond pour les organisations — {{count}} clé",
+      "supervisedActionKeysCeilingSummary_other": "Plafond pour les organisations — {{count}} clés",
+      "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
+      "ticketAutonomousWrites": "Écritures autonomes de tickets",
+      "ticketAutonomousWritesHint": "Dérogation d'organisation uniquement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
+      "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
+      "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
+      "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
+      "recipientRoleNoMembers": "aucun membre actif"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Services système",
+        "manage_startup_items": "Éléments de démarrage",
+        "manage_scheduled_tasks": "Tâches planifiées",
+        "security_scan": "Analyse de sécurité"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Démarrer un service",
+          "stop": "Arrêter un service",
+          "restart": "Redémarrer un service"
+        },
+        "manage_startup_items": {
+          "disable": "Désactiver un élément de démarrage",
+          "enable": "Activer un élément de démarrage"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Exécuter une tâche planifiée",
+          "disable": "Désactiver une tâche planifiée",
+          "enable": "Activer une tâche planifiée"
+        },
+        "security_scan": {
+          "quarantine": "Mettre une menace en quarantaine",
+          "remove": "Supprimer une menace",
+          "restore": "Restaurer une menace"
+        }
+      }
     },
     "loading": "Chargement des agents…",
     "runs": {
@@ -1510,8 +1772,6 @@
         "status": "Statut",
         "trigger": "Déclencheur",
         "verdict": "Résultat",
-        "queued": "En file d'attente",
-        "finished": "Terminé",
         "cost": "Coût"
       },
       "statuses": {
@@ -1540,7 +1800,8 @@
       },
       "profile": {
         "sweep": "Balayage",
-        "narrative": "Rapport hebdomadaire"
+        "narrative": "Rapport hebdomadaire",
+        "triage": "Triage des tickets"
       },
       "sweep": {
         "title": "Constats du balayage",
@@ -1679,6 +1940,837 @@
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
         }
+      },
+      "triage": {
+        "title": "Triage des tickets",
+        "fieldsTitle": "Champs proposés",
+        "fields": {
+          "categoryIdLabel": "ID de catégorie",
+          "priority": "Priorité"
+        },
+        "confidence": "{{value}} % confiance",
+        "device": "Appareil correspondant : {{value}}",
+        "draftReplyTitle": "Brouillon de réponse",
+        "draftResolutionTitle": "Brouillon de note de résolution",
+        "notesTitle": "Notes",
+        "intentsTitle": "Modifications de ticket proposées",
+        "intentUnknown": "Statut indisponible",
+        "draftsWrittenTitle": "Brouillons créés",
+        "draftKinds": {
+          "reply": "Brouillon de réponse",
+          "resolutionNote": "Brouillon de note de résolution"
+        },
+        "skippedTitle": "Non appliqué",
+        "skipped": {
+          "item": {
+            "fields": "Mises à jour de champs",
+            "link": "Association d’appareil",
+            "note": "Note privée",
+            "draftReply": "Brouillon de réponse",
+            "draftResolution": "Brouillon de note de résolution"
+          },
+          "reason": {
+            "noFieldsProposed": "Aucun champ n’a été proposé.",
+            "belowConfidenceFloor": "La confiance était inférieure au seuil requis pour une écriture automatique.",
+            "humanSet": "Une personne a déjà défini ce champ.",
+            "noDeviceProposed": "Aucun appareil n’a été proposé.",
+            "deviceAlreadyLinked": "Le ticket a déjà un appareil associé.",
+            "noDraftReply": "Aucune réponse n’a été proposée.",
+            "noDraftResolution": "Aucune note de résolution n’a été proposée.",
+            "resolutionNoteExists": "Le ticket a déjà une note de résolution.",
+            "maxActionsPerRun": "Le plafond d’actions de l’exécution a été atteint en premier.",
+            "intentError": "La création de la modification a échoué.",
+            "ticketNotFound": "Le ticket est introuvable."
+          }
+        }
+      }
+    },
+    "impact": {
+      "title": "Impact de l’IA",
+      "description": "Ce que vos agents IA ont traité dans les organisations que vous pouvez voir, et le temps de travail que cela représente selon l’estimation.",
+      "windowLabel": "Période du rapport",
+      "windows": {
+        "d7": "7 derniers jours",
+        "d30": "30 derniers jours",
+        "d90": "90 derniers jours"
+      },
+      "loading": "Chargement du rapport d’impact…",
+      "refresh": "Actualiser",
+      "refreshing": "Reconstruction en cours…",
+      "retry": "Réessayer",
+      "moreActions": "Plus d’actions",
+      "errors": {
+        "load": "Impossible de charger le rapport d’impact.",
+        "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente.",
+        "tooManyOrgs": "Cette reconstruction couvre plus de {{limit}} organisations. Choisissez une seule organisation dans le sélecteur d’organisation, puis réessayez.",
+        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact.",
+        "exportPdf": "L'export PDF n'a pas pu être généré."
+      },
+      "toasts": {
+        "rebuildQueued": "Reconstruction du rapport mise en file d’attente.",
+        "rebuildComplete": "Le rapport d’impact a été reconstruit.",
+        "rebuildStillRunning": "La reconstruction est toujours en cours. Rechargez cette page dans quelques minutes pour voir les nouveaux chiffres."
+      },
+      "emptyState": {
+        "title": "Aucun résultat d’IA pour cette période",
+        "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "action": "Configurer un agent"
+      },
+      "tileGroups": {
+        "judged": "Évalués",
+        "executed": "Exécutés"
+      },
+      "tiles": {
+        "alertsJudged": "Alertes évaluées",
+        "noiseFlagged": "Signalées comme bruit",
+        "ticketsTriaged": "Tickets triés",
+        "draftsSent": "Brouillons envoyés",
+        "fixesExecuted": "Correctifs appliqués",
+        "promoteEligible": "Opérations éligibles à la promotion",
+        "promoteEligibleCaption": "Opérations disposant de suffisamment de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.",
+        "estTimeSaved": "Temps gagné estimé",
+        "estTimeSavedValue_one": "{{hours}} heure",
+        "estTimeSavedValue_other": "{{hours}} heures",
+        "estTimeSavedCaption": "Basé sur des durées fixes par résultat — modifiez les pondérations pour ajuster.",
+        "howEstimatedToggle": "Comment cette estimation est-elle calculée ?",
+        "llmSpend": "Dépenses LLM"
+      },
+      "weightsTooltipTitle": "Une estimation uniquement — chaque résultat est crédité d’une durée fixe :",
+      "weightsTooltipLine": "{{label}} : {{minutes}} min créditées par résultat",
+      "weightLabels": {
+        "alertJudged": "Alerte évaluée",
+        "noiseFlagged": "Signalée comme bruit",
+        "ticketTriaged": "Ticket trié",
+        "draftSent": "Brouillon envoyé",
+        "fixExecuted": "Correctif appliqué",
+        "narrativeDelivered": "Rapport hebdomadaire livré"
+      },
+      "chart": {
+        "title": "Résultats par jour",
+        "empty": "Aucun résultat n’a été enregistré sur cette période.",
+        "noiseFlagged": "Signalées comme bruit",
+        "alertsJudgedNet": "Alertes évaluées, hors bruit",
+        "ticketsTriaged": "Tickets triés",
+        "fixesExecuted": "Correctifs appliqués"
+      },
+      "byOrg": {
+        "title": "Par organisation",
+        "truncated": "Affichage des {{limit}} organisations ayant le temps gagné estimé le plus élevé.",
+        "columns": {
+          "organization": "Organisation",
+          "alertsJudged": "Alertes évaluées",
+          "ticketsTriaged": "Tickets triés",
+          "fixesExecuted": "Correctifs appliqués",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM"
+        }
+      },
+      "freshnessLabel": "Fraîcheur des données",
+      "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Pas encore généré — la première reconstruction s’exécute cette nuit",
+      "positiveFeedbackRate": "Taux d’avis positifs",
+      "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles",
+      "editWeights": "Modifier les pondérations",
+      "exportPdf": "Exporter en PDF",
+      "weightsDrawer": {
+        "title": "Modifier les pondérations de temps gagné",
+        "description": "Définissez le nombre de minutes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "unitSuffix": "min.",
+        "rangeHint": "Saisissez une valeur entre {{min}} et {{max}} minutes.",
+        "defaultValue": "Par défaut : {{minutes}} min.",
+        "preview": "Temps estimé économisé pour cette période : {{from}} → {{to}}",
+        "noOutcomesPreview": "Aucun résultat dans cette période à prévisualiser",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "reset": "Rétablir les valeurs par défaut",
+        "resetting": "Rétablissement…",
+        "customized": "Personnalisé",
+        "resetConfirm": {
+          "title": "Rétablir les pondérations aux valeurs par défaut ?",
+          "message": "Les six pondérations reviennent à leurs valeurs par défaut, et le temps estimé économisé sur cette page change en conséquence."
+        },
+        "errors": {
+          "save": "Les pondérations n'ont pas pu être enregistrées.",
+          "reset": "Les pondérations n'ont pas pu être réinitialisées."
+        },
+        "toasts": {
+          "saved": "Pondérations enregistrées.",
+          "reset": "Pondérations réinitialisées aux valeurs par défaut."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertes évaluées",
+          "noiseFlagged": "Signalées comme bruit",
+          "suppressionsApplied": "Suppressions appliquées",
+          "ticketsTriaged": "Tickets triés",
+          "draftsSent": "Brouillons envoyés",
+          "fixesProposed": "Correctifs proposés",
+          "fixesExecuted": "Correctifs appliqués",
+          "fixWatchesHeld": "Surveillances de correctif maintenues",
+          "fixWatchesRecurred": "Surveillances de correctif récurrentes",
+          "narrativesDelivered": "Rapports hebdomadaires livrés",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM",
+          "window": "Fenêtre du rapport (jours)",
+          "through": "Données jusqu'au (UTC)",
+          "rebuiltAt": "Dernière reconstruction"
+        },
+        "weightRowLabel": "{{label}} (minutes créditées)",
+        "neverRebuilt": "Jamais reconstruit"
+      }
+    },
+    "graduation": {
+      "title": "Habilitation progressive",
+      "description": "Ce que cet agent a démontré sur les 30 derniers jours, opération par opération, et si ces preuves suffisent à demander une exécution préautorisée.",
+      "loading": "Chargement des preuves d’habilitation…",
+      "error": "Les preuves d’habilitation n’ont pas pu être chargées.",
+      "retry": "Réessayer",
+      "noBaselineTitle": "Aucun agent de référence pour l’instant",
+      "noBaseline": "Le suivi d’habilitation démarre dès qu’un agent de référence à l’échelle du partenaire de ce type existe. Créez-en un avec la portée « Toutes les organisations » pour commencer à suivre les preuves de cette organisation.",
+      "orgRequired": "Choisissez une seule organisation dans le sélecteur d’organisations pour voir ses preuves d’habilitation.",
+      "empty": "Aucune preuve n’a encore été enregistrée pour cet agent.",
+      "readOnlyNote": "L’exécution préautorisée est désactivée sur ce déploiement ; ces chiffres sont fournis à titre indicatif.",
+      "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
+      "thresholdPerOrgNote": "Chaque organisation résout son propre seuil d’habilitation : les exécutions vérifiées sont donc affichées ici sans cible. Choisissez une seule organisation dans le sélecteur d’organisations pour voir sa cible.",
+      "approvalsLink": "Suivre cette demande dans la boîte des approbations",
+      "ceilingHint": "Les clés au niveau du partenaire sont un plafond, pas une autorisation. L’agent de chaque organisation doit recevoir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
+      "grantOnlyHint": "Les clés préautorisées d’un agent d’organisation ne sont accordées que via le panneau d’habilitation progressive par un second approbateur, et elles y sont également révoquées.",
+      "promote": "Promouvoir",
+      "revoke": "Révoquer",
+      "emptyTitle": "Aucune preuve pour l’instant",
+      "demotedAt": "Révoquée le {{at}}",
+      "demotedReason": "Motif : {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "une tentative a échoué",
+        "recurrence": "l’alerte corrigée est revenue",
+        "operator": "une personne opératrice l’a révoquée"
+      },
+      "revokeConfirm": {
+        "title": "Révoquer la préautorisation",
+        "message": "{{opKey}} retourne dans la file d’approbation de l’agent de cette organisation. Une exécution déjà en cours n’est pas affectée ; chaque suivante exige de nouveau une décision humaine.",
+        "action": "Révoquer",
+        "reasonLabel": "Motif (facultatif)",
+        "reasonHint": "Consigné dans l’entrée d’audit de cette révocation. Jusqu’à 500 caractères."
+      },
+      "verifiedOfThreshold": "{{verified}} sur {{threshold}}",
+      "columns": {
+        "opKey": "Opération",
+        "state": "État",
+        "verified": "Vérifiées",
+        "executed": "Exécutées",
+        "failed": "En échec",
+        "recurred": "Réapparitions",
+        "firstVerified": "Première vérification",
+        "blockedReason": "Pourquoi pas encore"
+      },
+      "states": {
+        "tracking": "Sous observation",
+        "eligible": "Éligible",
+        "promoted": "Promue",
+        "demoted": "Rétrogradée"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "L’agent au niveau du partenaire n’autorise pas encore cette opération.",
+        "below_threshold": "Pas encore assez d’exécutions vérifiées.",
+        "too_recent": "La première exécution vérifiée est encore trop récente.",
+        "has_failures": "Un échec ou une réapparition a été enregistré sur cette période.",
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+      },
+      "confirm": {
+        "title": "Demander une préautorisation",
+        "message": "Cela demande à une deuxième personne de préautoriser {{opKey}} pour l’agent de cette organisation. Cela ne vaut que pour les exécutions futures et n’autorise jamais une demande déjà en attente de décision.",
+        "action": "Demander l’approbation"
+      },
+      "toasts": {
+        "requested": "Préautorisation demandée. Une deuxième personne doit l’approuver avant que cette opération s’exécute sans surveillance, et cela ne vaut que pour les exécutions futures.",
+        "revoked": "Préautorisation révoquée. Cette opération exige de nouveau une décision humaine, dès la prochaine exécution."
+      },
+      "errors": {
+        "promote": "La demande de préautorisation n’a pas pu être déposée.",
+        "policyDecideDisabled": "L’exécution préautorisée est désactivée sur ce déploiement, cette opération ne peut donc pas être promue.",
+        "revoke": "La préautorisation n’a pas pu être révoquée.",
+        "noPromotedGrant": "Cette opération n’est pas préautorisée pour cette organisation, il n’y a donc rien à révoquer.",
+        "alreadyDemoted": "Cette opération est déjà revenue dans la file d’approbation.",
+        "alreadyRevoked": "Cette opération avait déjà été retirée de l’agent, rien n’a changé.",
+        "ambiguousOpKey": "Plusieurs agents détiennent cette opération pour cette organisation. Ouvrez l’agent à modifier et révoquez-la depuis celui-ci."
+      },
+      "reliability": {
+        "caption": "Opérations du mode action, en lecture seule : ce ne sont pas des clés de politique, elles ne peuvent donc jamais être préautorisées."
+      }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Alertes et supervision",
+          "description": "Afficher et gérer les alertes, les règles d'alerte et les moniteurs de disponibilité ou de services sur l'ensemble du parc."
+        },
+        "services_startup": {
+          "label": "Services et éléments de démarrage",
+          "description": "Démarrer, arrêter ou redémarrer des services ; activer ou désactiver des éléments de démarrage sur un poste."
+        },
+        "files_disk": {
+          "label": "Fichiers et disque",
+          "description": "Lire, écrire ou supprimer des fichiers et des dossiers ; analyser et nettoyer l'espace disque sur un poste."
+        },
+        "scripts_commands": {
+          "label": "Scripts et commandes",
+          "description": "Exécuter des scripts, des playbooks et des commandes système, et gérer les processus, tâches planifiées et entrées de registre concernés."
+        },
+        "tickets": {
+          "label": "Tickets d'assistance",
+          "description": "Examiner les tickets du support et proposer des réponses ou les prochaines étapes."
+        },
+        "patching_software": {
+          "label": "Correctifs et logiciels",
+          "description": "Approuver, installer ou annuler des correctifs, lancer des déploiements et gérer les politiques logicielles et les anneaux de mise à jour."
+        },
+        "security_response": {
+          "label": "Réponse de sécurité",
+          "description": "Enquêter sur les menaces et y répondre : isoler des postes, lancer des analyses de sécurité et appliquer des remédiations CIS."
+        },
+        "backup_recovery": {
+          "label": "Sauvegarde et restauration",
+          "description": "Configurer des sauvegardes et gérer la restauration des postes et des charges de travail."
+        },
+        "config_policies": {
+          "label": "Politiques de configuration",
+          "description": "Créer, assigner et examiner les politiques de configuration, DNS, navigateur et périphériques."
+        },
+        "network": {
+          "label": "Réseau",
+          "description": "Découvrir les appareils sur le réseau et gérer les référentiels liés au réseau."
+        },
+        "remote_access": {
+          "label": "Accès à distance",
+          "description": "Afficher l'écran d'un poste et prendre le contrôle à distance de sa souris et de son clavier."
+        },
+        "endpoint_agent": {
+          "label": "Agent du poste",
+          "description": "Inspecter et gérer l'agent Breeze lui-même : journaux, diagnostics et niveaux de journalisation."
+        },
+        "automations_reports": {
+          "label": "Automatisations et rapports",
+          "description": "Exécuter des automatisations, générer des rapports et gérer les groupes, étiquettes et filtres enregistrés."
+        },
+        "business": {
+          "label": "Activité commerciale",
+          "description": "Gérer les devis, les factures, les contrats et le catalogue de produits."
+        },
+        "tenancy": {
+          "label": "Gestion des organisations",
+          "description": "Gérer les organisations, les sites et les intégrations inter-organisations."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Analyse des performances de démarrage",
+        "analyze_disk_usage": "Analyse de l'utilisation du disque",
+        "analyze_fleet_metrics": "Analyse des indicateurs du parc",
+        "analyze_metrics": "Analyse des indicateurs du poste",
+        "analyze_screen": "Analyse d'écran",
+        "apply_cis_remediation": "Remédiation CIS",
+        "apply_configuration_policy": "Appliquer une politique de configuration",
+        "cancel_script_execution": "Annuler une exécution de script",
+        "capture_agent_pprof": "Capturer les diagnostics de l'agent",
+        "computer_control": "Contrôle à distance",
+        "configuration_policy_compliance": "Conformité de la politique de configuration",
+        "delete_tenant": "Supprimer une organisation",
+        "detect_log_correlations": "Détecter des corrélations de journaux",
+        "disk_cleanup": "Nettoyage de disque",
+        "execute_command": "Exécuter une commande système",
+        "execute_playbook": "Exécuter un playbook",
+        "file_operations": "Opérations sur les fichiers",
+        "generate_report": "Rapports",
+        "get_active_users": "Utilisateurs actifs",
+        "get_catalog_item": "Recherche d'un article du catalogue",
+        "get_cis_compliance": "Rapport de conformité CIS",
+        "get_cis_device_report": "Rapport CIS du poste",
+        "get_configuration_policy": "Détails de la politique de configuration",
+        "get_contract": "Détails du contrat",
+        "get_device_context": "Contexte du poste",
+        "get_device_details": "Détails du poste",
+        "get_device_vulnerabilities": "Vulnérabilités du poste",
+        "get_dns_security": "Activité de sécurité DNS",
+        "get_effective_configuration": "Configuration effective",
+        "get_fleet_findings": "Constats du parc",
+        "get_fleet_health": "Santé du parc",
+        "get_fleet_status": "État du parc",
+        "get_huntress_incidents": "Incidents Huntress",
+        "get_huntress_status": "État de Huntress",
+        "get_invoice": "Détails de la facture",
+        "get_log_trends": "Tendances des journaux",
+        "get_playbook_history": "Historique d'exécution du playbook",
+        "get_quote": "Détails du devis",
+        "get_s1_status": "État de SentinelOne",
+        "get_s1_threats": "Menaces SentinelOne",
+        "get_script_details": "Détails du script",
+        "get_script_execution": "Détails de l'exécution du script",
+        "get_script_execution_history": "Historique d'exécution du script",
+        "get_security_posture": "Posture de sécurité",
+        "get_service_monitoring_status": "État de la supervision des services",
+        "get_user_experience_metrics": "Indicateurs d'expérience utilisateur",
+        "get_vulnerability_report": "Rapport de vulnérabilités",
+        "list_configuration_policies": "Liste des politiques de configuration",
+        "list_contracts": "Liste des contrats",
+        "list_invoices": "Liste des factures",
+        "list_organizations": "Liste des organisations",
+        "list_playbooks": "Liste des playbooks",
+        "list_quotes": "Liste des devis",
+        "list_script_templates": "Liste des modèles de scripts",
+        "list_scripts": "Liste des scripts",
+        "lookup_distributor_product": "Recherche d'un produit du distributeur",
+        "m365_query_groups": "Groupes Microsoft 365",
+        "m365_query_intune_devices": "Appareils Microsoft Intune",
+        "m365_query_org": "Organisation Microsoft 365",
+        "m365_query_signins": "Connexions Microsoft 365",
+        "m365_query_sites": "Sites Microsoft 365",
+        "m365_query_users": "Utilisateurs Microsoft 365",
+        "manage_alert_rules": "Gérer les règles d'alerte",
+        "manage_alerts": "Gérer les alertes",
+        "manage_automations": "Gérer les automatisations",
+        "manage_backup_configs": "Gérer les configurations de sauvegarde",
+        "manage_configuration_policy": "Gérer les politiques de configuration",
+        "manage_contracts": "Gérer les contrats",
+        "manage_deployments": "Gérer les déploiements",
+        "manage_dns_policy": "Gérer la politique DNS",
+        "manage_groups": "Gérer les groupes de postes",
+        "manage_invoices": "Gérer les factures",
+        "manage_maintenance_windows": "Gérer les fenêtres de maintenance",
+        "manage_monitors": "Gérer les moniteurs de disponibilité",
+        "manage_organizations": "Gérer les organisations",
+        "manage_patches": "Gérer les correctifs",
+        "manage_peripheral_policies": "Gérer les politiques de périphériques",
+        "manage_policy_feature_link": "Lier une politique à une fonctionnalité",
+        "manage_service_monitors": "Gérer les moniteurs de services",
+        "manage_services": "Gérer les services",
+        "manage_software_policies": "Gérer les politiques logicielles",
+        "manage_startup_items": "Gérer les éléments de démarrage",
+        "manage_update_rings": "Gérer les anneaux de mise à jour",
+        "network_discovery": "Découverte réseau",
+        "preview_configuration_change": "Prévisualiser un changement de configuration",
+        "query_audit_log": "Interroger le journal d'audit",
+        "query_change_log": "Interroger le journal des modifications",
+        "query_devices": "Interroger les postes",
+        "query_monitors": "Interroger les moniteurs",
+        "remediate_vulnerability": "Corriger une vulnérabilité",
+        "remove_configuration_policy_assignment": "Retirer une assignation de politique de configuration",
+        "resolve_device_context": "Résoudre un poste",
+        "run_script": "Exécuter un script",
+        "s1_isolate_device": "SentinelOne : isoler un poste",
+        "s1_threat_action": "Actions sur les menaces SentinelOne",
+        "search_agent_logs": "Rechercher dans les journaux de l'agent",
+        "search_catalog": "Rechercher dans le catalogue de produits",
+        "search_logs": "Rechercher dans les journaux du poste",
+        "security_scan": "Analyse de sécurité",
+        "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
+        "set_device_context": "Définir le contexte du poste",
+        "sync_huntress_data": "Synchroniser les données Huntress",
+        "take_screenshot": "Prendre une capture d'écran"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "Appliquer la remédiation CIS",
+          "rollback": "Annuler la remédiation CIS"
+        },
+        "computer_control": {
+          "double_click": "Double-cliquer",
+          "key": "Appuyer sur une touche",
+          "left_click": "Clic gauche",
+          "middle_click": "Clic central",
+          "mouse_move": "Déplacer la souris",
+          "right_click": "Clic droit",
+          "screenshot": "Prendre une capture d'écran",
+          "scroll": "Faire défiler",
+          "type": "Saisir du texte"
+        },
+        "configuration_policy_compliance": {
+          "status": "État de conformité",
+          "summary": "Résumé de conformité"
+        },
+        "disk_cleanup": {
+          "execute": "Lancer le nettoyage de disque",
+          "preview": "Prévisualiser le nettoyage de disque"
+        },
+        "execute_command": {
+          "event_logs_list": "Lister les journaux d'événements",
+          "event_logs_query": "Interroger les journaux d'événements",
+          "file_list": "Lister les fichiers",
+          "file_read": "Lire un fichier",
+          "kill_process": "Terminer un processus",
+          "list_processes": "Lister les processus",
+          "list_services": "Lister les services",
+          "restart_service": "Redémarrer un service",
+          "start_service": "Démarrer un service",
+          "stop_service": "Arrêter un service"
+        },
+        "file_operations": {
+          "delete": "Supprimer un fichier",
+          "list": "Lister les fichiers",
+          "mkdir": "Créer un dossier",
+          "read": "Lire un fichier",
+          "rename": "Renommer un fichier",
+          "write": "Écrire un fichier"
+        },
+        "generate_report": {
+          "create": "Créer un rapport",
+          "data": "Données du rapport",
+          "delete": "Supprimer un rapport",
+          "download": "Télécharger un rapport",
+          "generate": "Générer un rapport",
+          "history": "Historique des rapports",
+          "list": "Lister les rapports",
+          "update": "Mettre à jour un rapport"
+        },
+        "get_dns_security": {
+          "allowed": "Activité DNS autorisée",
+          "blocked": "Activité DNS bloquée",
+          "redirected": "Activité DNS redirigée"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Services connus",
+          "results": "Résultats de la supervision",
+          "status": "État de la supervision",
+          "summary": "Résumé de la supervision"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Résumé des alertes",
+          "create_rule": "Créer une règle d'alerte",
+          "delete_rule": "Supprimer une règle d'alerte",
+          "get_rule": "Détails de la règle d'alerte",
+          "list_channels": "Lister les canaux de notification",
+          "list_rules": "Lister les règles d'alerte",
+          "list_templates": "Lister les modèles de règles d'alerte",
+          "test_rule": "Tester une règle d'alerte",
+          "update_rule": "Mettre à jour une règle d'alerte"
+        },
+        "manage_alerts": {
+          "acknowledge": "Accuser réception d'une alerte",
+          "get": "Détails de l'alerte",
+          "list": "Lister les alertes",
+          "resolve": "Résoudre une alerte",
+          "suppress": "Supprimer une alerte"
+        },
+        "manage_automations": {
+          "create": "Créer une automatisation",
+          "delete": "Supprimer une automatisation",
+          "disable": "Désactiver une automatisation",
+          "enable": "Activer une automatisation",
+          "get": "Détails de l'automatisation",
+          "history": "Historique d'exécution de l'automatisation",
+          "list": "Lister les automatisations",
+          "run": "Exécuter une automatisation",
+          "update": "Mettre à jour une automatisation"
+        },
+        "manage_backup_configs": {
+          "create": "Créer une configuration de sauvegarde",
+          "get": "Détails de la configuration de sauvegarde",
+          "list": "Lister les configurations de sauvegarde",
+          "update": "Mettre à jour une configuration de sauvegarde"
+        },
+        "manage_configuration_policy": {
+          "activate": "Activer une politique de configuration",
+          "create": "Créer une politique de configuration",
+          "deactivate": "Désactiver une politique de configuration",
+          "delete": "Supprimer une politique de configuration",
+          "update": "Mettre à jour une politique de configuration"
+        },
+        "manage_contracts": {
+          "activate": "Activer un contrat",
+          "add_line": "Ajouter une ligne de contrat",
+          "cancel": "Résilier un contrat",
+          "create_draft": "Créer un brouillon de contrat",
+          "delete_draft": "Supprimer un brouillon de contrat",
+          "pause": "Suspendre un contrat",
+          "remove_line": "Retirer une ligne de contrat",
+          "resume": "Reprendre un contrat",
+          "update": "Mettre à jour un contrat",
+          "update_line": "Mettre à jour une ligne de contrat"
+        },
+        "manage_deployments": {
+          "cancel": "Annuler un déploiement",
+          "create": "Créer un déploiement",
+          "device_status": "État des postes du déploiement",
+          "get": "Détails du déploiement",
+          "list": "Lister les déploiements",
+          "pause": "Suspendre un déploiement",
+          "resume": "Reprendre un déploiement",
+          "start": "Démarrer un déploiement"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Autoriser un domaine",
+          "add_block": "Bloquer un domaine",
+          "remove_allow": "Retirer un domaine autorisé",
+          "remove_block": "Retirer un domaine bloqué"
+        },
+        "manage_groups": {
+          "add_devices": "Ajouter des postes à un groupe",
+          "create": "Créer un groupe de postes",
+          "delete": "Supprimer un groupe de postes",
+          "get": "Détails du groupe de postes",
+          "list": "Lister les groupes de postes",
+          "membership_log": "Historique d'appartenance au groupe",
+          "preview": "Prévisualiser l'appartenance au groupe",
+          "remove_devices": "Retirer des postes d'un groupe",
+          "update": "Mettre à jour un groupe de postes"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Ajouter une ligne de lot",
+          "add_catalog_line": "Ajouter une ligne de catalogue",
+          "add_contract_line": "Ajouter une ligne de contrat",
+          "add_manual_line": "Ajouter une ligne manuelle",
+          "assemble_from_org": "Composer une facture à partir d'une organisation",
+          "assemble_from_ticket": "Composer une facture à partir d'un ticket",
+          "create_draft": "Créer un brouillon de facture",
+          "create_pay_link": "Créer un lien de paiement",
+          "delete_draft": "Supprimer un brouillon de facture",
+          "issue": "Émettre une facture",
+          "record_payment": "Enregistrer un paiement",
+          "remove_line": "Retirer une ligne de facture",
+          "update_header": "Mettre à jour les détails de la facture",
+          "update_line": "Mettre à jour une ligne de facture",
+          "void": "Annuler une facture",
+          "void_payment": "Annuler un paiement"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Fenêtres de maintenance actives",
+          "create": "Créer une fenêtre de maintenance",
+          "delete": "Supprimer une fenêtre de maintenance",
+          "get": "Détails de la fenêtre de maintenance",
+          "list": "Lister les fenêtres de maintenance",
+          "update": "Mettre à jour une fenêtre de maintenance"
+        },
+        "manage_monitors": {
+          "create": "Créer un moniteur",
+          "delete": "Supprimer un moniteur",
+          "get": "Détails du moniteur",
+          "update": "Mettre à jour un moniteur"
+        },
+        "manage_organizations": {
+          "add_contact": "Ajouter un contact de l'organisation",
+          "create_org": "Créer une organisation",
+          "create_site": "Créer un site",
+          "update_org": "Mettre à jour une organisation"
+        },
+        "manage_patches": {
+          "approve": "Approuver un correctif",
+          "bulk_approve": "Approuver des correctifs en masse",
+          "compliance": "Conformité des correctifs",
+          "decline": "Refuser un correctif",
+          "defer": "Différer un correctif",
+          "install": "Installer un correctif",
+          "list": "Lister les correctifs",
+          "rollback": "Annuler un correctif",
+          "scan": "Rechercher des correctifs",
+          "setup_auto_approval": "Configurer l'approbation automatique des correctifs"
+        },
+        "manage_peripheral_policies": {
+          "create": "Créer une politique de périphériques",
+          "get": "Détails de la politique de périphériques",
+          "list": "Lister les politiques de périphériques",
+          "update": "Mettre à jour une politique de périphériques"
+        },
+        "manage_policy_feature_link": {
+          "add": "Lier une politique à une fonctionnalité",
+          "list": "Lister les liaisons de politiques",
+          "remove": "Retirer une liaison de politique",
+          "update": "Mettre à jour une liaison de politique"
+        },
+        "manage_service_monitors": {
+          "list": "Lister les moniteurs de services"
+        },
+        "manage_services": {
+          "list": "Lister les services",
+          "restart": "Redémarrer un service",
+          "start": "Démarrer un service",
+          "stop": "Arrêter un service"
+        },
+        "manage_software_policies": {
+          "create": "Créer une politique logicielle",
+          "get": "Détails de la politique logicielle",
+          "list": "Lister les politiques logicielles",
+          "update": "Mettre à jour une politique logicielle"
+        },
+        "manage_startup_items": {
+          "disable": "Désactiver un élément de démarrage",
+          "enable": "Activer un élément de démarrage"
+        },
+        "manage_update_rings": {
+          "create": "Créer un anneau de mise à jour",
+          "get": "Détails de l'anneau de mise à jour",
+          "list": "Lister les anneaux de mise à jour",
+          "update": "Mettre à jour un anneau de mise à jour"
+        },
+        "s1_threat_action": {
+          "kill": "Terminer le processus d'une menace",
+          "quarantine": "Mettre une menace en quarantaine",
+          "rollback": "Annuler une action sur une menace"
+        },
+        "security_scan": {
+          "quarantine": "Mettre une menace en quarantaine",
+          "remove": "Supprimer une menace",
+          "restore": "Restaurer une menace",
+          "scan": "Lancer une analyse de sécurité",
+          "status": "État de l'analyse de sécurité",
+          "vulnerabilities": "Rechercher des vulnérabilités"
+        }
+      },
+      "alwaysOnCount_one": "{{count}} outil en lecture seule",
+      "alwaysOnCount_other": "{{count}} outils en lecture seule",
+      "highImpact": "Impact élevé",
+      "recommendedTitle": "Recommandé pour {{kind}}",
+      "recommendedDescription": "Opérations dont les agents {{kind}} ont généralement besoin.",
+      "recommendedApply": "Utiliser la recommandation",
+      "recommendedApplied": "Appliqué",
+      "searchPlaceholder": "Rechercher des capacités, outils ou actions…",
+      "showToolNames": "Afficher les noms des outils",
+      "outcome": {
+        "approval_request": "Demande d'approbation",
+        "logged_proposal": "Proposition consignée",
+        "unattended": "S'exécute sans intervention"
+      },
+      "preauthorizable": "Cette opération peut être préautorisée pour ne plus nécessiter de demande d'approbation.",
+      "notInCeiling": "Absent du référentiel du partenaire",
+      "ceilingNote": "Cette organisation ne peut activer que des opérations déjà présentes dans le référentiel de son partenaire.",
+      "moreCapabilities": "Autres capacités ({{count}})",
+      "moreCapabilitiesHint": "Capacités dont ce type d'agent n'a généralement pas besoin.",
+      "unrecognisedTitle": "Entrées non reconnues ou inaccessibles",
+      "unrecognised": {
+        "unknown_tool": "Cet outil n'existe plus.",
+        "unreachable_tool": "Cet outil n'est pas accessible aux agents.",
+        "bare_multi_op": "Cette entrée couvre toutes les actions de cet outil, y compris celles ajoutées ultérieurement. Sélectionnez plutôt des opérations individuelles.",
+        "read_only": "Lecture seule : toujours accessible à l'agent, donc cette entrée n'a aucun effet."
+      },
+      "remove": "Retirer",
+      "operationsCount_one": "{{selected}} opération sur {{total}}",
+      "operationsCount_other": "{{selected}} opérations sur {{total}}",
+      "capabilityCount_one": "{{count}} capacité",
+      "capabilityCount_other": "{{count}} capacités",
+      "summary": {
+        "shadow_one": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opération sur {{capabilityPhrase}} ({{breakdown}}) ; n'exécute rien sans intervention.",
+        "shadow_other": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilityPhrase}} ({{breakdown}}) ; n'exécute rien sans intervention.",
+        "act_one": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opération sur {{capabilityPhrase}} ({{breakdown}}) ; exécute sans intervention les opérations éligibles.",
+        "act_other": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilityPhrase}} ({{breakdown}}) ; exécute sans intervention les opérations éligibles.",
+        "off_one": "Désactivé : cet agent ne s'exécute pas. Une fois activé, il concernerait {{operations}} opération sur {{capabilityPhrase}} ({{breakdown}}).",
+        "off_other": "Désactivé : cet agent ne s'exécute pas. Une fois activé, il concernerait {{operations}} opérations sur {{capabilityPhrase}} ({{breakdown}})."
+      },
+      "modeLine": {
+        "shadow": "Mode Ombre : rien ci-dessous ne s'exécute de lui-même. Les demandes d'approbation sont envoyées à un technicien ; les changements à faible risque sont consignés comme propositions et ne sont jamais exécutés.",
+        "act": "Mode Action : les opérations marquées « S'exécute sans intervention » s'exécutent sans l'approbation d'un technicien ; tout le reste envoie toujours une demande d'approbation ou est consigné comme proposition.",
+        "off": "Désactivé : cet agent ne s'exécute pas, donc rien ci-dessous n'a d'effet pour l'instant."
+      },
+      "catalogUnavailable": "Impossible de charger le catalogue d'outils. Vous pouvez toujours modifier la liste des permissions directement ci-dessous.",
+      "loading": "Chargement des capacités…",
+      "approvalRequestCount_one": "{{count}} demande d'approbation",
+      "approvalRequestCount_other": "{{count}} demandes d'approbation",
+      "loggedProposalCount_one": "{{count}} proposition consignée",
+      "loggedProposalCount_other": "{{count}} propositions consignées",
+      "unattendedCount_one": "{{count}} sans intervention",
+      "unattendedCount_other": "{{count}} sans intervention",
+      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent."
+    },
+    "summary": {
+      "edit": "Modifier",
+      "createdDisabled": "Créé désactivé",
+      "enabled": "Activé",
+      "allOrganizations": "toutes les organisations",
+      "rowLabels": {
+        "runsWhen": "S'exécute quand",
+        "canRead": "Peut lire",
+        "mayPropose": "Peut proposer",
+        "executesUnattended": "Exécute sans surveillance",
+        "neverTouches": "Ne touche jamais",
+        "limits": "Limites",
+        "approvers": "Demande l'approbation de"
+      },
+      "runsWhen": {
+        "triage": "S'exécute lors de nouvelles alertes de gravité {{severities}} sur n'importe quel appareil.",
+        "anySeverity": "toute gravité",
+        "patch": "S'exécute selon un calendrier, ou lorsqu'il est déclenché manuellement, pour examiner les correctifs manquants.",
+        "helpdesk": "S'exécute quand un ticket est créé, reçoit sa première réponse ou est marqué comme résolu.",
+        "maintenanceWindows": "Attend la fin des fenêtres de maintenance.",
+        "ticketWrites": "Écrit des mises à jour de ticket sans attendre un technicien."
+      },
+      "canRead": "Données d'appareils, d'alertes et de parc pour {{scope}} : inventaire, métriques, journaux, correctifs, sauvegardes, tickets et historique d'audit ({{count}} outils en lecture seule, toujours actifs).",
+      "mayProposeNone": "Cet agent ne propose encore aucune opération.",
+      "unrecognisedLabel": "Non reconnues par le catalogue d'outils actuel :",
+      "executesUnattendedNone": "Rien. Le mode observation se contente d'observer et de proposer ; rien ne s'exécute sans l'approbation d'un technicien.",
+      "executesUnattendedNoneAct": "Rien pour l'instant — aucune opération sélectionnée n'est éligible à une exécution sans surveillance.",
+      "executesUnattendedList": "Exécute {{list}} sans attendre l'approbation d'un technicien.",
+      "preauthorizedNote": "Certaines sont des opérations préautorisées, accordées à l'avance via le processus de contrôle à quatre yeux.",
+      "neverTouchesEmpty": "Rien n'est encore protégé.",
+      "limits": "Jusqu'à {{devices}} par exécution, {{runs}}, {{minutes}} par exécution, un budget quotidien de {{budget}}, pas plus de {{fleetPercent}} du parc par jour, et {{cooldown}} entre deux exécutions sur le même appareil.",
+      "approversNone": "Aucun rôle n'est encore configuré, donc personne ne sera notifié.",
+      "mayPropose_one": "{{count}} opération répartie sur {{capabilityPhrase}} : {{breakdown}}.",
+      "mayPropose_other": "{{count}} opérations réparties sur {{capabilityPhrase}} : {{breakdown}}.",
+      "approvalCount_one": "{{count}} déclenche une demande d'approbation qu'un technicien tranche",
+      "approvalCount_other": "{{count}} déclenchent une demande d'approbation qu'un technicien tranche",
+      "loggedCount_one": "{{count}} est consignée comme proposition et n'est jamais exécutée",
+      "loggedCount_other": "{{count}} sont consignées comme propositions et ne sont jamais exécutées",
+      "unattendedCount_one": "{{count}} s'exécute sans intervention",
+      "unattendedCount_other": "{{count}} s'exécutent sans intervention",
+      "deviceCount_one": "{{count}} appareil",
+      "deviceCount_other": "{{count}} appareils",
+      "runsPerHourCount_one": "{{count}} exécution par heure",
+      "runsPerHourCount_other": "{{count}} exécutions par heure",
+      "minuteCount_one": "{{count}} minute",
+      "minuteCount_other": "{{count}} minutes",
+      "approvers_one": "{{roles}} est sollicité, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approvers_other": "{{roles}} sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversCount_one": "{{count}} rôle est sollicité, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversCount_other": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "scriptGateNote": "{{list}} ne s'exécutera sans intervention qu'une fois un script autorisé pour cet agent ; d'ici là, une demande d'approbation est déclenchée."
+    },
+    "flow": {
+      "title": "Nouvel agent",
+      "stepperAriaLabel": "Étapes du nouvel agent",
+      "back": "Retour",
+      "next": "Suivant : {{step}}",
+      "createAgent": "Créer l'agent",
+      "createdDisabledNote": "Les nouveaux agents sont créés désactivés. Vous déciderez de le démarrer à la dernière étape, après avoir tout vérifié.",
+      "startEnabled": "Démarrer activé",
+      "startEnabledHint": "Désactivé est le choix sûr par défaut. Vérifiez le résumé ci-dessus, puis activez ceci lorsque vous voulez que l'agent commence à fonctionner.",
+      "previewFailed": "Impossible de charger un aperçu en direct de la politique de cet agent. Vous pouvez tout de même le créer — vérifiez vos choix attentivement au préalable.",
+      "previewLoading": "Chargement de l'aperçu…",
+      "protectedResourcesLegend": "Ressources protégées",
+      "steps": {
+        "purpose": {
+          "label": "Objectif et posture",
+          "description": "Mode, type, propriété et nom"
+        },
+        "does": {
+          "label": "Ce qu'il fait",
+          "description": "Déclencheurs et capacités"
+        },
+        "safety": {
+          "label": "Sécurité et supervision",
+          "description": "Ressources protégées, limites et approbateurs"
+        },
+        "review": {
+          "label": "Vérifier et créer",
+          "description": "Confirmez ce que cet agent va faire"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Surveille les alertes et propose des correctifs pour celles qui comptent.",
+          "runsWhen": "une nouvelle alerte atteint les gravités que vous choisissez",
+          "recommended": "redémarrer les services bloqués et libérer de l'espace disque"
+        },
+        "patch": {
+          "blurb": "Examine les correctifs manquants et propose lesquels installer.",
+          "runsWhen": "son horaire se déclenche, ou vous le déclenchez manuellement",
+          "recommended": "approuver et installer les correctifs, puis redémarrer les services concernés"
+        },
+        "helpdesk": {
+          "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
+          "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
+          "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "S'exécute quand :",
+        "recommendedPrefix": "Recommandé :",
+        "taken": "Déjà utilisé pour ce propriétaire"
       }
     }
   },
@@ -1910,7 +3002,7 @@
     "remove": "Retirer",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Importation depuis URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG ou WebP jusqu’à 5 Mo.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG ou JPEG, jusqu’à 5 Mo.",
     "saveTheItemFirstThenAddAProductImage": "enregistrez d’abord l’article, puis ajoutez une image produit.",
     "thisItemIsABundle": "Cet élément est un paquet",
     "groupsOtherCatalogItemsSoldTogether": "Regroupe d’autres articles de catalogue vendus ensemble.",
@@ -2105,7 +3197,12 @@
     "phoneVerifiedLast4": "(téléphone vérifié : ...{{last4}})",
     "recoveryCodes": "Codes de récupération",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilisez ces codes pour accéder à votre compte si vous perdez votre authentificateur.",
-    "viewCodes": "Voir les codes",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Les codes de récupération ne s’affichent qu’une seule fois et ne peuvent pas être réaffichés.",
+    "regenerateRecoveryCodes": "Régénérer les codes de récupération",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Les codes existants ne peuvent pas être réaffichés. La régénération émet une nouvelle série et invalide immédiatement l’ancienne.",
+    "regenerateRecoveryCodesQuestion": "Régénérer les codes de récupération ?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La régénération invalide immédiatement tous les codes de récupération que vous avez conservés, y compris les copies imprimées. Les nouveaux codes s’affichent une seule fois, juste après leur génération.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Ce code a été refusé. Votre code QR reste valide : attendez le prochain code de votre authentificateur, puis réessayez.",
     "confirmYourPassword": "Confirmez votre mot de passe",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Saisissez à nouveau votre mot de passe de compte pour commencer à configurer une application d’authentification.",
     "setUpAuthenticator": "Configurez l’authentificateur",
@@ -2117,7 +3214,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Saisissez à nouveau votre mot de passe de compte pour confirmer ce changement.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Enregistrez ces codes dans un endroit sûr. Vous pouvez les utiliser pour accéder à votre compte si vous perdez votre appareil authentificateur.",
     "copyCodes": "Copier les codes",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Cliquez sur le bouton ci-dessous pour voir ou générer de nouveaux codes de récupération.",
+    "copiedCodes": "Copié",
+    "copyCodesFailed": "Impossible de copier dans le presse-papiers. Sélectionnez les codes ci-dessus et copiez-les manuellement.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Chaque code ne peut être utilisé qu’une seule fois. Générer de nouveaux codes invalidera tout code déjà généré.",
     "back": "Retour",
     "smsSentToPhone": "Des codes SMS envoyés au téléphone se terminant par {{last4}}.",
@@ -2141,7 +3239,6 @@
     "disabling": "Désactivant...",
     "generating": "Générer...",
     "regenerateCodes": "Régénération des codes",
-    "showRecoveryCodes": "Afficher les codes de récupération",
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
@@ -2903,6 +4000,8 @@
     "archived": {
       "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour effectuer des modifications.",
       "bannerWithDate": "Cette organisation est archivée ; la purge est prévue pour le {{date}}. Restaurez-la pour effectuer des modifications.",
+      "drainBanner": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés et elle reste en lecture seule jusqu'à la fin du processus.",
+      "drainBannerWithDate": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et la purge est prévue pour le {{date}}.",
       "restoreLink": "Restaurer cette organisation",
       "saveBlocked": "Cette organisation est archivée et ne peut pas être modifiée. Restaurez-la d’abord."
     },
@@ -2914,6 +4013,8 @@
       "organization": "Organisation",
       "general": "Généralités",
       "generalDescription": "Profil et paramètres par défaut",
+      "contacts": "Contacts",
+      "contactsDescription": "Personnes à joindre chez ce client, par site ou pour toute l’organisation",
       "contracts": "Contrats",
       "contractsDescription": "Accords récurrents",
       "billing": "Facturation",
@@ -2936,6 +4037,8 @@
       "remoteAccessDescription": "VNC, proxy et tunnels",
       "eventLogs": "Journaux d’événements",
       "eventLogsDescription": "Transfert et conservation",
+      "auditRetention": "Conservation des audits",
+      "auditRetentionDescription": "Durée de conservation des journaux d'audit",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "E-mail, Slack, webhooks",
@@ -3438,12 +4541,14 @@
       "empty": "Aucune organisation archivée.",
       "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
       "badge": "Archivée",
+      "archivingBadge": "Archivage en cours…",
       "keptIndefinitely": "Conservée indéfiniment",
       "purgeToday": "Suppression définitive aujourd'hui",
       "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
       "purgeCountdown_other": "Suppression définitive dans {{count}} jours",
       "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
       "readOnlyNotice": "Cette organisation est archivée et en lecture seule. Restaurez-la pour reprendre un accès normal.",
+      "drainNotice": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et elle reste en lecture seule jusqu'à la fin du processus. Restaurez-la pour annuler et la ramener.",
       "errors": {
         "fetch": "Échec du chargement des organisations archivées"
       }
@@ -3513,7 +4618,8 @@
       "title": "Dispositifs",
       "assigned": "Appareils attribués à ce site",
       "viewAll": "Voir tous les appareils"
-    }
+    },
+    "allContactsLink": "Tous les contacts de ce client"
   },
   "siteForm": {
     "description": "Seul le nom du site est requis. L’adresse et le contact sont optionnels — vous pourrez les remplir plus tard.",
@@ -3594,6 +4700,12 @@
     "description": "Définissez des attributs personnalisés pour suivre des informations supplémentaires sur les appareils.",
     "searchPlaceholder": "Rechercher des champs...",
     "allTypes": "Tous types",
+    "allOrganizations": "Toutes les organisations",
+    "ownerScope": {
+      "legend": "S'applique à",
+      "allOrganizations": "Toutes les organisations (à l'échelle du partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
     "actions": {
       "add": "Ajouter un champ personnalisé",
       "addFirst": "Ajoutez votre premier champ personnalisé",
@@ -3601,7 +4713,8 @@
       "createField": "Créer un champ",
       "saveChanges": "Enregistrer les modifications",
       "deleting": "Suppression…",
-      "deleteField": "Supprimer le champ"
+      "deleteField": "Supprimer le champ",
+      "importFromRmm": "Importer depuis un autre RMM"
     },
     "errors": {
       "fetch": "Impossible de récupérer des champs personnalisés",
@@ -3618,7 +4731,8 @@
     },
     "columns": {
       "key": "Clé",
-      "deviceTypes": "Types d’appareils"
+      "deviceTypes": "Types d’appareils",
+      "scriptWrite": "Écriture par script"
     },
     "fieldTypes": {
       "text": {
@@ -3659,6 +4773,8 @@
       "fieldKey": "Clé de Terrain",
       "fieldKeyPlaceholder": "par exemple, asset_tag",
       "fieldKeyHelp": "Utilisé dans les filtres et API. Ne peut pas être modifié après la création.",
+      "fieldKeyScriptHelp": "Cette clé est ce que les scripts utilisent pour lire et écrire le champ. Lecture : associez la source d’un paramètre de script à « À partir d’un champ personnalisé de l’appareil » en utilisant cette clé. Écriture : faites appeler par le script l’API des champs personnalisés de l’appareil avec une requête PATCH et une clé API pour enregistrer une nouvelle valeur.",
+      "fieldKeyScriptHelpAriaLabel": "À propos de l’utilisation de ce champ dans les scripts",
       "fieldType": "Type de champ",
       "dropdownChoices": "Choix déroulants",
       "choiceLabel": "Libellé",
@@ -3670,7 +4786,9 @@
       "patternPlaceholder": "par exemple, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Types d’appareils (optionnel)",
       "deviceTypesHelp": "Laisser vide pour s’afficher sur tous les types d’appareils",
-      "requiredField": "Champ requis"
+      "requiredField": "Champ requis",
+      "scriptWrite": "Autoriser les scripts à écrire dans ce champ",
+      "scriptWriteHelp": "Les scripts exécutés sur un appareil peuvent définir ce champ en affichant ::breeze:custom-fields:: {\"key\": \"value\"}. La valeur apparaît aussi dans la sortie enregistrée du script — n’y inscrivez jamais de secret."
     },
     "delete": {
       "title": "Supprimer le champ personnalisé",
@@ -3951,5 +5069,180 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
     "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "Les personnes que votre équipe joint chez ce client. Un contact peut être rattaché à un site ou valoir pour toute l’organisation.",
+    "organizationLevel": "Organisation",
+    "unknownSite": "Site indisponible",
+    "empty": "Aucun contact pour l’instant. Ajoutez-en un, ou importez un CSV depuis votre ancien outil.",
+    "loading": "Chargement des contacts…",
+    "confirmDelete": "Supprimer {{name}} ? Cette action est irréversible.",
+    "actions": {
+      "add": "Ajouter un contact",
+      "import": "Importer un CSV",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer le contact",
+      "saving": "Enregistrement…",
+      "cancel": "Annuler",
+      "retry": "Réessayer"
+    },
+    "filters": {
+      "site": "Filtrer par site",
+      "role": "Filtrer par rôle",
+      "allSites": "Tous les sites",
+      "allRoles": "Tous les rôles"
+    },
+    "columns": {
+      "name": "Nom",
+      "reach": "Comment les joindre",
+      "jobTitle": "Fonction",
+      "roles": "Rôles",
+      "site": "Rattaché à",
+      "actions": "Opérations"
+    },
+    "primary": {
+      "organization": "Principal (organisation)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Facturation",
+      "technical": "Technique",
+      "escalation": "Escalade",
+      "admin": "Administration",
+      "site": "Site",
+      "afterHours": "Hors heures ouvrées",
+      "portal": "Portail"
+    },
+    "form": {
+      "addHeading": "Nouveau contact",
+      "editHeading": "Modifier le contact",
+      "identifierRequired": "Renseignez au moins un élément : nom, adresse e-mail, téléphone ou portable.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse e-mail",
+        "phone": "Téléphone",
+        "mobile": "Portable",
+        "title": "Fonction",
+        "site": "Rattaché à",
+        "roles": "Rôles",
+        "notes": "Remarques",
+        "isPrimary": "Définir comme contact principal du périmètre choisi ci-dessus"
+      }
+    },
+    "pagination": {
+      "summary": "Affichage de {{from}} à {{to}} sur {{total}}",
+      "previous": "Précédent",
+      "next": "Suivant"
+    },
+    "toasts": {
+      "created": "Contact ajouté",
+      "updated": "Contact enregistré",
+      "deleted": "Contact supprimé"
+    },
+    "errors": {
+      "load": "Impossible de charger les contacts de cette organisation.",
+      "sites": "Impossible de charger les sites de cette organisation. Les noms de site et le filtre par site restent indisponibles.",
+      "create": "Impossible d’ajouter le contact.",
+      "update": "Impossible d’enregistrer le contact.",
+      "delete": "Impossible de supprimer le contact."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importer des contacts depuis un CSV",
+    "description": "Téléversez un export de contacts de votre ancien RMM ou PSA. Chaque ligne est rattachée à cette organisation.",
+    "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
+    "dropzoneHint": "Associez au moins un élément : nom, adresse e-mail, téléphone ou portable — sans cela il n’y a pas de contact.",
+    "actions": {
+      "close": "Fermer",
+      "preview": "Vérifier {{count}} lignes",
+      "previewing": "Vérification…",
+      "import": "Importer {{count}} sélectionnées",
+      "importing": "Import en cours…"
+    },
+    "mapping": {
+      "heading": "Correspondance des colonnes",
+      "unmapped": "Non associée",
+      "identifierRequired": "Associez une colonne nom, adresse e-mail, téléphone ou portable pour continuer.",
+      "droppedRows_one": "{{count}} ligne ignorée : ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "droppedRows_other": "{{count}} lignes ignorées : ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "tooManyRows": "Ce fichier associe {{count}} lignes, soit plus que les {{max}} acceptées par import. Découpez-le en fichiers plus petits.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse e-mail",
+        "phone": "Téléphone",
+        "mobile": "Portable",
+        "title": "Fonction",
+        "roles": "Rôles",
+        "site": "Site",
+        "externalId": "Identifiant du contact dans le système source",
+        "externalSystem": "Système source"
+      }
+    },
+    "mode": {
+      "label": "Contacts déjà liés",
+      "skip": "Les laisser inchangés",
+      "update": "Y fusionner le fichier"
+    },
+    "preview": {
+      "heading": "Ce qui va se passer"
+    },
+    "summary": {
+      "imported": "{{count}} ajoutés",
+      "updated": "{{count}} fusionnés",
+      "skipped": "{{count}} inchangés",
+      "failed": "{{count}} refusées",
+      "allFailed": "Rien n’a été importé — {{summary}}.",
+      "nothingImported": "Rien d’importé : {{count}} déjà liés.",
+      "nothingImportedEmpty": "Rien n’a été importé."
+    },
+    "failures": {
+      "title_one": "{{count}} ligne a été refusée",
+      "title_other": "{{count}} lignes ont été refusées"
+    },
+    "skipped": {
+      "title_one": "{{count}} ligne a été laissée inchangée",
+      "title_other": "{{count}} lignes ont été laissées inchangées",
+      "reasons": {
+        "alreadyLinked": "déjà lié à un contact existant"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La ligne est ambiguë par rapport aux contacts déjà présents.",
+      "orgNotFound": "Cette organisation n’est plus accessible pour vous.",
+      "annotationChanged": "Cette ligne a changé depuis l’aperçu. Vérifiez à nouveau le fichier.",
+      "matchChanged": "Cette ligne correspond désormais à un autre contact. Vérifiez à nouveau le fichier.",
+      "matchUnconfirmed": "Cochez la ligne puis relancez l’import pour confirmer la correspondance.",
+      "writeFailed": "La base de données a refusé l’écriture. Rien n’a été enregistré pour cette ligne.",
+      "noIdentifier": "Il ne reste à la ligne ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "invalidRole": "La ligne nomme un rôle que Breeze ne connaît pas.",
+      "siteNotInOrg": "Le site de cette ligne n’appartient pas à cette organisation."
+    },
+    "errors": {
+      "previewFailed": "Impossible de comparer le fichier aux contacts existants.",
+      "importFailed": "Impossible d’importer les contacts sélectionnés.",
+      "fileRead": "Impossible de lire ce fichier. Sélectionnez-le à nouveau.",
+      "noColumns": "Ce fichier n’a pas de ligne d’en-tête : il n’y a donc rien à associer."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Sélectionner toutes les lignes nouvelles et liées",
+    "organizationLevel": "Organisation",
+    "matches": "correspond à « {{name}} »",
+    "columns": {
+      "name": "Nom",
+      "email": "Adresse e-mail",
+      "site": "Site",
+      "status": "Résultat"
+    },
+    "badges": {
+      "create": "Nouveau",
+      "linkMatch": "Déjà lié",
+      "emailMatch": "Correspondance d’e-mail — à confirmer",
+      "nameMatch": "Correspondance de nom — à confirmer",
+      "conflict": "Conflit",
+      "orgNotFound": "Organisation introuvable"
+    }
   }
 }

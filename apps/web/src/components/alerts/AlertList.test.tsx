@@ -24,6 +24,7 @@ const baseVerdict: AlertAiVerdictSummaryDto = {
   rationale: 'Disk usage climbing steadily with no self-heal.',
   patternKind: null,
   feedback: null,
+  feedbackBy: null,
   suggestedIntentId: null,
   createdAt: '2026-08-28T00:00:00Z',
 };

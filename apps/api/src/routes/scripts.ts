@@ -5,16 +5,15 @@ import {
   exitCodeSeverityMappingSchema,
   scriptParameterDefinitionsEqual,
   scriptParameterDefinitionsSchema,
-  scriptParametersSchema,
 } from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
+import { executeScriptSchema } from '../services/scriptRunRequest';
 import { db } from '../db';
 import {
   scripts,
   scriptExecutions,
   devices,
-  deviceCommands,
   automationPolicies,
   patchPolicies,
   configPolicyComplianceRules,
@@ -42,8 +41,27 @@ import {
   findSecretVariableReferences,
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
+import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 
-import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import {
+  MAX_GRACE_SECONDS,
+  cancelScriptExecution,
+  clampGraceSeconds,
+  deliverCancelCommand,
+} from '../services/scriptCancellation';
+import { captureException } from '../services/sentry';
+
+/**
+ * #3525 W02b — optional body of POST /executions/:id/cancel.
+ *
+ * The bound mirrors `MAX_GRACE_SECONDS`, which the agent is contractually
+ * promised never to exceed; keeping the two in one place stops the API from
+ * advertising a grace the fleet will not honour.
+ */
+const cancelExecutionBodySchema = z.object({
+  graceSeconds: z.number().int().min(0).max(MAX_GRACE_SECONDS).optional(),
+}).optional();
+
 export const scriptRoutes = new Hono();
 
 // Helper functions
@@ -254,6 +272,15 @@ const createScriptSchema = z.object({
   availability: z.enum(['org', 'partner']).optional()
 });
 
+// Optional retarget/rename body for POST /scripts/:id/clone (#4887). Omitted
+// fields fall back to the source script — see resolveScriptCloneScope.
+// `.strict()` so a mis-keyed field is a 400, not silently ignored (mirrors
+// cloneQuoteSchema).
+const cloneScriptSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  orgId: z.string().guid().optional(),
+}).strict();
+
 const updateScriptSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
@@ -274,48 +301,12 @@ const updateScriptSchema = z.object({
   orgId: z.string().guid().nullable().optional()
 });
 
-export const executeScriptSchema = z
-  .object({
-    // Capped at 500: queueCommand fires an un-awaited, fire-and-forget audit
-    // transaction PER DEVICE for 'script' commands (AUDITED_COMMANDS in
-    // commandQueue.ts). The dispatch loop in scriptExecution.ts is sequential
-    // and awaited, but those audit transactions are not — an unbounded batch
-    // would launch hundreds of concurrent transactions against a pool sized
-    // for far fewer while this request also holds a connection, the same
-    // pool-starvation shape that has caused prior production incidents.
-    deviceIds: z.array(z.string().guid()).min(1).max(500, {
-      message: 'Cannot target more than 500 devices in a single script execution',
-    }),
-    // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared) —
-    // accepts string/number/boolean values, canonicalized to strings once at
-    // dispatch (scriptDispatch.ts). The 64KB cap is kept ON TOP of the
-    // schema's own count/length caps: it bounds the raw JSON body size this
-    // route ever accepts, independent of the canonicalized wire form.
-    parameters: scriptParametersSchema.refine(
-      (val) => JSON.stringify(val).length <= 65536,
-      { message: 'Object too large (max 64KB)' }
-    ).optional(),
-    // Deliberately omits 'automation' even though the DB enum has it (#3162):
-    // that value is provenance minted only by the automation runtime, and an
-    // API caller must not be able to forge it. Don't "fix" this to match the
-    // column type.
-    triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
-    runAs: z.enum(['system', 'user']).optional(),
-    // Windows session to run the user-context script in (RDS session
-    // targeting). Session ids are per-device, hence single-device only.
-    // min(1): session 0 is never an interactive session — the agent rejects
-    // it with a typed error, but rejecting here saves the round trip
-    // (amended during execution after the Task 6 session-0 finding).
-    targetSessionId: z.number().int().min(1).max(65535).optional(),
-  })
-  .refine((d) => d.targetSessionId == null || d.runAs === 'user', {
-    message: 'targetSessionId requires runAs=user',
-    path: ['targetSessionId'],
-  })
-  .refine((d) => d.targetSessionId == null || d.deviceIds.length === 1, {
-    message: 'targetSessionId requires exactly one device',
-    path: ['targetSessionId'],
-  });
+// The execute-request contract lives in services/scriptRunRequest.ts so
+// non-route callers (the AI `run_script` / `execute_script_on_device` tools,
+// #4888) validate an assistant-chosen run context against the SAME object a
+// human request clears. Re-exported here because this has always been its
+// import path.
+export { executeScriptSchema };
 
 const listExecutionsSchema = z.object({
   page: z.string().optional(),
@@ -973,6 +964,53 @@ scriptRoutes.delete(
   }
 );
 
+// POST /scripts/:id/clone - Duplicate an existing script (#4887). Tenancy
+// resolution, the save-time secret checks, and tag copying all live in
+// services/scriptClone.ts (cloneScript) so this handler stays a thin
+// body-parsing + status-mapping wrapper, matching POST /quotes/:id/clone.
+scriptRoutes.post(
+  '/:id/clone',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
+  zValidator('param', scriptIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: scriptId } = c.req.valid('param');
+
+    // Optional retarget/rename body, same discipline as POST /quotes/:id/clone:
+    // an ABSENT body degrades to a plain same-scope clone; ANY non-empty body
+    // that fails to read, parse, or validate is a 400 — never a silent
+    // same-scope clone of a retarget the caller intended.
+    let input: { name?: string; orgId?: string } = {};
+    let raw: string;
+    try { raw = await c.req.text(); } catch { return c.json({ error: 'Failed to read request body' }, 400); }
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = cloneScriptSchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid clone options' }, 400);
+      input = parsed.data;
+    }
+
+    const result = await cloneScript(auth, scriptId, input);
+    if (isScriptCloneError(result)) {
+      return c.json({ error: result.error }, result.status);
+    }
+
+    writeRouteAudit(c, {
+      orgId: resolveScriptAuditOrgId(auth, result.script.orgId ?? null),
+      action: 'script.clone',
+      resourceType: 'script',
+      resourceId: result.script.id,
+      resourceName: result.script.name,
+      details: { sourceScriptId: scriptId }
+    });
+
+    return c.json(result.script, 201);
+  }
+);
+
 // POST /scripts/:id/execute - Execute script on specific devices
 scriptRoutes.post(
   '/:id/execute',
@@ -998,74 +1036,33 @@ scriptRoutes.post(
     });
 
     if (!result.ok) {
-      return c.json({
-        error: result.error,
-        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
-      }, result.status);
+      return c.json({ error: result.error }, result.status);
     }
 
-    // Every target device failed to dispatch (#3409 PR2's per-device failure
-    // channel — e.g. an unresolved or secret {{var.*}} token). The service
-    // still reports ok:true because the request itself was valid, but nothing
-    // was queued, so returning 201 {status:'queued', executions:[]} would show
-    // the caller a success toast for a run that dispatched to no one. Returned
-    // before the audit, matching the maintenance-suppressed path above: an
-    // error return does not write a `script.execute` success record.
-    if (result.executions.length === 0 && result.failures.length > 0) {
-      return c.json({
-        error: `Script could not be dispatched to any target device: ${result.failures[0]!.error}`,
-        failures: result.failures,
-      }, 422);
+    if (result.admission.targets.some((target) => target.admission === 'admitted')) {
+      const batchIds = [...new Set(
+        result.admission.targets.flatMap((target) => target.batchId ? [target.batchId] : []),
+      )];
+      writeRouteAudit(c, {
+        orgId: result.auditOrgId,
+        action: 'script.execute',
+        resourceType: 'script',
+        resourceId: result.script.id,
+        resourceName: result.script.name,
+        details: {
+          requestId: result.admission.requestId,
+          admissionStatus: result.admission.status,
+          targets: result.admission.targets,
+          batchIds,
+          triggerType: result.triggerType,
+          runAs: result.runAs,
+          // Keys only. Caller-supplied values must never enter the audit row.
+          ignoredParameterKeys: result.ignoredParameters,
+        }
+      });
     }
 
-    writeRouteAudit(c, {
-      orgId: result.auditOrgId,
-      action: 'script.execute',
-      resourceType: 'script',
-      resourceId: result.script.id,
-      resourceName: result.script.name,
-      details: {
-        batchId: result.batchId,
-        batchIds: result.batchIds,
-        devicesTargeted: result.devicesTargeted,
-        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
-        triggerType: result.triggerType,
-        runAs: result.runAs,
-        // #3409 PR3 §2.2 — bound parameters the caller supplied a value for.
-        // The binding won and the supplied value was dropped, so the audit
-        // trail must record that the run did NOT use what the caller sent.
-        // KEYS ONLY, never values: a caller can send anything under a bound
-        // key (including the secret they thought they were overriding), and
-        // audit details are long-lived and widely readable.
-        //
-        // A distinct, self-describing field rather than folding these into an
-        // existing one: audit `details` is an untyped jsonb bag shared across
-        // every action in this repo, and overloading a generic key there has
-        // already produced one cross-meaning collision (`deviceId`).
-        ignoredParameterKeys: result.ignoredParameters,
-      }
-    });
-
-    return c.json({
-      batchId: result.batchId,
-      batchIds: result.batchIds,
-      scriptId,
-      devicesTargeted: result.devicesTargeted,
-      maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds.length > 0
-        ? result.maintenanceSuppressedDeviceIds
-        : undefined,
-      executions: result.executions,
-      // Partial failure: some devices dispatched, others didn't (the
-      // all-failed case returned 422 above). Omitted when empty so the
-      // common clean-run response shape is unchanged.
-      failures: result.failures.length > 0 ? result.failures : undefined,
-      // Bound parameter keys whose caller-supplied value was ignored (#3409
-      // PR3 §2.2) — the binding is authoritative. Omitted when empty, exactly
-      // like `failures` above, so the common clean-run response shape is
-      // unchanged and a client can treat presence alone as "warn the user".
-      ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
-      status: result.status,
-    }, 201);
+    return c.json(result.admission, 201);
   }
 );
 
@@ -1135,6 +1132,11 @@ scriptRoutes.get(
         exitCode: scriptExecutions.exitCode,
         errorMessage: scriptExecutions.errorMessage,
         createdAt: scriptExecutions.createdAt,
+        // #4888 — the run context this row actually ran in. NULL for rows
+        // written before the column existed; the UI renders that as unknown
+        // rather than guessing 'system'.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType
       })
@@ -1178,7 +1180,14 @@ scriptRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #2698 — what the script's custom-field write-back applied/rejected.
+        // NULL for every run that emitted no marker. Wave 2 renders it; without
+        // it here the summary would be stored but unreachable by any caller.
+        customFieldResult: scriptExecutions.customFieldResult,
         createdAt: scriptExecutions.createdAt,
+        // #4888 — see the list endpoint above.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         scriptName: scripts.name,
         scriptLanguage: scripts.language,
         deviceHostname: devices.hostname,
@@ -1211,7 +1220,14 @@ scriptRoutes.get(
   }
 );
 
-// POST /executions/:id/cancel - Cancel pending/running execution
+// POST /executions/:id/cancel - Request a stop for a pending/queued/running execution
+//
+// #3525 W02b. This route no longer stamps `cancelled` itself. It owns the
+// org / site / permission / MFA gates and the audit row; every state decision
+// lives in services/scriptCancellation so the route, the AI tool and the
+// automation fan-out cannot drift. A row only ever becomes `cancelled` when the
+// stop was PROVEN — server-side by retracting an undelivered command, or by the
+// device's own ack.
 scriptRoutes.post(
   '/executions/:id/cancel',
   requireScope('organization', 'partner', 'system'),
@@ -1221,6 +1237,35 @@ scriptRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: executionId } = c.req.valid('param');
+
+    // An absent body is the normal case (the web Stop button sends none), so
+    // this is parsed by hand rather than with zValidator('json'), which would
+    // 400 on no body at all. A body that IS present and out of range is
+    // rejected rather than silently reinterpreted: the agent is only promised
+    // 0..30 s, and quietly turning a requested 999 into the 5 s default would
+    // misreport what the endpoint is about to do.
+    //
+    // The empty/malformed split matters for the same reason: `c.req.json()`
+    // throws the same SyntaxError for both, so a bare `.catch(() => ({}))`
+    // would read a truncated `{"graceSeconds":30` as "no grace requested" and
+    // quietly hand the agent 5 s — the very substitution the range check below
+    // refuses, just one step earlier.
+    const rawText = await c.req.text().catch(() => '');
+    let rawBody: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: 'Malformed JSON body' }, 400);
+      }
+    }
+    const parsedBody = cancelExecutionBodySchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return c.json({
+        error: `graceSeconds must be an integer between 0 and ${MAX_GRACE_SECONDS}`,
+      }, 400);
+    }
+    const graceSeconds = parsedBody.data?.graceSeconds;
 
     // Get execution
     const [execution] = await db
@@ -1251,65 +1296,82 @@ scriptRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Can only cancel pending, queued, or running executions
-    const cancelableStatuses = ['pending', 'queued', 'running'];
-    if (!cancelableStatuses.includes(execution.status)) {
-      return c.json({
-        error: 'Cannot cancel execution with status: ' + execution.status
-      }, 400);
+    const outcome = await cancelScriptExecution({
+      executionId,
+      actorId: auth.user.id,
+      actorLabel: auth.user.email,
+      graceSeconds,
+    });
+
+    if (outcome.kind === 'not_found') {
+      return c.json({ error: 'Execution not found' }, 404);
     }
-
-    // Update execution status to cancelled
-    const [updated] = await db
-      .update(scriptExecutions)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        errorMessage: `Cancelled by user ${auth.user.email}`
-      })
-      .where(eq(scriptExecutions.id, executionId))
-      .returning();
-
-    if (!updated) {
-      return c.json({ error: 'Failed to cancel execution' }, 500);
+    if (outcome.kind === 'already_terminal') {
+      // Deliberate contract change from today's 400 — 409 is the conflict this
+      // actually is, and openapi.ts documents it.
+      return c.json({ error: `Cannot cancel execution with status: ${outcome.status}` }, 409);
     }
-
-    // Also cancel any pending device commands for this execution
-    await db
-      .update(deviceCommands)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        result: { cancelled: true, cancelledBy: auth.user.id },
-        ...terminalPayloadErasureSet(),
-      })
-      .where(
-        and(
-          eq(deviceCommands.deviceId, execution.deviceId),
-          eq(deviceCommands.status, 'pending'),
-          sql`${deviceCommands.payload}->>'executionId' = ${executionId}`
-        )
+    if (outcome.kind === 'inconsistent') {
+      // Absence of the paired script command is not proof that nothing ran.
+      // Fail closed rather than stamping a cancel we cannot justify.
+      captureException(
+        new Error('Cancel requested for an execution with no paired script command'),
+        undefined,
+        { executionId, deviceId: execution.deviceId },
       );
+      // Audited as well as reported: an operator reading this device's history
+      // must be able to see that a stop was attempted and refused, not just
+      // find it in Sentry.
+      writeRouteAudit(c, {
+        orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
+        action: 'script.execution.cancel',
+        resourceType: 'script_execution',
+        resourceId: executionId,
+        details: {
+          scriptExecutionId: executionId,
+          deviceId: execution.deviceId,
+          previousStatus: execution.status,
+          outcome: outcome.kind,
+        },
+      });
+      return c.json({ error: 'Execution state is inconsistent; cancellation refused' }, 500);
+    }
+
+    // POST-COMMIT DELIVERY (spec §2.5). The service committed its own
+    // transaction, so the command row is visible to the agent's ack lookup —
+    // sending before that commit lets a fast ack be routed as orphaned.
+    if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+      await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+    }
 
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
       action: 'script.execution.cancel',
       resourceType: 'script_execution',
-      resourceId: updated.id,
+      resourceId: executionId,
       details: {
         scriptExecutionId: executionId,
         deviceId: execution.deviceId,
-        previousStatus: execution.status
+        previousStatus: execution.status,
+        // The audit records what the REQUEST achieved, never an assumed stop.
+        outcome: outcome.kind,
+        ...(outcome.kind === 'cancelling'
+          ? { commandId: outcome.cancelCommandId, graceSeconds: clampGraceSeconds(graceSeconds) }
+          : {}),
       }
     });
 
-    return c.json({
-      success: true,
-      execution: {
-        id: updated.id,
-        status: updated.status,
-        completedAt: updated.completedAt
-      }
-    });
+    const [current] = await db
+      .select({
+        id: scriptExecutions.id,
+        status: scriptExecutions.status,
+        cancelState: scriptExecutions.cancelState,
+        completedAt: scriptExecutions.completedAt,
+      })
+      .from(scriptExecutions)
+      .where(eq(scriptExecutions.id, executionId))
+      .limit(1);
+
+    return c.json({ success: true, execution: current ?? { id: executionId } });
   }
 );

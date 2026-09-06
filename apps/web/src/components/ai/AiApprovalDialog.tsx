@@ -13,6 +13,8 @@ import { useTranslation } from "react-i18next";
 import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
 import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
+import { useRunContextLabel } from "../common/RunContext";
+import type { AiScriptRunContext } from "@breeze/shared";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -64,8 +66,62 @@ interface AiApprovalDialogProps {
    * AUTO_DENY_MS behavior.
    */
   intentExpiresAt?: string;
+  /**
+   * #4888 — the run context a script launch will execute in, resolved
+   * server-side (assistant override, else the script's saved default).
+   * Rendered as its own always-visible row rather than left inside the
+   * collapsed parameter JSON: an assistant choosing SYSTEM for a script whose
+   * saved default is the logged-in user is a privilege escalation, and the
+   * person approving it is the one control that stands between the model's
+   * choice and a machine-level run. Absent for every non-script tool.
+   */
+  scriptRunContext?: AiScriptRunContext | null;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
+}
+
+/**
+ * The run-context row. Deliberately NOT collapsible and NOT part of the
+ * parameter blob — an approver skimming the card must see the privilege level
+ * without expanding anything. The override case gets the louder styling
+ * because "the assistant asked for SYSTEM even though this script normally
+ * runs as the user" is the sentence the whole feature exists to put in front
+ * of a human.
+ */
+function RunContextRow({ ctx }: { ctx: AiScriptRunContext }) {
+  const { t } = useTranslation("ai");
+  const runContextLabel = useRunContextLabel();
+  const label = runContextLabel(ctx.effectiveRunAs, ctx.targetSessionId);
+  const overriddenDefault =
+    ctx.chosenByAssistant && ctx.scriptDefaultRunAs != null
+      && ctx.scriptDefaultRunAs !== ctx.effectiveRunAs
+      ? ctx.scriptDefaultRunAs
+      : null;
+
+  return (
+    <div
+      data-testid="approval-run-context"
+      className={cn(
+        "mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs",
+        overriddenDefault
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+          : "border-border bg-muted/40 text-gray-700 dark:text-gray-300",
+      )}
+    >
+      <ShieldAlert className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      <span className="opacity-70">{t("aiApprovalDialog.runContextLabel")}</span>
+      <span className="font-semibold">{label}</span>
+      <span className="opacity-70">
+        {overriddenDefault
+          ? t("aiApprovalDialog.runContextOverrides", {
+              context: runContextLabel(overriddenDefault),
+            })
+          : ctx.chosenByAssistant
+            ? t("aiApprovalDialog.runContextChosenByAssistant")
+            : t("aiApprovalDialog.runContextScriptDefault")}
+      </span>
+    </div>
+  );
 }
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -180,6 +236,7 @@ export default function AiApprovalDialog({
   intentBacked,
   selfApprovalRequestId,
   intentExpiresAt,
+  scriptRunContext,
   onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
@@ -421,6 +478,8 @@ export default function AiApprovalDialog({
           {t("aiApprovalDialog.pendingApproverDescription")}
         </p>
       )}
+
+      {scriptRunContext && <RunContextRow ctx={scriptRunContext} />}
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 

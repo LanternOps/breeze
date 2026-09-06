@@ -5,7 +5,6 @@ import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
   hashPassword,
-  verifyPassword,
   isPasswordStrong,
   rateLimiter,
   forgotPasswordLimiter,
@@ -26,7 +25,8 @@ import {
   revokeCurrentRefreshTokenJti,
   resolveUserAuditOrgId,
   writeAuthAudit,
-  authResponseFloorPromise
+  authResponseFloorPromise,
+  requireCurrentPasswordStepUp
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
@@ -293,22 +293,39 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
     }, 403);
   }
 
-  const [user] = await db
-    .select({ passwordHash: users.passwordHash })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-
-  if (!user?.passwordHash) {
-    const message = 'Password authentication is not available for this account';
-    return c.json({ error: message, message }, 400);
-  }
-
-  const validCurrentPassword = await verifyPassword(user.passwordHash, currentPassword);
-  if (!validCurrentPassword) {
-    const message = 'Current password is incorrect';
-    return c.json({ error: message, message }, 401);
-  }
+  // #4746: the current-password check runs through the SHARED step-up helper
+  // rather than a bare `verifyPassword`, so this route inherits the per-user
+  // rate limit (5 attempts / 5 min) every sibling that validates a
+  // body-supplied password already had — account deletion has its own
+  // `rateLimiter` call, and the MFA/passkey/phone factor routes come through
+  // this same helper. Without it a stolen access token could brute-force the
+  // current password at one argon2 verify per request and, on a hit, set a new
+  // one: account takeover with no lockout and no step-up cost. The limiter
+  // runs BEFORE the hash lookup and the verify, so a throttled guess costs an
+  // attacker a Redis round trip instead of an argon2 evaluation.
+  //
+  // The two rejection bodies are passed in explicitly to preserve this route's
+  // existing contract verbatim (#4660/#4739): both stay 400 with
+  // `code: 'invalid_credentials'`, and each keeps its own specific message —
+  // the helper's default opaque 'Invalid credentials' would surface on the web
+  // profile form, where it reads as a dead session rather than a typo. 400 (not
+  // 401) because `currentPassword` arrived in the request BODY: it is data this
+  // handler validates, not the credential that authenticates the request (that
+  // is the bearer, already checked by `authMiddleware` above), and the web
+  // client's `fetchWithAuth` funnels every 401 into refresh-and-replay and then
+  // `handleSessionExpired`.
+  const passwordError = await requireCurrentPasswordStepUp(
+    c,
+    auth.user.id,
+    currentPassword,
+    'pwd:change',
+    {
+      rejectionStatus: 400,
+      invalidMessage: 'Current password is incorrect',
+      noPasswordMessage: 'Password authentication is not available for this account',
+    },
+  );
+  if (passwordError) return passwordError;
 
   const passwordCheck = isPasswordStrong(newPassword);
   if (!passwordCheck.valid) {

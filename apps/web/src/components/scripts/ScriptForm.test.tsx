@@ -707,6 +707,24 @@ describe('ScriptForm sourced parameters', () => {
     });
   });
 
+  it('shows a help affordance explaining how scripts read/write a bound device custom field', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [
+            { name: 'asset_tag', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+          ],
+        }}
+      />
+    );
+
+    const trigger = await screen.findByRole('button', { name: 'About the device custom field binding' });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
+  });
+
   it('clears the previous arm\'s binding key when the source changes', async () => {
     render(
       <ScriptForm

@@ -41,8 +41,6 @@ import {
   organizations,
   organizationUsers,
   partnerUsers,
-  rolePermissions,
-  permissions,
   users,
   type ActionIntent,
 } from '../../db/schema';
@@ -55,6 +53,7 @@ import {
   getUserPermissions,
   hasPermission,
 } from '../permissions';
+import { resolveUsersWithPermissionForOrg } from '../usersWithPermission';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
@@ -62,86 +61,7 @@ import {
  * context, so it may be called from any ambient context (or none).
  */
 export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
-  return withSystemDbAccessContext(async () => {
-    // Role ids that grant approvals:decide. One join from role_permissions →
-    // permissions; matches the resource/action pair AND the wildcard grants
-    // (resource='*' / action='*') so this resolver mirrors hasPermission()
-    // (permissions.ts), which treats resource==='*' / action==='*' as
-    // covering any concrete pair. Without this a role granting approvals:* or
-    // *:* (superadmin) would never resolve as an eligible approver.
-    const grantingRoles = await db
-      .select({ roleId: rolePermissions.roleId })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(
-        and(
-          inArray(permissions.resource, [PERMISSIONS.APPROVALS_DECIDE.resource, '*']),
-          inArray(permissions.action, [PERMISSIONS.APPROVALS_DECIDE.action, '*']),
-        ),
-      );
-
-    const grantingRoleIds = [...new Set(grantingRoles.map((r) => r.roleId))];
-    if (grantingRoleIds.length === 0) return [];
-
-    // The org's owning partner — needed to resolve partner-scope membership.
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-
-    const candidateUserIds = new Set<string>();
-
-    // 1. Direct org members holding an approvals:decide role. Joined against
-    // `users` and gated on status='active' so a disabled or still-invited
-    // account is never counted as an eligible approver — it both inflates
-    // the four-eyes fan-out with someone who can't actually decide, and can
-    // wrongly suppress the sole-operator fallback (intentService.ts) by
-    // making it look like a second approver exists when none does.
-    const orgMembers = await db
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .innerJoin(users, eq(users.id, organizationUsers.userId))
-      .where(
-        and(
-          eq(organizationUsers.orgId, orgId),
-          inArray(organizationUsers.roleId, grantingRoleIds),
-          eq(users.status, 'active'),
-        ),
-      );
-    for (const m of orgMembers) candidateUserIds.add(m.userId);
-
-    // 2. Partner members of the org's partner whose org_access covers this
-    // org — the population plain organization_users membership can never see
-    // (CRITICAL-2: partner techs/admins have no organization_users row).
-    // Same `users` join + status='active' gate as above.
-    if (org?.partnerId) {
-      const partnerMembers = await db
-        .select({
-          userId: partnerUsers.userId,
-          orgAccess: partnerUsers.orgAccess,
-          orgIds: partnerUsers.orgIds,
-        })
-        .from(partnerUsers)
-        .innerJoin(users, eq(users.id, partnerUsers.userId))
-        .where(
-          and(
-            eq(partnerUsers.partnerId, org.partnerId),
-            inArray(partnerUsers.roleId, grantingRoleIds),
-            eq(users.status, 'active'),
-          ),
-        );
-      for (const m of partnerMembers) {
-        if (m.orgAccess === 'all') {
-          candidateUserIds.add(m.userId);
-        } else if (m.orgAccess === 'selected' && m.orgIds?.includes(orgId)) {
-          candidateUserIds.add(m.userId);
-        }
-      }
-    }
-
-    return [...candidateUserIds];
-  });
+  return resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
 }
 
 // ============================================================
@@ -162,19 +82,34 @@ export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
  * is treated as having INDIRECT targets — deployments, groups, filters —
  * and only site-UNRESTRICTED humans are eligible for it.
  *
- * Hand-verification record (2026-08-23), re-check the handler before adding
- * an entry — `intentApprovers.deviceTargets.contract.test.ts` only proves a
- * listed tool DECLARES deviceArgs, not that the declaration is complete:
+ * Hand-verification record (2026-08-23, remediate_vulnerability added #4452),
+ * re-check the handler before adding an entry —
+ * `intentApprovers.deviceTargets.contract.test.ts` only proves a listed tool
+ * DECLARES deviceArgs, not that the declaration is complete:
  * - execute_command  (aiToolsScripts.ts): acts on the single required
  *   `deviceId`; nothing else in the input reaches another device.
  * - run_script       (aiToolsScripts.ts): iterates the required `deviceIds`
  *   array only (first 10); scriptId selects content, not targets.
  * - manage_services  (aiToolsScripts.ts): single required `deviceId`;
  *   serviceName is a name on that device, not a target.
+ * - remediate_vulnerability (aiToolsVulnerability.ts): `deviceId` is
+ *   OPTIONAL, unlike the three above — the handler enforces it as a
+ *   COMPLETE pin only when the caller supplies it (every finding cited by
+ *   `deviceVulnerabilityIds` must belong to that one device, or the whole
+ *   call is refused with `finding_device_mismatch`); when omitted, findings
+ *   may legitimately span multiple devices ("interactive chat may still
+ *   omit it and remediate across devices as before", aiToolSchemas.ts). The
+ *   sweep pipeline that scopes this tool's intents always supplies it
+ *   (sweepFindings.ts's `proposalToolInput`), so the resolver below only
+ *   trusts the tool's own `deviceId` when it is actually PRESENT in args —
+ *   never the resolved intent/run device as a lone stand-in — so an
+ *   unscoped, unpinned call still falls closed to `indirect` instead of
+ *   under-representing the true device set.
  */
 export const DEVICE_COMPLETE_TARGET_TOOLS: ReadonlySet<string> = new Set([
   'execute_command',
   'manage_services',
+  'remediate_vulnerability',
   'run_script',
 ]);
 
@@ -186,7 +121,10 @@ export type IntentTargetScope =
  * Resolve the concrete target scope of a proposed agent intent. For a
  * DEVICE_COMPLETE_TARGET_TOOLS tool: the distinct site ids of every device
  * named in the tool's `deviceArgs` inputs, unioned with the intent's OWN
- * target device.
+ * target device — but only once the args themselves have named at least one
+ * device (#4452: a tool with an OPTIONAL device arg, e.g.
+ * remediate_vulnerability, must not have its target manufactured solely from
+ * `target.deviceId` when the arg is omitted — see the union site below).
  *
  * P2-2 (#4189): that third argument used to be the run row itself. It is now
  * the resolved target — `effectiveTargetDeviceId(resolveIntentTargetDevice(
@@ -231,7 +169,21 @@ export async function resolveIntentTargetScope(
     // A present-but-malformed value contributes nothing; if that leaves the
     // union empty we fall through to the fail-closed indirect branch below.
   }
-  if (target.deviceId) deviceIds.add(target.deviceId);
+  // The resolved intent target (the intent's own scope device, or the run's
+  // own device when unscoped) is unioned in ONLY as a widener on top of an
+  // already-nonempty args-derived set — never as the sole source of a
+  // 'devices' resolution. For execute_command/manage_services/run_script
+  // this changes nothing: their device args are REQUIRED, so the loop above
+  // always contributes and this union stays a pure (harmless) widen. It
+  // matters for remediate_vulnerability's OPTIONAL `deviceId`: when a call
+  // omits it, the loop above contributes nothing, and the tool is then free
+  // to touch findings on ANY device the caller can reach (see the hand-
+  // verification comment on DEVICE_COMPLETE_TARGET_TOOLS above) — so
+  // `target.deviceId`, which could be nothing more than an unrelated chat
+  // run's own bound device, must not be treated as a complete stand-in
+  // target in that case. Falling through to `indirect` below is the correct,
+  // fail-closed outcome.
+  if (deviceIds.size > 0 && target.deviceId) deviceIds.add(target.deviceId);
 
   // No resolvable device at all (malformed args + a detached run after a
   // device move, or a tombstoned scope): {kind:'devices', siteIds: []} would

@@ -218,7 +218,8 @@
     {
       "pattern": "docker-compose*.yml",
       "docs": [
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "getting-started/prerequisites.mdx"
       ]
     },
     {
@@ -1354,14 +1355,16 @@
       "pattern": "apps/api/src/routes/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
@@ -2326,11 +2329,39 @@
       "pattern": "apps/api/src/routes/aiAgents.ts",
       "docs": [
         "features/ai-agents.mdx",
+        "features/ai-impact.mdx",
         "reference/users-and-roles.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/aiAgents/**",
+      "docs": [
+        "features/ai-agents.mdx",
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiAgentImpactRollup.ts",
+      "docs": [
+        "features/ai-impact.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiAgentGraduationWorker.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/aiAgents/ImpactPage.tsx",
+      "docs": [
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/AiAgentGraduationPanel.tsx",
       "docs": [
         "features/ai-agents.mdx"
       ]
@@ -2352,6 +2383,358 @@
       "pattern": "packages/shared/src/types/aiAgents.ts",
       "docs": [
         "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateService.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateRender.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractDocumentService.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contractDocuments.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/templates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/contractTemplates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/contracts/TemplatesTab.tsx",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/billing/quotes/QuoteContractBlockEditor.tsx",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/guided-setup.sh",
+      "docs": [
+        "getting-started/prerequisites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgArchive.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgMerge.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/timeEntries/**",
+      "docs": [
+        "features/ticketing.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiAgentSchedules.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/aiKillState.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/llmProviderCatalog.ts",
+      "docs": [
+        "features/bring-your-own-llm-key.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/ticketAutonomy.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingMappingService.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/requestTransport.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "getting-started/quickstart.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/worker.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workerRegistry.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/patchRebootHandler.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/billingEvidence.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/invoices/evidence.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractCoverage.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractAllowance.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractSnapshot.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/deviceCoverage.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/billing.ts",
+      "docs": [
+        "features/devices.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/periods.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteDeviceSet.ts",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/invoicePdf.ts",
+      "docs": [
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/webhooks/quickbooks.ts",
+      "docs": [
+        "features/accounting-integrations.mdx",
+        "deploy/environment.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingInvoicePush.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingPaymentPull.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/portal/**",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/portal/rateLimit.ts",
+      "docs": [
+        "features/portal.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptCancellation.ts",
+      "docs": [
+        "features/scripts.mdx",
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptClone.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptRunContextApproval.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptRunRequest.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/customFields/**",
+      "docs": [
+        "features/custom-fields.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/customFields/scriptWriteBack.ts",
+      "docs": [
+        "features/custom-fields.mdx",
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiBudgetAlerts.ts",
+      "docs": [
+        "features/ai.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiBudgetAlertEmail.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/graduationService.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/impactRollup.ts",
+      "docs": [
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgAuditRetentionSettings.ts",
+      "docs": [
+        "reference/audit-logs.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/auditRetentionPolicyService.ts",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contacts/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgContacts.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/fcm.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/authenticatorAttestation.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/ssoDiscovery.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/partnerTrust.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ipClassify.ts",
+      "docs": [
+        "deploy/environment.mdx"
       ]
     }
   ]

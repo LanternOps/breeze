@@ -105,6 +105,10 @@ export const ticketDrafts = pgTable(
     // doesn't model partial indexes cleanly (same precedent as
     // intent_outbox_unpublished_idx / elevations.ts's
     // elevation_requests_org_pending_idx et al).
+    // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): the rollup's
+    // drafts_sent scan — neither existing index above covers consumed_at.
+    orgConsumedIdx: index('ticket_drafts_org_consumed_idx').on(table.orgId, table.consumedAt)
+      .where(sql`${table.consumedAt} IS NOT NULL`),
   }),
 );
 

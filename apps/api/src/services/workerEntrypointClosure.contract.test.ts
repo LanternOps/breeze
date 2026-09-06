@@ -271,25 +271,27 @@ function parseRegistrySource(): RegistryEntrySource[] {
 // entry can't slip past both suites at once).
 const EXPECTED_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
-  'tenantErasure', 'orgMerge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
+  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
+  'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
@@ -298,7 +300,9 @@ const EXPECTED_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
-  'alertVerdictScheduler', 'aiAgentSweepScheduler',
+  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
+  'aiAgentImpactRollup',
+  'aiAgentGraduation',
 ];
 
 // ---------------------------------------------------------------------------
@@ -450,7 +454,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(115); // sanity: the source-parsing regex itself must find all 115
+    expect(entries.length).toBe(126); // sanity: the source-parsing regex itself must find all 126
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);

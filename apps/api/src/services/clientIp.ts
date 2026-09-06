@@ -200,6 +200,10 @@ export function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
   return (
     hasForwardedIpHeaders(c)
     || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
+    // Consumed by effectiveRequestOrigin (same-origin CSRF proof) only from a
+    // trusted peer, so an untrusted peer sending it is the same
+    // misconfiguration signal as the headers above.
+    || Boolean(c.req.header('x-forwarded-host') ?? c.req.header('X-Forwarded-Host'))
   );
 }
 
@@ -225,7 +229,7 @@ function shouldEmitProxyTrustWarnNow(key: string): boolean {
   return true;
 }
 
-const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto';
+const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto/X-Forwarded-Host';
 
 function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
   // Count every occurrence — Prometheus rates are only useful unsampled.

@@ -195,6 +195,10 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
 }));
 
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: vi.fn(),
+}));
+
 vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
   CommandTypes: {
@@ -1441,6 +1445,17 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue(undefined)
+          })
+        }),
+        // No existing device_patches row for this device+patch — the
+        // installed-path version-aware flip (#2736) falls back to the global
+        // patches.version, which this fixture (installedAt-null handling) does
+        // not otherwise exercise.
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
           })
         }),
         insert: vi.fn()

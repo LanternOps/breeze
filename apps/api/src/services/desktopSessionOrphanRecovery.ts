@@ -15,6 +15,65 @@ import {
 import {
   enqueueDesktopSessionFinalization,
 } from '../jobs/desktopSessionFinalizationWorker';
+import { captureException } from './sentry';
+
+/**
+ * How long a persisted finalization intent may sit in `stop_pending` before
+ * the scanner escalates it (#3945).
+ *
+ * `drivePersistedIntent` re-adds the same stable BullMQ jobId every scan when
+ * the agent has not acked the stop command yet. Once that job hash exists in
+ * a terminal state, BullMQ's `queue.add({ jobId })` is a silent no-op
+ * (`removeOnFail` retains the failed hash) -- no new job, no new attempts, no
+ * further BullMQ-side signal. Recovery still happens (this scanner re-drives
+ * `finalize` directly on every pass), so a short-lived disconnect resolves
+ * fine; the gap is purely observability for the case where the agent never
+ * comes back: before this, that produced exactly one warning and then silence
+ * for as long as the row stayed non-terminal. 10 minutes is well past any
+ * ordinary reconnect blip (the scan cadence is REMOTE_WS_SHARED_LEASE_TTL_MS,
+ * 30s) but short enough that a genuinely abandoned session pages promptly.
+ */
+export const STALLED_STOP_PENDING_ESCALATION_MS = 10 * 60 * 1000;
+
+/**
+ * Upper bound on how long a "we already reported this one" marker survives
+ * (review follow-up on #3945).
+ *
+ * The natural clear point -- `drivePersistedIntent` observing the intent
+ * resolve off `stop_pending` -- does NOT reliably fire: per
+ * jobs/desktopSessionFinalizationWorker.ts, the BullMQ finalization worker
+ * resolves most stop_pending intents directly, on a retry cadence much
+ * faster than this scanner's 30s sweep. Once that happens the session goes
+ * terminal and drops out of scanDesktopSessionOrphans's query entirely, so
+ * `recover()` is never called for that finalizationId again and the "resolved"
+ * branch here never runs. Relying solely on that branch would make this map
+ * grow for the lifetime of the process. Pruning by age on every observation
+ * bounds it independent of whether that branch ever fires: a still-genuinely-
+ * stalled episode simply re-populates its own entry on the next scan, so
+ * pruning can never suppress a real escalation.
+ */
+const REPORTED_STALLED_PRUNE_AGE_MS = 24 * 60 * 60 * 1000;
+
+export class StalledStopPendingFinalizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StalledStopPendingFinalizationError';
+  }
+}
+
+/**
+ * A persisted finalization intent could not be parsed/canonicalized back into
+ * shape (#3945). Named per the BREEZE-1J convention (see
+ * jobs/desktopSessionFinalizationWorker.ts) so this is triageable in Sentry
+ * by exception type alone -- `scrubEvent` deletes `message` from every
+ * outbound event.
+ */
+export class PersistedFinalizationIntentParseError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PersistedFinalizationIntentParseError';
+  }
+}
 
 export interface DesktopOrphanSession {
   id: string;
@@ -74,6 +133,57 @@ export function createDesktopSessionOrphanRecoveryService(
 ) {
   const firstAbsentObservation = new Map<string, number>();
 
+  // "Already reported" markers for the stalled-stop_pending check (#3945),
+  // keyed by finalizationId (finalizationId -> when we reported, deps.now()
+  // ms) rather than sessionId so a fresh finalization attempt on the same
+  // session starts its own episode. Pruned by age on every observation (see
+  // REPORTED_STALLED_PRUNE_AGE_MS) rather than relied upon to be cleared
+  // exactly on resolution, since the resolution path frequently bypasses this
+  // service entirely (see that constant's doc comment).
+  const reportedStalledFinalizations = new Map<string, number>();
+
+  function pruneReportedStalledFinalizations(now: number): void {
+    for (const [key, reportedAt] of reportedStalledFinalizations) {
+      if (now - reportedAt > REPORTED_STALLED_PRUNE_AGE_MS) {
+        reportedStalledFinalizations.delete(key);
+      }
+    }
+  }
+
+  function noteStopPendingObservation(input: DesktopSessionFinalizationInput): void {
+    const key = input.finalizationId;
+    const now = deps.now();
+    pruneReportedStalledFinalizations(now);
+
+    // Age is derived from the persisted intent's own `endedAt` -- set once
+    // when the intent was first created and read back unchanged from Redis
+    // on every scan -- rather than from when THIS process first observed it.
+    // A local first-observation clock resets on every deploy/restart, which
+    // would silently restart the escalation window and could delay it
+    // indefinitely across repeated restarts for exactly the long-lived stall
+    // this check exists to catch (review follow-up on #3945).
+    const ageMs = now - new Date(input.endedAt).getTime();
+    if (ageMs < STALLED_STOP_PENDING_ESCALATION_MS) return;
+    if (reportedStalledFinalizations.has(key)) return;
+    reportedStalledFinalizations.set(key, now);
+    const message =
+      '[desktopSessionOrphanRecovery] finalization intent stuck in stop_pending '
+      + `past the ${STALLED_STOP_PENDING_ESCALATION_MS}ms escalation window; `
+      + 're-enqueue is a BullMQ no-op on this retained jobId, so recovery now '
+      + 'depends entirely on the agent reconnecting';
+    console.error(message, {
+      sessionId: input.sessionId,
+      finalizationId: input.finalizationId,
+      deviceId: input.deviceId,
+      ageMs,
+    });
+    captureException(new StalledStopPendingFinalizationError(message));
+  }
+
+  function clearStopPendingEscalation(finalizationId: string): void {
+    reportedStalledFinalizations.delete(finalizationId);
+  }
+
   async function drivePersistedIntent(
     input: DesktopSessionFinalizationInput,
     canonicalPayload: string,
@@ -84,8 +194,10 @@ export function createDesktopSessionOrphanRecoveryService(
         sessionId: input.sessionId,
         finalizationId: input.finalizationId,
       });
+      noteStopPendingObservation(input);
       return 'retained';
     }
+    clearStopPendingEscalation(input.finalizationId);
     if (!await deps.releaseIntent(
       input.sessionId,
       input.finalizationId,
@@ -158,7 +270,26 @@ export function createDesktopSessionOrphanRecoveryService(
             persisted.input,
             persisted.canonicalPayload,
           );
-        } catch {
+        } catch (error) {
+          // Fail-closed behavior is unchanged (never reclaim on a parse
+          // failure), but this used to be a bare `catch { return 'retained' }`
+          // with zero logging (#3945) -- a corrupted or unparseable persisted
+          // intent left the session stuck in this branch forever with no
+          // trace of why. Log with context and report it: unlike a genuinely
+          // in-flight stop_pending (handled by the escalation above), this is
+          // a data-integrity fault that will never resolve itself.
+          console.error(
+            '[desktopSessionOrphanRecovery] failed to parse/canonicalize the persisted finalization intent; retaining (fail-closed) instead of reclaiming',
+            {
+              sessionId,
+              finalizationId: observed.finalizationId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          captureException(new PersistedFinalizationIntentParseError(
+            '[desktopSessionOrphanRecovery] failed to parse/canonicalize the persisted finalization intent',
+            { cause: error },
+          ));
           return 'retained';
         }
       }

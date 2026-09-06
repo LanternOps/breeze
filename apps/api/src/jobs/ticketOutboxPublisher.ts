@@ -6,6 +6,7 @@ import { ticketOutbox, type TicketOutboxEvent } from '../db/schema/ticketOutbox'
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `ticket_outbox` transactional outbox (#3828 wave-6-3 task 2 —
@@ -44,8 +45,10 @@ const REAPER_QUEUE_NAME = 'ticket-outbox-publisher';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with publish_attempts > this are considered stuck: logged as an alarm
-// and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// and left alone rather than retried forever. Exported so
+// ticketOutboxRetention.ts's prune cutoff stays in sync with this threshold
+// instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 // The bounded subset of TicketOutboxEvent that currently has a corresponding
 // eventBus EventType literal. See the file doc comment above for why the
@@ -312,6 +315,7 @@ export async function initializeTicketOutboxPublisher(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'ticketOutboxPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[TicketOutboxPublisher] Worker error:', error);
     captureException(error);

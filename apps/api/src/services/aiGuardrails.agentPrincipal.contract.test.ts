@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { ACT_MANIFEST, resolveActOperation } from './aiAgents/actManifest';
 import {
+  AGENT_HUMAN_ONLY_TOOLS,
   BLOCKED_TOOLS,
   checkAgentGuardrails,
   checkGuardrails,
@@ -268,7 +269,10 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
   for (const toolName of Object.keys(TOOL_TIERS)) {
 
     const base = checkGuardrails(toolName, {});
-    if (base.tier === 3 || base.tier === 4 || !base.allowed || isSecretBearingTool(toolName)) {
+    if (
+      base.tier === 3 || base.tier === 4 || !base.allowed
+      || isSecretBearingTool(toolName) || AGENT_HUMAN_ONLY_TOOLS.has(toolName)
+    ) {
       it(`${toolName}: explicit allowlisting cannot bypass unconditional denials`, () => {
         // A multiplexed tool needs a resolvable action — calling it with {} now
         // denies on that ground alone, which would mask what this asserts.
@@ -284,11 +288,12 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
         const unconditionallyDenied = base.tier === 4
           || !base.allowed
           || BLOCKED_TOOLS.has(toolName)
-          || isSecretBearingTool(toolName);
+          || isSecretBearingTool(toolName)
+          || AGENT_HUMAN_ONLY_TOOLS.has(toolName);
 
-        // Tier 4, blocked, and secret-bearing tools remain denied even when
-        // the snapshot names them — these denials sit upstream of the act
-        // branch and allowlisting can never reach past them.
+        // Tier 4, blocked, secret-bearing and human-only tools remain denied
+        // even when the snapshot names them — these denials sit upstream of
+        // the act branch and allowlisting can never reach past them.
         if (unconditionallyDenied) {
           expect(agent.allowed).toBe(false);
           return;

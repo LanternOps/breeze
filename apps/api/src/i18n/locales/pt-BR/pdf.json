@@ -1,0 +1,37 @@
+{
+  "invoice": {
+    "title": "FATURA",
+    "from": "DE",
+    "billTo": "COBRAR DE",
+    "issued": "Emitida: {{date}}",
+    "due": "Vencimento: {{date}}",
+    "description": "DESCRIÇÃO",
+    "qty": "QTD",
+    "tax": "IMPOSTO",
+    "amount": "VALOR",
+    "subtotal": "Subtotal",
+    "taxLabel": "Imposto",
+    "taxWithRate": "Imposto ({{rate}}%)",
+    "total": "Total",
+    "balanceDue": "Saldo devedor",
+    "amountPaid": "Valor pago",
+    "depositDue": "Depósito devido",
+    "ticketWork": "Trabalho de ticket",
+    "payOnline": "Pagar on-line:"
+  },
+  "quote": {
+    "title": "COTAÇÃO",
+    "from": "DE",
+    "billTo": "PARA",
+    "issued": "Emitida: {{date}}",
+    "validUntil": "Válida até: {{date}}",
+    "description": "DESCRIÇÃO",
+    "qty": "QTD",
+    "amount": "VALOR",
+    "subtotal": "Subtotal",
+    "taxLabel": "Imposto",
+    "taxWithRate": "Imposto ({{rate}}%)",
+    "total": "Total",
+    "viewOnline": "Ver on-line:"
+  }
+}

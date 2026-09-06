@@ -64,6 +64,46 @@ Standalone maintenance windows use a `targetType` field to determine which devic
 
 ---
 
+## Manual Maintenance Mode
+
+Distinct from the scheduled windows the rest of this page describes, a technician can put a **single device** into maintenance mode by hand -- from the device page, or several devices at once from the device list. This is a per-device action with its own gate and its own record. It is not a maintenance window, it is not resolved through the configuration policy hierarchy, and it does not appear in `GET /maintenance/active`.
+
+### What entering requires
+
+<Steps>
+1. **A signed-in technician.** API keys, MCP tools, and other machine principals cannot enter, extend, or exit maintenance mode on a device. The route requires an interactive user session, and that requirement holds whether or not two-factor authentication is enabled for the deployment.
+
+2. **A fresh second factor, on entry *and* on extension.** An assured session is not enough on its own -- the technician re-verifies at the moment of the action. The console verifies with an authenticator app code or a passkey, so a technician whose only second factor is SMS must add an authenticator app or a passkey before they can use maintenance mode. Exiting needs no factor.
+
+3. **A reason and a duration.** Both are required. The reason is 3--500 characters; the duration is a whole number of hours from 1 to 168 (one week). Both are stored on the device record alongside who started the window and when, and both are written to the audit trail.
+</Steps>
+
+### Extending means "N hours from now"
+
+Submitting maintenance for a device that is already in a manual window **replaces** the window rather than adding to it. Choosing 4 hours always means "until four hours from now," whether the device had three hours left or three minutes. Submitting repeatedly cannot compound a window into a longer one.
+
+The original start time and the technician who started it are preserved across extensions; only the end time and the reason change. An extension is audited as `device.maintenance.extend` rather than `device.maintenance.enable`.
+
+### Exiting
+
+Exit is not gated by a second factor. If the device still has a `maintenance` status, exit recomputes it from when its agent was last seen, so a device that dropped off the network returns as `offline`. Other statuses remain unchanged.
+
+Exiting a device that was not in a manual window succeeds, changes nothing, and writes no audit event.
+
+### Which devices can enter
+
+A device must be `online`, `offline`, or already in `maintenance`. A device that is `quarantined`, `pending`, or `updating` is refused with a `409` (`MAINTENANCE_STATE_CONFLICT`) until it settles, and a `decommissioned` device is refused with a `400`.
+
+### Several devices at once
+
+`POST /devices/bulk/maintenance` takes a list of device IDs with one reason and one duration, and costs a **single** second-factor prompt for the whole batch. It covers entry and extension only -- exiting stays per-device. The response reports `succeeded` and `failed` separately, so a call in which every selected device was ineligible still returns `200` with an empty `succeeded` list.
+
+<Aside type="caution">
+**What manual maintenance mode does not do yet.** Entering manual maintenance mode records and audits a window on the device. It does not by itself change which alerts fire, which patches install, or which automations and scripts run. Suppression is still governed by the configuration policy maintenance feature and by the scheduled windows documented above.
+</Aside>
+
+---
+
 ## Creating a Maintenance Window
 
 ### Via Configuration Policy (Recommended)
@@ -79,7 +119,7 @@ The `config_policy_maintenance_settings` table stores:
 | `recurrence` | `varchar(20)` | One of `once`, `daily`, `weekly`, `monthly` |
 | `durationHours` | `integer` | How long the window lasts from its computed start time |
 | `timezone` | `varchar(100)` | IANA timezone identifier (e.g., `America/New_York`). Defaults to `UTC`. |
-| `windowStart` | `varchar(30)` | ISO-8601 datetime for `once` recurrence only (e.g., `2026-03-15T02:00:00`). Ignored for other recurrence types. |
+| `windowStart` | `varchar(30)` | For `once` recurrence, the ISO-8601 datetime the window runs at (e.g., `2026-03-15T02:00:00`). For `daily`, `weekly` and `monthly`, its time-of-day sets when each window opens; when empty, the window opens at midnight. |
 | `suppressAlerts` | `boolean` | Default: `true` |
 | `suppressPatching` | `boolean` | Default: `false` |
 | `suppressAutomations` | `boolean` | Default: `false` |
@@ -171,9 +211,11 @@ For recurring windows, the system generates occurrence records automatically. St
 
 | Recurrence | Window Start |
 |------------|--------------|
-| `daily` | Midnight (00:00) in the configured timezone, every day |
-| `weekly` | Midnight on the most recent Sunday in the configured timezone |
-| `monthly` | Midnight on the 1st of the current month in the configured timezone |
+| `daily` | The configured start time, in the configured timezone, every day |
+| `weekly` | The configured start time on the most recent Sunday in the configured timezone |
+| `monthly` | The configured start time on the 1st of the current month in the configured timezone |
+
+Set **Start time** on the policy's Maintenance tab to choose the time of day each window opens, in the selected timezone. A policy that has no start time stored — including every recurring policy saved before this was configurable — falls back to **midnight (00:00)**, which is how those windows have always behaved.
 
 The window remains active for `durationHours` from its computed start time.
 
@@ -183,7 +225,7 @@ The window remains active for `durationHours` from its computed start time.
 
 Both standalone windows and configuration policy settings store a `timezone` field as an IANA timezone identifier (e.g., `America/New_York`, `Europe/London`, `Asia/Tokyo`). The default is `UTC`.
 
-For configuration policy maintenance, the system converts the current UTC time to the configured timezone using `Intl.DateTimeFormat` before computing whether the window is active. This means a `daily` window with timezone `America/Chicago` and `durationHours: 4` is active from midnight to 04:00 Central time, regardless of the server's timezone.
+For configuration policy maintenance, the system converts the current UTC time to the configured timezone using `Intl.DateTimeFormat` before computing whether the window is active. This means a `daily` window with timezone `America/Chicago`, `durationHours: 4` and no start time set is active from midnight to 04:00 Central time, regardless of the server's timezone. Give it a start time of `02:00` and the same window runs from 02:00 to 06:00 Central instead.
 
 <Aside type="note">
 If an invalid timezone string is provided, the system logs a warning and falls back to UTC. This prevents a misconfigured timezone from permanently disabling maintenance windows.
@@ -330,26 +372,6 @@ The endpoint finds occurrences that are either explicitly `active` or `scheduled
 
 ---
 
-## Device Maintenance Mode
-
-In addition to scheduled maintenance windows, individual devices can be placed into maintenance mode manually:
-
-```bash
-POST /devices/:id/maintenance
-{
-  "enable": true,
-  "durationHours": 4
-}
-```
-
-This sets the device status to `maintenance` (or back to `online` when `enable` is `false`). The `durationHours` field accepts a positive integer up to 168 (one week). Decommissioned devices cannot be placed into maintenance mode.
-
-<Aside type="note">
-Device-level maintenance mode is a simple status toggle on the device record. It is separate from maintenance windows and does not interact with the suppression flag system. Maintenance windows provide time-bounded, policy-driven suppression; device maintenance mode is an immediate, manual override.
-</Aside>
-
----
-
 ## Occurrences
 
 Standalone maintenance windows generate **occurrence** records that represent individual instances of the window. Each occurrence tracks its own status, actual start/end times, and optional overrides or notes.
@@ -443,7 +465,8 @@ All routes are mounted under `/maintenance` and require authentication. Scope re
 |--------|------|-------------|
 | `GET` | `/maintenance/device/:deviceId/status` | Resolve the current maintenance status for a device (checks config policy first, then standalone windows). |
 | `GET` | `/maintenance/active` | List currently active maintenance windows, optionally filtered by device, site, or group. |
-| `POST` | `/devices/:id/maintenance` | Toggle device-level maintenance mode (separate from maintenance windows). |
+| `POST` | `/devices/:id/maintenance` | Enter, extend, or exit [manual maintenance mode](#manual-maintenance-mode) on one device. Entry and extension require an interactive session and a fresh second factor. |
+| `POST` | `/devices/bulk/maintenance` | Enter or extend manual maintenance mode on many devices, with one second-factor prompt for the batch. |
 
 ---
 

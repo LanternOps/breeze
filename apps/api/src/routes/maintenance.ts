@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq, and, or, isNull, lte, gte, inArray, desc, asc, sql, type SQL } from 'drizzle-orm';
@@ -13,6 +13,13 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import { isDeviceInMaintenance } from '../services/maintenanceService';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import {
+  MAINTENANCE_SITE_SCOPE_MESSAGES,
+  checkMaintenanceTargetsWithinSiteScope,
+  filterWindowsToSiteScope,
+  scopeWindowForRead,
+  type MaintenanceWindowTarget,
+} from '../services/maintenanceSiteScope';
 
 export const maintenanceRoutes = new Hono();
 const requireMaintenanceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -81,6 +88,24 @@ function canAccessWindow(
   }
   if (auth.scope === 'system') return true;
   return auth.scope === 'partner' && !!auth.partnerId && window.partnerId === auth.partnerId;
+}
+
+// Site-axis gate (#3654). `canAccessWindow` above is org/partner only, and
+// Postgres RLS does not defend the site axis, so a site-restricted technician
+// could otherwise re-time or delete a window another site's deployment is bound
+// to. Returns a 403 response to return as-is, or null to proceed. Unrestricted
+// callers cost zero queries.
+async function enforceWindowSiteScope(c: Context, target: MaintenanceWindowTarget) {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const result = await checkMaintenanceTargetsWithinSiteScope(target, perms);
+  if (result.ok) return null;
+  // Fail closed on a denial that somehow carries no reason: only `ok` may open
+  // the gate, never the absence of an explanation for closing it.
+  return c.json({ error: MAINTENANCE_SITE_SCOPE_MESSAGES[result.reason ?? 'out_of_scope'] }, 403);
+}
+
+function requestPermissions(c: Context): UserPermissions | undefined {
+  return c.get('permissions') as UserPermissions | undefined;
 }
 
 // Window-set condition for an org view: the org's own windows PLUS — for
@@ -358,7 +383,8 @@ maintenanceRoutes.get(
       .where(and(...conditions))
       .orderBy(desc(maintenanceWindows.createdAt));
 
-    return c.json({ data: windows });
+    // Site axis (#3654): the org filter above discloses every window in the org.
+    return c.json({ data: await filterWindowsToSiteScope(windows, requestPermissions(c)) });
   }
 );
 
@@ -390,6 +416,15 @@ maintenanceRoutes.post(
       }
       owner = { orgId: orgResult.orgId as string, partnerId: null };
     }
+
+    const siteScopeDenied = await enforceWindowSiteScope(c, {
+      orgId: owner.orgId,
+      targetType: body.targetType,
+      siteIds: body.siteIds,
+      groupIds: body.groupIds,
+      deviceIds: body.deviceIds,
+    });
+    if (siteScopeDenied) return siteScopeDenied;
 
     const startTime = new Date(body.startTime);
     const endTime = new Date(body.endTime);
@@ -475,6 +510,14 @@ maintenanceRoutes.get(
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 
+    // Site axis (#3654): a window that reaches none of the caller's sites is
+    // not theirs to see, and a visible one is returned with its target arrays
+    // narrowed to what they may see.
+    const scopedWindow = await scopeWindowForRead(window, requestPermissions(c));
+    if (!scopedWindow) {
+      return c.json({ error: 'Maintenance window not found' }, 404);
+    }
+
     // Get upcoming occurrences
     const occurrences = await db
       .select()
@@ -488,7 +531,7 @@ maintenanceRoutes.get(
       .orderBy(asc(maintenanceOccurrences.startTime))
       .limit(10);
 
-    return c.json({ ...window, upcomingOccurrences: occurrences });
+    return c.json({ ...scopedWindow, upcomingOccurrences: occurrences });
   }
 );
 
@@ -526,6 +569,12 @@ maintenanceRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Site axis (#3654): authority over the window you are about to change is
+    // established by its CURRENT target set — re-timing or deleting it steers
+    // whatever deployments are bound to it.
+    const siteScopeDenied = await enforceWindowSiteScope(c, window);
+    if (siteScopeDenied) return siteScopeDenied;
+
     // Build update object
     const updateData: Record<string, unknown> = {
       updatedAt: new Date()
@@ -546,6 +595,17 @@ maintenanceRoutes.patch(
     if (updates.suppressPatches !== undefined) updateData.suppressPatching = updates.suppressPatches;
     if (updates.suppressAutomations !== undefined) updateData.suppressAutomations = updates.suppressAutomations;
     // notifyBefore / notifyOnStart / notifyOnEnd retired from the write surface (#3256).
+
+    // ...and again on the RESULTING target set, so a restricted caller cannot
+    // widen a window they legitimately own onto sites they cannot see.
+    const nextTargetDenied = await enforceWindowSiteScope(c, {
+      orgId: window.orgId,
+      targetType: updates.targetType ?? window.targetType,
+      siteIds: updates.siteIds ?? window.siteIds,
+      groupIds: updates.groupIds ?? window.groupIds,
+      deviceIds: updates.deviceIds ?? window.deviceIds,
+    });
+    if (nextTargetDenied) return nextTargetDenied;
 
     const [updated] = await db
       .update(maintenanceWindows)
@@ -599,6 +659,12 @@ maintenanceRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Site axis (#3654): authority over the window you are about to change is
+    // established by its CURRENT target set — re-timing or deleting it steers
+    // whatever deployments are bound to it.
+    const siteScopeDenied = await enforceWindowSiteScope(c, window);
+    if (siteScopeDenied) return siteScopeDenied;
+
     // Delete only future occurrences (preserve past ones for audit)
     await db
       .delete(maintenanceOccurrences)
@@ -651,6 +717,12 @@ maintenanceRoutes.post(
     if (window.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+
+    // Site axis (#3654): authority over the window you are about to change is
+    // established by its CURRENT target set — re-timing or deleting it steers
+    // whatever deployments are bound to it.
+    const siteScopeDenied = await enforceWindowSiteScope(c, window);
+    if (siteScopeDenied) return siteScopeDenied;
 
     if (window.status === 'cancelled') {
       return c.json({ error: 'Window is already cancelled' }, 400);
@@ -712,6 +784,12 @@ maintenanceRoutes.get(
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 
+    // Site axis (#3654): a window that reaches none of the caller's sites is
+    // not theirs to see, and neither are its occurrences.
+    if (!(await scopeWindowForRead(window, requestPermissions(c)))) {
+      return c.json({ error: 'Maintenance window not found' }, 404);
+    }
+
     const occurrences = await db
       .select()
       .from(maintenanceOccurrences)
@@ -737,13 +815,22 @@ maintenanceRoutes.get(
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
-    // Get all windows for this org first (dual-axis, #2131)
+    // Get all windows for this org first (dual-axis, #2131), then narrow to
+    // the caller's site scope (#3654) — an occurrence discloses its window.
     const windows = await db
-      .select({ id: maintenanceWindows.id })
+      .select({
+        id: maintenanceWindows.id,
+        orgId: maintenanceWindows.orgId,
+        targetType: maintenanceWindows.targetType,
+        siteIds: maintenanceWindows.siteIds,
+        groupIds: maintenanceWindows.groupIds,
+        deviceIds: maintenanceWindows.deviceIds,
+      })
       .from(maintenanceWindows)
       .where(windowOwnershipCondition(auth, orgResult.orgId as string));
 
-    const windowIds = windows.map(w => w.id);
+    const visibleWindows = await filterWindowsToSiteScope(windows, requestPermissions(c));
+    const windowIds = visibleWindows.map(w => w.id);
 
     if (windowIds.length === 0) {
       return c.json({ data: [] });
@@ -825,6 +912,11 @@ maintenanceRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Site axis (#3654): an occurrence inherits its parent window's target set;
+    // starting/ending/re-timing one steers the same deployments.
+    const siteScopeDenied = await enforceWindowSiteScope(c, occurrence.window);
+    if (siteScopeDenied) return siteScopeDenied;
+
     // Build overrides and update data
     const currentOverrides = (occurrence.occurrence.overrides as Record<string, unknown>) || {};
     const updateData: Record<string, unknown> = {};
@@ -901,6 +993,11 @@ maintenanceRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Site axis (#3654): an occurrence inherits its parent window's target set;
+    // starting/ending/re-timing one steers the same deployments.
+    const siteScopeDenied = await enforceWindowSiteScope(c, occurrence.window);
+    if (siteScopeDenied) return siteScopeDenied;
+
     if (occurrence.occurrence.status !== 'scheduled') {
       return c.json({ error: 'Occurrence is not in scheduled status' }, 400);
     }
@@ -965,6 +1062,11 @@ maintenanceRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Site axis (#3654): an occurrence inherits its parent window's target set;
+    // starting/ending/re-timing one steers the same deployments.
+    const siteScopeDenied = await enforceWindowSiteScope(c, occurrence.window);
+    if (siteScopeDenied) return siteScopeDenied;
+
     if (occurrence.occurrence.status !== 'active') {
       return c.json({ error: 'Occurrence is not currently active' }, 400);
     }
@@ -1014,11 +1116,14 @@ maintenanceRoutes.get(
 
     const now = new Date();
 
-    // Get all windows for this org (dual-axis, #2131)
-    const windows = await db
+    // Get all windows for this org (dual-axis, #2131), then narrow to the
+    // caller's site scope (#3654).
+    const allWindows = await db
       .select()
       .from(maintenanceWindows)
       .where(windowOwnershipCondition(auth, orgResult.orgId as string));
+
+    const windows = await filterWindowsToSiteScope(allWindows, requestPermissions(c));
 
     if (windows.length === 0) {
       return c.json({ data: [] });

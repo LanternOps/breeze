@@ -1070,6 +1070,11 @@
       "title": "Excluir regra PAM",
       "message": "Excluir a regra \"{{name}}\"? Solicitações de elevação não corresponderão mais a ela.",
       "confirm": "Excluir regra"
+    },
+    "staleTierBadge": {
+      "label": "Obsoleto",
+      "tooltip": "O nível de risco {{tier}} não corresponde mais a nada que esta regra possa selecionar, portanto ela nunca mais poderá corresponder.",
+      "tooltipWithTiers": "O nível de risco {{tier}} não corresponde mais a nada que esta regra possa selecionar, portanto ela nunca mais poderá corresponder. Níveis atualmente em uso: {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

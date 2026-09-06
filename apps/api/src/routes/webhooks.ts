@@ -559,10 +559,9 @@ webhookRoutes.delete(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    await db
-      .delete(webhookDeliveries)
-      .where(eq(webhookDeliveries.webhookId, webhook.id));
-
+    // webhook_deliveries.webhook_id is ON DELETE CASCADE (#4100,
+    // 2026-09-29-webhook-deliveries-cascade.sql) — deliveries are removed by
+    // Postgres when the webhook row goes, so no explicit pre-delete here.
     await db
       .delete(webhooksTable)
       .where(eq(webhooksTable.id, webhook.id));

@@ -23,8 +23,10 @@ import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertC
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
+  ALERT_DISMISS_CAS_LOST_MESSAGE,
   ALERT_SUPPRESS_CAS_LOST_MESSAGE,
   buildAcknowledgeAlertCas,
+  buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
 } from '../../services/alertService';
@@ -169,19 +171,62 @@ const AI_NOISE_VERDICT_CLASSIFICATIONS = ['transient_self_healed', 'recurring_pa
 export function hideAiNoiseCondition(): SQL {
   return notExists(
     db.select({ one: sql`1` }).from(aiAlertVerdicts).where(and(
+      // #4446 — pin the verdict row to the OUTER alert's own org rather than
+      // trusting `alert_id` / the group membership join alone. Correlating on
+      // `alerts.orgId` (the column) and not an auth-derived value is what makes
+      // this correct for every caller: a system-scope token with no `orgId`
+      // query filter pushes NO app-layer org condition on the outer query at
+      // all (see the scope branch in `GET /alerts`), so before this predicate
+      // the ONLY thing keeping a mis-orged verdict from suppressing another
+      // tenant's alert was the RLS policy. Same defense-in-depth the sibling
+      // reader `latestVerdictsForAlerts` already applies (P2-1 task 16e).
+      // Free bonus: `org_id` is the leading column of both
+      // `ai_alert_verdicts_org_alert_idx` and `ai_alert_verdicts_org_group_idx`,
+      // which the unpinned form could not use.
+      eq(aiAlertVerdicts.orgId, alerts.orgId),
       or(
         eq(aiAlertVerdicts.alertId, alerts.id),
         inArray(
           aiAlertVerdicts.correlationGroupId,
           db.select({ groupId: alertCorrelationMembers.groupId })
             .from(alertCorrelationMembers)
-            .where(eq(alertCorrelationMembers.alertId, alerts.id)),
+            .where(and(
+              // The member row is what maps a GROUP verdict onto this alert,
+              // so it needs the same org pin — otherwise the group leg stays
+              // RLS-only even once the verdict row above is pinned.
+              eq(alertCorrelationMembers.orgId, alerts.orgId),
+              eq(alertCorrelationMembers.alertId, alerts.id),
+            )),
         ),
       )!,
       isNull(aiAlertVerdicts.supersededBy),
       inArray(aiAlertVerdicts.classification, AI_NOISE_VERDICT_CLASSIFICATIONS),
     ))
   );
+}
+
+/**
+ * #4446 (same sweep as `hideAiNoiseCondition` above) — the correlation
+ * metadata decorating each row of `GET /alerts`'s page. `alertIds` comes from
+ * the page that was just fetched, so it is *usually* already org-narrowed by
+ * the scope branch at the top of the handler — but NOT for a system-scope
+ * token with no `orgId` query param, which pushes no app-layer org condition
+ * at all. Pinning `org_id` on BOTH joined rows (rather than trusting the
+ * member→group join alone) is the same defense-in-depth
+ * `latestVerdictsForAlerts` applies to this handler's other correlation read,
+ * and it puts the leading column of `alert_correlation_members_org_alert_idx`
+ * / `alert_correlation_groups_org_status_seen_idx` back in play.
+ *
+ * Exported for the compiled-SQL test, same reason `hideAiNoiseCondition` is:
+ * the mocked-drizzle suite's schema stub has no real columns, so a `where`
+ * assertion there could not tell an org-pinned predicate from an unpinned one.
+ */
+export function correlationMetadataCondition(orgIds: string[], alertIds: string[]): SQL {
+  return and(
+    inArray(alertCorrelationMembers.orgId, orgIds),
+    inArray(alertCorrelationMembers.alertId, alertIds),
+    inArray(alertCorrelationGroups.orgId, orgIds),
+  )!;
 }
 
 // GET /alerts - List alerts with filters
@@ -336,6 +381,12 @@ alertsRoutes.get(
       .offset(offset);
 
     const alertIds = alertsList.map((alert) => alert.id);
+    // The org axis both correlation reads below scope on. Derived per-row from
+    // the already-loaded page (its select projection carries `orgId`) rather
+    // than off `auth`: a partner/system caller with no `orgId` query filter can
+    // see alerts spanning MULTIPLE orgs on one page, and a system-scope caller
+    // gets no app-layer org condition on the outer query at all (#4446).
+    const orgIdsForPage = [...new Set(alertsList.map((alert) => alert.orgId))];
     const correlationRows = alertIds.length > 0
       ? await db
         .select({
@@ -348,7 +399,7 @@ alertsRoutes.get(
         })
         .from(alertCorrelationMembers)
         .innerJoin(alertCorrelationGroups, eq(alertCorrelationMembers.groupId, alertCorrelationGroups.id))
-        .where(inArray(alertCorrelationMembers.alertId, alertIds))
+        .where(correlationMetadataCondition(orgIdsForPage, alertIds))
       : [];
 
     // Resolve acknowledgedBy/resolvedBy user ids to display names so clients
@@ -356,22 +407,38 @@ alertsRoutes.get(
     const alertsWithActorNames = await withAlertActorNames(alertsList);
 
     // Phase 2 wave P2-1 (alert verdicts), Task 14 — attach each alert's
-    // latest live verdict. A partner/system caller with no `orgId` query
-    // filter can see alerts spanning MULTIPLE orgs on one page (the org
-    // scoping above uses `inArray(alerts.orgId, orgIds)` in that case), so
-    // `orgId` is derived per-row from the already-loaded `alertsList`
-    // (its select projection already carries `orgId`) rather than off
-    // `auth` alone. `latestVerdictsForAlerts` takes the org id(s) directly
-    // (widened to accept an array) instead of the route grouping alert ids
-    // per org and issuing one query per org — see that function's own
-    // docstring for why this was the smaller change.
-    const orgIdsForVerdicts = [...new Set(alertsList.map((alert) => alert.orgId))];
-    const verdictMap = await latestVerdictsForAlerts(orgIdsForVerdicts, alertIds);
+    // latest live verdict, scoped on `orgIdsForPage` (see its definition
+    // above for why the org axis comes from the page, not from `auth`).
+    // `latestVerdictsForAlerts` takes the org id(s) directly (widened to
+    // accept an array) instead of the route grouping alert ids per org and
+    // issuing one query per org — see that function's own docstring for why
+    // this was the smaller change.
+    const verdictMap = await latestVerdictsForAlerts(orgIdsForPage, alertIds);
+
+    // #4445 — resolve each live verdict's feedbackBy to a display name (same
+    // actor-name pattern as acknowledgedBy/resolvedBy above, #3966) so the
+    // badge can show WHO already voted instead of a raw user id. A second,
+    // separate withAlertActorNames call: feedbackBy lives on the verdict row,
+    // not the alert row the call above already enriched.
+    const verdictFeedbackRows = await withAlertActorNames(
+      [...verdictMap.values()].map((verdict) => ({ id: verdict.id, feedbackBy: verdict.feedbackBy }))
+    );
+    const feedbackByNameByVerdictId = new Map(
+      verdictFeedbackRows.map((row) => [row.id, row.feedbackByName ?? null])
+    );
 
     const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
-      return { ...alert, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+      return {
+        ...alert,
+        aiVerdict: verdict
+          ? {
+            ...projectAlertAiVerdictSummary(verdict),
+            feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
+          }
+          : null,
+      };
     });
 
     return c.json({
@@ -1157,11 +1224,22 @@ alertsRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. Two techs on the same alert both clear this check.
+    // 409, not the 400 this used to return: losing at the pre-read and losing at the
+    // CAS are the same real-world event (somebody dismissed first), so they must not
+    // return two codes purely on which side of the read the other write landed.
+    // #4099 made exactly this change for resolve and #4288 for acknowledge.
     if (alert.status === 'dismissed') {
-      return c.json({ error: 'Alert is already dismissed' }, 400);
+      return c.json({ error: 'Alert is already dismissed' }, 409);
     }
 
     const dismissedAt = new Date();
+    // Winner-takes-all (#4293). Updating by id alone could not reopen an alert the
+    // way an unguarded acknowledge could — dismiss is legal from any other status —
+    // but it did silently clobber provenance: two concurrent dismissals both matched,
+    // so `dismissedAt`/`dismissedBy` recorded whichever write landed second while both
+    // callers got a 200, an ML feedback emit and an audit row claiming the transition.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -1169,10 +1247,14 @@ alertsRoutes.post(
         dismissedAt,
         dismissedBy: auth.user.id
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildDismissAlertCas(alertId))
       .returning();
     if (!updated) {
-      return c.json({ error: 'Failed to dismiss alert' }, 500);
+      // The CAS matched nothing between the read above and this write: the alert was
+      // dismissed first. The feedback and audit below belong to whoever performed
+      // that transition, not to this caller. Previously a 500 — correct only while
+      // the branch was unreachable, which an id-only UPDATE made it.
+      return c.json({ error: ALERT_DISMISS_CAS_LOST_MESSAGE }, 409);
     }
 
     // Like suppress: no event-bus publish (nothing should notify/escalate off a
@@ -1270,6 +1352,12 @@ alertsRoutes.get(
     const verdictMap = await latestVerdictsForAlerts(alert.orgId, [alertId]);
     const verdict = verdictMap.get(alertId);
 
+    // #4445 — same feedbackBy -> feedbackByName resolution as the list route
+    // above, scoped to the single verdict (if any) this alert carries.
+    const [feedbackByNameRow] = verdict
+      ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
+      : [];
+
     return c.json(withMlAlertContext({
       ...alertWithActorNames,
       device: device ? {
@@ -1287,7 +1375,12 @@ alertsRoutes.get(
         isActive: rule.isActive
       } : null,
       notifications,
-      aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null,
+      aiVerdict: verdict
+        ? {
+          ...projectAlertAiVerdictSummary(verdict),
+          feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
+        }
+        : null,
     }));
   }
 );

@@ -16,6 +16,7 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   checkGuardrails, resolveApprovalScope,
 } from './aiGuardrails';
+import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -30,27 +31,6 @@ function scopeTablePairs(): Array<{ tool: string; action: string; scope: 'four_e
     for (const action of actions) pairs.push({ tool, action, scope: 'supervised' });
   }
   return pairs;
-}
-
-/**
- * A tool's REAL action enum, from the two places an action string can enter the
- * system: the Anthropic tool definition the model is shown, and the Zod schema
- * validateToolInput enforces. Unioned, so a new member added to EITHER source
- * is caught. Returns null for a tool that is not action-multiplexed.
- */
-function realActionEnum(toolName: string): string[] | null {
-  const values = new Set<string>();
-
-  const definition = getToolDefinitions().find((d) => d.name === toolName);
-  const properties = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
-  const jsonEnum = (properties?.action as { enum?: unknown[] } | undefined)?.enum;
-  if (Array.isArray(jsonEnum)) for (const v of jsonEnum) if (typeof v === 'string') values.add(v);
-
-  const zodAction = (toolInputSchemas[toolName] as { shape?: Record<string, unknown> } | undefined)?.shape?.action;
-  const zodEnum = (zodAction as { options?: unknown[] } | undefined)?.options;
-  if (Array.isArray(zodEnum)) for (const v of zodEnum) if (typeof v === 'string') values.add(v);
-
-  return values.size > 0 ? [...values] : null;
 }
 
 /** Every action of `tool` that any tier table classifies explicitly. */
@@ -150,7 +130,7 @@ describe('tier-3 approval scope classification', () => {
 
     const enumerated: string[] = [];
     for (const tool of covered) {
-      const actions = realActionEnum(tool);
+      const actions = toolActionEnum(tool);
       if (!actions) continue; // whole-tool surface with no `action` enum
       enumerated.push(tool);
       const classified = explicitlyClassifiedActions(tool);
@@ -175,15 +155,15 @@ describe('tier-3 approval scope classification', () => {
       }
     }
     expect(enumerated.sort()).toEqual([
-      'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
+      'manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
     ]);
   });
 
   it('exposes both enum sources for every enumerated tool', () => {
-    // The union in realActionEnum() is only a real guard while BOTH sources
+    // The union in toolActionEnum() is only a real guard while BOTH sources
     // still reflect. If one silently returns nothing, the union quietly shrinks
     // and a new action in that source stops failing CI.
-    for (const tool of ['manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
+    for (const tool of ['manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
       const definition = getToolDefinitions().find((d) => d.name === tool);
       const properties = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
       expect((properties?.action as { enum?: unknown[] } | undefined)?.enum, `${tool} tool-definition enum`).toBeInstanceOf(Array);
@@ -256,6 +236,103 @@ describe('tier-3 approval scope classification', () => {
     expect(withoutStatus.approvalScope).toBe('supervised');
   });
 
+  // Task 7 (#3258 wave W02): add_contact went from a stub ("returns guidance
+  // only") to a real write of customer PII, so it must escalate to Tier 3 and
+  // land on `supervised` — not stay Tier 2 (auto-execute with no approval) and
+  // not fall through to `four_eyes` (which would demand a second approver for
+  // routine contact creation, same as create_site). Two assertions, one per
+  // failure mode described in spec §5:
+  //   - membership in BOTH TIER3_ACTIONS and TIER3_SUPERVISED_ACTIONS is
+  //     required — pulling either one out fails a DIFFERENT assertion below,
+  //     so this test cannot go green with just one of the two edits in place.
+  it('add_contact is classified supervised in both required tables, never four_eyes', () => {
+    expect(TIER3_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_organizations ?? []).not.toContain('add_contact');
+  });
+
+  it('add_contact resolves to supervised at tier 3 end-to-end — not tier 2, not four_eyes', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: 'o1', name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  // Review finding (fix round 1): the add_contact approval description had no
+  // fallback for `name` — a phone/mobile-only contact rendered literally as
+  // `Add contact "undefined"`, showing the human approver nothing identifying
+  // for exactly the input shape this task's own no-identifier fix enabled.
+  // These pin BOTH a name-bearing contact and a name-less one so the fallback
+  // chain (name ?? email ?? phone ?? mobile) can't regress silently.
+  it('add_contact approval description shows the contact name and email when both are present', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111',
+      name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toContain('Jane Doe');
+    expect(check.description).toContain('jane@customer.example');
+    expect(check.description).not.toContain('undefined');
+  });
+
+  it('add_contact approval description identifies a phone-only contact by phone, never "undefined"', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111', phone: '555-0100',
+    });
+    expect(check.description).toContain('555-0100');
+    expect(check.description).not.toContain('undefined');
+  });
+
+  // Review finding (fix round 2): the description named only the contact and
+  // the organization. `isPrimary` and `siteId` are the ONLY two add_contact
+  // inputs with an effect beyond inserting a row — `isPrimary: true` demotes
+  // whoever currently holds the scope's primary slot and REPLACES
+  // `organizations.billing_contact` (or `sites.contact` when a site is named),
+  // which is a public partner-API DTO. An approver shown neither could not
+  // tell "file a new contact" apart from "overwrite this customer's billing
+  // contact". These pin the exact rendering of all four combinations.
+  const CONTACT_ORG = '11112222-1111-4111-8111-111111111111';
+  const CONTACT_SITE = '22223333-2222-4222-8222-222222222222';
+
+  it('add_contact approval description names the primary takeover at the ORG level', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... '
+      + 'as PRIMARY contact (replaces the current billing contact)',
+    );
+  });
+
+  it('add_contact approval description names the SITE and the site-contact takeover together', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE,
+      name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333... '
+      + "as PRIMARY contact (replaces the site's current contact)",
+    );
+  });
+
+  it('add_contact approval description names the site pin on its own', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE, name: 'Jane Doe',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333...',
+    );
+  });
+
+  it('add_contact approval description is unchanged for a plain org-level contact', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" (email: jane@customer.example) to organization 11112222...',
+    );
+  });
+
   it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {
     expect(TIER3_INPUT_AWARE_TOOLS.has('s1_isolate_device')).toBe(true);
     expect(TIER3_FOUR_EYES_TOOLS.has('s1_isolate_device')).toBe(false);
@@ -269,6 +346,52 @@ describe('tier-3 approval scope classification', () => {
     expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1', isolate: true })).toBe('supervised');
     // isolate missing — fail toward the urgent-containment default, not the stricter one.
     expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1' })).toBe('supervised');
+  });
+
+  it('manage_policy_feature_link add+update are input-aware: exempt from the static per-action tables', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_policy_feature_link:add')).toBe(true);
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_policy_feature_link:update')).toBe(true);
+    // They escalate through the input-aware hook, NOT the static table — so
+    // they must not appear in TIER3_ACTIONS either, or `remove`'s entry would
+    // stop being the only static escalation for this tool.
+    expect(TIER3_ACTIONS.manage_policy_feature_link ?? []).toEqual(['remove']);
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_policy_feature_link ?? []).not.toContain('add');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_policy_feature_link ?? []).not.toContain('add');
+  });
+
+  it('the resolveApprovalScope override is MANDATORY for this tool, not stylistic', () => {
+    // RMM-QA-176 D9. manage_policy_feature_link is in NEITHER whole-tool set,
+    // and add/update are in neither *_ACTIONS scope table. Every static lookup
+    // in resolveApprovalScope therefore misses for them, and the function's
+    // last line is the per-TOOL `four_eyes` fail-safe. Without the input-aware
+    // override an escalated `add` would resolve to four_eyes — a scope spec
+    // §3.2 reserves for externally-binding/identity/destroy acts, and one the
+    // in-app approval UI would surface as needing a second approver. This test
+    // pins the three facts the override's necessity rests on, so that removing
+    // the override becomes a visible change rather than a silent re-scoping.
+    expect(TIER3_FOUR_EYES_TOOLS.has('manage_policy_feature_link')).toBe(false);
+    expect(TIER3_SUPERVISED_TOOLS.has('manage_policy_feature_link')).toBe(false);
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_policy_feature_link).toBeUndefined();
+    // ...and the fail-safe really is what an unclassified (tool, action) pair
+    // on this tool reaches, demonstrated on an action the override does not
+    // cover at all.
+    expect(resolveApprovalScope('manage_policy_feature_link', 'not_a_real_action', {})).toBe('four_eyes');
+  });
+
+  it('manage_policy_feature_link resolves supervised for maintenance on both add and update', () => {
+    expect(resolveApprovalScope('manage_policy_feature_link', 'add', { featureType: 'maintenance' })).toBe('supervised');
+    expect(resolveApprovalScope('manage_policy_feature_link', 'update', { featureType: 'maintenance' })).toBe('supervised');
+    // remove keeps reaching supervised via the STATIC table, unchanged.
+    expect(resolveApprovalScope('manage_policy_feature_link', 'remove', {})).toBe('supervised');
+  });
+
+  it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
+    const maintenance = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'maintenance' });
+    expect(maintenance.tier).toBe(3);
+    expect(maintenance.approvalScope).toBe('supervised');
+    const patch = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'patch' });
+    expect(patch.tier).toBe(2);
+    expect(patch.approvalScope).toBeUndefined();
   });
 
   it('checkGuardrails surfaces the scope on tier-3 results', () => {

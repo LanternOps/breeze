@@ -1070,6 +1070,11 @@
       "title": "Supprimer la règle PAM",
       "message": "Supprimer la règle « {{name}} » ? Les demandes d’élévation ne correspondront plus.",
       "confirm": "Supprimer la règle"
+    },
+    "staleTierBadge": {
+      "label": "Obsolète",
+      "tooltip": "Le niveau de risque {{tier}} ne correspond plus à rien que cette règle puisse sélectionner, elle ne pourra donc plus jamais correspondre.",
+      "tooltipWithTiers": "Le niveau de risque {{tier}} ne correspond plus à rien que cette règle puisse sélectionner, elle ne pourra donc plus jamais correspondre. Niveaux actuellement utilisés : {{tiers}}."
     }
   },
   "pamPamSignerGroupsTab": {

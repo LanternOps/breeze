@@ -143,19 +143,22 @@ Breeze [remote access](/features/remote-access/) replaces it functionally. The m
 
 ## Adapting the Playbook to an Unlisted RMM
 
-Every guide in this section is the same seven questions. Answer them for your platform and you have a migration plan.
+Every guide in this section is the same eight questions. Answer them for your platform and you have a migration plan.
 
 | # | Question | Feeds |
 |---|---|---|
 | 1 | What is the tenancy hierarchy, and how does it map to `Organization → Site → Device Group`? | [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv) |
 | 2 | How do I export the client/site tree and the device list as CSV? | Recipe 1, [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) |
-| 3 | Can its script engine run PowerShell/bash as SYSTEM on a schedule? | [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) |
-| 4 | Are its scripts text-based (port) or step-based (re-author)? | [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import) |
-| 5 | Where do its custom fields / UDFs live, and which are populated? | [Custom fields](/features/custom-fields/) |
-| 6 | Which alerts actually generated tickets in the last 90 days? | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
-| 7 | What is the silent uninstall command, and does the platform bundle a *separate* remote-access agent? | [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) |
+| 3 | Where do its customer contacts live — in the RMM, or only in the PSA? | [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts) |
+| 4 | Can its script engine run PowerShell/bash as SYSTEM on a schedule? | [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) |
+| 5 | Are its scripts text-based (port) or step-based (re-author)? | [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import) |
+| 6 | Where do its custom fields / UDFs live, and which are populated? | [Custom fields](/features/custom-fields/) |
+| 7 | Which alerts actually generated tickets in the last 90 days? | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| 8 | What is the silent uninstall command, and does the platform bundle a *separate* remote-access agent? | [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) |
 
-Question 7 is the one people miss. Datto, Atera, Syncro, and ConnectWise all ship remote-access components installed separately from the RMM agent, and all of them can survive the RMM uninstall.
+Question 8 is the one people miss. Datto, Atera, Syncro, and ConnectWise all ship remote-access components installed separately from the RMM agent, and all of them can survive the RMM uninstall.
+
+Question 3 is the newly answerable one. Contacts are a real migration target now that Breeze holds them as first-class records rather than a single field on the organization, so wherever they live in the RMM, export them alongside the tenancy tree and load them through the same preview → commit pair.
 
 <Aside type="tip">
   If your platform is not listed and you work through this checklist, please open an issue or a pull request on the [Breeze repository](https://github.com/LanternOps/breeze) with what you found. These guides are built from real migrations.

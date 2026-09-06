@@ -6,10 +6,15 @@ import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import {
   authorizeQueuedRecoveryWork,
   captureRecoveryAuthorizationSubject,
+  RecoveryAuthorizationDeniedError,
+  RecoveryAuthorizationTransientError,
   type RecoveryAuthorizationIntent,
   type RecoveryAuthorizationSubjectRow,
 } from './recoveryAuthorizationSubject';
-import type { ResilienceResourceRef } from './resilienceSiteAuthorization';
+import {
+  ResilienceAuthorizationError,
+  type ResilienceResourceRef,
+} from './resilienceSiteAuthorization';
 
 const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
@@ -275,13 +280,54 @@ async function loadDrPlanGroups(planId: string, orgId: string, tx: DrDb = db): P
     .orderBy(asc(drPlanGroups.sequence));
 }
 
-class DrRecoveryAuthorizationDeniedError extends Error {
+export class DrRecoveryAuthorizationDeniedError extends Error {
   readonly retriable = false;
 
   constructor(readonly code: string) {
     super(code);
     this.name = 'DrRecoveryAuthorizationDeniedError';
   }
+}
+
+export type DrExecutionAuthorizationFailure = {
+  status: 400 | 403 | 404 | 503;
+  code: string;
+};
+
+/**
+ * Translate an authorization failure raised while starting a DR execution into
+ * the status the caller should see, or null when the error is not one.
+ *
+ * `createDrExecutionAndEnqueue` authorizes every group device against the
+ * caller's site grant before an execution row exists, so a denial is a normal,
+ * expected outcome for a site-restricted technician. Left uncaught it reaches
+ * the global Hono handler, which renders anything that is not an HTTPException
+ * as a 500 and reports it to Sentry — telling the caller the server broke and
+ * burying a genuine authorization signal in fault noise (#3653).
+ *
+ * Returning null for an unrecognised error is deliberate: the caller must
+ * rethrow it so real faults keep failing loudly.
+ */
+export function classifyDrExecutionAuthorizationError(
+  error: unknown,
+): DrExecutionAuthorizationFailure | null {
+  if (error instanceof ResilienceAuthorizationError) {
+    return { status: error.status, code: error.code };
+  }
+  if (error instanceof RecoveryAuthorizationTransientError) {
+    // The subject could not be re-verified. Not a denial — a retryable outage.
+    return { status: 503, code: error.code };
+  }
+  if (error instanceof RecoveryAuthorizationDeniedError) {
+    return { status: 403, code: error.code };
+  }
+  if (error instanceof DrRecoveryAuthorizationDeniedError) {
+    return {
+      status: error.code === 'resource_not_found' ? 404 : 400,
+      code: error.code,
+    };
+  }
+  return null;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

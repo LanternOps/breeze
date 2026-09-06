@@ -91,9 +91,15 @@ const ROOT_ALLOWLIST: Record<string, string> = {
     'no consumer — the shipped business-email gate reads SIGNUP_REQUIRE_BUSINESS_EMAIL / SIGNUP_BUSINESS_EMAIL_CONTACT_URL instead',
 };
 
-// The digest-pinned droplet stack. Its api block is well-maintained; after
-// wiring the parity gaps, nothing here needs an intentional exception.
-const PROD_ALLOWLIST: Record<string, string> = {};
+// The digest-pinned droplet stack. Its api block is well-maintained; the two
+// entries below are the prod-side counterpart of GRAFANA_ADMIN_USER/PASSWORD
+// in ROOT_ALLOWLIST above — consumed by the optional docker-compose.monitoring.yml
+// overlay (see scripts/prod/deploy.sh's ENABLE_MONITORING), never by
+// deploy/docker-compose.prod.yml itself (#4362).
+const PROD_ALLOWLIST: Record<string, string> = {
+  GRAFANA_ADMIN_PASSWORD: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+  POSTGRES_EXPORTER_DSN: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+};
 
 interface Pair {
   name: string;
@@ -239,6 +245,43 @@ describe('LLM_PROVIDER_CATALOG_ENABLED regression (#4113/#4116)', () => {
 
   it('is threaded through a docker-compose.yml service environment block', () => {
     expect(isReferencedInCompose('LLM_PROVIDER_CATALOG_ENABLED', REPO_ROOT_COMPOSE)).toBe(true);
+  });
+});
+
+/**
+ * QuickBooks (final-review finding I). The Phase C sandbox walkthrough needed a
+ * manual container override for exactly this reason: all five QBO_* vars were
+ * validated in `validate.ts` and read by `config/env.ts`, but documented
+ * nowhere and mapped into no service block — so setting them in `.env` was a
+ * silent no-op and the integration simply stayed dark. Pinned on all three axes,
+ * for both the self-host and droplet compose files, so they cannot drift apart
+ * again.
+ */
+describe('QuickBooks QBO_* env plumbing (finding I)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const QBO_VARS = [
+    'QBO_CLIENT_ID',
+    'QBO_CLIENT_SECRET',
+    'QBO_REDIRECT_URI',
+    'QBO_ENVIRONMENT',
+    'QBO_WEBHOOK_VERIFIER_TOKEN',
+  ] as const;
+
+  it.each(QBO_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
   });
 });
 

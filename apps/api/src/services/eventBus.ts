@@ -73,6 +73,9 @@ export type EventType =
   | 'automation.started'
   | 'automation.completed'
   | 'automation.failed'
+  // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
+  // went wrong, so alerting keyed on automation.failed must not fire.
+  | 'automation.cancelled'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -174,6 +177,16 @@ export type EventType =
   | 'ai.agent.run.completed'
   | 'ai.agent.run.failed'
   | 'ai.agent.run.skipped'
+  // #4205 — follow-up to #3828/PR #4168: the per-org circuit breaker
+  // (`agentCircuit.ts`'s `recordRunTerminal`) previously only fired a
+  // notification + audit row when it opened. Published from the SAME
+  // best-effort, outside-the-transaction fan-out as those two, right after
+  // the CAS-guarded open-transition UPDATE commits — so it shares their
+  // "opens exactly once per episode" guarantee. Payload:
+  // { agentId, orgId, triggeringRunId, consecutiveFailures, threshold }.
+  | 'ai.agent.circuit.opened'
+  // #4388 — an org crossed an AI budget rung; org-level, no device/site.
+  | 'ai.budget.threshold_crossed'
   // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
   // publishUserEvent, which deliberately does not use the ordinary publish
   // path. Two segments so it stays subscribable under EVENT_TYPE_RE.
@@ -214,6 +227,10 @@ export interface BreezeEvent<T = Record<string, unknown>> {
 }
 
 export interface PublishOptions {
+  /** Stable logical identity for a durable publisher; retries may physically redeliver. */
+  eventId?: string;
+  /** Immutable source timestamp for durable publication retries. */
+  occurredAt?: string;
   priority?: EventPriority;
   correlationId?: string;
   causationId?: string;
@@ -281,7 +298,12 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const eventId = randomUUID();
+    const eventId = options.eventId ?? randomUUID();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
+      throw new Error('Invalid eventId');
+    }
+    const occurredAt = options.occurredAt === undefined ? new Date() : new Date(options.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid occurredAt');
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Normalise an empty-string siteId to "no attribution" so the WS filter
@@ -301,7 +323,7 @@ class EventBus {
         correlationId: options.correlationId || eventId,
         causationId: options.causationId,
         userId: options.userId,
-        timestamp: new Date().toISOString()
+        timestamp: occurredAt.toISOString()
       }
     };
 
@@ -569,6 +591,7 @@ export const EVENT_TYPES = {
   AUTOMATION_STARTED: 'automation.started' as const,
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
+  AUTOMATION_CANCELLED: 'automation.cancelled' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,
@@ -654,6 +677,10 @@ export const EVENT_TYPES = {
   AI_AGENT_RUN_COMPLETED: 'ai.agent.run.completed' as const,
   AI_AGENT_RUN_FAILED: 'ai.agent.run.failed' as const,
   AI_AGENT_RUN_SKIPPED: 'ai.agent.run.skipped' as const,
+  // #4205
+  AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' as const,
+  // #4388
+  AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' as const,
   // Wave 2 (#3823). Addressed to one user via publishUserEvent — never
   // broadcast, never written to the stream or the global channel.
   NOTIFICATION_CREATED: 'notification.created' as const,

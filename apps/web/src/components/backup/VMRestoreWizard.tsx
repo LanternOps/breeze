@@ -18,6 +18,8 @@ import VMRestoreConfirmStep from './VMRestoreConfirmStep';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -33,12 +35,6 @@ type Snapshot = {
     memoryMB?: number;
     diskGB?: number;
   };
-};
-
-type Device = {
-  id: string;
-  hostname: string;
-  osType?: string;
 };
 
 type VMEstimate = {
@@ -60,7 +56,7 @@ export default function VMRestoreWizard() {
   const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [deviceSearch, setDeviceSearch] = useState('');
   const [snapshotId, setSnapshotId] = useState('');
   const [targetDeviceId, setTargetDeviceId] = useState('');
   const [memoryMB, setMemoryMB] = useState(4096);
@@ -74,18 +70,20 @@ export default function VMRestoreWizard() {
   const [restoreError, setRestoreError] = useState<string>();
   const [restoreSuccess, setRestoreSuccess] = useState<string>();
   const [restoring, setRestoring] = useState(false);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    osType: 'windows',
+    includeIds: targetDeviceId ? [targetDeviceId] : [],
+  });
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, steps.length - 1));
   const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
 
-  // Fetch snapshots and devices
+  // Fetch snapshots; target hosts are loaded by the shared device-options contract.
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [snapRes, devRes] = await Promise.all([
-          fetchWithAuth('/backup/snapshots'),
-          fetchWithAuth('/devices'),
-        ]);
+        const snapRes = await fetchWithAuth('/backup/snapshots');
 
         if (snapRes.ok) {
           const payload = await snapRes.json();
@@ -100,13 +98,6 @@ export default function VMRestoreWizard() {
               };
             })
           );
-        }
-
-        if (devRes.ok) {
-          const payload = await devRes.json();
-          const data = asList(payload);
-          const all = Array.isArray(data) ? data : [];
-          setDevices(all.filter((d: Device) => d.osType?.toLowerCase().includes('windows')));
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load data');
@@ -141,7 +132,7 @@ export default function VMRestoreWizard() {
   }, [snapshotId]);
 
   const selectedSnapshot = snapshots.find((s) => s.id === snapshotId);
-  const selectedDevice = devices.find((d) => d.id === targetDeviceId);
+  const selectedDevice = deviceOptions.options.find((d) => d.id === targetDeviceId);
 
   const handleRestore = useCallback(async () => {
     try {
@@ -310,23 +301,14 @@ export default function VMRestoreWizard() {
                 <p className="text-sm text-muted-foreground">
                   {t('vMRestoreWizard.chooseAWindowsDeviceWithHyperVTo')} </p>
               </div>
-              {devices.length === 0 ? (
-                <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  {t('vMRestoreWizard.noWindowsDevicesAvailable')} </div>
-              ) : (
-                <select
-                  value={targetDeviceId}
-                  onChange={(e) => setTargetDeviceId(e.target.value)}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                >
-                  <option value="">{t('vMRestoreWizard.selectATargetHost')}</option>
-                  {devices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.hostname}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <DeviceOptionPicker
+                result={deviceOptions}
+                selectedIds={targetDeviceId ? [targetDeviceId] : []}
+                onSelectedIdsChange={(ids) => setTargetDeviceId(ids[0] ?? '')}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+                selectionMode="single"
+              />
             </div>
           )}
 
@@ -454,7 +436,7 @@ export default function VMRestoreWizard() {
               <button
                 type="button"
                 onClick={handleRestore}
-                disabled={restoring || !snapshotId || !targetDeviceId || !vmName.trim()}
+                disabled={restoring || !snapshotId || !targetDeviceId || !vmName.trim() || !deviceOptions.canSubmit}
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {restoring ? (

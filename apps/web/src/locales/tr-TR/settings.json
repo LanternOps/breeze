@@ -1,4 +1,86 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Canlı güncelleniyor"
+    },
+    "list": {
+      "clearFilters": "Filtreleri temizle",
+      "emptyDescription": "Uyarılar, zamanlamalar, biletler ve manuel eylemler tarafından tetiklenen çalıştırmalar, bir aracı bunları yürüttüğünde burada görünecektir.",
+      "emptyFilteredDescription": "Bu filtrelere uyan çalıştırma yok. Farklı bir aracı veya durum deneyin.",
+      "emptyConfigureLink": "AI aracılarını yapılandır",
+      "columns": {
+        "started": "Başlatıldı",
+        "duration": "Süre"
+      },
+      "showCost": "Maliyeti göster",
+      "hideCost": "Maliyeti gizle"
+    },
+    "detail": {
+      "notFoundDescription": "Bu çalıştırma silinmiş olabilir veya bağlantı güncel olmayabilir.",
+      "pageTitle": "{{agent}} · {{started}} · Çalıştırma | Breeze RMM",
+      "header": {
+        "title": "{{agent}} çalıştırması",
+        "startedLabel": "Başlatıldı",
+        "machineVerdict": "Makine kararı: {{verdict}}"
+      },
+      "summary": {
+        "title": "Aracının bulduğu sonuçlar"
+      },
+      "findings": {
+        "badge_one": "İncelenecek {{count}} bulgu",
+        "badge_other": "İncelenecek {{count}} bulgu"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Sürücü",
+          "serviceName": "Hizmet adı",
+          "configName": "Yedekleme işi",
+          "usedPercent": "Kullanılan (%)",
+          "percentUsed": "Kullanılan (%)",
+          "freeGb": "Boş (GB)",
+          "totalGb": "Kapasite (GB)",
+          "lastSeenAt": "Son görülme",
+          "lastSeenDays": "Son görülmeden bu yana geçen gün",
+          "checkedAt": "Kontrol edildi",
+          "cveIds": "CVE kimlikleri",
+          "cveCount": "CVE sayısı",
+          "cveId": "CVE",
+          "cvssScore": "CVSS puanı",
+          "osType": "İşletim sistemi türü",
+          "openCriticalCount": "Açık kritik CVE'ler"
+        }
+      },
+      "sweep": {
+        "caption": "Bu taramanın bulduğu her sorun için bir satır ve önerilen eylem.",
+        "reviewPermissions": "Aracı izinlerini incele",
+        "checksLabel": "Kontroller:"
+      },
+      "trace": {
+        "description": "Aracının önerdiği, yürüttüğü veya reddedilen her araç çağrısı, sırasıyla.",
+        "emptyDescription": "Aracının önerdiği veya yürüttüğü araç çağrıları burada listelenecektir."
+      },
+      "ledger": {
+        "description": "Yalnızca gerçekten çalışan çağrılar; süreleri ve varsa hatalarıyla.",
+        "emptyDescription": "Aracının gerçekten çağırdığı araçlar burada listelenecektir.",
+        "collapsedSummary": "Araç yürütmeleri ({{count}}) — yukarıdaki izle aynı",
+        "statuses": {
+          "pending": "Beklemede",
+          "approved": "Onaylandı",
+          "executing": "Yürütülüyor",
+          "completed": "Tamamlandı",
+          "failed": "Başarısız",
+          "rejected": "Reddedildi"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Bu çalıştırmanın istediği onaylar burada listelenecektir."
+      },
+      "triage": {
+        "categoryLabel": "Kategori",
+        "categoryUnresolved": "Önerildi — bu görünümde ad kullanılamıyor"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
     "description": "İş ortağı kapsamındaki makine kimliklerini ve bunların erişim anahtarlarını yönetin.",
@@ -18,6 +100,7 @@
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
     "sourceCidrs": "Kaynak IP'leri veya CIDR'ler (satır başına bir tane)",
+    "writeScopeRestrictionsRequired": "enrollment-keys:write kapsamı bir son kullanma tarihi ve en az bir kaynak IP veya CIDR gerektirir.",
     "expiresAt": "Süresi doluyor",
     "save": "Kaydet",
     "cancel": "İptal",
@@ -119,7 +202,9 @@
     "maxTurns": "Oturum Başına Maksimum Dönüş Sayısı",
     "messagesPerMinute": "Kullanıcı Başına Dakikada Mesaj Sayısı",
     "messagesPerHour": "Kuruluş Başına Saat Başına Mesaj Sayısı",
-    "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
+    "alertThresholds": "Uyar (bütçenin %'si)",
+    "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
+    "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
     "description": "Bütçe değerleri tüm alt kuruluşlarda uygulanır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
     "modes": {
       "perStep": "Adım Başına",
@@ -127,6 +212,9 @@
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
   },
   "partnerAiProvider": {
     "title": "Yapay Zeka Sağlayıcısı",
@@ -743,6 +831,28 @@
       "unavailable": "Politika mevcut değil."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Denetim Günlüğü Saklama",
+    "description": "Eski kayıtlar temizlenmeden önce bu kuruluşun denetim geçmişinin ne kadar süreyle saklanacağını denetler.",
+    "loading": "Saklama ilkesi yükleniyor...",
+    "errors": {
+      "load": "Denetim saklama ilkesi yüklenemedi.",
+      "save": "Denetim saklama ilkesi kaydedilemedi."
+    },
+    "toasts": {
+      "saved": "Denetim saklama ilkesi kaydedildi."
+    },
+    "unconfiguredWarning": "Bu kuruluş için henüz bir saklama ilkesi yapılandırılmadı — siz birini kaydedene kadar denetim günlükleri hiçbir zaman temizlenmez.",
+    "retentionDays": "Saklama süresi (gün)",
+    "readOnly": "Bu ayarı değiştirme izniniz yok.",
+    "lastCleanup": "Son temizlik {{date}} tarihinde çalıştı",
+    "actions": {
+      "save": "Kaydet"
+    },
+    "issues": {
+      "range": "1 ile 3650 arasında tam sayı gün girin."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Markalama",
     "description": "{{organization}} için portal deneyimini özelleştirin.",
@@ -1004,6 +1114,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Görünürlük",
+      "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
+      "enableAll": "Tüm görünürlüğü etkinleştir",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Pano",
+          "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
+        },
+        "enableSecurity": {
+          "label": "Güvenlik",
+          "description": "Güvenlik duruşunu, korumayı, tehditleri ve güvenlik açıklarını gösterir."
+        },
+        "enableBackups": {
+          "label": "Yedeklemeler",
+          "description": "Yedekleme kapsamını, doğrulamayı, geri yükleme testlerini ve hazır olma durumunu gösterir."
+        },
+        "enableReports": {
+          "label": "Raporlar",
+          "description": "Müşterilerin onaylı raporlar oluşturmasına ve indirmesine izin verir."
+        },
+        "enableSupportUsage": {
+          "label": "Destek kullanımı",
+          "description": "Ayın bugüne kadarki faturalandırılabilir destek süresi toplamını gösterir."
+        }
+      }
+    },
     "support": {
       "title": "Destek iletişim kişisi",
       "description": "Portalda müşterilere gösterilir.",
@@ -1048,6 +1185,7 @@
     },
     "toasts": {
       "inviteSent": "Davet gönderildi",
+      "inviteSentAmbiguousContact": "Davet gönderildi, ancak birden fazla kişi bu e-posta adresini paylaştığı için hiçbir kişi bağlanamadı. Bir kişi bağlanana kadar bu kullanıcı e-posta yoluyla gelen talepleri göremeyecek.",
       "pendingInvited": "Davet edildi {{count}} bekleyen kullanıcı(lar)",
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
@@ -1294,6 +1432,13 @@
     "monthlyBudget": "Aylık Bütçe ($)",
     "noLimit": "Sınır yok",
     "dailyBudget": "Günlük Bütçe ($)",
+    "alertThresholds": "Uyar (bütçenin %'si)",
+    "alertThresholdsHelp": "Uyarılar, faturalama erişimine sahip partner yöneticilerine gönderilir. %100 (limite ulaşıldı) her zaman gönderilir.",
+    "firedRung": "%{{pct}} {{period}} uyarısı {{date}} tarihinde gönderildi",
+    "periodLabel": {
+      "daily": "günlük",
+      "monthly": "aylık"
+    },
     "maxTurnsPerSession": "Oturum Başına Maksimum Dönüş Sayısı",
     "msgsMinPerUser": "Mesaj/Kullanıcı Başına Min",
     "msgsHrPerOrg": "Kuruluş Başına Mesaj/Saat",
@@ -1321,7 +1466,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
+    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1339,7 +1485,7 @@
       "deleteOverride": "Geçersiz kılmayı kaldır",
       "confirmDelete": "Silmeyi onayla",
       "cron": "Cron ifadesi",
-      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır.",
+      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır. Dakika alanı, virgülle ayrılmış sabit sayılardan oluşmalıdır (*, / veya - kullanılamaz) — programlar en fazla saatte bir çalışır.",
       "cronInvalid": "Kaydetmeden önce geçerli, beş alanlı bir cron ifadesi girin.",
       "timezone": "Saat dilimi",
       "kinds": {
@@ -1359,6 +1505,10 @@
       "tightenOnly": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir: taramayı kapatabilir veya denetim çıkarabilir, asla ekleyemez.",
       "noKinds": "Denetim yok",
       "lastRun": "Son çalışma {{at}} · {{total}} kuruluştan {{admitted}} tanesi tarandı, {{skipped}} atlandı.",
+      "nextRun": "Sonraki çalışma {{at}} ({{timezone}})",
+      "nextRunInvalid": "Geçersiz zamanlama",
+      "nextRunNone": "Önümüzdeki bir yıl içinde çalışma yok.",
+      "useMyTimezone": "Saat dilimimi kullan",
       "kindLabels": {
         "disk_pressure": "Disk baskısı",
         "stale_agents": "Eskimiş aracılar",
@@ -1391,10 +1541,72 @@
     "title": "Yapay Zeka Aracıları",
     "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
     "empty": "Henüz aracı yok.",
+    "kindHints": {
+      "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
+      "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
+      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir."
+    },
+    "emptyState": {
+      "title": "Henüz aracı yok",
+      "description": "Aracı, çalışan bir süreç değil kayıtlı bir politikadır: seçtiğiniz uyarıları, yamaları ya da talepleri izler, izin verdiğiniz araçlarla inceler ve ardından bir çözüm önerir veya uygular. Gölge modunda başlayın: aracı önerir, bir kişi onaylar, böylece siz demeden hiçbir şey bir cihaza ulaşmaz.",
+      "action": "İlk aracınızı oluşturun"
+    },
+    "modeChoice": {
+      "legend": "Bu aracının yapabilecekleri",
+      "off": "Kapalı",
+      "offConsequence": "Hiçbir şey çalışmaz.",
+      "shadow": "Gölge",
+      "shadowConsequence": "İzler ve önerir; her şeyi bir kişi onaylar.",
+      "act": "Eylem",
+      "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
+      "actUnavailable": "Bu aracı için henüz kullanılamıyor."
+    },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
     "stateEnabled": "Etkin",
     "stateDisabled": "Devre dışı",
+    "runningBadge": {
+      "running": "Çalışıyor",
+      "notRunning": "Çalışmıyor"
+    },
+    "reenableNote": "Geri yüklendi, kapalı durumda. Açmadan önce politikasını gözden geçirin.",
+    "chipLabels": {
+      "kind": "Tür",
+      "ownership": "Sahiplik",
+      "mode": "Mod",
+      "running": "Durum",
+      "baseline": "Partner temeli",
+      "lastRunStatus": "Son çalıştırma sonucu"
+    },
+    "inertBadge": {
+      "label": "Pasif",
+      "hint": "Bu tür için henüz iş ortağı genelinde bir temel çizgi yok. Yalnızca kuruluşa özgü bir aracı yalnızca bir temel çizgiyi geçersiz kılar, bu nedenle biri oluşturulana kadar hiçbir etkisi olmaz."
+    },
+    "lastRun": {
+      "never": "Hiç çalıştırılmadı",
+      "at": "Son çalıştırma {{at}}"
+    },
+    "disableDialog": {
+      "title": "{{name}} devre dışı bırakılsın mı?",
+      "message": "Gelecekteki çalıştırmalar durur, bağlı zamanlamalar tetiklenmez ve bu aracının kuruluş geçersiz kılmaları uygulanmaz. Hâlihazırda süren bir çalıştırma, süre sınırına kadar devam eder.",
+      "retained": "Çalıştırma geçmişi ve kanıtlar korunur. Aracıyı daha sonra devre dışı listesinden yeniden etkinleştirebilirsiniz; kapalı olarak geri gelir."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Bu düzenleyiciyi kapatmadan önce düzenlediğiniz zamanlamayı kaydedin veya iptal edin.",
+      "discardTitle": "Kaydedilmemiş zamanlama atılsın mı?",
+      "discardMessage": "Düzenlediğiniz zamanlama kaydedilmedi. Düzenleyiciyi kapatmak bu değişiklikleri atar. Aracının kendisi değişmez.",
+      "discardConfirm": "Zamanlamayı at"
+    },
+    "disabledSection": {
+      "title": "Devre dışı bırakılanlar",
+      "hint": "Çalıştırma geçmişleri için saklanır. Birini yeniden etkinleştirdiğinizde kapalı olarak geri gelir; böylece yeniden çalışmadan önce politikasını gözden geçirebilirsiniz.",
+      "disabledAt": "{{at}} tarihinde devre dışı bırakıldı"
+    },
+    "allDisabled": {
+      "title": "Tüm aracılar devre dışı",
+      "description": "Şu anda hiçbir şey çalışmıyor.",
+      "reenableCta": "Bir aracıyı yeniden etkinleştir"
+    },
     "errors": {
       "load": "Aracılar yüklenemedi.",
       "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
@@ -1403,7 +1615,9 @@
       "actMissingRecipient": "Uygula modunu etkinleştirmeden önce en az bir bildirim alıcısı ekleyin.",
       "actMissingTool": "Uygula modunu etkinleştirmeden önce en az bir uygulanabilir aracı izin verin veya bir betiği yetkilendirin.",
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Bu aracı zaten etkin.",
+      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1411,19 +1625,24 @@
       "save": "Kaydet",
       "cancel": "İptal",
       "disable": "Devre dışı bırak",
-      "confirmDisable": "Devre dışı bırakmayı onayla"
+      "confirmDisable": "Devre dışı bırakmayı onayla",
+      "reenable": "Yeniden etkinleştir",
+      "runs": "Çalıştırmalar"
     },
     "toasts": {
       "saved": "Aracı kaydedildi",
       "saveFailed": "Aracı kaydedilemedi.",
       "disabled": "Aracı devre dışı bırakıldı",
-      "disableFailed": "Aracı devre dışı bırakılamadı."
+      "disableFailed": "Aracı devre dışı bırakılamadı.",
+      "reenabled": "Aracı yeniden etkinleştirildi",
+      "reenableFailed": "Aracı yeniden etkinleştirilemedi."
     },
     "issues": {
       "name": "Aracıya bir ad verin.",
       "severities": "En az bir uyarı önem derecesi seçin.",
       "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin.",
-      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin."
+      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin.",
+      "unsavedSchedule": "Kaydedilmemiş bir zamanlamanız var. Aracıyı kaydetmeden önce onu kaydedin veya iptal edin."
     },
     "editor": {
       "newTitle": "Yeni aracı",
@@ -1436,8 +1655,11 @@
     "sections": {
       "scope": "Ne zaman çalışır",
       "permissions": "İzinler",
+      "permissionsDescription": "Bu aracının nelere dokunabileceği. Araç listesi yapabileceklerini genişletir; korunan kaynaklar daraltır ve her zaman öncelikli olur.",
       "policyDecide": "Gözetimsiz politika yetkilendirmesi",
       "limits": "Sınırlar",
+      "limitsBudget": "Bütçe ve kapsam",
+      "limitsTiming": "Zamanlama",
       "notifications": "Bildirimler",
       "instructions": "Yönergeler"
     },
@@ -1487,13 +1709,53 @@
       "maxFleetPercentPerDay": "Gün başına en fazla filo payı (%)",
       "cooldownSeconds": "Cihaz başına bekleme (saniye)",
       "recipientRolesHint": "Bu aracı bir öneride bulunduğunda bilgilendirilecek roller.",
+      "recipientRolesPartner": "İş ortağı rolleri",
+      "recipientRolesOrganization": "Kuruluş rolleri",
       "recipientRolesEmpty": "Kullanılabilir rol yok.",
       "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
       "charactersLeft": "{{count}} karakter kaldı",
       "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor.",
       "supervisedActionKeysHint": "Eşleşen bir politika varsa ve kuruluşun maruziyet sınırında yer varsa, bu aracının bir insan onaylamadan gerçekleştirebileceği işlemler. Her biri yürütme anında yine de canlı korumalardan, kapatma anahtarından ve kuruluş başına sınırlardan geçer.",
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
-      "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor."
+      "supervisedActionKeysNoneHeld": "Bu aracının henüz önceden yetkilendirilmiş bir işlemi yok.",
+      "supervisedActionKeysCeilingSummary_one": "Kuruluşlar için üst sınır — {{count}} anahtar",
+      "supervisedActionKeysCeilingSummary_other": "Kuruluşlar için üst sınır — {{count}} anahtar",
+      "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
+      "ticketAutonomousWrites": "Otonom talep yazmaları",
+      "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
+      "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
+      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
+      "recipientRoleNoMembers": "etkin üye yok"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Hizmetler",
+        "manage_startup_items": "Başlangıç öğeleri",
+        "manage_scheduled_tasks": "Zamanlanmış görevler",
+        "security_scan": "Güvenlik taraması"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Hizmeti başlat",
+          "stop": "Hizmeti durdur",
+          "restart": "Hizmeti yeniden başlat"
+        },
+        "manage_startup_items": {
+          "disable": "Başlangıç öğesini devre dışı bırak",
+          "enable": "Başlangıç öğesini etkinleştir"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Zamanlanmış görevi çalıştır",
+          "disable": "Zamanlanmış görevi devre dışı bırak",
+          "enable": "Zamanlanmış görevi etkinleştir"
+        },
+        "security_scan": {
+          "quarantine": "Tehdidi karantinaya al",
+          "remove": "Tehdidi kaldır",
+          "restore": "Tehdidi geri yükle"
+        }
+      }
     },
     "loading": "Aracılar yükleniyor…",
     "runs": {
@@ -1510,8 +1772,6 @@
         "status": "Durum",
         "trigger": "Tetikleyici",
         "verdict": "Sonuç",
-        "queued": "Sıraya alındı",
-        "finished": "Tamamlandı",
         "cost": "Maliyet"
       },
       "statuses": {
@@ -1540,7 +1800,8 @@
       },
       "profile": {
         "sweep": "Tarama",
-        "narrative": "Haftalık rapor"
+        "narrative": "Haftalık rapor",
+        "triage": "Talep önceliklendirme"
       },
       "sweep": {
         "title": "Tarama bulguları",
@@ -1679,6 +1940,837 @@
           "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
           "loading": "Bütçe yükleniyor…"
         }
+      },
+      "triage": {
+        "title": "Talep önceliklendirme",
+        "fieldsTitle": "Önerilen alanlar",
+        "fields": {
+          "categoryIdLabel": "Kategori Kimliği",
+          "priority": "Öncelik"
+        },
+        "confidence": "{{value}}% güven",
+        "device": "Eşleşen cihaz: {{value}}",
+        "draftReplyTitle": "Yanıt taslağı",
+        "draftResolutionTitle": "Çözüm notu taslağı",
+        "notesTitle": "Notlar",
+        "intentsTitle": "Önerilen talep değişiklikleri",
+        "intentUnknown": "Durum kullanılamıyor",
+        "draftsWrittenTitle": "Oluşturulan taslaklar",
+        "draftKinds": {
+          "reply": "Yanıt taslağı",
+          "resolutionNote": "Çözüm notu taslağı"
+        },
+        "skippedTitle": "Uygulanmadı",
+        "skipped": {
+          "item": {
+            "fields": "Alan güncellemeleri",
+            "link": "Cihaz bağlantısı",
+            "note": "Özel not",
+            "draftReply": "Yanıt taslağı",
+            "draftResolution": "Çözüm notu taslağı"
+          },
+          "reason": {
+            "noFieldsProposed": "Hiçbir alan önerilmedi.",
+            "belowConfidenceFloor": "Güven düzeyi otomatik yazma için gereken eşiğin altındaydı.",
+            "humanSet": "Bu alanı zaten bir kişi ayarladı.",
+            "noDeviceProposed": "Hiçbir cihaz önerilmedi.",
+            "deviceAlreadyLinked": "Talebe zaten bir cihaz bağlı.",
+            "noDraftReply": "Hiçbir yanıt önerilmedi.",
+            "noDraftResolution": "Hiçbir çözüm notu önerilmedi.",
+            "resolutionNoteExists": "Talebin zaten bir çözüm notu var.",
+            "maxActionsPerRun": "Çalıştırmanın eylem sınırına önce ulaşıldı.",
+            "intentError": "Değişiklik oluşturulamadı.",
+            "ticketNotFound": "Talep bulunamadı."
+          }
+        }
+      }
+    },
+    "impact": {
+      "title": "Yapay zeka etkisi",
+      "description": "Yapay zeka ajanlarınızın görebildiğiniz kuruluşlarda hallettikleri işler ve bunun tahminen karşılık geldiği insan zamanı.",
+      "windowLabel": "Rapor dönemi",
+      "windows": {
+        "d7": "Son 7 gün",
+        "d30": "Son 30 gün",
+        "d90": "Son 90 gün"
+      },
+      "loading": "Etki raporu yükleniyor…",
+      "refresh": "Yenile",
+      "refreshing": "Yeniden oluşturuluyor…",
+      "retry": "Yeniden dene",
+      "moreActions": "Diğer işlemler",
+      "errors": {
+        "load": "Etki raporu yüklenemedi.",
+        "rebuild": "Etki raporunun yeniden oluşturulması sıraya alınamadı.",
+        "tooManyOrgs": "Bu yeniden oluşturma {{limit}} kuruluştan fazlasını kapsıyor. Organizasyon değiştiriciden tek bir organizasyon seçip yeniden deneyin.",
+        "orgIdRequired": "Etki raporunu yeniden oluşturmadan önce organizasyon değiştiriciden tek bir organizasyon seçin.",
+        "exportPdf": "PDF dışa aktarımı oluşturulamadı."
+      },
+      "toasts": {
+        "rebuildQueued": "Etki raporunun yeniden oluşturulması sıraya alındı.",
+        "rebuildComplete": "Etki raporu yeniden oluşturuldu.",
+        "rebuildStillRunning": "Yeniden oluşturma hâlâ sürüyor. Yeni rakamları görmek için bu sayfayı birkaç dakika sonra yeniden yükleyin."
+      },
+      "emptyState": {
+        "title": "Bu dönemde henüz yapay zekâ sonucu yok",
+        "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "action": "Ajan kur"
+      },
+      "tileGroups": {
+        "judged": "Değerlendirilen",
+        "executed": "Uygulanan"
+      },
+      "tiles": {
+        "alertsJudged": "Değerlendirilen uyarılar",
+        "noiseFlagged": "Gürültü olarak işaretlenenler",
+        "ticketsTriaged": "Sınıflandırılan biletler",
+        "draftsSent": "Gönderilen taslaklar",
+        "fixesExecuted": "Uygulanan düzeltmeler",
+        "promoteEligible": "Yükseltmeye uygun işlemler",
+        "promoteEligibleCaption": "Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.",
+        "estTimeSaved": "Tahmini kazanılan zaman",
+        "estTimeSavedValue_one": "{{hours}} saat",
+        "estTimeSavedValue_other": "{{hours}} saat",
+        "estTimeSavedCaption": "Sonuç başına sabit sürelere dayanır — ayarlamak için ağırlıkları düzenleyin.",
+        "howEstimatedToggle": "Bu nasıl tahmin ediliyor?",
+        "llmSpend": "LLM harcaması"
+      },
+      "weightsTooltipTitle": "Yalnızca bir tahmin — her sonuca sabit bir süre yazılır:",
+      "weightsTooltipLine": "{{label}}: sonuç başına {{minutes}} dk",
+      "weightLabels": {
+        "alertJudged": "Uyarı değerlendirildi",
+        "noiseFlagged": "Gürültü olarak işaretlendi",
+        "ticketTriaged": "Bilet sınıflandırıldı",
+        "draftSent": "Taslak gönderildi",
+        "fixExecuted": "Düzeltme uygulandı",
+        "narrativeDelivered": "Haftalık rapor teslim edildi"
+      },
+      "chart": {
+        "title": "Günlük sonuçlar",
+        "empty": "Bu dönemde hiç sonuç kaydedilmedi.",
+        "noiseFlagged": "Gürültü olarak işaretlenenler",
+        "alertsJudgedNet": "Değerlendirilen uyarılar, gürültü hariç",
+        "ticketsTriaged": "Sınıflandırılan biletler",
+        "fixesExecuted": "Uygulanan düzeltmeler"
+      },
+      "byOrg": {
+        "title": "Kuruluşa göre",
+        "truncated": "Tahmini kazanılan zamana göre ilk {{limit}} kuruluş gösteriliyor.",
+        "columns": {
+          "organization": "Organizasyon",
+          "alertsJudged": "Değerlendirilen uyarılar",
+          "ticketsTriaged": "Sınıflandırılan biletler",
+          "fixesExecuted": "Uygulanan düzeltmeler",
+          "estTimeSaved": "Tahmini kazanılan zaman",
+          "llmSpend": "LLM harcaması"
+        }
+      },
+      "freshnessLabel": "Veri güncelliği",
+      "freshness": "{{through}} tarihine kadar olan veriler (UTC) · yeniden oluşturuldu: {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Henüz oluşturulmadı — ilk yeniden oluşturma bu gece çalışacak",
+      "positiveFeedbackRate": "Olumlu geri bildirim oranı",
+      "positiveFeedbackDetail": "{{up}} yararlı, {{down}} yararsız",
+      "editWeights": "Ağırlıkları düzenle",
+      "exportPdf": "PDF olarak dışa aktar",
+      "weightsDrawer": {
+        "title": "Kazanılan zaman ağırlıklarını düzenle",
+        "description": "Her sonuç için kaç dakika insan zamanı kredilendirileceğini belirleyin. Bu ağırlıklar yalnızca tahmini değiştirir — yapay zeka ajanlarınızın yaptıklarını asla değiştirmez.",
+        "unitSuffix": "dk",
+        "rangeHint": "{{min}} ile {{max}} dakika arasında bir değer girin.",
+        "defaultValue": "Varsayılan {{minutes}} dk",
+        "preview": "Bu pencerede tahmini kazanılan süre: {{from}} → {{to}}",
+        "noOutcomesPreview": "Bu pencerede önizlenecek bir sonuç yok",
+        "save": "Kaydet",
+        "saving": "Kaydediliyor…",
+        "reset": "Varsayılanlara sıfırla",
+        "resetting": "Sıfırlanıyor…",
+        "customized": "Özelleştirildi",
+        "resetConfirm": {
+          "title": "Ağırlıklar varsayılanlara sıfırlansın mı?",
+          "message": "Altı ağırlığın tümü varsayılan değerlerine döner ve bu sayfadaki tahmini kazanılan süre buna göre değişir."
+        },
+        "errors": {
+          "save": "Ağırlıklar kaydedilemedi.",
+          "reset": "Ağırlıklar sıfırlanamadı."
+        },
+        "toasts": {
+          "saved": "Ağırlıklar kaydedildi.",
+          "reset": "Ağırlıklar varsayılanlara sıfırlandı."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Değerlendirilen uyarılar",
+          "noiseFlagged": "Gürültü olarak işaretlenenler",
+          "suppressionsApplied": "Uygulanan bastırmalar",
+          "ticketsTriaged": "Sınıflandırılan biletler",
+          "draftsSent": "Gönderilen taslaklar",
+          "fixesProposed": "Önerilen düzeltmeler",
+          "fixesExecuted": "Uygulanan düzeltmeler",
+          "fixWatchesHeld": "Tutulan düzeltme izlemeleri",
+          "fixWatchesRecurred": "Tekrarlanan düzeltme izlemeleri",
+          "narrativesDelivered": "Teslim edilen haftalık raporlar",
+          "estTimeSaved": "Tahmini kazanılan zaman",
+          "llmSpend": "LLM harcaması",
+          "window": "Rapor penceresi (gün)",
+          "through": "Veriler (UTC) itibarıyla",
+          "rebuiltAt": "Son yeniden oluşturma"
+        },
+        "weightRowLabel": "{{label}} (kredilendirilen dakika)",
+        "neverRebuilt": "Hiç yeniden oluşturulmadı"
+      }
+    },
+    "graduation": {
+      "title": "Kademeli yetkilendirme",
+      "description": "Bu aracının son 30 günde işlem bazında neyi kanıtladığı ve bu kanıtların önceden yetkili çalıştırma istemeye yetip yetmediği.",
+      "loading": "Yetkilendirme kanıtları yükleniyor…",
+      "error": "Yetkilendirme kanıtları yüklenemedi.",
+      "retry": "Yeniden dene",
+      "noBaselineTitle": "Henüz temel araç yok",
+      "noBaseline": "Kademeli yetkilendirme takibi, bu türde ortak genelinde bir temel araç oluşturulduğunda başlar. Bu kuruluş için kanıt takibini başlatmak üzere \"Tüm kuruluşlar\" kapsamıyla bir tane oluşturun.",
+      "orgRequired": "Kanıtları görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "empty": "Bu araç için henüz hiç kanıt kaydedilmedi.",
+      "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
+      "byOrgTruncated": "Ada göre ilk {{limit}} kuruluş gösteriliyor. Geri kalanını görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "thresholdPerOrgNote": "Her kuruluş kendi terfi eşiğini çözümler; bu nedenle doğrulanan çalışmalar burada hedefsiz gösterilir. Bir kuruluşun hedefini görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "approvalsLink": "Bu isteği onay kutusunda izleyin",
+      "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
+      "grantOnlyHint": "Bir kuruluş aracısındaki önceden yetkilendirilmiş anahtarlar yalnızca Kademeli Yetkilendirme panelinden ikinci bir onaylayan tarafından verilir ve iptalleri de orada yapılır.",
+      "promote": "Yükselt",
+      "revoke": "Geri al",
+      "emptyTitle": "Henüz kanıt yok",
+      "demotedAt": "{{at}} tarihinde geri alındı",
+      "demotedReason": "Gerekçe: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "bir deneme başarısız oldu",
+        "recurrence": "düzeltilen uyarı yeniden ortaya çıktı",
+        "operator": "bir operatör geri aldı"
+      },
+      "revokeConfirm": {
+        "title": "Ön yetkiyi geri al",
+        "message": "{{opKey}}, bu kuruluşun aracısı için onay kuyruğuna geri döner. Sürmekte olan bir çalıştırma etkilenmez; sonraki her çalıştırma yeniden insan kararı gerektirir.",
+        "action": "Geri al",
+        "reasonLabel": "Gerekçe (isteğe bağlı)",
+        "reasonHint": "Bu geri alma işleminin denetim kaydına yazılır. En çok 500 karakter."
+      },
+      "verifiedOfThreshold": "{{threshold}} içinde {{verified}}",
+      "columns": {
+        "opKey": "İşlem",
+        "state": "Durum",
+        "verified": "Doğrulanan",
+        "executed": "Çalıştırılan",
+        "failed": "Başarısız",
+        "recurred": "Yinelenen",
+        "firstVerified": "İlk doğrulama",
+        "blockedReason": "Neden henüz değil"
+      },
+      "states": {
+        "tracking": "İzleniyor",
+        "eligible": "Uygun",
+        "promoted": "Yükseltildi",
+        "demoted": "Geri alındı"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "İş ortağı düzeyindeki araç bu işleme henüz izin vermiyor.",
+        "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
+        "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
+        "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+      },
+      "confirm": {
+        "title": "Ön yetki isteği oluştur",
+        "message": "Bu, ikinci bir onaylayan kişiden bu kuruluşun aracı için {{opKey}} işlemini önceden yetkilendirmesini ister. Yalnızca gelecekteki çalıştırmalar için geçerlidir ve karar bekleyen bir isteği asla yetkilendirmez.",
+        "action": "Onay iste"
+      },
+      "toasts": {
+        "requested": "Ön yetki istendi. Bu işlem gözetimsiz çalışmadan önce ikinci bir kişinin onaylaması gerekir ve yalnızca gelecekteki çalıştırmalar için geçerlidir.",
+        "revoked": "Ön yetki geri alındı. Bu işlem, bir sonraki çalıştırmadan başlayarak yeniden insan kararı gerektirir."
+      },
+      "errors": {
+        "promote": "Ön yetki isteği oluşturulamadı.",
+        "policyDecideDisabled": "Önceden yetkili çalıştırma bu kurulumda kapalı, bu yüzden bu işlem yükseltilemez.",
+        "revoke": "Ön yetki geri alınamadı.",
+        "noPromotedGrant": "Bu işlem bu kuruluş için önceden yetkilendirilmemiş, dolayısıyla geri alınacak bir şey yok.",
+        "alreadyDemoted": "Bu işlem zaten onay kuyruğuna geri dönmüş.",
+        "alreadyRevoked": "Bu işlem aracıdan zaten kaldırılmıştı, hiçbir şey değişmedi.",
+        "ambiguousOpKey": "Bu kuruluş için bu işlemi birden fazla aracı tutuyor. Değiştirmek istediğiniz aracıyı açıp orada geri alın."
+      },
+      "reliability": {
+        "caption": "Eylem kipi işlemleri, salt okunur: bunlar politika anahtarı değildir, bu yüzden asla önceden yetkilendirilemez."
+      }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Uyarılar ve izleme",
+          "description": "Filodaki uyarıları, uyarı kurallarını ve çalışma süresi veya hizmet izleyicilerini görüntüleyin ve yönetin."
+        },
+        "services_startup": {
+          "label": "Hizmetler ve başlangıç öğeleri",
+          "description": "Bir cihazda hizmetleri başlatın, durdurun veya yeniden başlatın; başlangıç öğelerini etkinleştirin veya devre dışı bırakın."
+        },
+        "files_disk": {
+          "label": "Dosyalar ve disk",
+          "description": "Bir cihazda dosya ve klasörleri okuyun, yazın veya silin; disk alanını analiz edin ve temizleyin."
+        },
+        "scripts_commands": {
+          "label": "Betikler ve komutlar",
+          "description": "Betikleri, playbook'ları ve sistem komutlarını çalıştırın; bunların etkilediği süreçleri, zamanlanmış görevleri ve kayıt defteri girişlerini yönetin."
+        },
+        "tickets": {
+          "label": "Yardım masası talepleri",
+          "description": "Yardım masası taleplerini inceleyin ve yanıt veya sonraki adımlar önerin."
+        },
+        "patching_software": {
+          "label": "Yama ve yazılım",
+          "description": "Yamaları onaylayın, yükleyin veya geri alın; dağıtımları çalıştırın ve yazılım ile güncelleme halkası politikalarını yönetin."
+        },
+        "security_response": {
+          "label": "Güvenlik müdahalesi",
+          "description": "Tehditleri araştırın ve müdahale edin: cihazları izole edin, güvenlik taramaları çalıştırın ve CIS düzeltmeleri uygulayın."
+        },
+        "backup_recovery": {
+          "label": "Yedekleme ve kurtarma",
+          "description": "Yedekleme işlerini yapılandırın ve cihazlar ile iş yüklerinin kurtarılmasını yönetin."
+        },
+        "config_policies": {
+          "label": "Yapılandırma politikaları",
+          "description": "Yapılandırma, DNS, tarayıcı ve çevre birimi politikalarını oluşturun, atayın ve inceleyin."
+        },
+        "network": {
+          "label": "Ağ",
+          "description": "Ağdaki cihazları keşfedin ve ağ ile ilgili taban çizgilerini yönetin."
+        },
+        "remote_access": {
+          "label": "Uzaktan erişim",
+          "description": "Bir cihazın ekranını görüntüleyin ve fare ile klavyesinin uzaktan denetimini alın."
+        },
+        "endpoint_agent": {
+          "label": "Uç nokta aracısı",
+          "description": "Breeze aracısının kendisini inceleyin ve yönetin: günlükler, tanılama ve günlük düzeyleri."
+        },
+        "automations_reports": {
+          "label": "Otomasyonlar ve raporlar",
+          "description": "Otomasyonları çalıştırın, rapor oluşturun ve grupları, etiketleri ve kayıtlı filtreleri yönetin."
+        },
+        "business": {
+          "label": "İşletme",
+          "description": "Teklifleri, faturaları, sözleşmeleri ve ürün kataloğunu yönetin."
+        },
+        "tenancy": {
+          "label": "Kiracı yönetimi",
+          "description": "Organizasyonları, siteleri ve kiracılar arası entegrasyonları yönetin."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Önyükleme performansı analizi",
+        "analyze_disk_usage": "Disk kullanımı analizi",
+        "analyze_fleet_metrics": "Filo metrikleri analizi",
+        "analyze_metrics": "Cihaz metrikleri analizi",
+        "analyze_screen": "Ekran analizi",
+        "apply_cis_remediation": "CIS düzeltmesi",
+        "apply_configuration_policy": "Yapılandırma politikası uygula",
+        "cancel_script_execution": "Betik çalıştırmayı iptal et",
+        "capture_agent_pprof": "Aracı tanılama verisi yakala",
+        "computer_control": "Uzaktan denetim",
+        "configuration_policy_compliance": "Yapılandırma politikası uyumluluğu",
+        "delete_tenant": "Bir organizasyonu sil",
+        "detect_log_correlations": "Günlük korelasyonlarını tespit et",
+        "disk_cleanup": "Disk temizliği",
+        "execute_command": "Bir sistem komutu çalıştır",
+        "execute_playbook": "Bir playbook çalıştır",
+        "file_operations": "Dosya işlemleri",
+        "generate_report": "Raporlar",
+        "get_active_users": "Etkin kullanıcılar",
+        "get_catalog_item": "Katalog öğesi arama",
+        "get_cis_compliance": "CIS uyumluluk raporu",
+        "get_cis_device_report": "CIS cihaz raporu",
+        "get_configuration_policy": "Yapılandırma politikası ayrıntıları",
+        "get_contract": "Sözleşme ayrıntıları",
+        "get_device_context": "Cihaz bağlamı",
+        "get_device_details": "Cihaz ayrıntıları",
+        "get_device_vulnerabilities": "Cihaz güvenlik açıkları",
+        "get_dns_security": "DNS güvenlik etkinliği",
+        "get_effective_configuration": "Etkin yapılandırma",
+        "get_fleet_findings": "Filo bulguları",
+        "get_fleet_health": "Filo sağlığı",
+        "get_fleet_status": "Filo durumu",
+        "get_huntress_incidents": "Huntress olayları",
+        "get_huntress_status": "Huntress durumu",
+        "get_invoice": "Fatura ayrıntıları",
+        "get_log_trends": "Günlük eğilimleri",
+        "get_playbook_history": "Playbook çalıştırma geçmişi",
+        "get_quote": "Teklif ayrıntıları",
+        "get_s1_status": "SentinelOne durumu",
+        "get_s1_threats": "SentinelOne tehditleri",
+        "get_script_details": "Betik ayrıntıları",
+        "get_script_execution": "Betik çalıştırma ayrıntıları",
+        "get_script_execution_history": "Betik çalıştırma geçmişi",
+        "get_security_posture": "Güvenlik duruşu",
+        "get_service_monitoring_status": "Hizmet izleme durumu",
+        "get_user_experience_metrics": "Kullanıcı deneyimi metrikleri",
+        "get_vulnerability_report": "Güvenlik açığı raporu",
+        "list_configuration_policies": "Yapılandırma politikaları listesi",
+        "list_contracts": "Sözleşme listesi",
+        "list_invoices": "Fatura listesi",
+        "list_organizations": "Organizasyon listesi",
+        "list_playbooks": "Playbook listesi",
+        "list_quotes": "Teklif listesi",
+        "list_script_templates": "Betik şablonları listesi",
+        "list_scripts": "Betik listesi",
+        "lookup_distributor_product": "Distribütör ürünü arama",
+        "m365_query_groups": "Microsoft 365 grupları",
+        "m365_query_intune_devices": "Microsoft Intune cihazları",
+        "m365_query_org": "Microsoft 365 organizasyonu",
+        "m365_query_signins": "Microsoft 365 oturum açmaları",
+        "m365_query_sites": "Microsoft 365 siteleri",
+        "m365_query_users": "Microsoft 365 kullanıcıları",
+        "manage_alert_rules": "Uyarı kurallarını yönet",
+        "manage_alerts": "Uyarıları yönet",
+        "manage_automations": "Otomasyonları yönet",
+        "manage_backup_configs": "Yedekleme yapılandırmalarını yönet",
+        "manage_configuration_policy": "Yapılandırma politikalarını yönet",
+        "manage_contracts": "Sözleşmeleri yönet",
+        "manage_deployments": "Dağıtımları yönet",
+        "manage_dns_policy": "DNS politikasını yönet",
+        "manage_groups": "Cihaz gruplarını yönet",
+        "manage_invoices": "Faturaları yönet",
+        "manage_maintenance_windows": "Bakım pencerelerini yönet",
+        "manage_monitors": "Çalışma süresi izleyicilerini yönet",
+        "manage_organizations": "Organizasyonları yönet",
+        "manage_patches": "Yamaları yönet",
+        "manage_peripheral_policies": "Çevre birimi politikalarını yönet",
+        "manage_policy_feature_link": "Bir politikayı bir özelliğe bağla",
+        "manage_service_monitors": "Hizmet izleyicilerini yönet",
+        "manage_services": "Hizmetleri yönet",
+        "manage_software_policies": "Yazılım politikalarını yönet",
+        "manage_startup_items": "Başlangıç öğelerini yönet",
+        "manage_update_rings": "Güncelleme halkalarını yönet",
+        "network_discovery": "Ağ keşfi",
+        "preview_configuration_change": "Bir yapılandırma değişikliğini önizle",
+        "query_audit_log": "Denetim günlüğünü sorgula",
+        "query_change_log": "Değişiklik günlüğünü sorgula",
+        "query_devices": "Cihazları sorgula",
+        "query_monitors": "İzleyicileri sorgula",
+        "remediate_vulnerability": "Bir güvenlik açığını düzelt",
+        "remove_configuration_policy_assignment": "Bir yapılandırma politikası atamasını kaldır",
+        "resolve_device_context": "Bir cihazı çözümle",
+        "run_script": "Bir betik çalıştır",
+        "s1_isolate_device": "SentinelOne: cihazı izole et",
+        "s1_threat_action": "SentinelOne tehdit eylemleri",
+        "search_agent_logs": "Aracı günlüklerinde ara",
+        "search_catalog": "Ürün kataloğunda ara",
+        "search_logs": "Cihaz günlüklerinde ara",
+        "security_scan": "Güvenlik taraması",
+        "set_agent_log_level": "Aracı günlük düzeyini ayarla",
+        "set_device_context": "Cihaz bağlamını ayarla",
+        "sync_huntress_data": "Huntress verilerini eşitle",
+        "take_screenshot": "Ekran görüntüsü al"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "CIS düzeltmesini uygula",
+          "rollback": "CIS düzeltmesini geri al"
+        },
+        "computer_control": {
+          "double_click": "Çift tıkla",
+          "key": "Bir tuşa bas",
+          "left_click": "Sol tıkla",
+          "middle_click": "Orta tıkla",
+          "mouse_move": "Fareyi hareket ettir",
+          "right_click": "Sağ tıkla",
+          "screenshot": "Ekran görüntüsü al",
+          "scroll": "Kaydır",
+          "type": "Metin yaz"
+        },
+        "configuration_policy_compliance": {
+          "status": "Uyumluluk durumu",
+          "summary": "Uyumluluk özeti"
+        },
+        "disk_cleanup": {
+          "execute": "Disk temizliğini çalıştır",
+          "preview": "Disk temizliğini önizle"
+        },
+        "execute_command": {
+          "event_logs_list": "Olay günlüklerini listele",
+          "event_logs_query": "Olay günlüklerini sorgula",
+          "file_list": "Dosyaları listele",
+          "file_read": "Bir dosyayı oku",
+          "kill_process": "Bir süreci sonlandır",
+          "list_processes": "Süreçleri listele",
+          "list_services": "Hizmetleri listele",
+          "restart_service": "Hizmeti yeniden başlat",
+          "start_service": "Hizmeti başlat",
+          "stop_service": "Hizmeti durdur"
+        },
+        "file_operations": {
+          "delete": "Bir dosyayı sil",
+          "list": "Dosyaları listele",
+          "mkdir": "Bir klasör oluştur",
+          "read": "Bir dosyayı oku",
+          "rename": "Bir dosyayı yeniden adlandır",
+          "write": "Bir dosyaya yaz"
+        },
+        "generate_report": {
+          "create": "Bir rapor oluştur",
+          "data": "Rapor verileri",
+          "delete": "Bir raporu sil",
+          "download": "Bir raporu indir",
+          "generate": "Bir rapor üret",
+          "history": "Rapor geçmişi",
+          "list": "Raporları listele",
+          "update": "Bir raporu güncelle"
+        },
+        "get_dns_security": {
+          "allowed": "İzin verilen DNS etkinliği",
+          "blocked": "Engellenen DNS etkinliği",
+          "redirected": "Yönlendirilen DNS etkinliği"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Bilinen hizmetler",
+          "results": "İzleme sonuçları",
+          "status": "İzleme durumu",
+          "summary": "İzleme özeti"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Uyarı özeti",
+          "create_rule": "Bir uyarı kuralı oluştur",
+          "delete_rule": "Bir uyarı kuralını sil",
+          "get_rule": "Uyarı kuralı ayrıntıları",
+          "list_channels": "Bildirim kanallarını listele",
+          "list_rules": "Uyarı kurallarını listele",
+          "list_templates": "Uyarı kuralı şablonlarını listele",
+          "test_rule": "Bir uyarı kuralını test et",
+          "update_rule": "Bir uyarı kuralını güncelle"
+        },
+        "manage_alerts": {
+          "acknowledge": "Bir uyarıyı onayla",
+          "get": "Uyarı ayrıntıları",
+          "list": "Uyarıları listele",
+          "resolve": "Bir uyarıyı çözümle",
+          "suppress": "Bir uyarıyı bastır"
+        },
+        "manage_automations": {
+          "create": "Bir otomasyon oluştur",
+          "delete": "Bir otomasyonu sil",
+          "disable": "Bir otomasyonu devre dışı bırak",
+          "enable": "Bir otomasyonu etkinleştir",
+          "get": "Otomasyon ayrıntıları",
+          "history": "Otomasyon çalıştırma geçmişi",
+          "list": "Otomasyonları listele",
+          "run": "Bir otomasyonu çalıştır",
+          "update": "Bir otomasyonu güncelle"
+        },
+        "manage_backup_configs": {
+          "create": "Bir yedekleme yapılandırması oluştur",
+          "get": "Yedekleme yapılandırması ayrıntıları",
+          "list": "Yedekleme yapılandırmalarını listele",
+          "update": "Bir yedekleme yapılandırmasını güncelle"
+        },
+        "manage_configuration_policy": {
+          "activate": "Bir yapılandırma politikasını etkinleştir",
+          "create": "Bir yapılandırma politikası oluştur",
+          "deactivate": "Bir yapılandırma politikasını devre dışı bırak",
+          "delete": "Bir yapılandırma politikasını sil",
+          "update": "Bir yapılandırma politikasını güncelle"
+        },
+        "manage_contracts": {
+          "activate": "Bir sözleşmeyi etkinleştir",
+          "add_line": "Bir sözleşme kalemi ekle",
+          "cancel": "Bir sözleşmeyi iptal et",
+          "create_draft": "Bir sözleşme taslağı oluştur",
+          "delete_draft": "Bir sözleşme taslağını sil",
+          "pause": "Bir sözleşmeyi duraklat",
+          "remove_line": "Bir sözleşme kalemini kaldır",
+          "resume": "Bir sözleşmeyi sürdür",
+          "update": "Bir sözleşmeyi güncelle",
+          "update_line": "Bir sözleşme kalemini güncelle"
+        },
+        "manage_deployments": {
+          "cancel": "Bir dağıtımı iptal et",
+          "create": "Bir dağıtım oluştur",
+          "device_status": "Dağıtım cihaz durumu",
+          "get": "Dağıtım ayrıntıları",
+          "list": "Dağıtımları listele",
+          "pause": "Bir dağıtımı duraklat",
+          "resume": "Bir dağıtımı sürdür",
+          "start": "Bir dağıtımı başlat"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Bir alan adına izin ver",
+          "add_block": "Bir alan adını engelle",
+          "remove_allow": "İzin verilen bir alan adını kaldır",
+          "remove_block": "Engellenen bir alan adını kaldır"
+        },
+        "manage_groups": {
+          "add_devices": "Bir gruba cihaz ekle",
+          "create": "Bir cihaz grubu oluştur",
+          "delete": "Bir cihaz grubunu sil",
+          "get": "Cihaz grubu ayrıntıları",
+          "list": "Cihaz gruplarını listele",
+          "membership_log": "Grup üyeliği geçmişi",
+          "preview": "Grup üyeliğini önizle",
+          "remove_devices": "Bir gruptan cihaz kaldır",
+          "update": "Bir cihaz grubunu güncelle"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Bir paket kalemi ekle",
+          "add_catalog_line": "Bir katalog kalemi ekle",
+          "add_contract_line": "Bir sözleşme kalemi ekle",
+          "add_manual_line": "Bir manuel kalem ekle",
+          "assemble_from_org": "Bir organizasyondan fatura oluştur",
+          "assemble_from_ticket": "Bir talepten fatura oluştur",
+          "create_draft": "Bir fatura taslağı oluştur",
+          "create_pay_link": "Bir ödeme bağlantısı oluştur",
+          "delete_draft": "Bir fatura taslağını sil",
+          "issue": "Bir fatura düzenle",
+          "record_payment": "Bir ödemeyi kaydet",
+          "remove_line": "Bir fatura kalemini kaldır",
+          "update_header": "Fatura ayrıntılarını güncelle",
+          "update_line": "Bir fatura kalemini güncelle",
+          "void": "Bir faturayı iptal et",
+          "void_payment": "Bir ödemeyi iptal et"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Etkin bakım pencereleri",
+          "create": "Bir bakım penceresi oluştur",
+          "delete": "Bir bakım penceresini sil",
+          "get": "Bakım penceresi ayrıntıları",
+          "list": "Bakım pencerelerini listele",
+          "update": "Bir bakım penceresini güncelle"
+        },
+        "manage_monitors": {
+          "create": "Bir izleyici oluştur",
+          "delete": "Bir izleyiciyi sil",
+          "get": "İzleyici ayrıntıları",
+          "update": "Bir izleyiciyi güncelle"
+        },
+        "manage_organizations": {
+          "add_contact": "Bir organizasyon kişisi ekle",
+          "create_org": "Bir organizasyon oluştur",
+          "create_site": "Bir site oluştur",
+          "update_org": "Bir organizasyonu güncelle"
+        },
+        "manage_patches": {
+          "approve": "Bir yamayı onayla",
+          "bulk_approve": "Yamaları toplu onayla",
+          "compliance": "Yama uyumluluğu",
+          "decline": "Bir yamayı reddet",
+          "defer": "Bir yamayı ertele",
+          "install": "Bir yama yükle",
+          "list": "Yamaları listele",
+          "rollback": "Bir yamayı geri al",
+          "scan": "Yama tara",
+          "setup_auto_approval": "Otomatik yama onayını ayarla"
+        },
+        "manage_peripheral_policies": {
+          "create": "Bir çevre birimi politikası oluştur",
+          "get": "Çevre birimi politikası ayrıntıları",
+          "list": "Çevre birimi politikalarını listele",
+          "update": "Bir çevre birimi politikasını güncelle"
+        },
+        "manage_policy_feature_link": {
+          "add": "Bir politikayı bir özelliğe bağla",
+          "list": "Politika bağlantılarını listele",
+          "remove": "Bir politika bağlantısını kaldır",
+          "update": "Bir politika bağlantısını güncelle"
+        },
+        "manage_service_monitors": {
+          "list": "Hizmet izleyicilerini listele"
+        },
+        "manage_services": {
+          "list": "Hizmetleri listele",
+          "restart": "Hizmeti yeniden başlat",
+          "start": "Hizmeti başlat",
+          "stop": "Hizmeti durdur"
+        },
+        "manage_software_policies": {
+          "create": "Bir yazılım politikası oluştur",
+          "get": "Yazılım politikası ayrıntıları",
+          "list": "Yazılım politikalarını listele",
+          "update": "Bir yazılım politikasını güncelle"
+        },
+        "manage_startup_items": {
+          "disable": "Başlangıç öğesini devre dışı bırak",
+          "enable": "Başlangıç öğesini etkinleştir"
+        },
+        "manage_update_rings": {
+          "create": "Bir güncelleme halkası oluştur",
+          "get": "Güncelleme halkası ayrıntıları",
+          "list": "Güncelleme halkalarını listele",
+          "update": "Bir güncelleme halkasını güncelle"
+        },
+        "s1_threat_action": {
+          "kill": "Tehdit sürecini sonlandır",
+          "quarantine": "Tehdidi karantinaya al",
+          "rollback": "Bir tehdit eylemini geri al"
+        },
+        "security_scan": {
+          "quarantine": "Tehdidi karantinaya al",
+          "remove": "Tehdidi kaldır",
+          "restore": "Tehdidi geri yükle",
+          "scan": "Bir güvenlik taraması çalıştır",
+          "status": "Güvenlik taraması durumu",
+          "vulnerabilities": "Güvenlik açığı tara"
+        }
+      },
+      "alwaysOnCount_one": "{{count}} salt okunur araç",
+      "alwaysOnCount_other": "{{count}} salt okunur araç",
+      "highImpact": "Yüksek etki",
+      "recommendedTitle": "{{kind}} için önerilen",
+      "recommendedDescription": "{{kind}} aracılarının genellikle ihtiyaç duyduğu işlemler.",
+      "recommendedApply": "Öneriyi uygula",
+      "recommendedApplied": "Uygulandı",
+      "searchPlaceholder": "Yetenekleri, araçları veya eylemleri ara…",
+      "showToolNames": "Araç adlarını göster",
+      "outcome": {
+        "approval_request": "Onay isteği",
+        "logged_proposal": "Kayıtlı öneri",
+        "unattended": "Gözetimsiz çalışır"
+      },
+      "preauthorizable": "Bu işlem, onay isteğini atlayacak şekilde önceden yetkilendirilebilir.",
+      "notInCeiling": "Partner taban çizgisinde yok",
+      "ceilingNote": "Bu organizasyon yalnızca partnerinin taban çizgisinde zaten bulunan işlemleri etkinleştirebilir.",
+      "moreCapabilities": "Diğer yetenekler ({{count}})",
+      "moreCapabilitiesHint": "Bu aracı türünün genellikle ihtiyaç duymadığı yetenekler.",
+      "unrecognisedTitle": "Tanınmayan veya erişilemeyen girişler",
+      "unrecognised": {
+        "unknown_tool": "Bu araç artık mevcut değil.",
+        "unreachable_tool": "Bu araç aracılar için kullanılamaz.",
+        "bare_multi_op": "Bu giriş, daha sonra eklenenler dahil bu aracın tüm eylemlerini kapsar. Bunun yerine tek tek işlemleri seçin.",
+        "read_only": "Salt okunur: aracı için her zaman kullanılabilir, bu nedenle bu girişin hiçbir etkisi yok."
+      },
+      "remove": "Kaldır",
+      "operationsCount_one": "{{total}} işlemden {{selected}} tanesi",
+      "operationsCount_other": "{{total}} işlemden {{selected}} tanesi",
+      "capabilityCount_one": "{{count}} yetenek",
+      "capabilityCount_other": "{{count}} yetenek",
+      "summary": {
+        "shadow_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "shadow_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "act_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); uygun işlemleri gözetimsiz çalıştırır.",
+        "act_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); uygun işlemleri gözetimsiz çalıştırır.",
+        "off_one": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{breakdown}}).",
+        "off_other": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{breakdown}})."
+      },
+      "modeLine": {
+        "shadow": "Gölge modu: aşağıdakilerin hiçbiri kendiliğinden çalışmaz. Onay istekleri bir teknisyene gider; düşük riskli değişiklikler öneri olarak kaydedilir ve hiçbir zaman yürütülmez.",
+        "act": "Eylem modu: “Gözetimsiz çalışır” olarak işaretlenen işlemler bir teknisyenin onayı olmadan çalışır; geri kalan her şey yine de bir onay isteği gönderir veya öneri olarak kaydedilir.",
+        "off": "Kapalı: bu aracı çalışmıyor, bu yüzden aşağıdakilerin henüz hiçbir etkisi yok."
+      },
+      "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz.",
+      "loading": "Yetenekler yükleniyor…",
+      "approvalRequestCount_one": "{{count}} onay isteği",
+      "approvalRequestCount_other": "{{count}} onay isteği",
+      "loggedProposalCount_one": "{{count}} kayıtlı öneri",
+      "loggedProposalCount_other": "{{count}} kayıtlı öneri",
+      "unattendedCount_one": "{{count}} gözetimsiz",
+      "unattendedCount_other": "{{count}} gözetimsiz",
+      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır."
+    },
+    "summary": {
+      "edit": "Düzenle",
+      "createdDisabled": "Devre dışı oluşturuldu",
+      "enabled": "Etkin",
+      "allOrganizations": "tüm kuruluşlar",
+      "rowLabels": {
+        "runsWhen": "Şu durumda çalışır",
+        "canRead": "Okuyabilir",
+        "mayPropose": "Önerebilir",
+        "executesUnattended": "Gözetimsiz yürütür",
+        "neverTouches": "Asla dokunmaz",
+        "limits": "Sınırlar",
+        "approvers": "Onay istediği kişiler"
+      },
+      "runsWhen": {
+        "triage": "Herhangi bir cihazda yeni {{severities}} önem düzeyindeki uyarılarda çalışır.",
+        "anySeverity": "herhangi bir önem düzeyi",
+        "patch": "Eksik yamaları incelemek için bir zamanlamaya göre veya manuel olarak tetiklendiğinde çalışır.",
+        "helpdesk": "Bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde çalışır.",
+        "maintenanceWindows": "Bakım pencerelerinin bitmesini bekler.",
+        "ticketWrites": "Bir teknisyeni beklemeden talep güncellemeleri yazar."
+      },
+      "canRead": "{{scope}} için cihaz, uyarı ve filo verileri: envanter, metrikler, günlükler, yamalar, yedekler, talepler ve denetim geçmişi ({{count}} salt okunur araç, her zaman etkin).",
+      "mayProposeNone": "Bu aracı henüz herhangi bir işlem önermiyor.",
+      "unrecognisedLabel": "Geçerli araç kataloğu tarafından tanınmıyor:",
+      "executesUnattendedNone": "Hiçbir şey. Gölge modu yalnızca gözlemler ve önerir; bir teknisyenin onayı olmadan hiçbir şey çalışmaz.",
+      "executesUnattendedNoneAct": "Henüz hiçbir şey yok — seçilen hiçbir işlem gözetimsiz çalıştırma için uygun değil.",
+      "executesUnattendedList": "Bir teknisyenin onayını beklemeden {{list}} çalıştırır.",
+      "preauthorizedNote": "Bunlardan bazıları, dört göz inceleme süreciyle önceden verilmiş ön yetkilendirilmiş işlemlerdir.",
+      "neverTouchesEmpty": "Henüz hiçbir şey korunmuyor.",
+      "limits": "Çalıştırma başına en fazla {{devices}}, {{runs}}, çalıştırma başına {{minutes}}, günlük {{budget}} bütçe, günde filonun en fazla {{fleetPercent}}'i ve aynı cihazda çalıştırmalar arasında {{cooldown}}.",
+      "approversNone": "Henüz hiçbir rol yapılandırılmadı, bu yüzden kimseye bildirim gönderilmeyecek.",
+      "mayPropose_one": "{{capabilityPhrase}} genelinde {{count}} işlem: {{breakdown}}.",
+      "mayPropose_other": "{{capabilityPhrase}} genelinde {{count}} işlem: {{breakdown}}.",
+      "approvalCount_one": "{{count}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur",
+      "approvalCount_other": "{{count}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur",
+      "loggedCount_one": "{{count}} tanesi öneri olarak kaydedilir ve asla çalıştırılmaz",
+      "loggedCount_other": "{{count}} tanesi öneri olarak kaydedilir ve asla çalıştırılmaz",
+      "unattendedCount_one": "{{count}} tanesi gözetimsiz çalışır",
+      "unattendedCount_other": "{{count}} tanesi gözetimsiz çalışır",
+      "deviceCount_one": "{{count}} cihaz",
+      "deviceCount_other": "{{count}} cihaz",
+      "runsPerHourCount_one": "saatte {{count}} çalıştırma",
+      "runsPerHourCount_other": "saatte {{count}} çalıştırma",
+      "minuteCount_one": "{{count}} dakika",
+      "minuteCount_other": "{{count}} dakika",
+      "approvers_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur."
+    },
+    "flow": {
+      "title": "Yeni ajan",
+      "stepperAriaLabel": "Yeni ajan adımları",
+      "back": "Geri",
+      "next": "İleri: {{step}}",
+      "createAgent": "Ajan oluştur",
+      "createdDisabledNote": "Yeni ajanlar kapalı olarak oluşturulur. Her şeyi gözden geçirdikten sonra son adımda çalışmaya başlayıp başlamayacağına karar vereceksin.",
+      "startEnabled": "Etkin başlat",
+      "startEnabledHint": "Kapalı, güvenli varsayılan seçenektir. Yukarıdaki özeti incele, ardından ajanının çalışmaya başlamasını istediğinde bunu aç.",
+      "previewFailed": "Bu ajanın politikasının canlı önizlemesi yüklenemedi. Yine de oluşturabilirsin — önce seçimlerini dikkatle gözden geçir.",
+      "previewLoading": "Önizleme yükleniyor…",
+      "protectedResourcesLegend": "Korunan kaynaklar",
+      "steps": {
+        "purpose": {
+          "label": "Amaç ve duruş",
+          "description": "Mod, tür, sahiplik ve ad"
+        },
+        "does": {
+          "label": "Ne yapar",
+          "description": "Tetikleyiciler ve yetenekler"
+        },
+        "safety": {
+          "label": "Güvenlik ve gözetim",
+          "description": "Korunan kaynaklar, sınırlar ve onaylayanlar"
+        },
+        "review": {
+          "label": "Gözden geçir ve oluştur",
+          "description": "Bu ajanın ne yapacağını onayla"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Uyarıları izler ve önemli olanlar için çözüm önerir.",
+          "runsWhen": "seçtiğin önem derecelerinden birine ulaşan yeni bir uyarı olduğunda",
+          "recommended": "takılı kalan hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        },
+        "patch": {
+          "blurb": "Eksik yamaları gözden geçirir ve neyin kurulacağını önerir.",
+          "runsWhen": "zamanlaması tetiklendiğinde veya onu manuel olarak çalıştırdığında",
+          "recommended": "yamaları onaylayıp kurmak, ardından etkilenen hizmetleri yeniden başlatmak"
+        },
+        "helpdesk": {
+          "blurb": "Talepler oluşturuldukca, ilk yanıtı aldıkça veya çözüldükçe onlar üzerinde çalışır.",
+          "runsWhen": "bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde",
+          "recommended": "yaygın talepleri çözmek için hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Çalıştığı zaman:",
+        "recommendedPrefix": "Önerilen:",
+        "taken": "Bu sahip için zaten kullanımda"
       }
     }
   },
@@ -1910,7 +3002,7 @@
     "remove": "Kaldır",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "URL'den içe aktar",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG veya WebP 5 MB'a kadar.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG veya JPEG, 5 MB'a kadar.",
     "saveTheItemFirstThenAddAProductImage": "Önce öğeyi kaydedin, ardından bir ürün resmi ekleyin.",
     "thisItemIsABundle": "Bu öğe bir pakettir",
     "groupsOtherCatalogItemsSoldTogether": "Birlikte satılan diğer katalog ürünlerini gruplandırır.",
@@ -2105,7 +3197,12 @@
     "phoneVerifiedLast4": "(telefon doğrulandı: ...{{last4}})",
     "recoveryCodes": "Kurtarma kodları",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Kimlik doğrulayıcınızı kaybederseniz hesabınıza erişmek için bu kodları kullanın.",
-    "viewCodes": "Kodları görüntüle",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Kurtarma kodları yalnızca bir kez gösterilir ve sonradan yeniden görüntülenemez.",
+    "regenerateRecoveryCodes": "Kurtarma kodlarını yeniden oluştur",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Mevcut kodlar yeniden görüntülenemez. Yeniden oluşturmak yeni bir set üretir ve eskisini anında geçersiz kılar.",
+    "regenerateRecoveryCodesQuestion": "Kurtarma kodları yeniden oluşturulsun mu?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Yeniden oluşturma, yazdırılmış kopyalar dahil kaydettiğiniz tüm kurtarma kodlarını anında geçersiz kılar. Yeni kodlar, oluşturulduktan hemen sonra yalnızca bir kez gösterilir.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Bu kod kabul edilmedi. QR kodunuz hâlâ geçerli; kimlik doğrulayıcınızdaki bir sonraki kodu bekleyip yeniden deneyin.",
     "confirmYourPassword": "Şifrenizi doğrulayın",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Kimlik doğrulama uygulaması kurmaya başlamak için hesap şifrenizi yeniden girin.",
     "setUpAuthenticator": "Kimlik doğrulayıcıyı ayarla",
@@ -2117,7 +3214,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Bu değişikliği onaylamak için hesap şifrenizi yeniden girin.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bu kodları güvenli bir yere kaydedin. Kimlik doğrulayıcı cihazınızı kaybederseniz hesabınıza erişmek için bunları kullanabilirsiniz.",
     "copyCodes": "Kodları kopyala",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Yeni kurtarma kodlarını görüntülemek veya oluşturmak için aşağıdaki düğmeye tıklayın.",
+    "copiedCodes": "Kopyalandı",
+    "copyCodesFailed": "Panoya kopyalanamadı. Yukarıdaki kodları seçip elle kopyalayın.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Her kod yalnızca bir kez kullanılabilir. Yeni kodların oluşturulması önceden oluşturulmuş kodları geçersiz kılacaktır.",
     "back": "Geri",
     "smsSentToPhone": "{{last4}} ile biten telefona SMS kodları gönderildi.",
@@ -2141,7 +3239,6 @@
     "disabling": "Devre dışı bırakılıyor...",
     "generating": "Oluşturuluyor...",
     "regenerateCodes": "Kodları yeniden oluştur",
-    "showRecoveryCodes": "Kurtarma kodlarını göster",
     "verifyYourIdentity": "Kimliğinizi doğrulayın",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
@@ -2956,6 +4053,8 @@
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur durumda. Değişiklik yapmak için geri yükleyin.",
       "bannerWithDate": "Bu kuruluş arşivlendi — silme işlemi {{date}} tarihinde planlandı. Değişiklik yapmak için geri yükleyin.",
+      "drainBanner": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor.",
+      "drainBannerWithDate": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve silme işlemi {{date}} tarihinde planlandı.",
       "restoreLink": "Bu kuruluşu geri yükle",
       "saveBlocked": "Bu kuruluş arşivlendi ve düzenlenemez. Önce geri yükleyin."
     },
@@ -2967,6 +4066,8 @@
       "organization": "Organizasyon",
       "general": "Genel",
       "generalDescription": "Profil ve varsayılanlar",
+      "contacts": "Kişiler",
+      "contactsDescription": "Bu müşteride ulaşılacak kişiler; siteye göre veya kuruluş genelinde",
       "contracts": "Sözleşmeler",
       "contractsDescription": "Yinelenen anlaşmalar",
       "billing": "Faturalandırma",
@@ -2989,6 +4090,8 @@
       "remoteAccessDescription": "VNC, proxy, tüneller",
       "eventLogs": "Olay Günlükleri",
       "eventLogsDescription": "İletme ve saklama",
+      "auditRetention": "Denetim Saklama",
+      "auditRetentionDescription": "Denetim günlüklerinin ne kadar süreyle saklanacağı",
       "communications": "İletişim",
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",
@@ -3491,12 +4594,14 @@
       "empty": "Arşivlenmiş kuruluş yok.",
       "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
       "badge": "Arşivlendi",
+      "archivingBadge": "Arşivleniyor…",
       "keptIndefinitely": "Süresiz olarak saklanıyor",
       "purgeToday": "Bugün kalıcı olarak silinecek",
       "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
       "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
       "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
       "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
+      "drainNotice": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor. İptal edip geri getirmek için geri yükleyin.",
       "errors": {
         "fetch": "Arşivlenen kuruluşlar yüklenemedi"
       }
@@ -3566,7 +4671,8 @@
       "title": "Cihazlar\nBu siteye atanmış ",
       "assigned": "cihazlar",
       "viewAll": "Tüm cihazları görüntüle"
-    }
+    },
+    "allContactsLink": "Bu müşterinin tüm kişileri"
   },
   "siteForm": {
     "description": "Yalnızca site adı gereklidir. Adres ve iletişim bilgileri isteğe bağlıdır; bunları daha sonra doldurabilirsiniz.",
@@ -3647,6 +4753,12 @@
     "description": "Cihazlardaki ek bilgileri izlemek için özel öznitelikler tanımlayın.",
     "searchPlaceholder": "Arama alanları...",
     "allTypes": "Tüm Türler",
+    "allOrganizations": "Tüm kuruluşlar",
+    "ownerScope": {
+      "legend": "Şunlara uygulanır",
+      "allOrganizations": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
     "actions": {
       "add": "Özel Alan Ekle",
       "addFirst": "İlk özel alanınızı ekleyin",
@@ -3654,7 +4766,8 @@
       "createField": "Alan Oluştur",
       "saveChanges": "Değişiklikleri Kaydet",
       "deleting": "Siliniyor...",
-      "deleteField": "Alanı Sil"
+      "deleteField": "Alanı Sil",
+      "importFromRmm": "Başka bir RMM'den içe aktar"
     },
     "errors": {
       "fetch": "Özel alanlar getirilemedi",
@@ -3671,7 +4784,8 @@
     },
     "columns": {
       "key": "Anahtar",
-      "deviceTypes": "Cihaz Türleri"
+      "deviceTypes": "Cihaz Türleri",
+      "scriptWrite": "Betik yazma"
     },
     "fieldTypes": {
       "text": {
@@ -3712,6 +4826,8 @@
       "fieldKey": "Alan Tuşu",
       "fieldKeyPlaceholder": "örneğin, asset_tag",
       "fieldKeyHelp": "Filtrelerde ve API kullanılır. Oluşturulduktan sonra değiştirilemez.",
+      "fieldKeyScriptHelp": "Bu anahtar, betiklerin alanı okumak ve yazmak için kullandığı şeydir. Okuma: bir betik parametresinin kaynağını bu anahtarı kullanarak \"Cihaz özel alanından\" olarak bağlayın. Yazma: yeni bir değeri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldKeyScriptHelpAriaLabel": "Bu alanın betiklerde kullanımı hakkında",
       "fieldType": "Alan Türü",
       "dropdownChoices": "Açılır Seçenekler",
       "choiceLabel": "Etiket",
@@ -3723,7 +4839,9 @@
       "patternPlaceholder": "örneğin, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Cihaz Türleri (isteğe bağlı)",
       "deviceTypesHelp": "Tüm cihaz türlerinde gösterilmesi için boş bırakın",
-      "requiredField": "Gerekli alan"
+      "requiredField": "Gerekli alan",
+      "scriptWrite": "Betiklerin bu alana yazmasına izin ver",
+      "scriptWriteHelp": "Bir cihazda çalışan betikler, ::breeze:custom-fields:: {\"key\": \"value\"} yazdırarak bu alanı ayarlayabilir. Değer, betiğin kaydedilen çıktısında da görünür — bu şekilde asla bir gizli bilgi yazmayın."
     },
     "delete": {
       "title": "Özel Alanı Sil",
@@ -3951,5 +5069,180 @@
     "saveFailed": "Zaman takibi ayarları kaydedilemedi",
     "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
     "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır"
+  },
+  "contactsCard": {
+    "title": "Kişiler",
+    "description": "Ekibinizin bu müşteride ulaştığı kişiler. Bir kişi tek bir siteye bağlanabilir ya da kuruluşun tamamı için geçerli olabilir.",
+    "organizationLevel": "Kuruluş",
+    "unknownSite": "Site kullanılamıyor",
+    "empty": "Henüz kişi yok. Bir tane ekleyin ya da önceki aracınızdan bir CSV içe aktarın.",
+    "loading": "Kişiler yükleniyor…",
+    "confirmDelete": "{{name}} silinsin mi? Bu geri alınamaz.",
+    "actions": {
+      "add": "Kişi ekle",
+      "import": "CSV içe aktar",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "save": "Kişiyi kaydet",
+      "saving": "Kaydediliyor…",
+      "cancel": "Vazgeç",
+      "retry": "Yeniden dene"
+    },
+    "filters": {
+      "site": "Siteye göre süz",
+      "role": "Role göre süz",
+      "allSites": "Tüm siteler",
+      "allRoles": "Tüm roller"
+    },
+    "columns": {
+      "name": "Ad",
+      "reach": "Nasıl ulaşılır",
+      "jobTitle": "Unvan",
+      "roles": "Roller",
+      "site": "Bağlı olduğu yer",
+      "actions": "İşlemler"
+    },
+    "primary": {
+      "organization": "Birincil (kuruluş)",
+      "site": "Birincil ({{site}})"
+    },
+    "roles": {
+      "billing": "Faturalama",
+      "technical": "Teknik",
+      "escalation": "Yükseltme",
+      "admin": "Yönetim",
+      "site": "Site",
+      "afterHours": "Mesai dışı",
+      "portal": "Müşteri portalı"
+    },
+    "form": {
+      "addHeading": "Yeni kişi",
+      "editHeading": "Kişiyi düzenle",
+      "identifierRequired": "Ad, e-posta adresi, telefon veya cep telefonundan en az birini doldurun.",
+      "fields": {
+        "name": "Ad",
+        "email": "E-posta adresi",
+        "phone": "Telefon",
+        "mobile": "Cep telefonu",
+        "title": "Unvan",
+        "site": "Bağlı olduğu yer",
+        "roles": "Roller",
+        "notes": "Notlar",
+        "isPrimary": "Yukarıda seçilen kapsam için birincil kişi yap"
+      }
+    },
+    "pagination": {
+      "summary": "{{total}} kayıttan {{from}}-{{to}} arası gösteriliyor",
+      "previous": "Önceki",
+      "next": "Sonraki"
+    },
+    "toasts": {
+      "created": "Kişi eklendi",
+      "updated": "Kişi kaydedildi",
+      "deleted": "Kişi silindi"
+    },
+    "errors": {
+      "load": "Bu kuruluşun kişileri yüklenemedi.",
+      "sites": "Bu kuruluşun siteleri yüklenemedi. Site adları ve site filtresi yüklenene kadar kullanılamaz.",
+      "create": "Kişi eklenemedi.",
+      "update": "Kişi kaydedilemedi.",
+      "delete": "Kişi silinemedi."
+    }
+  },
+  "bulkContactImport": {
+    "title": "CSV dosyasından kişi içe aktar",
+    "description": "Önceki RMM veya PSA aracınızdan aldığınız kişi dışa aktarımını yükleyin. Her satır bu kuruluşun altına kaydedilir.",
+    "dropzone": "Buraya bir CSV dosyası bırakın veya göz atmak için tıklayın",
+    "dropzoneHint": "Ad, e-posta adresi, telefon veya cep telefonundan en az birini eşleyin; biri olmadan kişi oluşmaz.",
+    "actions": {
+      "close": "Kapat",
+      "preview": "{{count}} satırı denetle",
+      "previewing": "Denetleniyor…",
+      "import": "Seçilen {{count}} satırı içe aktar",
+      "importing": "İçe aktarılıyor…"
+    },
+    "mapping": {
+      "heading": "Sütun eşleme",
+      "unmapped": "Eşlenmedi",
+      "identifierRequired": "Devam etmek için ad, e-posta adresi, telefon veya cep telefonu sütunu eşleyin.",
+      "droppedRows_one": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "droppedRows_other": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "tooManyRows": "Bu dosya {{count}} satır eşliyor; tek bir içe aktarmanın kabul ettiği {{max}} satırdan fazla. Dosyayı daha küçük parçalara bölün.",
+      "fields": {
+        "name": "Ad",
+        "email": "E-posta adresi",
+        "phone": "Telefon",
+        "mobile": "Cep telefonu",
+        "title": "Unvan",
+        "roles": "Roller",
+        "site": "Site",
+        "externalId": "Kaynak sistemdeki kişi kimliği",
+        "externalSystem": "Kaynak sistem"
+      }
+    },
+    "mode": {
+      "label": "Halihazırda bağlı kişiler",
+      "skip": "Olduğu gibi bırak",
+      "update": "Dosyayı onlarla birleştir"
+    },
+    "preview": {
+      "heading": "Ne olacak"
+    },
+    "summary": {
+      "imported": "{{count}} eklendi",
+      "updated": "{{count}} birleştirildi",
+      "skipped": "{{count}} değiştirilmedi",
+      "failed": "{{count}} reddedildi",
+      "allFailed": "Hiçbir şey içe aktarılmadı — {{summary}}.",
+      "nothingImported": "Hiçbir şey içe aktarılmadı: {{count}} zaten bağlı.",
+      "nothingImportedEmpty": "Hiçbir kayıt içe aktarılmadı."
+    },
+    "failures": {
+      "title_one": "{{count}} satır reddedildi",
+      "title_other": "{{count}} satır reddedildi"
+    },
+    "skipped": {
+      "title_one": "{{count}} satır olduğu gibi bırakıldı",
+      "title_other": "{{count}} satır olduğu gibi bırakıldı",
+      "reasons": {
+        "alreadyLinked": "zaten mevcut bir kişiye bağlı"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "Satır, burada zaten bulunan kişiler karşısında belirsiz.",
+      "orgNotFound": "Bu kuruluş artık erişiminizde değil.",
+      "annotationChanged": "Bu satır önizlemeden bu yana değişti. Dosyayı yeniden denetleyin.",
+      "matchChanged": "Bu satır artık başka bir kişiyle eşleşiyor. Dosyayı yeniden denetleyin.",
+      "matchUnconfirmed": "Eşleşmeyi onaylamak için satırı işaretleyip yeniden içe aktarın.",
+      "writeFailed": "Veritabanı yazma işlemini reddetti. Bu satır için hiçbir şey kaydedilmedi.",
+      "noIdentifier": "Satırda ad, e-posta adresi, telefon veya cep telefonu kalmıyor.",
+      "invalidRole": "Satır, Breeze’in tanımadığı bir rol belirtiyor.",
+      "siteNotInOrg": "Bu satırdaki site bu kuruluşa ait değil."
+    },
+    "errors": {
+      "previewFailed": "Dosya mevcut kişilerle karşılaştırılamadı.",
+      "importFailed": "Seçilen kişiler içe aktarılamadı.",
+      "fileRead": "Bu dosya okunamadı. Lütfen yeniden seçin.",
+      "noColumns": "Bu dosyada başlık satırı yok, dolayısıyla eşlenecek bir şey de yok."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Yeni ve bağlı tüm satırları seç",
+    "organizationLevel": "Kuruluş",
+    "matches": "“{{name}}” ile eşleşiyor",
+    "columns": {
+      "name": "Ad",
+      "email": "E-posta adresi",
+      "site": "Site",
+      "status": "Sonuç"
+    },
+    "badges": {
+      "create": "Yeni",
+      "linkMatch": "Zaten bağlı",
+      "emailMatch": "E-posta eşleşmesi — onaylayın",
+      "nameMatch": "Ad eşleşmesi — onaylayın",
+      "conflict": "Çakışma",
+      "orgNotFound": "Kuruluş bulunamadı"
+    }
   }
 }

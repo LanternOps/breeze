@@ -31,6 +31,32 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/'],
+    // Task 5 entity-mapping routes — all four call QuickBooks HTTP inside the
+    // handler (list proposals, list income accounts, verify-on-confirm, sync).
+    ['GET', '/api/v1/accounting/quickbooks/mappings'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/'],
+    ['put', '/api/v1/accounting/quickbooks/mappings'], // method is case-insensitive
+    // Phase C Task 2 — settings refresh calls provider.fetchRealmSettings
+    // (real QuickBooks HTTP) inside the handler.
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/'],
+    ['post', '/api/v1/accounting/quickbooks/settings/refresh'], // method is case-insensitive
+    // Phase C Task 5 — manual invoice push and remote-candidate search both
+    // call QuickBooks HTTP inside the handler. push-bulk is deliberately
+    // ABSENT from this list (see the NO_MATCH block below) — it only enqueues
+    // to Redis and never calls QuickBooks itself.
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push/'],
+    ['post', '/api/v1/accounting/quickbooks/invoices/abc-123/push'], // method is case-insensitive
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates'],
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates/'],
+    ['get', '/api/v1/accounting/quickbooks/remote-candidates'], // method is case-insensitive
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -42,6 +68,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/catalog/distributors/pax8/import'], // method is case-insensitive
     // PR3 — the three SSO provider routes that run OIDC discovery against a
     // tenant-controlled issuer (10s timeout) inside the handler.
+    // #2787 bulk restore — runBulkIsolated opens one short transaction per
+    // device; the ambient request tx would otherwise pin one pooled connection
+    // (and every devices/device_commands lock it takes) across up to 500 items.
+    ['POST', '/api/v1/devices/bulk/restore'],
+    ['POST', '/api/v1/devices/bulk/restore/'],
+    ['post', '/api/v1/devices/bulk/restore'], // method is case-insensitive
     ['POST', '/api/v1/sso/providers'],
     ['POST', '/api/v1/sso/providers/'],
     ['PATCH', '/api/v1/sso/providers/abc-123'],
@@ -101,9 +133,29 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
     ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    // #3905 — quote send/re-send render the proposal PDF and run the outbound
+    // mail round-trip in the handler, and sendQuote holds a FOR UPDATE lock on
+    // the quote (and a revision's PARENT) that only the commit releases.
+    ['POST', '/api/v1/quotes/abc-123/send'],
+    ['POST', '/api/v1/quotes/abc-123/send/'],
+    ['post', '/api/v1/quotes/abc-123/send'], // method is case-insensitive
+    ['POST', '/api/v1/quotes/abc-123/resend'],
+    ['POST', '/api/v1/quotes/abc-123/resend/'],
+    ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    // #3905 — the /send pattern must not swallow its siblings. Losing the
+    // ambient transaction on a route whose handler does NOT manage its own
+    // contexts means every db call there lands on the bare pool with no RLS
+    // GUC and silently affects 0 rows (#1375).
+    ['POST', '/api/v1/quotes/bulk-send', 'bulk-send is one path segment, and runBulkIsolated already opens a tx per item'],
+    ['POST', '/api/v1/quotes/abc-123/schedule-send', 'schedule-send only enqueues; it keeps the ambient tx'],
+    ['DELETE', '/api/v1/quotes/abc-123/schedule-send', 'undo-send is DB-only'],
+    ['GET', '/api/v1/quotes/abc-123/send', 'send is POST-only'],
+    ['POST', '/api/v1/quotes//send', 'empty id segment must not match'],
+    ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],
@@ -123,6 +175,30 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/extra', 'extra segment must not match'],
+    // Task 5 — every OTHER accounting route (connect/callback/disconnect/status/
+    // settings) does only DB work and MUST keep the ambient RLS transaction.
+    ['POST', '/api/v1/accounting/quickbooks/mappings', 'POST to the mappings route (only GET/PUT opt out)'],
+    ['DELETE', '/api/v1/accounting/quickbooks/mappings', 'DELETE to the mappings route is not a route at all'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/income-accounts', 'income-accounts is GET-only'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only, not PUT'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/extra', 'extra segment must not match'],
+    // Phase C Task 2 — refresh is POST-only, and the sibling PATCH .../settings
+    // route (no /refresh) makes no outbound call — keep the ambient tx.
+    ['GET', '/api/v1/accounting/quickbooks/settings/refresh', 'refresh is POST-only'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/extra', 'extra segment must not match'],
+    ['PATCH', '/api/v1/accounting/quickbooks/settings', 'plain settings PATCH does only DB work'],
+    // Phase C Task 5 — push-bulk only enqueues to Redis (never calls
+    // QuickBooks), so it must NOT match despite sharing the /invoices/ prefix
+    // with the single-invoice push route above.
+    ['POST', '/api/v1/accounting/quickbooks/invoices/push-bulk', 'bulk enqueue is DB/Redis-only, no outbound QuickBooks call'],
+    ['GET', '/api/v1/accounting/quickbooks/invoices/abc-123/push', 'invoice push is POST-only'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices//push', 'empty invoiceId segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/remote-candidates', 'remote-candidates is GET-only'],
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates/extra', 'extra segment must not match'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],
@@ -189,6 +265,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
     ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
+
+    // #2787 — the SINGLE restore does one device in one transaction and must
+    // keep the ambient tx; losing it would put its writes on the bare pool with
+    // no RLS GUC, silently affecting 0 rows (#1375).
+    ['POST', '/api/v1/devices/11111111-1111-4111-8111-111111111111/restore', 'single restore keeps ambient tx'],
+    ['POST', '/api/v1/devices/bulk/restore/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/devices/bulk/restore', 'bulk restore is POST-only'],
+    // Bulk permanent delete only validates and ENQUEUES — no slow work in the
+    // handler, so it keeps the ambient transaction (same call as quotes/bulk-send).
+    ['POST', '/api/v1/devices/bulk/permanent-delete', 'bulk purge only enqueues; the worker does the work'],
 
     // The other catalog mutations are DB-only and MUST keep the ambient tx.
     ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],

@@ -1,6 +1,5 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
-import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-notifications';
 
@@ -9,11 +8,13 @@ import { registerPushToken as apiRegisterPushToken } from './api';
 // Configure how notifications are handled when the app is in the foreground.
 // SDK 55: shouldShowAlert is deprecated; use shouldShowBanner + shouldShowList.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
+  handleNotification: async (notification) => ({
     shouldShowBanner: true,
     shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: true,
+    shouldSetBadge: shouldSetBadgeFor(
+      notification.request.content.data as Record<string, unknown> | undefined
+    ),
   }),
 });
 
@@ -48,31 +49,14 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
       return { status: 'failed', reason: 'permission_denied' };
     }
 
-    if (Platform.OS === 'ios') {
-      // Native device push token: raw APNs token. Uses getDevicePushTokenAsync
-      // — needs NO Expo projectId/account — so push works with a plain
-      // Xcode/Apple build (not the Expo push relay).
-      const tokenData = await Notifications.getDevicePushTokenAsync();
-      token = String(tokenData.data);
-    } else {
-      // Android stays on the Expo push relay: the API's approval dispatcher
-      // does not send to raw FCM tokens yet (deliberately skipped server-side
-      // in expoPush.ts), so a native device token here would silently drop
-      // approval pushes.
-      //
-      // The iOS-native-APNs switch removed `extra.eas.projectId` from app.json,
-      // so on a stock build there is no relay to register with. That is a
-      // not-built-yet state, NOT a failure: reporting it as 'failed' would show
-      // Android users a red "push failed to register" banner for a feature that
-      // was never wired. Android push needs either an Expo projectId restored
-      // here or a real FCM sender added server-side.
-      const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-      if (!projectId) {
-        return { status: 'unsupported', reason: 'android_push_not_configured' };
-      }
-      const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-      token = tokenData.data;
-    }
+    // Native device push token for both platforms: raw APNs token on iOS,
+    // raw FCM registration token on Android. Needs NO Expo projectId/account
+    // on either platform — Android instead requires google-services.json
+    // bundled into the native build (see STORE_SUBMISSION.md). The server
+    // routes both natively via services/apns.ts and services/fcm.ts (#3639);
+    // the Expo push relay is no longer used by this app on either platform.
+    const tokenData = await Notifications.getDevicePushTokenAsync();
+    token = String(tokenData.data);
 
     const platform = Platform.OS as 'ios' | 'android';
     await apiRegisterPushToken(token, platform);
@@ -102,6 +86,15 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
         name: 'Approvals',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 200, 100, 200],
+        lightColor: '#1c8a9e',
+        sound: 'default',
+      });
+
+      // W10 (#4336).
+      await Notifications.setNotificationChannelAsync('tickets', {
+        name: 'Tickets',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 200],
         lightColor: '#1c8a9e',
         sound: 'default',
       });
@@ -285,6 +278,61 @@ export function parseApprovalNotification(
     return { approvalId: data.approvalId };
   }
   return null;
+}
+
+/**
+ * W10 (#4336). What a ticket push carries once it has been validated.
+ *
+ * Deliberately narrower than the wire payload: the server also sends
+ * `internalNumber` for the lock-screen body, which nothing on this side routes
+ * on. Keeping the parsed shape to the routing-relevant fields means a change to
+ * the presentation extras cannot break tap handling.
+ */
+export interface TicketPushData {
+  ticketId: string;
+  reason: 'assigned' | 'sla_breached';
+  target?: 'response' | 'resolution';
+}
+
+/**
+ * Pure parser over the notification `data` map.
+ *
+ * Wire contract: `buildTicketPush` in `apps/api/src/services/expoPush.ts`
+ * (shipped in the API half of W07, PR #4281) emits
+ * `{ type: 'ticket', ticketId, reason, target?, internalNumber? }`.
+ *
+ * An unrecognised `target` is dropped rather than rejecting the push: the
+ * target is a label, and refusing the whole notification would strand the
+ * technician on a breach the server already decided to tell them about. A bad
+ * `ticketId` or `reason` IS fatal — both feed navigation.
+ */
+export function parseTicketData(
+  data: Record<string, unknown> | null | undefined
+): TicketPushData | null {
+  if (!data || data.type !== 'ticket') return null;
+  if (typeof data.ticketId !== 'string' || data.ticketId.length === 0) return null;
+  if (data.reason !== 'assigned' && data.reason !== 'sla_breached') return null;
+  const parsed: TicketPushData = { ticketId: data.ticketId, reason: data.reason };
+  if (data.target === 'response' || data.target === 'resolution') parsed.target = data.target;
+  return parsed;
+}
+
+export function parseTicketNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): TicketPushData | null {
+  return parseTicketData(notification.request.content.data as Record<string, unknown> | undefined);
+}
+
+/**
+ * Ticket pushes never touch the app badge.
+ *
+ * `reconcileApprovalNotifications` SETS the badge to the pending-approval
+ * count, so the badge means "approvals waiting on you" and nothing else. A
+ * ticket push that bumped it would read as a phantom approval until the next
+ * reconcile silently corrected it.
+ */
+export function shouldSetBadgeFor(data: Record<string, unknown> | null | undefined): boolean {
+  return !(data && data.type === 'ticket');
 }
 
 /** The server sends a date-only `YYYY-MM-DD`; the screen puts it straight into `?date=`. */

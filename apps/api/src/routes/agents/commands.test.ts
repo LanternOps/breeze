@@ -24,6 +24,7 @@ const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
 });
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
 const consumePamReconciliationRateLimitMock = vi.fn().mockResolvedValue({
   allowed: true,
   remaining: 119,
@@ -113,6 +114,15 @@ vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
 }));
 
+vi.mock('../../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('./helpers', () => ({
   handleSecurityCommandResult: vi.fn(),
   handleFilesystemAnalysisCommandResult: vi.fn(),
@@ -183,6 +193,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
       });
@@ -275,6 +286,11 @@ describe('agent commands routes', () => {
       resolvedDeviceId: 'device-1',
       stdout: 'hello from the script',
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'hello from the script',
+    }));
   });
 
   it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
@@ -605,6 +621,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         tenantDraining: true,
@@ -874,6 +891,7 @@ describe('agent commands routes', () => {
         deviceId: deviceUuid,
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
       });
@@ -925,6 +943,7 @@ describe('agent commands routes', () => {
           deviceId: deviceUuid,
           agentId: 'agent-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           siteId: 'site-1',
           role: 'agent',
         });
@@ -1328,6 +1347,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
         deviceId: opts.deviceId ?? 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         ...drainContext,

@@ -23,6 +23,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -57,6 +58,7 @@ export async function pruneAiUnattendedExposure(): Promise<RetentionJobResult> {
   const durationMs = Date.now() - startedAt;
 
   console.log(`[AiUnattendedExposureRetention] Pruned ${deletedCount} exposure-ledger rows older than ${RETENTION_HOURS}h in ${durationMs}ms`);
+  recordRetentionRun('ai_unattended_exposure_retention', { rowsDeleted: deletedCount });
   return { deletedCount, durationMs };
 }
 

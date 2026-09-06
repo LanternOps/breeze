@@ -421,7 +421,8 @@ rulesRoutes.post(
     if (!isPartnerWide) {
       const createNotificationBindingError = await validateAlertRuleNotificationBindings(
         owner.orgId!,
-        getOverrides(baseOverrides)
+        getOverrides(baseOverrides),
+        auth.scope
       );
       if (createNotificationBindingError) {
         return c.json({ error: createNotificationBindingError }, 400);
@@ -624,7 +625,8 @@ rulesRoutes.put(
       }
       const updateNotificationBindingError = await validateAlertRuleNotificationBindings(
         rule.orgId!,
-        getOverrides(baseOverrides)
+        getOverrides(baseOverrides),
+        auth.scope
       );
       if (updateNotificationBindingError) {
         return c.json({ error: updateNotificationBindingError }, 400);

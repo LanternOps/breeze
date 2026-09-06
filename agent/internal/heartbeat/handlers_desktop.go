@@ -631,6 +631,16 @@ func normalizeDesktopInputEvent(raw map[string]any) (desktop.InputEvent, error) 
 	}
 	event.Modifiers = modifiers
 
+	// This relay rebuilds the event field by field, so anything not copied here
+	// is dropped. Caps Lock state has to survive it or issue #3595 would stay
+	// broken on every session that falls back from WebRTC to the WebSocket
+	// transport.
+	capsLock, err := normalizeDesktopCapsLock(raw["capsLock"])
+	if err != nil {
+		return event, err
+	}
+	event.CapsLock = capsLock
+
 	switch event.Type {
 	case "mouse_click", "mouse_down", "mouse_up":
 		if event.Button == "" {
@@ -647,6 +657,20 @@ func normalizeDesktopInputEvent(raw map[string]any) (desktop.InputEvent, error) 
 	}
 
 	return event, nil
+}
+
+// normalizeDesktopCapsLock reads the viewer's Caps Lock assertion. Absent stays
+// absent (nil) rather than collapsing to false — the agent distinguishes "the
+// viewer did not state it" from "the viewer says it is off".
+func normalizeDesktopCapsLock(value any) (*bool, error) {
+	if value == nil {
+		return nil, nil
+	}
+	state, ok := value.(bool)
+	if !ok {
+		return nil, fmt.Errorf("invalid capsLock")
+	}
+	return &state, nil
 }
 
 func readDesktopCoordinate(value any) (int, error) {

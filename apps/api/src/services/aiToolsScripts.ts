@@ -31,8 +31,11 @@ import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+// Type-only: the runtime import stays dynamic inside the handler.
+import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
@@ -273,7 +276,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing script to run' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
-          parameters: { type: 'object', description: 'Script parameters' }
+          parameters: { type: 'object', description: 'Script parameters' },
+          // #4888 — see services/scriptRunRequest.ts. Shared with the three
+          // other declarations of this tool's input shape so the model can
+          // express a run context on every surface, not just some of them.
+          ...AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES
         },
         required: ['scriptId', 'deviceIds']
       }
@@ -282,6 +289,29 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
+
+      // #4888 — an assistant-chosen run context clears the SAME gate a human
+      // one does. Not a copy of the rules, the actual object the HTTP route
+      // validates with (`POST /scripts/:id/execute`), so the enum ('elevated'
+      // excluded — that stays a property of the saved script) and both
+      // cross-field rules ("targetSessionId requires runAs=user", "…and
+      // exactly one device") can never drift between the two callers.
+      //
+      // `parameters` is deliberately NOT re-parsed here: the AI path has never
+      // validated them against `scriptParametersSchema` and tightening that is
+      // a separate behaviour change with its own blast radius. The field being
+      // optional in the schema is what lets this validate the run context
+      // alone. Nothing about the privilege decision depends on it.
+      const runContext = executeScriptSchema.safeParse({
+        deviceIds,
+        runAs: input.runAs,
+        targetSessionId: input.targetSessionId,
+      });
+      if (!runContext.success) {
+        return JSON.stringify({
+          error: runContext.error.issues[0]?.message ?? 'Invalid run context',
+        });
+      }
 
       // #3409 PR4c-1 — a release path may have ALREADY read this script row and
       // resolved its tenant variables, in order to recompute the approval's
@@ -449,6 +479,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 triggerType: 'manual',
                 triggeredBy: auth.user.id,
                 createdBy: auth.user.id,
+                // #4888 — undefined when the assistant did not choose one, in
+                // which case dispatch falls back to `script.runAs` exactly as
+                // it always did.
+                runAs: runContext.data.runAs,
+                targetSessionId: runContext.data.targetSessionId,
                 requireOnline: true,
                 variableScope,
               });
@@ -472,6 +507,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
             commandId: cmd.id,
             executionId: dispatch.executionId,
+            // #4888 — the RESOLVED context, echoed from dispatch rather than
+            // recomputed here, so the assistant can tell "ran as SYSTEM
+            // because I asked" from "ran as SYSTEM because that is the
+            // script's default" and reason about a user-context failure
+            // instead of retrying blind (the #4882 debugging shape).
+            runAs: dispatch.runAs,
+            ...(dispatch.targetSessionId != null ? { targetSessionId: dispatch.targetSessionId } : {}),
           };
         } catch (err) {
           // A thrown error here is indistinguishable from "device unsupported"
@@ -486,6 +528,95 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ results });
     }
+  });
+
+  // ============================================
+  // cancel_script_execution - Tier 3 (requires approval)
+  // ============================================
+
+  registerTool({
+    tier: 3,
+    // The device is derived from the execution, not supplied — so there is no
+    // device-id property for the central `enforceDeviceArgs` gate to check.
+    // The handler therefore gates inline. It uses the shared
+    // `verifyDeviceAccess` helper (org + site on the DEVICE row), which is
+    // STRICTER than `get_script_execution`'s hand-rolled site-only check on
+    // the read side: this is a write, so the device's own org is re-checked
+    // rather than inferred from the execution.
+    deviceArgs: [],
+    definition: {
+      name: 'cancel_script_execution',
+      description: 'Stop a running script execution on a device. Cancellation is a de-escalation: it never starts work. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          executionId: { type: 'string', description: 'UUID of the script_executions row to stop' },
+          graceSeconds: { type: 'number', description: 'Seconds to wait after SIGTERM before SIGKILL (0-30, default 5). No graceful phase on Windows.' },
+        },
+        required: ['executionId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const executionId = input.executionId as string;
+
+      // Org axis on the execution itself (script_executions carries the DEVICE's
+      // org, so a partner-wide script's run is still scoped to where it ran),
+      // then the site axis and device visibility via the shared write-path gate.
+      const conditions: SQL[] = [eq(scriptExecutions.id, executionId)];
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
+      const [execution] = await db
+        .select({ id: scriptExecutions.id, deviceId: scriptExecutions.deviceId })
+        .from(scriptExecutions)
+        .where(and(...conditions))
+        .limit(1);
+      if (!execution) return JSON.stringify({ error: 'Execution not found or access denied' });
+
+      const access = await verifyDeviceAccess(execution.deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      // Same service the HTTP route and the automation fan-out use, so the
+      // state machine has exactly one implementation.
+      const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+      const outcome = await cancelScriptExecution({
+        executionId,
+        // May be a synthetic principal id; the service probes-and-degrades it
+        // against `users` rather than raising 23503.
+        actorId: auth.user.id,
+        actorLabel: `AI assistant (${auth.user.email})`,
+        graceSeconds: input.graceSeconds as number | undefined,
+      });
+
+      if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+        await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+      }
+
+      // Report the OUTCOME, never a claimed stop: only `retracted` proves the
+      // script never ran, and `cancelling` is still awaiting the device.
+      //
+      // Each kind carries a plain-English `detail` because the bare kind names
+      // are not self-describing to a model — `recovered` in particular reads as
+      // "successfully resolved" when it means the opposite: the cancel was too
+      // late and the script already finished on its own.
+      const CANCEL_OUTCOME_DETAIL: Record<CancelOutcome['kind'], string> = {
+        not_found: 'No such execution, or it is outside your access.',
+        already_terminal: 'The execution had already finished; nothing was cancelled.',
+        idempotent: 'A cancellation was already recorded for this execution; nothing new was sent.',
+        retracted: 'Proven stopped: the script had not reached the device and the command was withdrawn.',
+        recovered: 'TOO LATE — the script already finished on its own and the cancel had no effect. Read the execution to see how it ended.',
+        cancelling: 'A stop was sent to the device. The script is NOT stopped yet; re-read the execution to see whether it was.',
+        inconsistent: 'Refused: the execution has no paired command, so a stop cannot be proven either way.',
+      };
+
+      return JSON.stringify({
+        executionId,
+        outcome: outcome.kind,
+        detail: CANCEL_OUTCOME_DETAIL[outcome.kind],
+        ...(outcome.kind === 'already_terminal' || outcome.kind === 'idempotent'
+          ? { status: outcome.status }
+          : {}),
+      });
+    },
   });
 
   // ============================================

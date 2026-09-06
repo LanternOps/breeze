@@ -7,11 +7,19 @@ import { captureException } from '../../services/sentry';
  * Alert columns that hold a user id. Each gets a `<field>Name` companion in the
  * API response so clients render the technician's name instead of a raw UUID
  * (#3966).
+ *
+ * `feedbackBy` (#4445) is not an alert column — it lives on the `ai_alert_verdicts`
+ * row a verdict badge shows. The alerts route builds pseudo-rows (`{ id:
+ * verdict.id, feedbackBy: verdict.feedbackBy }`) to run through this same
+ * batched lookup rather than duplicating `resolveUserDisplayNames`, since the
+ * safety argument below (ids only ever come from already access-checked rows)
+ * holds just as well for verdict ids as alert ids.
  */
 const ACTOR_NAME_KEY = {
   acknowledgedBy: 'acknowledgedByName',
   resolvedBy: 'resolvedByName',
   dismissedBy: 'dismissedByName',
+  feedbackBy: 'feedbackByName',
 } as const;
 
 type ActorIdField = keyof typeof ACTOR_NAME_KEY;
@@ -39,8 +47,18 @@ export type AlertActorNames = Partial<
  * already access-checked for, and only the display name is returned — no email,
  * no tenancy columns. The Audit Trail already shows those same callers the
  * acting user's name/email for the same actions.
+ *
+ * Deliberately NOT exported (#3983). This is an RLS-bypassing name oracle: it
+ * accepts an arbitrary list of user ids and resolves them outside any request
+ * tenancy scope. That's only safe because `withAlertActorNames` below is the
+ * sole caller and every id it passes in already came off an access-checked
+ * alert row. A general-purpose exported "give me names for these ids" helper
+ * invites a future caller (an endpoint that echoes ids from a request body, a
+ * batch/list route resolving ids it never itself authorized) to turn this into
+ * cross-tenant user enumeration. Keep it module-private; route all name
+ * resolution through `withAlertActorNames`.
  */
-export async function resolveUserDisplayNames(
+async function resolveUserDisplayNames(
   userIds: readonly (string | null | undefined)[]
 ): Promise<Map<string, string>> {
   const ids = [

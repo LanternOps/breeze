@@ -4,20 +4,24 @@ import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
+import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
+import RemoveDeviceDialog from './RemoveDeviceDialog';
+import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
+import { useOrgIdFromHash } from './orgHash';
 import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
@@ -31,7 +35,10 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import type { BulkMaintenanceResponse } from '../../services/deviceActions';
+import MaintenanceModeDialog from './MaintenanceModeDialog';
+import { isInMaintenance } from '../../lib/maintenanceResource';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -109,17 +116,27 @@ function summarizeFailedDevices(names: string[]): string {
 // ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+//
+// #5023: `permanent-delete` belongs here for a stronger reason than any of the
+// others. Bulk purge has always made the operator type the device count
+// (BulkPurgeDialog), while the single row/card kebab fired the same
+// irreversible operation on one click — and unlike `decommission` there is no
+// Restore afterwards. The 5s undo toast is not a substitute for a gate: it
+// starts a countdown the operator has to NOTICE to stop.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete']);
 
 // ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
 // caution-triangle), so the grading has to match the detail page rather than
 // drift from it: DeviceActions.tsx marks shutdown and decommission
 // `destructive` and every other confirm `warning`.
-const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete']);
 
-// The command name is snake_case; the locale keys are camelCase.
-const confirmKeyFor = (action: string): string =>
-  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+// The command name is snake_case / kebab-case; the locale keys are camelCase.
+const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
+  reboot_safe_mode: 'rebootSafeMode',
+  'permanent-delete': 'permanentDelete',
+};
+const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
@@ -171,7 +188,17 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
+  // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
+  // (#import-definitions / #import-values) internally, so this only tracks
+  // whether either of those hashes means the wizard is open at all.
+  const [showRmmImport, setShowRmmImport] = useHashState<boolean>(false, (h) =>
+    h === 'import-definitions' || h === 'import-values' ? true : undefined,
+  );
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  // Non-null = MaintenanceModeDialog is open for exactly these devices. Holding
+  // the SET (not just a flag) is what lets the completion handler name the
+  // devices the server reported back on.
+  const [maintenanceDialogDevices, setMaintenanceDialogDevices] = useState<Device[] | null>(null);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
   const [vmHostPickerDevices, setVmHostPickerDevices] = useState<Device[] | null>(null);
@@ -192,6 +219,16 @@ export default function DevicesPage() {
   // on which screen you were on — and the list is the dense, easy-to-mis-click
   // one, with Reboot sitting next to Run Script and Wake.
   const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
+  // #3987: bulk Remove asks the agent question ONCE for the whole selection,
+  // then runBulkRemove runs the per-device DELETE loop with that one answer.
+  const [pendingBulkRemove, setPendingBulkRemove] = useState<Device[] | null>(null);
+  // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
+  // runBulkPurge then starts the async job and polls it.
+  const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
+  const purgePollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped whenever a poll chain is superseded (a new run, or unmount), so a
+  // tick already in flight cannot land its result over a newer run's.
+  const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -211,10 +248,26 @@ export default function DevicesPage() {
   // its server half.
   const [listFilters, setListFilters] = useState<ListFilters>(DEFAULT_LIST_FILTERS);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
+  // #3205 W06: a coverage-notice deep link pins the org in the hash. Adoption is a
+  // LAYOUT effect, and its position above useAdvancedFilterIds is load-bearing:
+  // React runs every layout effect in a commit before any passive effect, and the
+  // filter preview (useAdvancedFilterIds.ts:40) is a passive effect keyed on the
+  // FILTER alone — it never re-runs when the org changes, so a preview that fired
+  // first would be computed against the wrong org and never corrected.
+  // Pinned by DevicesPage.deepLink.test.tsx.
+  useOrgIdFromHash();
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.
-  const { ids: advancedFilterIds, loading: advancedFilterLoading } = useAdvancedFilterIds(advancedFilter);
+  const {
+    ids: advancedFilterIds,
+    loading: advancedFilterLoading,
+    error: advancedFilterError,
+    // #5023: the resolution is keyed on the FILTER, so it never notices that a
+    // mutation changed a filtered attribute. Every post-mutation refresh below
+    // goes through `refreshDevices`, which re-resolves the id set as well.
+    refetch: refetchAdvancedFilterIds,
+  } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -286,10 +339,17 @@ export default function DevicesPage() {
   // set into DeviceList, which combines it with its local quick-filters
   // (search/status/os/etc. stay list-only).
   //
-  // Decommissioned devices are hidden by default (old list behavior). Show them
-  // only when the active filter group explicitly targets the 'decommissioned'
-  // status, so a user filtering FOR decommissioned still sees them.
-  const includeDecommissioned = useMemo(() => {
+  // Decommissioned devices are hidden by default (old list behavior). They
+  // become visible in two ways: the active filter group explicitly targets
+  // the 'decommissioned' status (a user filtering FOR removed devices still
+  // sees them), or the tech clicked "show" on the hidden-removed hint, which
+  // flips the page-level showRemoved flag. The flag ADDS the removed rows to
+  // whatever is on screen — it does not touch the advanced filter (#5023
+  // paper cut: "show" used to swap the view to a removed-only status filter,
+  // dropping every active device the tech was looking at). Transient session
+  // state on purpose: a reload returns to the hidden-by-default view.
+  const [showRemoved, setShowRemoved] = useState(false);
+  const filterTargetsDecommissioned = useMemo(() => {
     const conds = advancedFilter?.conditions ?? [];
     return conds.some(c => {
       if ('conditions' in c) return false; // nested groups: ignore (rare)
@@ -299,30 +359,14 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
+  const includeDecommissioned = showRemoved || filterTargetsDecommissioned;
 
-  // "Show" action for the hidden-decommissioned hint (#2251): applies the
-  // Decommissioned status filter — the same unhide mechanism the toolbar's
-  // status picker uses — replacing any other status equals/in value. Same
-  // single-select-per-field semantics as DeviceFilterToolbar's addCondition
-  // (independent implementation; chip order may differ — the replacement is
-  // appended rather than placed in the replaced condition's slot). Other
-  // filter conditions are preserved. If the current group is an OR sentence
-  // built in the Advanced drawer, nest it instead of rewriting it so its
-  // meaning is kept and the status condition stays top-level (where the
-  // includeDecommissioned memo looks); the AND intersection can be empty if
-  // the OR sentence itself constrains status — the rows still unhide, but
-  // zero of them may match.
-  const handleShowDecommissioned = useCallback(() => {
-    setAdvancedFilter(prev => {
-      const statusCond: FilterCondition = { field: 'status', operator: 'equals', value: 'decommissioned' };
-      if (!prev) return { operator: 'AND', conditions: [statusCond] };
-      if (prev.operator === 'OR') return { operator: 'AND', conditions: [prev, statusCond] };
-      const rest = prev.conditions.filter(
-        c => 'conditions' in c || c.field !== 'status' || (c.operator !== 'equals' && c.operator !== 'in')
-      );
-      return { operator: 'AND', conditions: [...rest, statusCond] };
-    });
-  }, []);
+  const handleShowDecommissioned = useCallback(() => setShowRemoved(true), []);
+  const handleHideDecommissioned = useCallback(() => setShowRemoved(false), []);
+  // "hide" is only meaningful while the flag (not an explicit status filter)
+  // is what unhid the rows; otherwise clicking it would visibly do nothing.
+  const onHideDecommissioned =
+    showRemoved && !filterTargetsDecommissioned ? handleHideDecommissioned : undefined;
 
   // The fleet as the active filters (advanced filter, search, decommissioned
   // rule) leave it — the SAME predicate DeviceList applies, so the segment
@@ -366,23 +410,38 @@ export default function DevicesPage() {
         .join(', '),
     [hiddenNetwork.fields]
   );
+  // Rows the filters admit, before the hidden-by-default decommissioned rule —
+  // the removed-hint counts come from this set so they only promise rows
+  // "show" can actually reveal (#2251/#5023). Same shared predicate as the
+  // table, with the decommissioned rule lifted.
+  const gridMatchingDevices = useMemo(
+    () =>
+      classFilteredDevices.filter(d =>
+        matchesMergedListFilters(d, { ...listFilterContext, includeDecommissioned: true })
+      ),
+    [classFilteredDevices, listFilterContext]
+  );
   // Grid view: same filtered rows as the table (search included) in the same
   // default order, instead of the raw fetch concatenation.
   const gridDevices = useMemo(
-    () => sortByDisplayName(filterDevicesByClass(fleetFilteredDevices, deviceClassFilter)),
-    [fleetFilteredDevices, deviceClassFilter]
-  );
-  // How many decommissioned devices the default view is hiding (#2251) — drives
-  // the grid view's hint line (the list view computes its own from the same
-  // classFilteredDevices set, so the two stay in lockstep). The page fetches
-  // with includeDecommissioned: true, so this is a cheap client-side count.
-  const hiddenDecommissionedCount = useMemo(
     () =>
-      includeDecommissioned
-        ? 0
-        : classFilteredDevices.filter(d => d.status === 'decommissioned').length,
-    [classFilteredDevices, includeDecommissioned]
+      sortByDisplayName(
+        includeDecommissioned
+          ? gridMatchingDevices
+          : gridMatchingDevices.filter(d => d.status !== 'decommissioned')
+      ),
+    [gridMatchingDevices, includeDecommissioned]
   );
+  // How many decommissioned devices the grid is hiding / showing (#2251) —
+  // drives the grid view's hint line (the list view computes its own from the
+  // same inputs, so the two stay in lockstep). The page fetches with
+  // includeDecommissioned: true, so this is a cheap client-side count.
+  const decommissionedCount = useMemo(
+    () => gridMatchingDevices.filter(d => d.status === 'decommissioned').length,
+    [gridMatchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  const shownDecommissionedCount = includeDecommissioned ? decommissionedCount : 0;
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -485,6 +544,11 @@ export default function DevicesPage() {
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
+          // RMM-QA-176: the manual maintenance lease end. This transform is an
+          // explicit whitelist, so omitting it would silently make every
+          // leased device look "not in maintenance" to isInMaintenance while
+          // every other test stayed green.
+          maintenanceUntil: typeof d.maintenanceUntil === 'string' ? d.maintenanceUntil : null,
           // Collision enrollment (#2764). A non-null uuid means this row may be
           // replacing an earlier device with the same hostname; the list shows
           // a "Possible duplicate" badge and the device page a review banner.
@@ -636,6 +700,28 @@ export default function DevicesPage() {
     }
   }, [t]);
 
+  /**
+   * The post-change refresh — use this, not `fetchDevices`, anywhere something
+   * has just altered the fleet (#5023).
+   *
+   * An advanced filter is resolved SERVER-side into an id set
+   * (`serverFilterIds`), and that resolution is keyed on the filter alone, so
+   * refreshing the device rows on their own leaves the id set describing the
+   * fleet as it was BEFORE the mutation. Restoring a device inside a "Status is
+   * Removed" filter is the reported case: the row came back with a stale count
+   * and only a full page reload cleared it. The same staleness applies to every
+   * mutation that touches a filtered attribute, which is why the pairing lives
+   * here once rather than at each call site.
+   *
+   * The mount effect below deliberately keeps calling `fetchDevices` directly:
+   * the hook resolves the filter itself on mount, so going through here would
+   * just fire a second, redundant /filters/preview.
+   */
+  const refreshDevices = useCallback(async () => {
+    await fetchDevices();
+    refetchAdvancedFilterIds();
+  }, [fetchDevices, refetchAdvancedFilterIds]);
+
   useEffect(() => {
     // Org context not usable for scoping yet (#4147). A request now would go
     // out unscoped: `loading` is the sub-second window before the shell's
@@ -652,8 +738,8 @@ export default function DevicesPage() {
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
     setAutoSelectGroupId(newGroupId);
-    await fetchDevices();
-  }, [fetchDevices]);
+    await refreshDevices();
+  }, [refreshDevices]);
 
   const handleAutoSelectConsumed = useCallback(() => {
     setAutoSelectGroupId(null);
@@ -694,15 +780,30 @@ export default function DevicesPage() {
       // fleet-wide list on screen. Nothing is lost by skipping: the mount
       // effect fetches as soon as the scope resolves.
       if (orgScopeResolving || orgContextFailed) return;
-      fetchDevices();
+      // An enrol/decommission changes `status`, which is a filterable
+      // attribute — refresh the resolved id set with the rows (#5023).
+      void refreshDevices();
     }
-  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
+  }, [refreshDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
   }, [subscribe]);
+
+  // A failed advanced-filter preview (403 on a pinned orgId the caller can't
+  // access, 500, network error) must never render as a silently unfiltered
+  // list (#4732) — useAdvancedFilterIds already fails CLOSED (empty id set),
+  // so both the list and grid view already render zero rows; this toast is
+  // what tells the user WHY, since the grid view has no DeviceList toolbar to
+  // show the inline pill. Effect fires only on the false→true transition (the
+  // hook doesn't flip error back to true while the failing filter is
+  // unchanged), so this can't spam repeat toasts on unrelated re-renders.
+  useEffect(() => {
+    if (!advancedFilterError) return;
+    showToast({ type: 'error', message: t('devicesPage.toasts.advancedFilterFailed') });
+  }, [advancedFilterError, t]);
 
   // Mirror the chip-bar filter into the URL hash so the view is shareable.
   // Only active under v2; the legacy bar doesn't expect hash interop.
@@ -751,11 +852,25 @@ export default function DevicesPage() {
       const { script, runAs, parameters, devices } = pending;
       const deviceIds = devices.map(d => d.id);
       const result = await executeScript(script.id, deviceIds, parameters, runAs);
+      const admitted = result.targets.filter(target => target.admission === 'admitted');
+      const refused = result.targets.filter(target => target.admission !== 'admitted');
 
-      if (devices.length === 1) {
+      if (admitted.length === 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({ type: 'error', message: `${t('devicesPage.toasts.scriptQueueFailed')}: ${reasons}` });
+        return;
+      }
+
+      if (refused.length > 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({
+          type: 'warning',
+          message: `${admitted.length} of ${result.targets.length} script targets queued; ${refused.length} not admitted (${reasons})`,
+        });
+      } else if (devices.length === 1) {
         showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedOne', { script: script.name, hostname: devices[0].hostname }) });
       } else {
-        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: result.devicesTargeted }) });
+        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: admitted.length }) });
       }
 
       closeScriptPicker();
@@ -790,7 +905,14 @@ export default function DevicesPage() {
     await runDeviceAction(action, device);
   };
 
-  const runDeviceAction = async (action: string, device: Device) => {
+  const runDeviceAction = async (
+    action: string,
+    device: Device,
+    // #3987: the Remove dialog's agent answer. Absent for every other
+    // action, and absent means UNINSTALL — the web default, deliberately
+    // stricter than the API's back-compat `false`.
+    opts?: { uninstallAgent?: boolean },
+  ) => {
     if (actionInProgress) return;
 
     try {
@@ -838,7 +960,7 @@ export default function DevicesPage() {
               .then(async (outcome) => {
                 if (outcome === 'online') {
                   showToast({ type: 'success', message: t('devicesPage.toasts.deviceOnline', { hostname }) });
-                  await fetchDevices();
+                  await refreshDevices();
                 } else if (outcome === 'timeout') {
                   showToast({
                     type: 'error',
@@ -871,15 +993,21 @@ export default function DevicesPage() {
         }
 
         case 'maintenance':
-          const isCurrentlyMaintenance = device.status === 'maintenance';
-          await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
+          // RMM-QA-176 D10: exit is a one-click, un-gated operation; ENTRY
+          // needs a reason, a duration and possibly a step-up factor, so it
+          // opens MaintenanceModeDialog instead of firing a request here.
+          if (!isInMaintenance(device)) {
+            setMaintenanceDialogDevices([device]);
+            break;
+          }
+          await exitMaintenanceMode(device.id);
           showToast({
             type: 'success',
-            message: isCurrentlyMaintenance
-              ? t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname })
-              : t('devicesPage.toasts.maintenanceOn', { hostname: device.hostname }),
+            message: t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname }),
           });
-          await fetchDevices();
+          // Refetch rather than assume: exit returns the device to its REAL
+          // liveness state, never a blind 'online'.
+          await refreshDevices();
           break;
 
         case 'deploy-software':
@@ -918,9 +1046,9 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({ type: 'success', message: t('devicesPage.toasts.decommissioned', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.decommissionFailed', { hostname: device.hostname }) });
             }
@@ -931,7 +1059,7 @@ export default function DevicesPage() {
         case 'restore':
           await restoreDevice(device.id);
           showToast({ type: 'success', message: t('devicesPage.toasts.restored', { hostname: device.hostname }) });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'permanent-delete': {
@@ -950,8 +1078,10 @@ export default function DevicesPage() {
             if (pdCancelled) return;
             try {
               await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
               showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
             }
@@ -983,12 +1113,65 @@ export default function DevicesPage() {
         message: `Linked ${targets.length - 1} guest VM${targets.length - 1 === 1 ? '' : 's'} under ${host?.displayName || host?.hostname || 'the host server'}.`,
       });
       setVmHostPickerDevices(null);
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to link devices' });
     } finally {
       setActionInProgress(false);
     }
+  };
+
+  /**
+   * Report the outcome of a maintenance ENTRY (RMM-QA-176 D2/D10).
+   *
+   * `POST /devices/bulk/maintenance` answers **200 even when every device
+   * failed preflight** (not found / site denied / decommissioned / state
+   * conflict) — an empty eligible set is a legitimate 200 with an all-`failed`
+   * body and the grant left unspent. So `succeeded`/`failed`, never the HTTP
+   * status, decides whether this was a success: reporting the resolved promise
+   * as success would tell the technician N devices are suppressed when none
+   * are, and they would find out from the alert storm.
+   */
+  const reportMaintenanceEntryOutcome = (targets: Device[], result: unknown) => {
+    const hostnameFor = (deviceId: string) =>
+      targets.find(d => d.id === deviceId)?.hostname || deviceId;
+    const bulk = result as Partial<BulkMaintenanceResponse> | null;
+    if (bulk && Array.isArray(bulk.succeeded) && Array.isArray(bulk.failed)) {
+      const verb = t('devicesPage.maintenanceVerb.on');
+      const failedNames = bulk.failed.map(f => hostnameFor(f.deviceId));
+      if (failedNames.length === 0) {
+        showToast({
+          type: 'success',
+          message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: bulk.succeeded.length, verb }),
+        });
+      } else if (bulk.succeeded.length === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceAllFailed', {
+            count: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', {
+            succeeded: bulk.succeeded.length,
+            verb,
+            failed: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      }
+      return;
+    }
+    // Single device: every failure arrived as a REJECTED promise inside the
+    // dialog (the single route uses status codes, not a failed[] list), so
+    // reaching here means that one device entered maintenance.
+    showToast({
+      type: 'success',
+      message: t('devicesPage.toasts.maintenanceOn', { hostname: targets[0]?.hostname ?? '' }),
+    });
   };
 
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
@@ -1137,7 +1320,7 @@ export default function DevicesPage() {
             type: 'success',
             message: t('devicesPage.toasts.multibootLinked', { count: deviceCount }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1175,12 +1358,20 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'maintenance-on':
+        // RMM-QA-176 D2/D10: the two halves are no longer symmetric, so they
+        // no longer share a case. ENTRY is ONE server-side call under ONE
+        // step-up grant (POST /devices/bulk/maintenance) — the old N-single-
+        // calls loop would demand N grants and 403 on every one of them, and
+        // it had no way to collect the now-required reason. EXIT is un-gated
+        // and stays a loop, because there is no bulk exit route (ending
+        // suppression needs no batching).
+        case 'maintenance-on': {
+          setMaintenanceDialogDevices(selectedDevices);
+          break;
+        }
+
         case 'maintenance-off': {
-          const enabling = action === 'maintenance-on';
-          const mLabel = enabling
-            ? t('devicesPage.progress.enablingMaintenance')
-            : t('devicesPage.progress.disablingMaintenance');
+          const mLabel = t('devicesPage.progress.disablingMaintenance');
           setBulkProgress({ current: 0, total: deviceCount, label: mLabel });
           let mDone = 0;
           const mFailed: string[] = [];
@@ -1189,7 +1380,7 @@ export default function DevicesPage() {
           // failures and report them in a single summary toast (#1322).
           for (const device of selectedDevices) {
             try {
-              await toggleMaintenanceMode(device.id, enabling);
+              await exitMaintenanceMode(device.id);
             } catch {
               mFailed.push(device.hostname || device.id);
             }
@@ -1198,7 +1389,7 @@ export default function DevicesPage() {
           }
           setBulkProgress(null);
           const mSucceeded = deviceCount - mFailed.length;
-          const mVerb = enabling ? t('devicesPage.maintenanceVerb.on') : t('devicesPage.maintenanceVerb.off');
+          const mVerb = t('devicesPage.maintenanceVerb.off');
           if (mFailed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: mSucceeded, verb: mVerb }) });
           } else if (mSucceeded === 0) {
@@ -1206,36 +1397,51 @@ export default function DevicesPage() {
           } else {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
         case 'decommission': {
-          const result = await bulkDecommissionDevices(
-            selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
-          );
+          // Ask the agent question once for the whole selection (#3987). The
+          // actual DELETE loop runs in runBulkRemove once the dialog confirms.
+          // `return` inside `try` still runs the `finally` that clears
+          // actionInProgress, so the dialog's own Confirm is not dead on arrival.
+          setPendingBulkRemove(selectedDevices);
+          return;
+        }
+
+        case 'restore': {
+          // #2787. Synchronous: the API returns the final per-device outcome,
+          // so there is nothing to poll. Emitted by the bulk bar ONLY for an
+          // all-removed selection (REMOVED_ONLY_BULK_ACTIONS).
+          const result = await bulkRestoreDevices(deviceIds);
+          const dispatched = result.succeeded.filter(r => r.uninstallAlreadyDispatched).length;
           if (result.failed.length === 0) {
-            showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
-          } else if (result.succeeded === 0) {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
-                count: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
+            showToast({ type: 'success', message: t('devicesPage.toasts.bulkRestored', { count: result.succeeded.length }) });
+          } else if (result.succeeded.length === 0) {
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }) });
           } else {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionFailed', {
-                succeeded: result.succeeded,
-                failed: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }) });
           }
-          await fetchDevices();
+          // A SEPARATE toast, deliberately: the device row came back, but those
+          // machines had already been handed the uninstall and may be gone.
+          // Folding it into the success line would let it read as "all fine".
+          if (dispatched > 0) {
+            showToast({ type: 'warning', message: t('devicesPage.toasts.bulkRestoreUninstallAlreadySent', { count: dispatched }) });
+          }
+          await refreshDevices();
           break;
+        }
+
+        case 'permanent-delete': {
+          // Confirm first — this is the only irreversible bulk action, and the
+          // dialog makes the operator type the count. runBulkPurge starts the
+          // job. Prune to rows still present in the current fetch: the
+          // selection persists across filter changes, so a stale id would be
+          // rejected by the API and counted against the typed total.
+          const present = new Set(devices.map(d => d.id));
+          setPendingBulkPurge(selectedDevices.filter(d => present.has(d.id)));
+          return;
         }
 
         case 'wake': {
@@ -1274,6 +1480,159 @@ export default function DevicesPage() {
       }
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action }) });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // #2787: the second half of bulk Delete permanently.
+  //
+  // The API returns 202 the moment the job is queued, so the only way the
+  // operator learns the outcome is this poll. It is deliberately shaped like
+  // MergeOrgModal's: a token ref invalidates a superseded chain so a tick
+  // already in flight cannot land its result over a newer run's (or after
+  // unmount), and every terminal state stops the chain explicitly rather than
+  // relying on the next tick not being scheduled.
+  // -------------------------------------------------------------------------
+  const stopPurgePolling = useCallback(() => {
+    if (purgePollTimeoutRef.current !== null) {
+      clearTimeout(purgePollTimeoutRef.current);
+      purgePollTimeoutRef.current = null;
+    }
+    purgePollTokenRef.current += 1;
+  }, []);
+
+  useEffect(() => stopPurgePolling, [stopPurgePolling]);
+
+  const pollPurgeRun = useCallback(
+    async (jobId: string, token: number) => {
+      const scheduleNextTick = () => {
+        if (purgePollTokenRef.current !== token) return; // superseded meanwhile
+        purgePollTimeoutRef.current = setTimeout(
+          () => void pollPurgeRun(jobId, token),
+          PURGE_POLL_INTERVAL_MS,
+        );
+      };
+
+      let run: Awaited<ReturnType<typeof fetchPurgeRun>>;
+      try {
+        run = await fetchPurgeRun(jobId);
+      } catch {
+        // A transient blip is not a failed purge — the job is running in the
+        // worker either way. Retry on the next tick.
+        scheduleNextTick();
+        return;
+      }
+      if (purgePollTokenRef.current !== token) return; // stale — drop silently
+
+      if (run.state === 'completed') {
+        stopPurgePolling();
+        const purged = run.result?.purged.length ?? 0;
+        const skipped = run.result?.skipped ?? [];
+        if (skipped.length === 0) {
+          showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeDone', { count: purged }) });
+        } else {
+          // Group by refusal code: a 50-device run with 40 UNINSTALL_PENDING
+          // must not become 40 toasts, and a bare count would hide WHY.
+          const byCode: Record<string, number> = {};
+          for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
+          const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+          showToast({
+            type: 'warning',
+            message: purged === 0
+              ? t('devicesPage.toasts.bulkPurgeNoneDeleted', { reasons })
+              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
+          });
+        }
+        await refreshDevices();
+        return;
+      }
+
+      if (run.state === 'failed') {
+        stopPurgePolling();
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkPurgeFailed', {
+            reason: run.failedReason ?? t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+          }),
+        });
+        // The job may have deleted some devices before failing, so the list is
+        // stale either way.
+        await refreshDevices();
+        return;
+      }
+
+      scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
+    },
+    [refreshDevices, stopPurgePolling, t],
+  );
+
+  const runBulkPurge = async (targets: Device[]) => {
+    if (targets.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const started = await startBulkPurge(targets.map(d => d.id));
+      showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeStarted', { count: started.accepted }) });
+      if (started.rejected.length > 0) {
+        // A partial rejection is NOT an error — the accepted devices are being
+        // deleted. Say which ones were left out and why, or they silently
+        // survive a delete the operator believes they ordered.
+        const byCode: Record<string, number> = {};
+        for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
+        const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged: started.accepted, skipped: started.rejected.length, reasons }) });
+      }
+      stopPurgePolling(); // drop anything from a previous run
+      const token = purgePollTokenRef.current;
+      purgePollTimeoutRef.current = setTimeout(
+        () => void pollPurgeRun(started.jobId, token),
+        PURGE_POLL_INTERVAL_MS,
+      );
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+      });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // #3987: the second half of bulk Remove. runBulkAction's `decommission` case
+  // only opens RemoveDeviceDialog; this runs once the operator has answered the
+  // agent question, with the SAME answer applied to every device in the batch.
+  const runBulkRemove = async (selectedDevices: Device[], choice: { uninstallAgent: boolean }) => {
+    if (selectedDevices.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const result = await bulkDecommissionDevices(
+        selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
+        choice,
+      );
+      if (result.failed.length === 0) {
+        showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
+      } else if (result.succeeded === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
+            count: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionFailed', {
+            succeeded: result.succeeded,
+            failed: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      }
+      await refreshDevices();
+    } catch (err) {
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'decommission' }) });
     } finally {
       setActionInProgress(false);
     }
@@ -1347,7 +1706,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={() => void fetchDevices()}
+            onClick={() => void refreshDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             {t('devicesPage.tryAgain')}
@@ -1391,6 +1750,17 @@ export default function DevicesPage() {
               <Grid className="h-4 w-4" />
             </button>
           </div>
+          <button
+            type="button"
+            data-testid="devices-page-import-rmm"
+            onClick={() => {
+              window.location.hash = 'import-definitions';
+              setShowRmmImport(true);
+            }}
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            {t('devicesPage.importFromRmm')}
+          </button>
           <button
             type="button"
             onClick={() => setShowAddDevice(true)}
@@ -1488,8 +1858,10 @@ export default function DevicesPage() {
           serverFilterIds={advancedFilterIds}
           advancedFilter={advancedFilter}
           serverFilterLoading={advancedFilterLoading}
+          serverFilterError={advancedFilterError}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}
+          onHideDecommissioned={onHideDecommissioned}
           listFilters={listFilters}
           onListFiltersChange={setListFilters}
           onCreateGroup={() => setShowCreateGroup(true)}
@@ -1499,11 +1871,37 @@ export default function DevicesPage() {
         />
       ) : (
         <div className="space-y-3">
+          {/* Grid view has no filter toolbar to host DeviceList's inline
+              pill, and the toast fired above is transient (auto-dismisses)
+              and one-shot (only fires on the false→true transition) — a user
+              who missed it, or who switched into grid view after the error
+              already landed, would otherwise see an unexplained empty grid.
+              This persistent banner is grid view's equivalent of DeviceList's
+              `device-filter-error` pill (#4732). */}
+          {advancedFilterError && (
+            <div
+              className="flex items-center gap-2 rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive w-fit"
+              data-testid="device-filter-error-grid"
+              role="alert"
+            >
+              <AlertCircle className="h-3.5 w-3.5" />
+              {t('devicesPage.toasts.advancedFilterFailed')}
+            </div>
+          )}
           {hiddenDecommissionedCount > 0 && (
             <p>
               <DecommissionedHiddenHint
                 count={hiddenDecommissionedCount}
                 onShow={handleShowDecommissioned}
+              />
+            </p>
+          )}
+          {onHideDecommissioned && shownDecommissionedCount > 0 && (
+            <p>
+              <DecommissionedHiddenHint
+                mode="shown"
+                count={shownDecommissionedCount}
+                onHide={onHideDecommissioned}
               />
             </p>
           )}
@@ -1522,6 +1920,16 @@ export default function DevicesPage() {
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
 
+      {showRmmImport && (
+        <RmmCustomFieldImport
+          organizationId={orgScope.status === 'resolved' && orgScope.scope !== 'all' ? orgScope.orgId : null}
+          onClose={() => {
+            window.location.hash = '';
+            setShowRmmImport(false);
+          }}
+        />
+      )}
+
       <CreateGroupModal
         isOpen={showCreateGroup}
         onClose={() => setShowCreateGroup(false)}
@@ -1535,6 +1943,18 @@ export default function DevicesPage() {
           busy={actionInProgress}
           onConfirm={hostId => void handleVmHostConfirm(hostId)}
           onClose={() => setVmHostPickerDevices(null)}
+        />
+      )}
+
+      {maintenanceDialogDevices && (
+        <MaintenanceModeDialog
+          open={true}
+          devices={maintenanceDialogDevices.map(d => ({ id: d.id, hostname: d.hostname }))}
+          onClose={() => setMaintenanceDialogDevices(null)}
+          onCompleted={result => {
+            reportMaintenanceEntryOutcome(maintenanceDialogDevices, result);
+            void fetchDevices();
+          }}
         />
       )}
 
@@ -1618,7 +2038,28 @@ export default function DevicesPage() {
           deviceActions.confirm.* copy so the two screens read identically and
           no new locale keys are needed. Double-click safety is the shared
           components' job (#3705) — see the decommissioned-skip dialog above. */}
-      {pendingDeviceAction && (
+      {/* #3987: Remove owns its own dialog — it is the one confirm that has a
+          question to ask (uninstall the agent, or leave it?), not just a
+          yes/no. Every other gated action keeps the generic ConfirmDialog
+          below with the shared deviceActions.confirm.* copy. */}
+      {pendingDeviceAction && pendingDeviceAction.action === 'decommission' && (
+        <RemoveDeviceDialog
+          open
+          targets={[{
+            hostname: pendingDeviceAction.device.hostname,
+            status: pendingDeviceAction.device.status,
+          }]}
+          onClose={() => setPendingDeviceAction(null)}
+          onConfirm={(choice) => {
+            const p = pendingDeviceAction;
+            setPendingDeviceAction(null);
+            void runDeviceAction(p.action, p.device, choice);
+          }}
+          confirmTestId="confirm-device-action"
+        />
+      )}
+
+      {pendingDeviceAction && pendingDeviceAction.action !== 'decommission' && (
         <ConfirmDialog
           open={true}
           onClose={() => setPendingDeviceAction(null)}
@@ -1627,7 +2068,14 @@ export default function DevicesPage() {
             setPendingDeviceAction(null);
             void runDeviceAction(p.action, p.device);
           }}
-          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`)}
+          // The hostname is interpolated into the TITLE as well as the message
+          // (#5023): permanentDelete names the device up front — "Delete
+          // {{hostname}} permanently?" — because that is the last thing the
+          // operator reads before an irreversible delete. A no-op for the
+          // existing keys, whose titles carry no placeholder.
+          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`, {
+            hostname: pendingDeviceAction.device.hostname,
+          })}
           message={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.message`, {
             hostname: pendingDeviceAction.device.hostname,
           })}
@@ -1637,12 +2085,41 @@ export default function DevicesPage() {
         />
       )}
 
+      {pendingBulkRemove && (
+        <RemoveDeviceDialog
+          open
+          targets={pendingBulkRemove.map(d => ({ hostname: d.hostname, status: d.status }))}
+          onClose={() => setPendingBulkRemove(null)}
+          onConfirm={(choice) => {
+            const devicesToRemove = pendingBulkRemove;
+            setPendingBulkRemove(null);
+            void runBulkRemove(devicesToRemove, choice);
+          }}
+          isLoading={actionInProgress}
+          confirmTestId="confirm-bulk-remove"
+        />
+      )}
+
+      {pendingBulkPurge && (
+        <BulkPurgeDialog
+          open
+          targets={pendingBulkPurge.map(d => ({ hostname: d.hostname, orgId: d.orgId }))}
+          onClose={() => setPendingBulkPurge(null)}
+          onConfirm={() => {
+            const devicesToPurge = pendingBulkPurge;
+            setPendingBulkPurge(null);
+            void runBulkPurge(devicesToPurge);
+          }}
+          isLoading={actionInProgress}
+        />
+      )}
+
       {settingsDevice && (
         <DeviceSettingsModal
           device={settingsDevice}
           isOpen={!!settingsDevice}
           onClose={() => setSettingsDevice(null)}
-          onSaved={fetchDevices}
+          onSaved={refreshDevices}
           onAction={handleDeviceAction}
         />
       )}

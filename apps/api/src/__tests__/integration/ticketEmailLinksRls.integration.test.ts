@@ -16,14 +16,21 @@
  *      `.cause`, matched against 42501 per the task brief).
  *   2. a link legitimately inserted for org A's own ticket succeeds, and is
  *      invisible to an org-B SELECT.
+ *   3. (#4643) moveTicketOrg re-stamps org_id on a link row (ticket-move axis).
+ *   4. (#4643) the device move-org rewrite moves a link row via the tickets
+ *      join (device-move axis) — same shape as ticketAttachmentsRls's
+ *      equivalent pair, proving Postgres executes the statement and RLS
+ *      admits the write under a system context, not just that the mocked
+ *      unit suites assert the right statement SHAPE.
  */
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { ticketEmailLinks, tickets, organizations, partners } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { ticketEmailLinks, tickets, organizations, partners, devices, sites, users } from '../../db/schema';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { moveTicketOrg } from '../../services/ticketService';
 
 const seededPartnerIds: string[] = [];
 const seededOrgIds: string[] = [];
@@ -109,10 +116,18 @@ afterAll(async () => {
   const orgList = sql.join(seededOrgIds.map((id) => sql`${id}`), sql`, `);
   const partnerList = sql.join(seededPartnerIds.map((id) => sql`${id}`), sql`, `);
 
-  // FK order: ticket_email_links (FK ticket_id) -> tickets -> orgs -> partners.
+  // FK order: ticket_email_links (FK ticket_id) -> tickets (FK device_id,
+  // for the org-re-stamp fixture's device-linked ticket) -> devices (FK
+  // site_id) -> sites -> orgs. The org-re-stamp fixture's actor user is
+  // org-nullable MSP staff (orgId: null, partnerId set) so it has no FK into
+  // the orgs above, but it does FK partner_id -> partners, so it must go
+  // before the partner delete below.
   await adminDb.delete(ticketEmailLinks).where(sql`${ticketEmailLinks.orgId} IN (${orgList})`);
   await adminDb.delete(tickets).where(sql`${tickets.orgId} IN (${orgList})`);
+  await adminDb.delete(devices).where(sql`${devices.orgId} IN (${orgList})`);
+  await adminDb.delete(sites).where(sql`${sites.orgId} IN (${orgList})`);
   await adminDb.delete(organizations).where(sql`${organizations.id} IN (${orgList})`);
+  await adminDb.delete(users).where(sql`${users.partnerId} IN (${partnerList})`);
   await adminDb.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
 });
 
@@ -174,5 +189,106 @@ describe('ticket_email_links RLS', () => {
         .where(eq(ticketEmailLinks.messageId, messageId))
     );
     expect(crossOrgRows).toEqual([]);
+  });
+});
+
+/**
+ * Org re-stamp coverage (#4643). moveTicketOrg only allows a SAME-partner
+ * move, so this needs its own two-orgs-one-partner fixture — distinct from
+ * seedTwoOrgsWithTickets() above, which deliberately uses two DIFFERENT
+ * partners to exercise the RLS org boundary. A device is seeded too so the
+ * device-move axis's `WHERE ticket_id IN (SELECT id FROM tickets WHERE
+ * device_id = ...)` join has something to resolve through.
+ */
+async function seedSamePartnerOrgsWithDeviceTicket() {
+  const adminDb = getTestDb() as any;
+  const unique = uniqueSuffix();
+
+  const partner = await createPartner();
+  const orgA = await createOrganization({ partnerId: partner.id });
+  const orgB = await createOrganization({ partnerId: partner.id });
+  const siteA = await createSite({ orgId: orgA.id });
+  const actor = await createUser({ partnerId: partner.id, orgId: null, email: `tel-move-actor-${unique}@example.test` });
+
+  seededPartnerIds.push(partner.id);
+  seededOrgIds.push(orgA.id, orgB.id);
+
+  const [device] = await adminDb
+    .insert(devices)
+    .values({
+      orgId: orgA.id,
+      siteId: siteA.id,
+      agentId: `tel-move-device-${unique}`,
+      hostname: `tel-move-host-${unique}`,
+      osType: 'windows',
+      osVersion: '10.0.19041',
+      architecture: 'x64',
+      agentVersion: '0.1.0',
+    })
+    .returning();
+
+  const [ticketA] = await adminDb
+    .insert(tickets)
+    .values({
+      orgId: orgA.id,
+      partnerId: partner.id,
+      ticketNumber: `TEL-MOVE-${unique}`,
+      subject: 'ticket_email_links org re-stamp test',
+      deviceId: device!.id,
+      source: 'portal',
+    })
+    .returning();
+
+  return { partner, orgA, orgB, device: device!, ticketA: ticketA!, actor };
+}
+
+/** Inserts a link row as the RLS-bypassing test superuser. */
+async function seedLink(opts: { orgId: string; partnerId: string; ticketId: string }): Promise<string> {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb
+    .insert(ticketEmailLinks)
+    .values({
+      ticketId: opts.ticketId,
+      orgId: opts.orgId,
+      partnerId: opts.partnerId,
+      messageId: `<move-${uniqueSuffix()}@example.test>`,
+      origin: 'addin_link',
+      visibility: 'public',
+    })
+    .returning({ id: ticketEmailLinks.id });
+  return row!.id;
+}
+
+describe('ticket_email_links org re-stamp on move (#4643)', () => {
+  it('moveTicketOrg re-stamps org_id on the link row', async () => {
+    const f = await seedSamePartnerOrgsWithDeviceTicket();
+    const link = await seedLink({ orgId: f.orgA.id, partnerId: f.partner.id, ticketId: f.ticketA.id });
+
+    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA.id, f.orgB.id, { userId: f.actor.id }));
+
+    const [row] = (await getTestDb().execute(sql`
+      SELECT org_id FROM ticket_email_links WHERE id = ${link}::uuid
+    `)) as unknown as Array<{ org_id: string }>;
+    expect(row?.org_id).toBe(f.orgB.id);
+  });
+
+  it('the device move-org rewrite moves a link row via the tickets join', async () => {
+    const f = await seedSamePartnerOrgsWithDeviceTicket();
+    const link = await seedLink({ orgId: f.orgA.id, partnerId: f.partner.id, ticketId: f.ticketA.id });
+
+    // The statement routes/devices/moveOrg.ts issues inside its transaction.
+    // The mocked route test asserts its SHAPE; this proves Postgres executes
+    // it and that RLS admits the write under a system context.
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        UPDATE ticket_email_links SET org_id = ${f.orgB.id}::uuid
+         WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${f.device.id}::uuid)
+      `)
+    );
+
+    const [row] = (await getTestDb().execute(sql`
+      SELECT org_id FROM ticket_email_links WHERE id = ${link}::uuid
+    `)) as unknown as Array<{ org_id: string }>;
+    expect(row?.org_id).toBe(f.orgB.id);
   });
 });

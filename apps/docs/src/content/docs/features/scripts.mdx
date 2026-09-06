@@ -112,6 +112,12 @@ Categories and tags travel by name and are created in the importing tenant when 
   Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
 </Aside>
 
+### Duplicating a script
+
+Use **Duplicate** — in the row actions on the Scripts list, or in the script editor toolbar — to start a new script from an existing one. Breeze copies the content, execution settings, parameter definitions, and tags into a new, fully editable script named `<name> (copy)`. Execution history is not copied; the new script starts with a clean record.
+
+This is the way to adapt a script from the system library without waiting for permission to edit the original, and the way to branch a working script for a customer who needs a variation. A partner-wide script duplicates as partner-wide by default; duplicating out of the system library requires you to say which organization the copy belongs to.
+
 ### Version history and rollback
 
 When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
@@ -126,7 +132,9 @@ When you edit a script's content, the version number increments automatically. F
 
 2. **Review script info.** The modal shows the script's language, category, target OS, and description.
 
-3. **Choose the run-as context.** Select **System** (runs as the agent service account) or **Logged-in user** (runs in the active user session).
+3. **Choose the run-as context.** Under **Run as**, select **System** (runs as the agent service account) or **Logged-in user** (runs in the active user session).
+
+   When you run a script from a single device — its **Scripts** tab, or the **Test Run** panel in the script editor — choosing **Logged-in user** on a device whose helper starts on demand also offers a **Target session** list: **Any active session**, or a specific signed-in user by name. Pick a session when a machine has more than one person signed in and it matters which desktop the script touches. Devices with an always-on helper own a single session, so there is nothing to choose and the list does not appear. Automation actions have a **Run as** setting but no session target — an automation fans out across a fleet, where a specific session has no meaning.
 
 4. **Fill in parameters.** If the script defines parameters, fill in the values. Required parameters are marked with an asterisk. Boolean parameters show as checkboxes; select parameters show as dropdowns.
 
@@ -150,6 +158,12 @@ Navigate to **Scripts** and click a script name to open the editor, then click *
 - **Sort columns.** Click column headers (Script, Device, Status, Started, Duration, Exit Code) to sort ascending or descending.
 - **View details.** Click any execution row to open the detail view with full stdout, stderr, exit code, error messages, and timing information.
 - **Paginate.** Results are paginated with 10 per page by default.
+
+### Run again
+
+Open any past execution and click **Run again**. The Run modal reopens with the same device and the same parameter values already filled in, so re-running a fix on a machine that regressed is one click and a confirmation rather than a re-entry exercise. Change anything you like before confirming — nothing is locked.
+
+After the run is dispatched, a single-device re-run takes you to that device's **Scripts** tab with the new execution highlighted, so you can watch it finish in context. A multi-device run leaves you on the execution history.
 
 ---
 
@@ -369,6 +383,10 @@ Every parameter has a **source** that decides where its value comes from. By def
 | **From a device custom field** | A custom field value on the target device. |
 | **From a device property** | A built-in device property, such as hostname or OS type. |
 
+<Aside>
+  This reads a custom field. To have a script **write** one back to the device — no API key required — see [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script).
+</Aside>
+
 ### Using parameters in script content
 
 The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
@@ -519,6 +537,8 @@ Returns the full execution record including `stdout`, `stderr`, `exitCode`, `err
   The agent captures up to 1 MB of stdout and 1 MB of stderr. Output exceeding this limit is truncated. The `truncatedFields` array in the agent result indicates which fields were truncated.
 </Aside>
 
+If the script printed a [custom-field write-back marker](/features/custom-fields/#writing-custom-fields-from-a-script), the response also includes `customFieldResult: { applied: string[], rejected: [{ key, reason }] } | null` — surfaced in the web UI's execution detail panel.
+
 ### Cancelling an execution
 
 Pending, queued, or running executions can be cancelled:
@@ -528,7 +548,11 @@ POST /scripts/executions/:executionId/cancel
 Authorization: Bearer <token>
 ```
 
-The API sets the execution status to `cancelled` and also cancels any pending device commands associated with the execution. On the agent side, the executor terminates the process and kills the entire process group to prevent orphaned child processes.
+The API sets the execution status to `cancelled` and cancels any device commands for that execution that have not yet been delivered.
+
+<Aside type="caution">
+  This stops an execution that has not reached the device yet. It does **not** reach into a device and kill a script that is already running — the process on the endpoint runs to completion or times out, and only the record in Breeze is marked cancelled.
+</Aside>
 
 ---
 

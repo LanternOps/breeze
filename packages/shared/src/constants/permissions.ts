@@ -115,6 +115,12 @@ export const PERMISSION_GRANTS = {
   // Audit
   AUDIT_READ: { resource: 'audit', action: 'read' },
   AUDIT_EXPORT: { resource: 'audit', action: 'export' },
+  // Manage the org's audit-log retention policy (audit_retention_policies —
+  // issue #4633). Distinct from AUDIT_READ: reading the audit trail and
+  // configuring how long it is kept are different levels of trust — lowering
+  // retention shortens the forensic window, so this rides with Org Admin only,
+  // not every audit:read holder.
+  AUDIT_MANAGE: { resource: 'audit', action: 'manage' },
 
   // Reports
   REPORTS_READ: { resource: 'reports', action: 'read' },

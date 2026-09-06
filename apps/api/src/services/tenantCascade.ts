@@ -68,6 +68,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'access_reviews',
   'account_deletion_requests',
   'action_intents',
+  'agent_health_observations',
   'agent_logs',
   'ai_action_plans',
   // ai_agent_circuit_state / ai_agent_fix_watches (Wave 6 PR 2, #3828): sort
@@ -79,6 +80,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // alphabetization (same reasoning as ai_unattended_exposure below).
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
+  // ai_agent_graduation (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, promoted_intent_id/org_id composite SET
+  // NULL) so position relative to ai_agents/action_intents is cosmetic —
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the
+  // actual DELETE, not this list's alphabetization.
+  'ai_agent_graduation',
+  // ai_agent_impact_daily (P2-6, #4193): derived daily rollup. Its ONLY FK
+  // is org_id -> organizations ON DELETE CASCADE, so it has no
+  // child-before-parent constraint of its own and
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the real
+  // DELETE.
+  'ai_agent_impact_daily',
+  // ai_agent_op_evidence (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, run_id/org_id composite SET NULL) — same
+  // position-independence reasoning as ai_agent_graduation above.
+  'ai_agent_op_evidence',
   'ai_agent_runs',
   // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
   // cascade with the org; partner rows have org_id NULL and are untouched by
@@ -94,6 +111,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // orders the actual DELETE, not this list's alphabetization (same
   // reasoning as ai_unattended_exposure above).
   'ai_alert_verdicts',
+  // ai_budget_alert_events (#4388, W01): durable outbox row, FK org_id ON
+  // DELETE CASCADE. No cross-references to ai_budgets, so its position is
+  // pure alphabetization ('_' sorts before letters under localeCompare).
+  'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',
@@ -122,6 +143,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_logs',
   'audit_policy_states',
   'audit_retention_policies',
+  'automation_action_results',
   'automation_policies',
   'automation_resource_bindings',
   'automation_run_device_results',
@@ -163,6 +185,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // prefix-extension trap noted below for custom_field_definitions).
   'contact_external_links',
   'contacts',
+  // localeCompare puts the '_' in 'contract_billing_period_outcomes' ahead of
+  // the 's' in 'contract_billing_periods' — the same prefix-extension trap
+  // documented above for contact_external_links/contacts. Verify with
+  // `node --eval "console.log('contract_billing_period_outcomes'.localeCompare('contract_billing_periods'))"`
+  // (-1) before moving either line.
+  'contract_billing_period_outcomes',
   'contract_billing_periods',
   'contract_documents',
   'contract_lines',
@@ -182,12 +210,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'delegant_m365_connections',
   'deployment_invites',
   'deployments',
+  'device_agent_health_latest',
   'device_boot_metrics',
   'device_change_log',
   'device_config_state',
   'device_connections',
+  // Leaf table (#3257 W05): ON DELETE CASCADE FKs to both devices and
+  // custom_field_definitions, so no children of its own to order against.
+  'device_custom_field_values',
   'device_disks',
   'device_event_logs',
+  'device_external_links',
   'device_filesystem_cleanup_runs',
   'device_filesystem_scan_state',
   'device_filesystem_snapshots',
@@ -215,6 +248,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_reliability',
   'device_reliability_history',
   'device_sessions',
+  'device_software_inventory_state',
   'device_vulnerabilities',
   'device_warranty',
   'devices',
@@ -250,6 +284,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'incidents',
   'installer_bootstrap_tokens',
   'invoice_documents',
+  // Same '_' < 's' prefix-extension trap: invoice_line_devices sorts BEFORE
+  // invoice_lines. It is also the FK child, so children-before-parents and
+  // alphabetical order agree here — but the runtime topological sort
+  // (topologicalCascadeOrder) is what actually orders the DELETEs.
+  'invoice_line_devices',
   'invoice_lines',
   'invoice_payments',
   'invoice_stripe_payments',
@@ -293,6 +332,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
+  // partner_enrollment_key_idempotency (2026-08-09, partner-api-enrollment-keys):
+  // Idempotency claim store for Partner API enrollment-key minting. org_id is a
+  // direct FK to organizations (ON DELETE CASCADE already clears rows on org
+  // delete; listed here anyway per the cascade contract test's requirement that
+  // every org_id-columned public table be enumerated for auditability).
+  'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
   'patch_compliance_snapshots',
   'patch_jobs',
@@ -329,6 +374,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'recovery_tokens',
   'remediation_suggestions',
   'remote_sessions',
+  'report_schedule_recipients',
   'reports',
   'restore_jobs',
   'roles',
@@ -368,6 +414,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'software_catalog',
   'software_deployments',
   'software_inventory',
+  'software_inventory_observations',
   'software_policies',
   'software_policy_audit',
   'software_remediation_requests',
@@ -434,6 +481,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // position anyway). localeCompare sorts this BEFORE 'ticket_parts'
   // ('o' < 'p').
   'ticket_outbox',
+  'offline_transition_effects',
   'ticket_parts',
   'tickets',
   'time_entries',
@@ -467,9 +515,14 @@ export function getOrgCascadeDeleteOrder(): readonly string[] {
 export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
 
 /**
- * Tables that hold FK references INTO the cascade set but are themselves
- * system-scoped (no org_id) — they need targeted pre-clearing so cascade
- * deletes don't violate FK constraints.
+ * Tables outside the org-cascade set that must still be cleared for one org,
+ * either because they hold FK references INTO the set (most entries — without
+ * a pre-clear the cascade's DELETEs violate an FK) or because they carry the
+ * org's identity in a POLYMORPHIC column the cascade can never discover
+ * (`accounting_entity_mappings`, below). Both shapes are invisible to
+ * `information_schema.columns WHERE column_name = 'org_id'`, which is what the
+ * cascade contract test enumerates — so neither is caught by CI, and both are
+ * GDPR erasure gaps if omitted.
  *
  * `device_commands.device_id → devices.id`: agent WS path; system-scoped
  * by design. We clear by joining through devices.
@@ -593,6 +646,45 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
     clearSql: (orgId) => sql`
       DELETE FROM report_runs
       WHERE report_id IN (SELECT id FROM reports WHERE org_id = ${orgId})
+    `,
+  },
+  // accounting_entity_mappings (QuickBooks Phase B): the ONE entry here that is
+  // not about an FK. Its tenancy axis is `partner_id`, and the Breeze side of a
+  // mapping is a POLYMORPHIC (breeze_entity_type, breeze_entity_id) pair with
+  // no FK and no org_id column — so the table is correctly absent from
+  // CORE_ORG_CASCADE_DELETE_ORDER, no FK breaks without this, and nothing in CI
+  // could ever have flagged it. What it strands is exactly what erasure exists
+  // to remove: the erased org's UUID paired with the QuickBooks Customer id it
+  // was billed under, retained indefinitely under the partner.
+  //
+  // It also poisons the live integration. `listMappingProposals` builds
+  // `claimedRemoteIds` from every mapping row for the connection, so an orphan
+  // row keeps a real QuickBooks Customer permanently filtered out of the
+  // candidate pool for every surviving org, and a manual confirm of that
+  // customer 409s forever on `accounting_entity_mappings_remote_uniq` — with
+  // no UI anywhere that can show or clear the offending row, because its org
+  // no longer exists.
+  //
+  // Only the 'org' rows are keyed by an organization id; 'catalog_item' rows
+  // are partner-scoped and must survive. Phase C added 'invoice'/'payment'
+  // rows, which are keyed by an invoice/invoice_payments row that DOES carry
+  // org_id — but since accounting_entity_mappings itself has no org_id column
+  // (and no FK), reaching them still needs an explicit join through those
+  // tables, done here BEFORE the main cascade loop (this whole
+  // ASSOCIATED_SYSTEM_SCOPED_TABLES pass runs in step 1b of cascadeDeleteOrg,
+  // ahead of the CORE_ORG_CASCADE_DELETE_ORDER walk that deletes
+  // invoices/invoice_payments themselves) so the subqueries below still see
+  // the rows they need to join through.
+  {
+    table: 'accounting_entity_mappings',
+    clearSql: (orgId) => sql`
+      DELETE FROM accounting_entity_mappings m
+      WHERE (m.breeze_entity_type = 'org' AND m.breeze_entity_id = ${orgId}::uuid)
+         OR (m.breeze_entity_type = 'invoice' AND m.breeze_entity_id IN (
+               SELECT id FROM invoices WHERE org_id = ${orgId}::uuid))
+         OR (m.breeze_entity_type = 'payment' AND m.breeze_entity_id IN (
+               SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
+                WHERE i.org_id = ${orgId}::uuid))
     `,
   },
 ];
@@ -851,11 +943,18 @@ export async function cascadeDeleteOrg(
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
     } catch (err) {
-      // A single table failure aborts the cascade — partial deletion is
-      // worse than no deletion (the org sits in an inconsistent state).
-      // Best-effort forensic record of how far the erasure got (#2195 —
-      // mirrors the partner purge's purge_failed breadcrumb), then re-throw
-      // with context.
+      // A single table failure aborts the WALK. It does NOT roll the erasure
+      // back: each table above deletes inside its own
+      // `withSystemDbAccessContext` transaction, so every table already
+      // processed is committed by the time a later one raises. The contract is
+      // therefore fail-fast + partial + re-runnable, not atomic — which is why
+      // the forensic breadcrumb below matters (it is the only record of how far
+      // the erasure got) and why the walk is idempotent (a re-run after the
+      // fault is cleared finishes the job; already-erased tables match zero
+      // rows). Pinned end-to-end by the "failure semantics" describe in
+      // `__tests__/integration/tenantCascadeErasureBreadth.integration.test.ts`
+      // (#3880). Best-effort forensic record (#2195 — mirrors the partner
+      // purge's purge_failed breadcrumb), then re-throw with context.
       await writeErasureFailedAudit(orgId, performedBy, performedByEmail, table, stats, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for org=${orgId}: ${

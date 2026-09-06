@@ -85,6 +85,10 @@ export async function rateLimiter(
     const resetAt = new Date(oldestScore + windowSeconds * 1000);
     const allowed = count <= limit;
 
+    // Tracks whether the refund actually landed in Redis, so `remaining`
+    // below reflects the true post-refund state rather than always the
+    // pre-refund `count` — see the `remaining` comment (#3984).
+    let refunded = false;
     if (!allowed && options.refundOnReject) {
       // Remove exactly the members this call added. Best-effort: a failure here
       // only means the caller is treated the old (punitive) way, never that a
@@ -92,14 +96,34 @@ export async function rateLimiter(
       const members = zaddArgs.filter((_, i) => i % 2 === 1) as string[];
       try {
         await redis.zrem(key, ...members);
+        refunded = true;
       } catch (err) {
         console.error('[rate-limit] refund failed for key:', key, err);
       }
     }
 
+    // `count` includes this call's own just-added (and possibly just-refunded)
+    // entries. When the refund above actually landed, those entries are gone
+    // from Redis, so reporting `remaining` from the pre-refund `count` lies —
+    // it can under-report the capacity the refund actually restored, which is
+    // exactly the number a well-behaved client reads to decide when to retry
+    // (#3984).
+    //
+    // NOTE on current callers: both `refundOnReject: true` call sites
+    // (apps/api/src/routes/auth/login.ts's /auth/refresh limiter, and
+    // pamReconciliationRateLimit.ts) pass `cost = 1`, and at cost 1 a
+    // rejection means `count` was already `>= limit + 1` BEFORE this call's
+    // own entry, so refunding just this call's own 1 entry never brings
+    // `effectiveCount` below `limit` — `remaining` is still correctly 0
+    // either way. This fix has no observable effect on those two call sites
+    // today; it corrects the general `rateLimiter()` contract for any
+    // caller (present or future) that passes a weighted `cost > 1`, where a
+    // single rejected call CAN refund enough to restore real capacity.
+    const effectiveCount = refunded ? Math.max(0, count - safeCost) : count;
+
     return {
       allowed,
-      remaining: Math.max(0, limit - count),
+      remaining: Math.max(0, limit - effectiveCount),
       resetAt
     };
   } catch (err) {

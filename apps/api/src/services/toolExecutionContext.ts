@@ -69,4 +69,24 @@ export type VerifiedRunScript = {
  */
 export type ToolExecutionContext = {
   verifiedRunScript?: VerifiedRunScript;
+  /**
+   * The `action_intents` row whose approved release is executing this call —
+   * set by BOTH release paths (jobs/intentReleaseWorker.ts, and the inline
+   * chat release in services/aiAgentSdk.ts, whose preToolUse gate already
+   * returns the id it won the executing-CAS on) and by nothing else. Absent
+   * for every direct chat/MCP/script-builder call, which is what makes it a
+   * usable discriminator: a handler that must not run outside an approved
+   * release fails closed on `undefined` rather than trusting a
+   * caller-supplied id.
+   *
+   * It belongs here for the reason the header gives above — it is a
+   * per-invocation EXECUTION INPUT produced by the release path, not a caller
+   * identity (AuthContext) and not part of the approved `arguments` the
+   * digest is computed over. `manage_ai_agents:authorize_supervised_key`
+   * (P2-5, #4192) is the first consumer: it stamps
+   * `ai_agent_graduation.promoted_intent_id` with the approval that granted
+   * the key, and re-asserts that intent's own immutable `org_id` before
+   * writing anything.
+   */
+  actionIntentId?: string;
 };

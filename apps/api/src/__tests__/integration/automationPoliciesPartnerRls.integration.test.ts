@@ -19,7 +19,7 @@
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { automationPolicies, automationPolicyCompliance, devices, sites } from '../../db/schema';
 import { evaluatePolicy } from '../../services/policyEvaluationService';
@@ -324,5 +324,101 @@ describe('evaluatePolicy — partner-wide evaluation fan-out (#2129)', () => {
     const evaluatedIds = result.results.map((r) => r.deviceId);
     expect(evaluatedIds).toContain(device1);
     expect(evaluatedIds).not.toContain(device2);
+  });
+
+  /**
+   * #4122. `automation_policy_compliance` had no uniqueness and the writer was a
+   * select-then-insert, so two evaluations racing between the SELECT and the
+   * INSERT each created a row for the same (policy, device).
+   *
+   * Neither property below is reachable from the unit suite: the compiled-SQL
+   * test (`policyEvaluationService.upsertSql.test.ts`) proves the statement
+   * NAMES the right arbiter, but only a real Postgres decides whether it can
+   * INFER the partial index. If `targetWhere` ever stops implying the index
+   * predicate the statement dies at runtime with
+   * `42P10 there is no unique or exclusion constraint matching the ON CONFLICT
+   * specification` — and this is the only place that surfaces.
+   */
+  async function seedPolicyForDevice(hostname: string) {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const deviceId = await seedDevice(org.id, hostname);
+    const policyId = await seedPartnerPolicy(partner.id);
+    const [policy] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select().from(automationPolicies).where(eq(automationPolicies.id, policyId)),
+    );
+    return { policy: policy!, policyId, deviceId };
+  }
+
+  function complianceRowsFor(policyId: string, deviceId: string) {
+    return withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .select({ id: automationPolicyCompliance.id })
+        .from(automationPolicyCompliance)
+        .where(
+          and(
+            eq(automationPolicyCompliance.policyId, policyId),
+            eq(automationPolicyCompliance.deviceId, deviceId),
+          ),
+        ),
+    );
+  }
+
+  it('re-evaluating UPDATES the compliance row through the real ON CONFLICT arbiter', async () => {
+    const { policy, policyId, deviceId } = await seedPolicyForDevice('upsert-serial');
+    const opts = { source: 'integration-test', requestRemediation: false };
+
+    await withDbAccessContext(SYSTEM_CTX, () => evaluatePolicy(policy, opts));
+    // The second pass is the one that takes the DO UPDATE branch against a live
+    // partial index. A 42P10 or a bare unique violation fails the test here.
+    await withDbAccessContext(SYSTEM_CTX, () => evaluatePolicy(policy, opts));
+
+    expect(await complianceRowsFor(policyId, deviceId)).toHaveLength(1);
+  });
+
+  /**
+   * The durable half of the fix. Racing two `evaluatePolicy` calls and hoping
+   * they interleave is NOT a test — I tried it, and reverting the writer to the
+   * old select-then-insert left it green, because nothing forces the two SELECTs
+   * to both land before either INSERT.
+   *
+   * What actually makes the duplicate unreachable is the index, so assert that
+   * directly: emit the exact write the old code produced when it lost the race
+   * (a blind INSERT for an already-present key) and require Postgres to reject
+   * it. This holds no matter what the application layer does, which is the
+   * guarantee #4122 asked for.
+   */
+  it('a blind duplicate INSERT for an existing (policy, device) is rejected by the index (#4122)', async () => {
+    const { policy, policyId, deviceId } = await seedPolicyForDevice('upsert-blind-dup');
+
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      evaluatePolicy(policy, { source: 'integration-test', requestRemediation: false }),
+    );
+    expect(await complianceRowsFor(policyId, deviceId)).toHaveLength(1);
+
+    const failure = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(automationPolicyCompliance).values({ policyId, deviceId, status: 'pending' }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure, 'the blind duplicate INSERT must be rejected').not.toBeNull();
+
+    // Assert the SQLSTATE and the constraint NAME, not the message: Drizzle
+    // wraps the driver error, so `.message` is its own "Failed query: …" text
+    // and a message regex would pass for any failure at all — including an RLS
+    // denial, which would let this test go green with no index present.
+    const codes: string[] = [];
+    const constraints: string[] = [];
+    for (let error = failure as { code?: string; constraint_name?: string; cause?: unknown } | null;
+         error;
+         error = (error.cause ?? null) as typeof error) {
+      if (error.code) codes.push(error.code);
+      if (error.constraint_name) constraints.push(error.constraint_name);
+    }
+    expect(codes, `expected unique_violation, got codes ${JSON.stringify(codes)}`).toContain('23505');
+    expect(constraints).toContain('apc_policy_device_uq');
+
+    expect(await complianceRowsFor(policyId, deviceId)).toHaveLength(1);
   });
 });

@@ -69,6 +69,9 @@ const limitsFields = z.object({
   maxTriageRunsPerHour: z.number().int().min(1).max(200),
   triageBudgetCentsPerRun: z.number().int().min(1).max(50),
   triageMaxTurns: z.number().int().min(2).max(12),
+  // Promotion threshold (phase 2 P2-5) — see
+  // AiAgentLimits.promoteThreshold's docstring.
+  promoteThreshold: z.number().int().min(5).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -224,6 +227,25 @@ export const updateAiAgentSchema = z.object({
 });
 
 /**
+ * Task 11 (#5051): `POST /ai/agents/preview` evaluates a DRAFT agent policy —
+ * exactly the body `POST /ai/agents` would accept, except a name has not
+ * necessarily been chosen yet (the guided create flow's review step, spec
+ * §4.6 step 4, runs before Step 1's name field is required to be final).
+ * Every other field keeps `createAiAgentSchema`'s validation and defaulting
+ * (`aiAgentPolicyFieldsSchema`'s `.prefault({})` transforms still fill
+ * `protectedResources`/`limits`/`triggers`/`recipients`/`actAssets`), so
+ * `buildAgentPreview` never has to special-case a partially-defaulted draft.
+ *
+ * `createAiAgentSchema` is `aiAgentPolicyFieldsSchema.extend({...})` — a
+ * plain `ZodObject` (the object itself is never `.transform()`ed, only
+ * individual field schemas are), so `.omit()`/`.extend()` chain on it
+ * directly rather than needing to be rebuilt from the fields schema.
+ */
+export const previewAiAgentSchema = createAiAgentSchema.omit({ name: true }).extend({
+  name: z.string().trim().min(1).max(120).optional(),
+});
+
+/**
  * Manual "run now" trigger body. `.strict()` so a caller cannot smuggle an
  * `orgId`/`kind`/`dedupeKey` past the route into `createAndEnqueueAgentRun` —
  * the org comes from the device row and the kind from the agent row.
@@ -234,6 +256,7 @@ export const triggerAgentRunSchema = z.object({
 
 export type CreateAiAgentInput = z.infer<typeof createAiAgentSchema>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentSchema>;
+export type PreviewAiAgentInput = z.infer<typeof previewAiAgentSchema>;
 export type TriggerAgentRunInput = z.infer<typeof triggerAgentRunSchema>;
 
 /**

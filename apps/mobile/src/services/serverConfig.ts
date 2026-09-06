@@ -47,19 +47,52 @@ export function buildAccountDeletionUrl(
 /**
  * Resolve the account-deletion URL from the server chosen at sign-in
  * (SecureStore key `breeze_server_url`). Falls back to `fallbackBaseUrl` when
- * no server is stored.
+ * no server is stored. Propagates `ServerUrlReadError` when the read itself
+ * fails — see `getServerUrl`.
  */
 export async function getAccountDeletionUrl(fallbackBaseUrl: string): Promise<string> {
   const stored = await getServerUrl();
   return buildAccountDeletionUrl(stored, fallbackBaseUrl);
 }
 
+/**
+ * Thrown by `getServerUrl` when SecureStore itself fails to read the key —
+ * e.g. a transiently locked keychain — as distinct from a successful read
+ * that simply found nothing stored. Branch on `.name` rather than
+ * `instanceof` at call sites: subclass `instanceof` is unreliable across
+ * RN/Hermes bundles (see `SecureWipeError` in `services/auth.ts`), and
+ * `.name` is set explicitly here to keep that contract sound.
+ */
+export class ServerUrlReadError extends Error {
+  constructor(cause: unknown) {
+    super('Failed to read the configured server URL from secure storage', { cause });
+    this.name = 'ServerUrlReadError';
+  }
+}
+
+/**
+ * Resolve the server URL the user configured at sign-in.
+ *
+ * Returns `null` ONLY when SecureStore genuinely has nothing stored under
+ * this key — that legitimately means "not configured", and callers are free
+ * to fall back to `FALLBACK_API_BASE_URL`. A FAILED read (locked keychain,
+ * SecureStore unavailable, etc.) throws `ServerUrlReadError` instead of
+ * collapsing into that same `null`.
+ *
+ * Folding the two together let every `(await getServerUrl()) || FALLBACK`
+ * call site silently reroute a self-hosted (or non-US) tenant to the hosted
+ * default host on a transient keychain error, including on the auth path —
+ * login and MFA request bodies went to a server the tenant never configured
+ * (#4002). Throwing makes the failure propagate through that same `await`
+ * expression (it never reaches the `||`), so every existing call site fails
+ * closed without needing its own change.
+ */
 export async function getServerUrl(): Promise<string | null> {
   try {
     return await SecureStore.getItemAsync(SERVER_URL_KEY);
   } catch (error) {
     console.error('Error retrieving server URL:', error);
-    return null;
+    throw new ServerUrlReadError(error);
   }
 }
 

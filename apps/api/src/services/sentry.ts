@@ -105,6 +105,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // cluster groupable and actionable.
   'body_limit_rule',
   'body_limit_max_size',
+  // #4514: the AI session cap alarm fires when EVERY in-memory session is
+  // mid-turn, so LRU can evict nothing and MAX_ACTIVE_SESSIONS is exceeded.
+  // `scrubEvent` deletes `message`, so without this the event says only that it
+  // happened — and a single-request blip is then byte-identical to a manager
+  // wedged at several times its cap, which is exactly the distinction that
+  // decides whether to page. Closed four-value set from
+  // `bucketSessionOvershoot` (services/streamingSessionManager.ts); the raw
+  // count would be unbounded cardinality, and the bucket carries no tenant,
+  // device or session identifier.
+  'ai_session_cap_bucket',
   // BREEZE-18: the required `captureMessage` discriminator. `scrubEvent`
   // deletes `message`, `logentry` and `extra` from every event, so before this
   // existed any captureMessage that happened not to carry one of the tags above
@@ -133,6 +143,21 @@ const ALLOWED_TAG_NAMES = new Set([
   'binary_component',
   'release_asset_name',
   'manifest_refusal_reason',
+  // #4262: binarySync's release fetches now run through the SSRF-guarded
+  // helper, and all three of its catch sites deliberately FAIL OPEN — a
+  // transient resolver blip must not take boot down. That makes the Sentry
+  // event the only durable record that a refusal happened, and `scrubEvent`
+  // deletes `message`, so without these two tags it arrives as a contentless
+  // blank: the operator learns an exception occurred but not that the SSRF
+  // guard fired, which is the difference between "GitHub had a bad day" and
+  // "something is resolving api.github.com to an internal address".
+  // `release_sync_failure_reason` is a closed 2-value set derived from the
+  // error CLASS (never its message, which interpolates the offending host);
+  // `release_sync_context` is one of four hardcoded call-site literals.
+  // Neither carries a tenant, device, host or resolved IP — the addresses stay
+  // in the server-side log line only.
+  'release_sync_failure_reason',
+  'release_sync_context',
   // #1379/BREEZE-9: `attachWorkerObservability` sets this tag on every worker —
   // twice, in fact: on the per-job isolation scope (so anything captured DURING
   // a job inherits it) and again on the `failed` listener. It is a closed set of
@@ -176,6 +201,18 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
+  // processDispatchBackup commits per-target child `backup_jobs` rows, so a
+  // retry duplicates them. Two consequences of that trade are things an
+  // operator must be able to see, and scrubEvent deletes message/logentry/extra
+  // and rewrites the exception value to '[redacted]' — so this tag is the ONLY
+  // part of either capture that reaches Sentry. Closed set of two string
+  // literals written at their call sites in jobs/backupWorker.ts:
+  // 'redelivery-refused' (a whole backup run was deliberately dropped rather
+  // than duplicated) | 'undelivered-settle-failed' (the fast cleanup of
+  // provably-unsent rows failed, so they wait on the stale reaper instead).
+  // Carries no tenant, device or job identifier.
+  'backup_dispatch_issue',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.
@@ -214,6 +251,19 @@ const ALLOWED_TAG_NAMES = new Set([
   // so proving every current and future path passes a hardcoded literal is a
   // real sweep, not a glance. Unproven means not allowlisted.
   'dbContextOpener',
+  // #4343: which table a retention sweep left a backlog on. Without it every
+  // `retention_backlog_remaining` event from all nine call sites collapses into
+  // one issue reading "a retention job is behind" — scrubEvent deletes
+  // `message`, so the table baked into the warning text never arrives either.
+  //
+  // Structurally bounded, and checked: every caller passes one of eight
+  // hardcoded table literals (`agent_logs`, `device_change_log`,
+  // `device_event_logs`, `device_ip_history`, `snmp_metrics`,
+  // `device_reliability_history`, `user_risk_scores`, and mlOutputRetention's
+  // three-literal `PrunedTable['table']` union). Per-run detail that is NOT
+  // bounded — eventLogRetention's org id — is deliberately kept out of this tag
+  // and goes only to the console line, which is not scrubbed.
+  'retentionTarget',
   // The AI billing calls (services/aiCostTracker.ts) are deliberately
   // FAIL-OPEN, so the only thing separating "billing said no" from "billing
   // never answered" is this tag. Its value is either an HTTP status rendered
@@ -233,6 +283,62 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
+  // #4143: which CONTAINER produced the event. Since the api/worker role split
+  // (#4086) a droplet in split mode runs two processes off the same image,
+  // same DSN, same release — so an event from the worker was indistinguishable
+  // from one served on the request path, and "is this the scheduler or the
+  // API?" (the first question asked in both #3022 and #3214) could not be
+  // answered from Sentry at all. Set once at init from `breezeRole()`, whose
+  // return type is the closed union `'all' | 'api' | 'worker'`; anything else
+  // in BREEZE_ROLE is folded to `all` by that function, so this tag is a
+  // 3-value set by construction and carries no tenant, device or host.
+  'breeze_role',
+  // #4828: every `captureException` in the accounting sync path
+  // (accountingInvoicePush.ts, accountingMappingService.ts) tagged `service`,
+  // `invoiceId`/`mappingId`/`partnerId`/`remoteEntityId` — none of which were
+  // allowlisted (the camelCase keys had no allowlisted equivalent at all, not
+  // even a snake_case one, and `service` itself was never added). `scrubEvent`
+  // deletes `message`/`extra`/`logentry`, so every one of these best-effort
+  // failure reports has been arriving as a near-contentless event since the
+  // pattern was introduced — on-call could see a sync failed but not which
+  // invoice, mapping, or partner.
+  //
+  // `service` is the hardcoded module-name literal at each call site
+  // (`'accountingInvoicePush' | 'accountingMappingService'` today) — a closed
+  // set by construction, never interpolated, carrying no identifier.
+  //
+  // `invoice_id` and `accounting_mapping_id` follow the same precedent already
+  // set by `org_id`/`partner_id`/`user_id` above: unbounded UUID primary keys,
+  // allowed specifically for tenant/record-scoped triage, never raw message
+  // text. `remote_entity_id` is the analogous id on the QuickBooks side (the
+  // provider's own record id for the pushed invoice/customer/item) — also an
+  // opaque identifier, not free text, and length-capped like every tag by
+  // `isBoundedTagValue`.
+  //
+  // `breeze_entity_type` is the closed 2-value union `'org' | 'catalog_item'`
+  // from `SyncMappedEntityInput` (accountingMappingService.ts) — which kind of
+  // entity a sync failure was for; bounded by construction, carries no
+  // identifier.
+  //
+  // `remote_sync_token` is QuickBooks' optimistic-concurrency version counter
+  // for the pushed entity — a short numeric string (`'0'`, `'1'`, `'3'`, …),
+  // not free text. It is specifically the value the "QuickBooks accepted the
+  // sync but Breeze failed to record it — do not retry; contact support to
+  // reconcile" failure path in accountingMappingService.ts hands off: manual
+  // reconciliation needs to know which version Breeze last observed, not just
+  // which record. No tenant, device, or host identifier.
+  'service',
+  'invoice_id',
+  'accounting_mapping_id',
+  'remote_entity_id',
+  'breeze_entity_type',
+  'remote_sync_token',
+  // #3860: which translation key `tApi` could not resolve. By convention keys
+  // are hardcoded `ns:dotted.path` literals at the call site, which keeps the
+  // set bounded — `tApi` types `key` as `string`, so this is a convention, not
+  // a type-level guarantee: never build a key from tenant or user data. Carries
+  // no tenant, device, or host id.
+  'i18n_key',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -409,6 +515,30 @@ export function scrubTransactionEvent<T extends Record<string, any>>(event: T): 
   return event;
 }
 
+/**
+ * The `breeze_role` tag value (#4143).
+ *
+ * Deliberately re-derived from `process.env.BREEZE_ROLE` here instead of
+ * importing `breezeRole()` from `config/env`. This module is imported by ~120
+ * others including `db/index.ts` (see setConnectTimeoutClassifier above for the
+ * incident that established the rule), and `config/env` is not a leaf: it reads
+ * ~40 `process.env` values into module-scope `export const`s, so importing it
+ * from here would both grow this module's graph and pull that env SNAPSHOT
+ * forward to whenever anything first reports an error.
+ *
+ * The duplication is intentional and pinned: `sentry.breezeRole.test.ts`
+ * asserts this function agrees with `breezeRole()` over every input class,
+ * including the unrecognised-value fallback, so the two cannot drift apart
+ * silently. Unlike `breezeRole()` this one does NOT warn on an unrecognised
+ * value — that warning is the config layer's job and is already emitted once
+ * at boot; repeating it from the Sentry layer would add nothing.
+ */
+export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
+  const raw = (process.env.BREEZE_ROLE ?? '').trim().toLowerCase();
+  if (raw === 'api' || raw === 'worker') return raw;
+  return 'all';
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -441,6 +571,18 @@ export function initSentry(): void {
     beforeSend: (event) => scrubEvent(event),
     beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
+
+  // #4143. Set on the global scope so EVERY event inherits it — including the
+  // per-job isolation scopes `attachWorkerObservability` forks, and the
+  // process-level unhandledRejection/uncaughtException reports that belong to
+  // no request. Without it the two containers a split-mode droplet runs are
+  // indistinguishable in Sentry: same DSN, same release, same environment.
+  //
+  // Allowlisted in ALLOWED_TAG_NAMES above — `scrubEvent` rebuilds `tags` from
+  // that list on the way out, so an unallowlisted tag set here would be
+  // silently dropped rather than merely unused (the exact `worker`-tag
+  // regression documented there).
+  Sentry.setTag('breeze_role', sentryBreezeRoleTag());
 
   initialized = true;
 }

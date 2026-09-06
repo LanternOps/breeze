@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { redactAgentLogRow, redactLogFields, redactLogMessage } from './logRedaction';
+import {
+  redactAgentLogFields,
+  redactAgentLogMessage,
+  redactAgentLogRow,
+  redactLogFields,
+  redactLogMessage,
+  redactSensitiveValueShapes,
+} from './logRedaction';
 
 describe('log redaction', () => {
   it('redacts common secret assignments in messages', () => {
@@ -80,6 +87,189 @@ describe('log redaction', () => {
       expect(round.__proto__).toEqual({ inner: 'kept' });
     });
   });
+
+// #3109. Key-name redaction blanked the `session` key while the SAME Windows
+// identifier survived verbatim inside the `error` string of the same row.
+// These cover the value-shape pass that closes it, and — just as importantly —
+// pin the boundary that keeps it OFF the shared redactors.
+describe('value-shape redaction on the agent-log path (#3109)', () => {
+  it('scrubs the reported row: identifier redacted in `error`, not just `session`', () => {
+    // Verbatim shape from the production agent_logs row in the issue.
+    const row = {
+      id: 'log-1',
+      message: 'command dispatch failed',
+      fields: {
+        error: 'duplicate in-flight command id: "desk-abc" (session "helper-CONTOSO\\WKSTN-01$-65864")',
+        attempt: 1,
+        session: 'helper-CONTOSO\\WKSTN-01$-65864',
+        component: 'heartbeat',
+      },
+    };
+
+    const out = redactAgentLogRow(row);
+    const fields = out.fields as Record<string, unknown>;
+
+    // The key-name rule still blanks `session` outright.
+    expect(fields.session).toBe('[REDACTED]');
+    // The regression: the sibling free-text field must not carry it either.
+    expect(fields.error).not.toContain('CONTOSO');
+    expect(fields.error).not.toContain('WKSTN-01');
+    // Non-identifying context survives, so the row stays diagnosable.
+    expect(fields.error).toContain('duplicate in-flight command id');
+    expect(fields.error).toContain('desk-abc');
+    expect(fields.attempt).toBe(1);
+    expect(fields.component).toBe('heartbeat');
+  });
+
+  it('fires regardless of which key carries the value', () => {
+    const leak = 'ran as CONTOSO\\WKSTN-01$';
+    for (const key of ['error', 'detail', 'component', 'anythingAtAll']) {
+      const out = redactAgentLogFields({ [key]: leak }) as Record<string, string>;
+      expect(out[key], `key ${key}`).not.toContain('CONTOSO');
+    }
+  });
+
+  it('redacts the legacy helper/assist session-id grammar from un-upgraded agents', () => {
+    // The Go agent now mints an opaque id, but deployed agents keep sending the
+    // old grammar until the fleet rolls; the Tauri assist helper sends its own.
+    expect(redactSensitiveValueShapes('(session "helper-jdoe-65864")')).toBe(
+      '(session "helper-[REDACTED]")'
+    );
+    expect(redactSensitiveValueShapes('session assist-jdoe-12345 closed')).toBe(
+      'session assist-[REDACTED] closed'
+    );
+  });
+
+  it('bounds the legacy session-id pattern so ingest cannot be made quadratic', () => {
+    // `agentLogEntrySchema.message` (routes/agents/schemas.ts) has NO max
+    // length, and 500 entries are allowed per request, so this pass runs on
+    // unbounded agent-supplied text. An unbounded middle segment backtracks
+    // over the whole tail once per `helper-` occurrence — measured at 116ms for
+    // a single 293KB message, and quadratic from there. The length bound is
+    // what keeps it linear; this asserts the bound is actually present.
+    const overLong = `helper-${'a'.repeat(200)}-65864`;
+    expect(redactSensitiveValueShapes(overLong)).toBe(overLong);
+    expect(redactSensitiveValueShapes(`helper-${'a'.repeat(100)}-65864`)).toBe('helper-[REDACTED]');
+
+    // A hostile 1MB input packed with `helper-` prefixes. Linear finishes in
+    // well under 100ms; the quadratic form took seconds. The threshold is
+    // deliberately loose so a slow CI runner cannot flake it.
+    const hostile = `helper-${'a-b-c-'.repeat(60)}`.repeat(2800);
+    const startedAt = Date.now();
+    redactSensitiveValueShapes(hostile);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('leaves the new opaque helper id alone — it carries no identity to scrub', () => {
+    const opaque = 'helper-a1b2c3d4e5f60718';
+    expect(redactSensitiveValueShapes(`(session "${opaque}")`)).toContain(opaque);
+  });
+
+  it('drops the user segment from home directories but keeps the path', () => {
+    expect(redactSensitiveValueShapes('openfdat C:\\Users\\jdoe\\AppData\\Local\\Breeze')).toBe(
+      'openfdat C:\\Users\\[REDACTED]\\AppData\\Local\\Breeze'
+    );
+    expect(redactSensitiveValueShapes('stat /home/jdoe/.config/breeze: no such file')).toBe(
+      'stat /home/[REDACTED]/.config/breeze: no such file'
+    );
+    expect(redactSensitiveValueShapes('/Users/jdoe/Library/Logs')).toBe(
+      '/Users/[REDACTED]/Library/Logs'
+    );
+  });
+
+  it('keeps machine-generic Windows paths intact', () => {
+    // From the second-instance measurement in the issue: these are the highest
+    // volume `error` values and carry no identity. Scrubbing them would cost
+    // diagnostics for nothing.
+    const generic = 'fork/exec C:\\WINDOWS\\system32\\dsregcmd.exe: The paging file is too small';
+    expect(redactSensitiveValueShapes(generic)).toBe(generic);
+    const programData = 'openfdat C:\\ProgramData\\Breeze\\sessions: The parameter is incorrect.';
+    expect(redactSensitiveValueShapes(programData)).toBe(programData);
+  });
+
+  it('redacts the host out of a UNC path but keeps the share', () => {
+    expect(redactSensitiveValueShapes('copy \\\\FILESRV01\\deploy\\agent.msi failed')).toBe(
+      'copy \\\\[REDACTED]\\deploy\\agent.msi failed'
+    );
+  });
+
+  it('redacts Windows machine accounts', () => {
+    expect(redactSensitiveValueShapes('token owner CONTOSO\\WKSTN-01$ denied')).toBe(
+      'token owner [REDACTED] denied'
+    );
+  });
+
+  it('redacts username assignments inside free text', () => {
+    expect(redactSensitiveValueShapes('spawn failed username=jdoe pid=4120')).toBe(
+      'spawn failed username=[REDACTED] pid=4120'
+    );
+    expect(redactSensitiveValueShapes('upn: jdoe@contoso.com')).toBe('upn: [REDACTED]');
+  });
+
+  describe('IP literals — routable addresses only', () => {
+    it('redacts a globally routable IPv4 address', () => {
+      expect(redactSensitiveValueShapes('dial tcp 203.44.19.7:443: timeout')).toBe(
+        'dial tcp [REDACTED]:443: timeout'
+      );
+    });
+
+    it('keeps private, loopback, link-local and CGNAT addresses', () => {
+      // Network discovery and connectivity logs are the highest-volume users of
+      // this path; these addresses are internal topology the MSP already
+      // administers and sees as first-class device data, so scrubbing them
+      // would buy no privacy and cost the feature its diagnosability.
+      for (const ip of ['10.0.1.5', '192.168.1.20', '172.16.4.9', '127.0.0.1', '0.0.0.0', '169.254.3.1', '100.64.0.7']) {
+        expect(redactSensitiveValueShapes(`probe ${ip} ok`), ip).toBe(`probe ${ip} ok`);
+      }
+    });
+
+    it('leaves version numbers and non-address dotted quads alone', () => {
+      expect(redactSensitiveValueShapes('agent 0.109.0 build 4')).toBe('agent 0.109.0 build 4');
+      expect(redactSensitiveValueShapes('schema 999.888.777.666')).toBe('schema 999.888.777.666');
+    });
+
+    it('redacts a global-unicast IPv6 address', () => {
+      expect(redactSensitiveValueShapes('dial 2001:db8::42 refused')).toBe('dial [REDACTED] refused');
+    });
+
+    it('keeps link-local, ULA and loopback IPv6', () => {
+      for (const ip of ['fe80::1c2d', 'fd00::5', '::1']) {
+        expect(redactSensitiveValueShapes(`bind ${ip}`), ip).toBe(`bind ${ip}`);
+      }
+    });
+
+    it('does not mistake clock times or MAC addresses for IPv6', () => {
+      const withTime = 'started at 14:23:45 after 00:00:02';
+      expect(redactSensitiveValueShapes(withTime)).toBe(withTime);
+      const withMac = 'nic 00:1a:2b:3c:4d:5e up';
+      expect(redactSensitiveValueShapes(withMac)).toBe(withMac);
+      const iso = 'ts=2026-09-03T14:23:45.123Z level=info';
+      expect(redactSensitiveValueShapes(iso)).toBe(iso);
+    });
+  });
+
+  // The scoping decision, pinned. redactLogMessage/redactLogFields are shared
+  // with services/aiToolOutput.ts (LLM tool output AND persisted
+  // ai_messages.tool_input), services/auditPayloadSanitizer.ts, jobs/dnsSyncJob.ts,
+  // jobs/s1Sync.ts and services/sentinelOne/actions.ts, where an address or a
+  // path is the payload rather than a leak. Widening the shared redactors would
+  // silently break those; this test fails if someone does.
+  describe('scope boundary: the shared redactors are unchanged', () => {
+    it('redactLogMessage does not apply value-shape rules', () => {
+      const text = 'dial tcp 203.44.19.7:443 from C:\\Users\\jdoe failed';
+      expect(redactLogMessage(text)).toBe(text);
+    });
+
+    it('redactLogFields does not apply value-shape rules', () => {
+      const fields = { error: 'unreachable 203.44.19.7', path: '/home/jdoe/x' };
+      expect(redactLogFields(fields)).toEqual(fields);
+    });
+
+    it('still redacts secret assignments on the agent path', () => {
+      expect(redactAgentLogMessage('login password=hunter2')).toBe('login password=[REDACTED]');
+    });
+  });
+});
 
   it('redacts row messages and fields defensively before returning logs', () => {
     expect(redactAgentLogRow({

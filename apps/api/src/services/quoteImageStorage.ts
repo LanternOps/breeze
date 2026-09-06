@@ -10,6 +10,19 @@ export { sniffImageMime };
 export const MAX_QUOTE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // reuse the avatar cap
 
 /**
+ * Quote PDFs are rendered with pdfkit, which can only embed PNG and JPEG —
+ * calling `doc.image()` on WebP bytes throws, and the renderer's per-image
+ * catch-and-continue silently dropped the image from the exported PDF with
+ * no error surfaced anywhere (#3483). Avatars go through a different (non-PDF)
+ * path and keep accepting WebP via `sniffImageMime`/`asAvatarMime`; quote
+ * images reject it explicitly here, at the upload boundary, for both the
+ * multipart route and the URL-import path below — so the failure is visible
+ * to the quote author immediately instead of to the customer, later, as a
+ * blank gap in a PDF that already sent.
+ */
+export const QUOTE_IMAGE_WEBP_REJECTED_MESSAGE = "WebP images can't be used in quote PDFs — please upload a PNG or JPEG image instead.";
+
+/**
  * Persist a proposal image as a bytea blob on `quote_images`, scoped to its
  * quote + org. The org-axis RLS on `quote_images` is the access boundary; the
  * caller must be inside a request/system DB access context. Magic-byte sniffing
@@ -114,7 +127,8 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
   }
 
   const mime = sniffImageMime(buffer);
-  if (!mime) throw new RemoteImageError('not_image', "That URL isn't a PNG, JPEG, or WebP image");
+  if (!mime) throw new RemoteImageError('not_image', "That URL isn't a PNG or JPEG image");
+  if (mime === 'image/webp') throw new RemoteImageError('not_image', QUOTE_IMAGE_WEBP_REJECTED_MESSAGE);
 
   return { mime, buffer };
 }

@@ -97,7 +97,7 @@ import {
   DEVICE_LINKED_DEVICE_ID_TABLES,
   DEVICE_LINK_DEPENDENT_COLUMNS,
 } from './core';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
@@ -511,6 +511,16 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears CALLS but keeps IMPLEMENTATIONS, so every impl
+    // installed by a test leaks into the next one that forgets to re-rig.
+    // Proven, not theoretical: the ordering test wraps db.transaction in a
+    // closure over its own rig, and the dispatch-throws test makes
+    // isAgentConnected throw. A test appended after either would silently run
+    // against the wrong world — recording another test's ordering, or
+    // exercising the catch path while looking like a happy-path test.
+    vi.mocked(db.transaction).mockReset();
+    vi.mocked(isAgentConnected).mockReset();
+    vi.mocked(sendCommandToAgent).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
   });
@@ -522,7 +532,27 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     vi.mocked(db.select).mockReturnValue({ from } as never);
   }
 
-  function rigDeleteTransaction(): string[] {
+  /**
+   * State the LOCKED devices row reports back, i.e. what the route decides on.
+   *
+   * Since #2787 the permanent-delete route no longer trusts the pre-flight
+   * `getDeviceWithOrgAndSiteCheck` copy for anything but authorisation:
+   * `purgeRemovedDevice` re-reads status and link_group_id under
+   * `SELECT ... FOR UPDATE`, so these knobs — not `rigDeviceLookup`'s fixture —
+   * are what drive the eligibility branches.
+   */
+  interface DeleteTxOptions {
+    /** Status the locked row reports. Default 'decommissioned' (eligible). */
+    status?: string;
+    /** link_group_id on the locked row. Default null (unlinked). */
+    linkGroupId?: string | null;
+    /** Serve a pending `device_remove` self_uninstall to the refusal probe. */
+    pendingUninstall?: boolean;
+    /** Lock returns zero rows (device vanished between lookup and lock). */
+    deviceMissing?: boolean;
+  }
+
+  function rigDeleteTransaction(opts: DeleteTxOptions = {}): string[] {
     const statements: string[] = [];
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
       const tx = {
@@ -548,7 +578,20 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
           // so a regression that permanently lost the lock would have been
           // invisible to these tests.
           if (text.includes('FOR UPDATE')) {
-            return pgResult([{ id: DEVICE.id }]);
+            if (opts.deviceMissing) return pgResult([]);
+            return pgResult([
+              {
+                id: DEVICE.id,
+                status: opts.status ?? 'decommissioned',
+                link_group_id: opts.linkGroupId ?? null,
+              },
+            ]);
+          }
+          // The purge refusal probe (deviceLifecycle.ts). Distinct from the
+          // cascade's own `DELETE FROM device_commands` — only the probe names
+          // the self_uninstall type.
+          if (text.includes('self_uninstall')) {
+            return opts.pendingUninstall ? pgResult([{ id: 'cmd-1' }]) : pgResult([]);
           }
           return pgResult([]);
         }),
@@ -556,7 +599,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
           where: vi.fn().mockResolvedValue(undefined),
         }),
       };
-      await cb(tx);
+      // Return, do not swallow: the route reads `linkGroupDissolved` off the
+      // transaction's resolved value now that purgeRemovedDevice owns it.
+      return cb(tx);
     });
     return statements;
   }
@@ -649,7 +694,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
   it('runs the link-group dissolve check when hard-deleting a linked boot profile (#2138)', async () => {
     const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
     rigDeviceLookup({ ...DEVICE, linkGroupId: 'grp-multiboot-1' });
-    rigDeleteTransaction();
+    // Read from the LOCKED row since #2787, not from the pre-flight lookup —
+    // the lookup's copy predates the lock and can be stale.
+    rigDeleteTransaction({ linkGroupId: 'grp-multiboot-1' });
 
     const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
       method: 'DELETE',
@@ -662,6 +709,38 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     // 1-member group (the survivor renders ungrouped and re-linking it 409s).
     expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
     expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
+  });
+
+  /**
+   * #2787 review — the audit spread was keyed on the PRE-LOCK
+   * `device.linkGroupId` from `getDeviceWithOrgAndSiteCheck`, while
+   * `linkGroupDissolved` came from the locked row. When those disagree (a
+   * device linked between the pre-flight read and the lock) the dissolve runs
+   * and the audit records NOTHING about it — and dissolving a group unlinks
+   * SIBLING devices that were never in this request, so "why did this whole VM
+   * group un-group?" becomes unanswerable.
+   *
+   * Both facts must come off the same read: the locked one.
+   */
+  it('audits the link group read UNDER THE LOCK, not the stale pre-flight copy (#2787)', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
+    // Pre-flight sees an UNLINKED device...
+    rigDeviceLookup({ ...DEVICE, linkGroupId: null });
+    // ...but under the lock it is in a group, and the dissolve fires.
+    rigDeleteTransaction({ linkGroupId: 'grp-late-link' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
+    expect(await auditDetails()).toMatchObject({
+      linkGroupId: 'grp-late-link',
+      linkGroupDissolved: true,
+    });
   });
 
   it('does not touch link groups when the deleted device was unlinked', async () => {
@@ -679,41 +758,215 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
   });
 
   /**
-   * A lock timeout must surface as the retryable 409 that reports
-   * `uninstallSent`, because the SELF_UNINSTALL is dispatched BEFORE the
-   * transaction and is irreversible — a bounded lock failure is the one path
-   * that can leave an agent uninstalling itself while its device row survives.
+   * Wave 05 (#5023 follow-up, #2787) — the cascade must run in a SYSTEM DB
+   * context, matching `jobs/deviceBulkPurge.ts`'s `purgeOne`. Today the route
+   * runs `purgeRemovedDevice` under the caller's tenant RLS context, and
+   * `services/deviceDeletion.ts` documents that at least one cascade table is
+   * deliberately invisible under tenant policy — so a single permanent delete
+   * can strand rows that bulk purge removes.
    *
-   * The shape here is not invented. It is what a REAL lock timeout produces:
-   * verified against live Postgres with two connections contending on one row,
-   * the error arrives as `{ code: undefined, cause: { code: '55P03' } }`,
-   * because Drizzle wraps the postgres-js PostgresError. The route used to read
-   * the top-level `.code`, so this branch was dead and the operator got a bare
-   * 500 with no indication the uninstall had already gone out. Assert the
-   * WRAPPED shape specifically — an unwrapped `{ code: '55P03' }` fixture would
-   * pass against the broken code and prove nothing.
+   * `runOutsideDbContext` must run FIRST (CLAUDE.md's DB context helpers
+   * contract): the route is already inside the request's `withDbAccessContext`
+   * transaction, and escalating without first exiting it would hold two
+   * pooled connections at once.
    *
-   * Uses an ONLINE device with the uninstall actually dispatched. An earlier
-   * revision used the offline fixture, where `uninstallSent` can only ever be
-   * false, and merely asserted the property existed — code that hard-coded
-   * `false` would have passed it.
+   * Authorisation must stay exactly where it is: `getDeviceWithOrgAndSiteCheck`
+   * (the `db.select` chokepoint) and the decommissioned pre-check both run
+   * BEFORE the escalation, so a caller who fails either check never reaches a
+   * system-scoped connection at all.
    */
+  describe('escalates the cascade to a system DB context (#5023 wave 05)', () => {
+    it('calls runOutsideDbContext and withSystemDbAccessContext exactly once on a successful purge, after the chokepoint lookup', async () => {
+      rigDeviceLookup(DEVICE);
+      rigDeleteTransaction();
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+
+      // Ordering: the chokepoint's authorisation read must resolve BEFORE the
+      // escalation opens — authorised first, matching the bulk worker.
+      const selectOrder = vi.mocked(db.select).mock.invocationCallOrder[0];
+      const escalateOrder = vi.mocked(runOutsideDbContext).mock.invocationCallOrder[0];
+      expect(selectOrder).toBeDefined();
+      expect(escalateOrder).toBeDefined();
+      expect(selectOrder!).toBeLessThan(escalateOrder!);
+    });
+
+    it('does not escalate when the pre-check 400s (device not decommissioned)', async () => {
+      rigDeviceLookup({ ...DEVICE, status: 'online' });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('does not escalate when the chokepoint 404s (device missing)', async () => {
+      rigDeviceLookup(null);
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
+  });
+
   // Still `decommissioned` — the route 400s anything else BEFORE it ever
-  // reaches the uninstall dispatch, so an 'online' status here would have
-  // tested the wrong branch entirely. What makes the uninstall fire is an
-  // agentId plus a live agent connection.
+  // reaches the transaction, so an 'online' status here would test the wrong
+  // branch entirely. `agentId` is what the REMOVED fire-and-forget uninstall
+  // needed, so the connected fixture is what makes its absence checkable.
   const CONNECTED_DEVICE = { ...DEVICE, agentId: 'agent-1' };
 
-  function rigUninstallDispatched() {
+  /**
+   * Rigs the agent as online AND the send as succeeding — i.e. a WS dispatch is
+   * POSSIBLE. Named for that, not for "dispatched": every test below uses it
+   * precisely to prove nothing was sent.
+   */
+  function rigAgentOnlineAndSendable() {
     vi.mocked(isAgentConnected).mockReturnValue(true);
-    // Returns synchronously — `uninstallSent = sendCommandToAgent(...)`, not an
-    // awaited promise, so mockResolvedValue would make uninstallSent a Promise.
     vi.mocked(sendCommandToAgent).mockReturnValue(true as never);
   }
 
-  it('maps a Drizzle-wrapped 55P03 to a retryable 409 that reports uninstallSent: true', async () => {
+  async function auditDetails(): Promise<Record<string, unknown>> {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    const call = vi.mocked(writeRouteAudit).mock.calls
+      .map((c) => c[1] as { action?: string; details?: Record<string, unknown> })
+      .find((entry) => entry.action === 'device.permanent_delete');
+    expect(call, 'expected a device.permanent_delete audit entry').toBeDefined();
+    return call!.details ?? {};
+  }
+
+  /**
+   * #2787 — the best-effort WS `self_uninstall` this route used to fire after
+   * the cascade committed is GONE, and its removal is the whole point of the
+   * refusal below, so it needs a discriminating test of its own.
+   *
+   * Why it went: it only ever reached a CONNECTED agent, and a device reaching
+   * permanent delete has been decommissioned — which force-closes the agent
+   * socket — so in practice it almost never fired. When it did, it raced the
+   * cascade that had just deleted the device's own `device_commands` rows. The
+   * durable `device_remove` uninstall queued at Remove time (#3986) is the real
+   * mechanism, and this route now REFUSES rather than destroying it.
+   *
+   * The online fixture is load-bearing: on an offline device `sendCommandToAgent`
+   * could not fire regardless, and this test would pass against the very
+   * regression it exists to catch.
+   */
+  it('never fires a WS self_uninstall, even with the agent connected (#2787)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
+    rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    // `isAgentConnected` asserts the process role and throws in the worker
+    // role, so the route must not so much as probe it any more.
+    expect(isAgentConnected).not.toHaveBeenCalled();
+
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toEqual({ success: true });
+    // The removed fields must not linger as `false`/undefined shells — a
+    // consumer reading `agentUninstallSent` should fail loudly, not read a
+    // fabricated "we tried".
+    expect(body).not.toHaveProperty('agentUninstallSent');
+    expect(body).not.toHaveProperty('warning');
+    expect(await auditDetails()).not.toHaveProperty('uninstallCommandSent');
+  });
+
+  /**
+   * The refusal that replaces it. `device_commands` is in the device cascade,
+   * so purging a device whose `device_remove` uninstall is still collectable
+   * destroys the only thing that will ever clean the endpoint — a zombie agent
+   * nobody can see or reach. 409 + code so the web can say why.
+   */
+  it('refuses with 409 UNINSTALL_PENDING while a device_remove uninstall is queued (#2787)', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    const statements = rigDeleteTransaction({ pendingUninstall: true });
+
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'UNINSTALL_PENDING' });
+    // Nothing was destroyed: the refusal has to happen before the cascade, not
+    // be reported after it.
+    expect(statements.some((s) => s.startsWith('DELETE FROM devices'))).toBe(false);
+    expect(statements.some((s) => s.startsWith('DELETE FROM device_commands'))).toBe(false);
+  });
+
+  /**
+   * The TOCTOU this wave closes. The pre-flight status check runs OUTSIDE the
+   * deletion transaction; a Restore committing between it and the cascade used
+   * to be purged silently. `purgeRemovedDevice` re-reads status under the row
+   * lock, so the loser of that race gets a 409 instead of a dead device.
+   */
+  it('refuses with 409 NOT_REMOVED when a Restore won the race under the lock (#2787)', async () => {
+    rigDeviceLookup(DEVICE); // still 'decommissioned' at pre-flight...
+    const statements = rigDeleteTransaction({ status: 'offline' }); // ...but not under the lock
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'NOT_REMOVED' });
+    expect(statements.some((s) => s.startsWith('DELETE FROM devices'))).toBe(false);
+  });
+
+  it('returns 404 when the device vanished between the lookup and the lock (#2787)', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ deviceMissing: true });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  /**
+   * A lock timeout must surface as a retryable 409.
+   *
+   * The error shape here is not invented. It is what a REAL lock timeout
+   * produces: verified against live Postgres with two connections contending on
+   * one row, the error arrives as `{ code: undefined, cause: { code: '55P03' } }`,
+   * because Drizzle wraps the postgres-js PostgresError. The route used to read
+   * the top-level `.code`, so this branch was dead and the operator got a bare
+   * 500. Assert the WRAPPED shape specifically — an unwrapped
+   * `{ code: '55P03' }` fixture would pass against that broken code and prove
+   * nothing.
+   *
+   * Uses an ONLINE device so that a reintroduced WS dispatch on the rollback
+   * path would actually be able to fire; on the offline fixture this test
+   * would pass against the very regression it exists to catch.
+   */
+  it('fails fast with a retryable 409 and sends nothing when the cascade hits 55P03', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigAgentOnlineAndSendable();
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: SELECT id FROM devices ... FOR UPDATE'), {
         cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
@@ -726,23 +979,26 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
 
     expect(res.status).toBe(409);
-    const body = await res.json() as { error: string; uninstallSent: boolean };
-    expect(body.uninstallSent).toBe(true);
-    expect(body.error).toMatch(/already sent/i);
-    expect(body.error).toMatch(/retry/i);
+    // The load-bearing half: nothing irreversible happened, so a retry is a
+    // plain retry rather than damage control.
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    const body = await res.json() as { error: string };
+    expect(body).not.toHaveProperty('uninstallSent');
+    expect(body.error).toMatch(/try again/i);
+    // The pre-#3817 message disclosed an uninstall that had already gone out.
+    // Keeping that text now would tell the operator their agent may be gone
+    // when it demonstrably is not.
+    expect(body.error).not.toMatch(/already sent/i);
   });
 
   /**
-   * The 23503 branch had NEVER executed before the unwrap — the top-level
-   * `.code` read meant it was unreachable. Switching it on is a behaviour
-   * change, so it gets the same online-agent coverage: a rolled-back cascade
-   * leaves the row present while the agent may already be uninstalling, and the
-   * web callers surface only `err.message`, so the disclosure must be in the
-   * text and not merely in the JSON field.
+   * The 23503 branch had NEVER executed before the SQLSTATE unwrap — the
+   * top-level `.code` read meant it was unreachable. It gets the same
+   * online-agent coverage as 55P03.
    */
-  it('maps a Drizzle-wrapped 23503 to a 409 that discloses the already-sent uninstall', async () => {
+  it('reports the offending table with a 409 and sends nothing when the cascade hits 23503', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: DELETE FROM devices'), {
         cause: Object.assign(new Error('update or delete violates foreign key constraint'), {
@@ -759,12 +1015,13 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
 
     expect(res.status).toBe(409);
-    const body = await res.json() as { error: string; uninstallSent: boolean };
-    expect(body.uninstallSent).toBe(true);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    const body = await res.json() as { error: string };
+    expect(body).not.toHaveProperty('uninstallSent');
     // table_name must come off the SAME node as the code, or this reads
     // "related records in undefined".
     expect(body.error).toContain('some_child');
-    expect(body.error).toMatch(/already sent/i);
+    expect(body.error).not.toMatch(/already sent/i);
   });
 
   /**
@@ -773,14 +1030,14 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    * cascade defect is not user-retryable, so a 409 would advertise a retry
    * that fails identically forever), but it must not take the diagnosis down
    * with it: the global onError logs a bare `Error:` with no deviceId, and in
-   * production returns a sanitized body, so without a log here the fact that
-   * an irreversible SELF_UNINSTALL had already gone out is unrecoverable from
-   * the server side. That breadcrumb is precisely what the original report was
-   * missing.
+   * production returns a sanitized body, so without a log here there is no
+   * server-side record of which device failed to delete. That breadcrumb is
+   * precisely what the original report was missing.
+   *
    */
-  it('logs deviceId and uninstallSent before rethrowing an unmapped SQLSTATE (#3952)', async () => {
+  it('logs the deviceId and SQLSTATE before rethrowing an unmapped error (#3952)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: UPDATE discovered_assets'), {
@@ -806,11 +1063,12 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
         logged,
         `Expected one cascade-delete context log.\nconsole.error calls: ${JSON.stringify(consoleError.mock.calls.map((c) => String(c[0])))}`
       ).toHaveLength(1);
-      // The three facts that make the line worth having: which device, whether
-      // the irreversible uninstall already went out, and which SQLSTATE.
+      // The two facts that make the line worth having: which device, and which
+      // SQLSTATE. Without them the global onError logs a bare `Error:` with no
+      // deviceId and, in production, returns a sanitized body.
       expect(logged[0]).toContain(CONNECTED_DEVICE.id);
-      expect(logged[0]).toContain('uninstallSent=true');
       expect(logged[0]).toContain('23514');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
     }

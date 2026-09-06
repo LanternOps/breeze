@@ -520,6 +520,28 @@ describe('authMiddleware', () => {
     expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
+  it('allows an unenrolled user to load /auth/mfa/enrollment-options through the 428 gate', async () => {
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.get('/api/v1/auth/mfa/enrollment-options', (c) => c.json({ allowedMethods: {} }));
+
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null,
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+    const res = await app.request('/api/v1/auth/mfa/enrollment-options', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+  });
+
   // I6: passkey registration is an enrollment action (passkey is the always-
   // allowed, phishing-resistant factor). A policy-required-but-unenrolled user
   // MUST be able to reach /auth/passkeys/register/* — otherwise the broadened
@@ -560,6 +582,23 @@ describe('authMiddleware', () => {
   it('does not exempt other /sso paths', () => {
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/providers')).toBe(false);
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/link/start/abc')).toBe(false);
+  });
+
+  it('exempts /auth/cf-access-logout/prepare (a logout action) from forced MFA enrollment (RMM-QA-164)', () => {
+    // The route durably revokes refresh authority and mints a one-time
+    // navigation ticket to the Cloudflare Access logout hops — pure
+    // teardown, the CF-fronted twin of /auth/logout. A policy-required,
+    // unenrolled Partner Admin (every fresh-install bootstrap admin since
+    // RMM-QA-164) must still be able to sign out; without this the gate
+    // 428s the prepare call and the CF session can never be terminated.
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/auth/cf-access-logout/prepare')).toBe(true);
+  });
+
+  it('does not widen the logout exemption beyond the prepare route', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/complete')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare/extra')).toBe(false);
   });
 
   it('permits an enrolled user without consulting the resolver at all', async () => {

@@ -97,7 +97,11 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   // turn into a "Reconnect QuickBooks" CTA, instead of an opaque 500.
   let accessToken: string;
   try {
-    accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
+    // Called BARE on purpose: `getValidAccessToken` opens its own short system
+    // transactions around the QuickBooks refresh fetch and asserts that nothing
+    // is already open. Wrapping it (as this once did) turned those into
+    // savepoints that held the connection's row lock across the round trip.
+    accessToken = await getValidAccessToken(db, conn);
   } catch (err) {
     if (err instanceof ReauthRequiredError) {
       throw new QbImportError('QuickBooks needs to be reconnected', 'reauth_required', 409);

@@ -90,6 +90,41 @@ describe('PatchList CVE chips', () => {
   });
 });
 
+describe('PatchList severity (#3758)', () => {
+  it('renders an Unrated badge with a will-not-auto-approve note for a null-severity patch', () => {
+    const patch = makePatch({
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+      title: 'KB5000001',
+      severity: 'unrated',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.getAllByText('Unrated').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/will not auto-approve/i).length).toBeGreaterThan(0);
+  });
+
+  it('does not render the will-not-auto-approve note for a rated patch', () => {
+    const patch = makePatch({
+      id: '99999999-9999-9999-9999-999999999999',
+      title: 'KB6000001',
+      severity: 'critical',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.queryByText(/will not auto-approve/i)).toBeNull();
+  });
+
+  it('offers "Unrated" as a severity filter option', () => {
+    render(<PatchList patches={[]} />);
+
+    const filter = screen.getByDisplayValue(/all severities/i) as HTMLSelectElement;
+    const optionLabels = Array.from(filter.options).map(o => o.textContent);
+    expect(optionLabels).toContain('Unrated');
+  });
+});
+
 describe('PatchList page-size selector', () => {
   it('defaults to 25 rows per page', () => {
     render(<PatchList patches={makePatches(40)} />);
@@ -165,6 +200,21 @@ describe('PatchList header sorting', () => {
 
     fireEvent.click(screen.getByTestId('patch-sort-severity'));
     expect(renderedTitles()).toEqual(['Crit One', 'Mod One', 'Low One']);
+  });
+
+  it('sorts unrated severity last, after low (#3758)', () => {
+    render(
+      <PatchList
+        patches={[
+          makePatch({ id: 'ffffffff-ffff-ffff-ffff-ffffffffffff', title: 'Unrated One', severity: 'unrated' }),
+          makePatch({ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', title: 'Crit One', severity: 'critical' }),
+          makePatch({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', title: 'Low One', severity: 'low' }),
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('patch-sort-severity'));
+    expect(renderedTitles()).toEqual(['Crit One', 'Low One', 'Unrated One']);
   });
 
   it('marks the active sort header via aria-sort', () => {

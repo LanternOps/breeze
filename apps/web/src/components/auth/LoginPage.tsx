@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
@@ -11,10 +11,12 @@ import {
   apiSendSmsMfaCode,
   fetchAndApplyPreferences
 } from '../../stores/auth';
-import type { MfaMethod } from '../../stores/auth';
+import type { MfaChallenge, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
+import { discoverOrgSso, type SsoDiscoveryProvider } from '../../lib/ssoDiscovery';
+import { parseMfaChallengeResponse } from '../../lib/mfaChallenge';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -43,6 +45,17 @@ function getSessionExpiredNotice(t: ReturnType<typeof useTranslation<'auth'>>['t
     }),
     idle: t('login.notices.idle', {
       defaultValue: 'You were signed out due to inactivity.',
+    }),
+    // Not an expiry: POST /auth/refresh answered 403 "Invalid request origin",
+    // i.e. the API was never told about the address this browser is using
+    // (classically a self-hoster on an SSH tunnel — https://localhost:8443
+    // against a CORS_ALLOWED_ORIGINS of https://localhost). Without naming the
+    // origin, the bounce is indistinguishable from a bad password and it
+    // repeats after every successful sign-in.
+    'origin-rejected': t('login.notices.originRejected', {
+      origin: window.location.origin,
+      defaultValue:
+        'This Breeze server is not configured to accept sign-ins from {{origin}}. Open Breeze at the public URL set during setup (PUBLIC_APP_URL), or add {{origin}} to CORS_ALLOWED_ORIGINS in .env and restart the API.',
     }),
   };
   return reason ? sessionExpiredCopy[reason] : undefined;
@@ -156,8 +169,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // rather than stacked.
   const sessionExpiredNotice = ssoLoginNotice ? undefined : getSessionExpiredNotice(t);
   const [loading, setLoading] = useState(false);
-  const [mfaRequired, setMfaRequired] = useState(false);
-  const [tempToken, setTempToken] = useState<string>();
+  const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge>();
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
   const [passkeyAvailable, setPasskeyAvailable] = useState(false);
   const [phoneLast4, setPhoneLast4] = useState<string>();
@@ -176,6 +188,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // form that's collapsed behind it (see the enforceSSO comment below).
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [ssoBootstrapping, setSsoBootstrapping] = useState(false);
+  // Org-axis SSO for the address currently in the email field (#3229). Null
+  // until an entered address resolves to an org that MANDATES SSO; the server
+  // answers null for every other case, so this is only ever set when the
+  // password form would be refused anyway.
+  const [orgSso, setOrgSso] = useState<SsoDiscoveryProvider | null>(null);
+  const [orgSsoDismissed, setOrgSsoDismissed] = useState(false);
+  // The address the in-flight/last discovery was for, so retyping the same
+  // address (tab out, tab back) does not re-spend the rate-limit budget.
+  const lastDiscoveredEmail = useRef<string | null>(null);
+  // Monotonic request id. A slow answer for an address the user has already
+  // replaced must never overwrite the answer for the address on screen.
+  const discoverySeq = useRef(0);
 
   const login = useAuthStore((state) => state.login);
 
@@ -247,11 +271,19 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.mfaRequired) {
-      setMfaRequired(true);
-      setTempToken(result.tempToken);
-      setMfaMethod(result.mfaMethod || 'totp');
-      setPasskeyAvailable(result.passkeyAvailable === true);
-      setPhoneLast4(result.phoneLast4);
+      const challenge = result.challenge ?? parseMfaChallengeResponse({
+        ...result,
+        mfaRequired: true,
+      });
+      if (!challenge) {
+        setError('Invalid MFA challenge response');
+        setLoading(false);
+        return;
+      }
+      setMfaChallenge(challenge);
+      setMfaMethod(challenge.primary);
+      setPasskeyAvailable(challenge.allowedMethods.passkey);
+      setPhoneLast4(challenge.phoneLast4 ?? undefined);
       setSmsSent(false);
       setLoading(false);
       return;
@@ -269,12 +301,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handleMfaVerify = async (code: string) => {
-    if (!tempToken) return;
+    if (!mfaChallenge || mfaMethod === 'passkey') return;
 
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyMFA(code, tempToken, mfaMethod);
+    const result = await apiVerifyMFA(code, mfaChallenge.tempToken, mfaMethod);
 
     if (!result.success) {
       setError(result.error);
@@ -283,6 +315,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
+      setMfaChallenge(undefined);
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       // Setup wizard wins over `next` — user can't do anything useful before setup completes.
@@ -294,12 +327,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handlePasskeyMfaVerify = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return;
 
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyPasskeyMFA(tempToken);
+    const result = await apiVerifyPasskeyMFA(mfaChallenge.tempToken);
 
     if (!result.success) {
       setError(result.error);
@@ -308,6 +341,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
+      setMfaChallenge(undefined);
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       await navigateTo(result.requiresSetup ? '/setup' : safeNext);
@@ -318,20 +352,55 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handleSendSmsCode = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return false;
 
     setSmsSending(true);
     setError(undefined);
 
-    const result = await apiSendSmsMfaCode(tempToken);
+    const result = await apiSendSmsMfaCode(mfaChallenge.tempToken);
 
     if (!result.success) {
       setError(result.error);
+      setSmsSending(false);
+      return false;
     } else {
       setSmsSent(true);
     }
 
     setSmsSending(false);
+    return true;
+  };
+
+  const handleEmailSettled = useCallback((raw: string) => {
+    const email = raw.trim().toLowerCase();
+    // Cheap syntactic gate: the API 400s anything that isn't an address, and a
+    // half-typed one is a wasted request against a limited budget.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+    if (lastDiscoveredEmail.current === email) return;
+    lastDiscoveredEmail.current = email;
+
+    const seq = ++discoverySeq.current;
+    void discoverOrgSso(email).then((provider) => {
+      if (seq !== discoverySeq.current) return;
+      setOrgSso(provider);
+      // A newly discovered tenant re-collapses the password controls: the
+      // previous "show me the password form anyway" was about the previous
+      // address, not this one.
+      setOrgSsoDismissed(false);
+    });
+  }, []);
+
+  const handleOrgSso = async () => {
+    if (!orgSso || ssoBootstrapping) return;
+    const url = `${orgSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`;
+    setSsoBootstrapping(true);
+    setError(undefined);
+    try {
+      await bootstrapThenNavigate(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Authentication bootstrap failed');
+      setSsoBootstrapping(false);
+    }
   };
 
   const handlePartnerSso = async () => {
@@ -353,7 +422,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     return <div data-testid="login-cf-access-check" className="u-min-h-px-160" />;
   }
 
-  if (mfaRequired) {
+  if (mfaChallenge) {
     return (
       <div>
         <div className="mb-8">
@@ -366,6 +435,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}
+          methods={mfaChallenge.methods}
+          onMethodChange={(method) => {
+            setMfaMethod(method);
+            setError(undefined);
+            if (method !== 'sms') setSmsSent(false);
+          }}
           passkeyAvailable={passkeyAvailable}
           phoneLast4={phoneLast4}
           onSendSmsCode={handleSendSmsCode}
@@ -441,6 +516,17 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           onSubmit={handleLogin}
           errorMessage={error}
           loading={loading}
+          onEmailSettled={handleEmailSettled}
+          ssoPrompt={
+            orgSso && !orgSsoDismissed
+              ? {
+                  providerName: orgSso.providerName,
+                  onSelect: () => { void handleOrgSso(); },
+                  onUsePassword: () => setOrgSsoDismissed(true),
+                  busy: ssoBootstrapping,
+                }
+              : null
+          }
         />
       )}
       <McpUrlCard variant="compact" requireOAuth className="mt-8" />

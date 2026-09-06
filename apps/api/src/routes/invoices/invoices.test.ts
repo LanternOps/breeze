@@ -59,6 +59,26 @@ vi.mock('../../middleware/auth', () => ({
   requirePermission: () => async (_c: any, next: any) => next()
 }));
 
+// #3205 W07: lifecycle.ts's applyDeviceAppendixOverride calls `db` directly
+// (the reset-link/public-link routes already do too, but are untested here).
+// Only `.update().set().where().returning()` needs a controllable result —
+// dbAppendixState is shared with the test bodies below via vi.hoisted so the
+// mock factory (hoisted above these imports) can close over it.
+const { dbAppendixState } = vi.hoisted(() => ({
+  dbAppendixState: { updateAffectedRows: 1 as number, callOrder: [] as string[] },
+}));
+vi.mock('../../db', () => {
+  const chain: Record<string, unknown> = {};
+  for (const m of ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'delete', 'for', 'update', 'set']) {
+    chain[m] = vi.fn(() => chain);
+  }
+  chain.returning = vi.fn(() => {
+    dbAppendixState.callOrder.push('device_appendix_update');
+    return Promise.resolve(dbAppendixState.updateAffectedRows > 0 ? [{ id: 'x' }] : []);
+  });
+  return { db: chain };
+});
+
 import { invoiceRoutes } from './index';
 import { invoiceAssemblyRoutes } from './assembly';
 import * as svc from '../../services/invoiceService';
@@ -414,6 +434,76 @@ describe('invoice lifecycle routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NOT_A_DRAFT');
+  });
+});
+
+// #3205 W07. NOTE: the plan brief cited a `lifecycle.test.ts` file for these
+// tests, but no such file exists — every route test for lifecycle.ts (the
+// module under change here) already lives in this file's "invoice lifecycle
+// routes" describe block above, so these are appended here instead (stale
+// citation, anchored on the real file per the controller's other rulings).
+describe('POST /:id/send — includeDeviceAppendix (#3205 W07)', () => {
+  const DRAFT_ID = INV_ID;
+  const SENT_ID = '55555555-5555-5555-5555-555555555555';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbAppendixState.updateAffectedRows = 1;
+    dbAppendixState.callOrder = [];
+    (pdfSvc.sendInvoiceEmail as any).mockImplementation(async () => {
+      dbAppendixState.callOrder.push('sendInvoiceEmail');
+      return { invoice: { id: DRAFT_ID, status: 'sent' }, emailed: true };
+    });
+  });
+
+  it('persists device_appendix on a DRAFT before issuing, then sends', async () => {
+    const res = await app().request(`/${DRAFT_ID}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ includeDeviceAppendix: true }),
+    });
+    expect(res.status).toBe(200);
+    // The atomic update runs BEFORE sendInvoiceEmail (which issues, which
+    // enqueues the async render) — the only ordering that survives the job.
+    expect(dbAppendixState.callOrder).toEqual(['device_appendix_update', 'sendInvoiceEmail']);
+  });
+
+  it('409 INVOICE_ALREADY_ISSUED when the flag is present on a non-draft, and sends nothing', async () => {
+    dbAppendixState.updateAffectedRows = 0;              // the WHERE status='draft' matched nothing
+    const res = await app().request(`/${SENT_ID}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ includeDeviceAppendix: true }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'INVOICE_ALREADY_ISSUED' });
+    expect(pdfSvc.sendInvoiceEmail).not.toHaveBeenCalled();
+  });
+
+  it('OMITTING the field on an issued invoice is unaffected', async () => {
+    const res = await app().request(`/${SENT_ID}/send`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(dbAppendixState.callOrder).toEqual(['sendInvoiceEmail']); // no override call at all
+  });
+
+  it('400s on an unknown composer field (the .strict() guard still bites)', async () => {
+    const res = await app().request(`/${DRAFT_ID}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ includeDeviceAppendixx: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(pdfSvc.sendInvoiceEmail).not.toHaveBeenCalled();
+  });
+
+  it('composerOptions does NOT forward includeDeviceAppendix — the column is the channel', async () => {
+    await app().request(`/${DRAFT_ID}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ includeDeviceAppendix: true }),
+    });
+    expect(pdfSvc.sendInvoiceEmail).toHaveBeenCalled();
+    expect((pdfSvc.sendInvoiceEmail as any).mock.calls[0]![2]).not.toHaveProperty('includeDeviceAppendix');
   });
 });
 

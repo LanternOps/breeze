@@ -23,6 +23,8 @@ import {
   bindIssuedUserSession,
   authBrowserTransitionsEnforced,
   recordAuthTransitionLegacyIssuer,
+  completeInitialMfaEnrollment,
+  generateRecoveryCodes,
   type AuthIssuanceCapability,
   type AuthorizedUserSession,
   type UserSessionIdentity,
@@ -40,6 +42,7 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { EpochAdvancePreconditionError, type Tx } from '../../services/authLifecycle';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -52,6 +55,8 @@ import {
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   resolveEnrollmentStepUp,
+  rejectProof,
+  MFA_PROOF_INVALID,
   installAuthorizedUserSessionCookies,
   installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
@@ -59,6 +64,7 @@ import {
   writeAuthAudit,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
+  hashRecoveryCodes,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
@@ -138,7 +144,7 @@ const deletePasskeySchema = z.object({
 // so this gate only decides whether the passkey path is OFFERED — it never
 // substitutes for credential/assertion verification.
 function pendingAllowsPasskey(pending: PendingMfaRecord): boolean {
-  return pending.mfaMethod === 'passkey' || pending.passkeyAvailable === true;
+  return pending.allowedMethods.passkey;
 }
 
 type PasskeyRow = typeof userPasskeys.$inferSelect;
@@ -155,6 +161,23 @@ passkeyRoutes.get('/passkeys', authMiddleware, async (c) => {
   return c.json({ passkeys: rows.map(toPublicPasskey) });
 });
 
+/**
+ * #4470: the AUTHENTICATED passkey factor-management routes
+ * (`/passkeys/register/options`, `/passkeys/register/verify`,
+ * `DELETE /passkeys/:id`) answer a rejected proof with 400, exactly like
+ * `./mfa.ts`. `ProfilePage.handleAddPasskey` / `handleDeletePasskey` call all
+ * three through `fetchWithAuth` with no opt-out and no status branch, so while
+ * these answered 401 a mistyped step-up password — or a stale registration
+ * challenge — was handed to the generic refresh-and-replay path and could sign
+ * the user out mid-enrollment. Same bug, same fix.
+ *
+ * The LOGIN-time passkey routes further down (`/mfa/passkey/options`,
+ * `/mfa/passkey/verify`) deliberately keep their 401s: they are pre-session,
+ * scoped to a `tempToken` rather than a bearer, and are reached with a plain
+ * `fetch` that has no refresh path to mislead.
+ */
+const PASSKEY_PROOF_REJECTION_STATUS = 400;
+
 passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('json', registerOptionsSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
@@ -170,7 +193,7 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
     c,
     auth,
     { currentPassword, ssoReauthGrantId },
-    { keyPrefix: 'passkey:pwd', consume: false }
+    { keyPrefix: 'passkey:pwd', consume: false, rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS }
   );
   if (enrollmentError) return enrollmentError;
 
@@ -183,6 +206,7 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
   const existingPasskeys = await listActivePasskeys(auth.user.id);
   const options = await generatePasskeyRegistrationOptions({
     user: auth.user,
+    epochs: { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number },
     existingPasskeys: existingPasskeys.map(toStoredCredential)
   });
 
@@ -201,11 +225,23 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   try {
     verification = await verifyPasskeyRegistration({
       userId: auth.user.id,
+      epochs: { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number },
       response: credential
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
-      return c.json({ error: err.message }, 401);
+      // #4470: the registration challenge could not be redeemed — usually
+      // because it is missing or expired. Whatever the cause, it is not a dead
+      // bearer, and the challenge is single-use, so refresh-and-replaying this
+      // body could only ever fail again. On the settings page that 401 logged
+      // the user out for it.
+      //
+      // `PasskeyChallengeError` also covers "Redis unavailable" and a corrupt
+      // record, which are infra failures rather than rejected proofs and would
+      // be better served by a 503. That conflation predates this change (they
+      // shared the old 401 too) and is left for a follow-up — 400 at least
+      // keeps the user signed in where 401 did not.
+      return rejectProof(c, err.message, MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
     }
     throw err;
   }
@@ -220,7 +256,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       email: auth.user.email,
       details: { method: 'passkey' }
     });
-    return c.json({ error: 'Passkey registration failed' }, 401);
+    return rejectProof(c, 'Passkey registration failed', MFA_PROOF_INVALID, PASSKEY_PROOF_REJECTION_STATUS);
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
@@ -240,17 +276,23 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     c,
     auth,
     { ssoReauthGrantId },
-    { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true }
+    { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS }
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
-  // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
-  // ONE transaction with the epoch bump + refresh-family revoke — registering
-  // a new passkey is a factor-add and must invalidate assurance minted before
-  // this factor existed. The inserted row is captured via closure so it can
-  // be used in the response after the transaction commits.
+  const [enrollmentState] = await db
+    .select({
+      mfaEnabled: users.mfaEnabled,
+      mfaSecret: users.mfaSecret,
+      mfaMethod: users.mfaMethod,
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  if (!enrollmentState) return c.json({ error: 'User not found' }, 404);
+
   let inserted: PasskeyRow | undefined;
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+  const persistPasskey = async (tx: Tx) => {
     const [row] = await tx
       .insert(userPasskeys)
       .values({
@@ -271,28 +313,96 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       throw new Error('Passkey insert returned no row');
     }
     inserted = row;
+    return row;
+  };
 
-    // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
-    // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
-    // clobbering it to 'passkey' would strand a user's working authenticator
-    // and risk lockout if they later lose the passkey device. Only make
-    // passkey the primary method when the user has no other factor configured.
-    const [currentMfa] = await tx
-      .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
-      .from(users)
-      .where(eq(users.id, auth.user.id))
-      .limit(1);
-    const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
+  let mfaEpoch: number;
+  let teardownFailed: boolean;
+  let replacement: { recoveryCodes: string[]; issued: AuthorizedUserSession } | null = null;
+  if (!enrollmentState.mfaEnabled) {
+    const recoveryCodes = generateRecoveryCodes();
+    const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+    let capability: AuthIssuanceCapability;
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    let result;
+    try {
+      result = await completeInitialMfaEnrollment({
+        userId: auth.user.id,
+        identity: {
+          userId: auth.user.id,
+          email: auth.user.email,
+          roleId: auth.token?.roleId ?? null,
+          orgId: auth.orgId ?? null,
+          partnerId: auth.partnerId ?? null,
+          scope: auth.scope,
+          mfa: true,
+          mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        },
+        capability,
+        expectedAuthEpoch: auth.token?.aep as number,
+        expectedMfaEpoch: auth.token?.mep as number,
+        revokeReason: 'passkey-register',
+        recoveryCodes,
+        recoveryCodeHashes,
+        persistFactor: async (tx, hashes) => {
+          const enabled = await tx
+            .update(users)
+            .set({
+              mfaEnabled: true,
+              mfaMethod: 'passkey',
+              mfaRecoveryCodes: [...hashes],
+              updatedAt: new Date(),
+            })
+            .where(and(eq(users.id, auth.user.id), eq(users.mfaEnabled, false)))
+            .returning({ id: users.id });
+          if (enabled.length !== 1) throw new Error('MFA enrollment state changed');
+          return persistPasskey(tx);
+        },
+      });
+    } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    await bindIssuedUserSession(result.issued);
+    installAuthorizedUserSessionCookies(c, result.issued);
+    mfaEpoch = result.mfaEpoch;
+    teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
+    replacement = { recoveryCodes: result.recoveryCodes, issued: result.issued };
+  } else {
+    // Secondary-factor addition keeps the existing invalidation behavior and
+    // does not rotate recovery codes or replace the already-assured session.
+    let result;
+    try {
+      result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+        await persistPasskey(tx);
+        const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
 
-    await tx
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+        await tx
+          .update(users)
+          .set({
+            mfaEnabled: true,
+            ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      }, { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number, status: 'active' });
+    } catch (error) {
+      if (error instanceof EpochAdvancePreconditionError) {
+        return c.json({ error: 'Authentication changed. Please sign in again.' }, 409);
+      }
+      throw error;
+    }
+    mfaEpoch = result.mfaEpoch;
+    teardownFailed = result.remoteSessionsTerminated === TEARDOWN_FAILED;
+  }
 
   if (!inserted) {
     throw new Error('Passkey insert returned no row');
@@ -307,14 +417,20 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     details: {
       method: 'passkey',
       credentialId: fields.credentialId,
-      mfaEpoch: result.mfaEpoch,
-      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+      mfaEpoch,
+      teardownFailed
     }
   });
 
   return c.json({
     success: true,
-    passkey: toPublicPasskey(inserted)
+    passkey: toPublicPasskey(inserted),
+    ...(replacement
+      ? {
+          recoveryCodes: replacement.recoveryCodes,
+          tokens: toPublicTokens(replacement.issued),
+        }
+      : {}),
   });
 });
 
@@ -397,7 +513,7 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
   if (!pendingAllowsPasskey(pending)) {
-    return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
   // Throttle challenge issuance so it can't be hammered, but on a SEPARATE
   // bucket from /verify. A legitimate retry issues one /options + one /verify;
@@ -412,6 +528,37 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
   );
   if (!rateCheck.allowed) {
     return c.json({ error: 'Too many MFA attempts' }, 429);
+  }
+
+  const [user] = await withSystemDbAccessContext(() =>
+    db.select().from(users).where(eq(users.id, pending.userId)).limit(1)
+  );
+  if (!user) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+  const liveEpochs = await getUserEpochs(user.id);
+  const pendingVerdict = liveEpochs
+    ? evaluatePendingMfa(pending, {
+        status: user.status,
+        authEpoch: liveEpochs.authEpoch,
+        mfaEpoch: liveEpochs.mfaEpoch,
+      })
+    : ({ ok: false, reason: 'epoch_mismatch' } as const);
+  if (!pendingVerdict.ok) {
+    await getRedis()?.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
+  const context = await resolveCurrentUserTokenContext(user.id);
+  const livePolicy = await getEffectiveMfaPolicy({
+    scope: context.scope,
+    userId: user.id,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+  });
+  if (!livePolicy.allowedMethods.passkey) {
+    await getRedis()?.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
   const passkeys = await withSystemDbAccessContext(() => listActivePasskeys(pending.userId));
@@ -443,7 +590,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
   if (!pendingAllowsPasskey(pending)) {
-    return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
   const transitionV1 = isAuthTransitionV1Request(c);
   if (!transitionV1 && authBrowserTransitionsEnforced()) {
@@ -466,12 +613,6 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   if (!user) {
     return c.json({ error: 'Invalid MFA configuration' }, 400);
   }
-  // Re-check account status before minting tokens — the user could have been
-  // suspended during the 5-minute MFA window after the pending token was issued.
-  if (user.status !== 'active') {
-    return c.json({ error: 'Invalid or expired MFA session' }, 401);
-  }
-
   // SR2-06: re-check the live epoch/status before minting. A factor change
   // (mfa_epoch) or account-wide security event (auth_epoch) during the
   // 5-minute MFA window must invalidate this in-flight session.
@@ -541,6 +682,24 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     throw error;
   }
+  let context;
+  try {
+    context = await resolveCurrentUserTokenContext(user.id);
+    const livePolicy = await getEffectiveMfaPolicy({
+      scope: context.scope,
+      userId: user.id,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+    });
+    if (!livePolicy.allowedMethods.passkey) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      await redis.del(`mfa:pending:${tempToken}`);
+      return c.json({ error: 'Invalid MFA code' }, 401);
+    }
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    throw error;
+  }
   if (pending.ssoLinkTokenHash) {
     // Preserve mainline's link-on-first-login semantics while the normal
     // password-login path below keeps passkey effects inside its guarded
@@ -597,13 +756,6 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     });
   }
 
-  let context;
-  try {
-    context = await resolveCurrentUserTokenContext(user.id);
-  } catch (error) {
-    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-    throw error;
-  }
   const identity: UserSessionIdentity = {
     userId: user.id,
     email: user.email,
@@ -741,7 +893,9 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     return c.json({ error: 'MFA verification is required to delete a passkey' }, 403);
   }
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd', {
+    rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS,
+  });
   if (passwordError) return passwordError;
 
   const [passkey] = await findOwnedPasskey(id, auth.user.id);

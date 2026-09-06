@@ -13,10 +13,8 @@ import (
 	"net"
 	"os"
 	osexec "os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +35,10 @@ var log = logging.L("userhelper")
 
 var newPamActuator = pamactuator.New
 
+// runTCCCheckLoop is a seam over RunTCCCheckLoop so the per-Run goroutine
+// teardown contract can be asserted on any platform.
+var runTCCCheckLoop = RunTCCCheckLoop
+
 const (
 	maxLaunchBinaryPathBytes = 4096
 	maxLaunchArgs            = 32
@@ -49,6 +51,9 @@ type Client struct {
 	role       ipc.HelperRole // "system" or "user"
 	binaryKind string
 	context    string
+	// connMu guards conn against the Stop-from-another-goroutine race the
+	// reconnect supervisor creates; see connect and currentConn.
+	connMu     sync.Mutex
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
@@ -115,6 +120,16 @@ func (c *Client) Run() error {
 	// TypePong reply (issue #2273). No-op on non-macOS / nocgo builds.
 	guardAgainstAppNap()
 
+	// runDone closes when this Run returns for ANY reason — a dropped
+	// connection as well as an explicit Stop. Per-Run goroutines must key off
+	// this, not c.stopChan: the reconnect supervisor discards a client after
+	// Run returns and never calls Stop, so a goroutine watching stopChan
+	// alone is stranded holding a dead *ipc.Conn until its own timeout. For
+	// the TCC check loop that is up to three 60-minute intervals, and the
+	// orphans accumulate one per reconnect (#4194).
+	runDone := make(chan struct{})
+	defer close(runDone)
+
 	if err := c.connect(); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -147,7 +162,7 @@ func (c *Client) Run() error {
 	// Skip capture probes while a live session is active to avoid contending
 	// with the streaming capturer in the same helper process.
 	safeGo("tcc_check", func() {
-		RunTCCCheckLoop(c.conn, c.stopChan, c.context, func() bool {
+		runTCCCheckLoop(c.conn, runDone, c.context, func() bool {
 			return !c.desktopMgr.hasActiveSessions()
 		})
 	})
@@ -168,9 +183,11 @@ func (c *Client) Stop() {
 	if c.desktopMgr != nil {
 		c.desktopMgr.stopAll()
 	}
-	if c.conn != nil {
-		c.conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
-		c.conn.Close()
+	if conn := c.currentConn(); conn != nil {
+		// Best-effort courtesy notice on the way out; the broker also notices
+		// the socket closing, so a failure here changes nothing.
+		_ = conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
+		_ = conn.Close()
 	}
 }
 
@@ -179,8 +196,21 @@ func (c *Client) connect() error {
 	if err != nil {
 		return err
 	}
+	// Guard the write: Stop() reads c.conn from the supervisor's shutdown
+	// goroutine, which can run concurrently with Run() dialling. Every other
+	// read happens on the Run goroutine (or on handler goroutines it starts
+	// after connect returns), so it is ordered behind this write already.
+	c.connMu.Lock()
 	c.conn = ipc.NewConn(conn)
+	c.connMu.Unlock()
 	return nil
+}
+
+// currentConn returns the live connection, or nil if Run has not dialled yet.
+func (c *Client) currentConn() *ipc.Conn {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.conn
 }
 
 // dialIPC is implemented in client_windows.go and client_unix.go.
@@ -209,16 +239,12 @@ func (c *Client) authenticate() error {
 		}
 		username = uname
 	} else {
-		cu, err := user.Current()
+		resolvedUID, resolvedUser, err := resolveUnixIdentity()
 		if err != nil {
 			return fmt.Errorf("get current user: %w", err)
 		}
-		parsed, parseErr := strconv.ParseUint(cu.Uid, 10, 32)
-		if parseErr != nil {
-			return fmt.Errorf("parse uid %q: %w", cu.Uid, parseErr)
-		}
-		uid = parsed
-		username = cu.Username
+		uid = resolvedUID
+		username = resolvedUser
 	}
 
 	if username == "" {
@@ -230,7 +256,8 @@ func (c *Client) authenticate() error {
 
 	binaryHash, _ := computeSelfHash()
 	displayEnv := detectDisplayEnv()
-	sessionID := fmt.Sprintf("helper-%s-%d", username, os.Getpid())
+	// Opaque, host-identity-free session id (#3109) — see newSessionID.
+	sessionID := newSessionID()
 
 	authReq := ipc.AuthRequest{
 		ProtocolVersion:   ipc.ProtocolVersion,
@@ -693,7 +720,13 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 			}
 		}
 
-		if err := c.executor.Cancel(executionID); err != nil {
+		// #3525: mirror the agent-side structured outcome. "no such execution"
+		// used to come back as a failed IPC result, indistinguishable from a
+		// failed kill — and the agent needs the difference to decide whether
+		// not_found is the whole fleet's answer.
+		outcome, err := c.executor.Cancel(executionID, cmd.CommandID,
+			getIntOrDefault(payload, "graceSeconds", defaultCancelGraceSeconds))
+		if err != nil {
 			return ipc.IPCCommandResult{
 				CommandID: cmd.CommandID,
 				Status:    "failed",
@@ -703,7 +736,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 		resultJSON, err := json.Marshal(map[string]any{
 			"executionId": executionID,
-			"cancelled":   true,
+			"outcome":     string(outcome),
+			"cancelled":   outcome == executor.CancelTerminated,
 		})
 		if err != nil {
 			return ipc.IPCCommandResult{
@@ -740,10 +774,33 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 	}
 
+	// This mirrors heartbeat.handleScriptInner's ScriptExecution — the daemon
+	// re-marshals the raw command payload over IPC and this process rebuilds
+	// the execution, so anything the daemon reads off the payload and this
+	// site does not is silently lost for every runAs=user run.
+	//
+	// #4882: ScriptID and Parameters were exactly that. Without Parameters,
+	// buildEnvironment emitted no BREEZE_PARAM_* and SubstituteParameters had
+	// nothing to substitute, so a parameterised script failed with its own
+	// "parameter is required" error in user context while the identical run in
+	// SYSTEM context succeeded. ParametersFromPayload is the one decoder both
+	// sites now use.
+	//
+	// Two fields are deliberately absent:
+	//
+	//   - SecretEnv. BREEZE_VAR_* is a SYSTEM-context-only capability;
+	//     runAsSupportsSecrets (#3409) refuses a secret-bearing runAs=user run
+	//     on the daemon before it forwards anything, and the helper must not
+	//     become a second delivery route for it.
+	//   - RunAs. This process IS the target user, so the execution is already
+	//     in the right context; forwarding runAs="user" would make
+	//     executor.configureRunAs reject its own delivery.
 	script := executor.ScriptExecution{
 		ID:         cmd.CommandID,
+		ScriptID:   getStringOrDefault(payload, "scriptId", ""),
 		ScriptType: getStringOrDefault(payload, "language", "bash"),
 		Script:     getStringOrDefault(payload, "content", ""),
+		Parameters: executor.ParametersFromPayload(payload["parameters"]),
 		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
 	}
 
@@ -761,11 +818,45 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		status = "failed"
 	}
 
-	resultJSON, err := json.Marshal(map[string]any{
+	// #2698: extract from RAW stdout, BEFORE SanitizeOutput, exactly like the
+	// main-agent local-executor path (handlers_script.go). This IS the raw
+	// output — the helper is the process that actually ran the script — so
+	// doing the extraction here, rather than after the IPC round trip, is
+	// required: forwarding SanitizeOutput'd stdout to the main agent and
+	// extracting there would corrupt any marker whose JSON contains a
+	// token/secret/password-shaped key before extraction ever saw it,
+	// silently degrading every runAs:user script to the pre-Wave-3 gap this
+	// feature exists to close.
+	customFields, cleanedStdout := executor.ExtractCustomFields(result.Stdout)
+	if strings.Contains(cleanedStdout, executor.CustomFieldMarker) {
+		// A marker-prefixed line survived extraction: rejected by one of
+		// ExtractCustomFields' caps or unparseable. Left visible in stdout by
+		// design; logged here too so it's diagnosable from agent logs, not just
+		// by reading persisted script output.
+		log.Warn("script printed a custom-field marker that was not applied (parse failure or cap exceeded)",
+			"commandId", cmd.CommandID)
+	}
+
+	resultPayload := map[string]any{
 		"exitCode": result.ExitCode,
-		"stdout":   executor.SanitizeOutput(result.Stdout),
+		"stdout":   executor.SanitizeOutput(cleanedStdout),
 		"stderr":   executor.SanitizeOutput(result.Stderr),
-	})
+	}
+	// #3525: a runAs=user script is killed by the HELPER's executor, so its
+	// cancellation marker only reaches the server if it rides back over the IPC
+	// hop. Omitted when absent so an uncancelled run's payload is unchanged.
+	if result.Cancelled {
+		resultPayload["cancelled"] = true
+		resultPayload["cancelledByCommandId"] = result.CancelledByCommandID
+	}
+	if len(customFields) > 0 {
+		resultPayload["customFieldWrites"] = map[string]any{
+			"schemaVersion": 1,
+			"fields":        customFields,
+		}
+	}
+
+	resultJSON, err := json.Marshal(resultPayload)
 	if err != nil {
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,
@@ -908,22 +999,66 @@ func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	}
 }
 
+// handleNotify shows a desktop notification and replies on the same envelope id.
+//
+// A request carrying Actions is an interactive PROMPT rather than an
+// announcement: it renders a native modal dialog and the daemon is blocked
+// waiting for the clicked label (sessionbroker.RequestNotificationDecision). A
+// request with no Actions keeps the fire-and-forget toast path exactly as it was
+// — that is the #3197 reboot warning ladder, which must never become a modal
+// dialog in the user's face.
+//
+// Because the daemon now WAITS, this guarantees a reply on every exit path, the
+// way handleConsentRequest does. handleNotify is dispatched via safeGo
+// (commandLoop), which recovers panics but sends nothing back, and the most
+// panic-prone code below is the raw user32 syscall in the Windows dialog. Silence
+// is not fatal here — an unanswered prompt means "proceed as scheduled" — but it
+// would cost a full prompt timeout of dead air on a rung that had something to
+// say.
 func (c *Client) handleNotify(env *ipc.Envelope) {
+	replied := false
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("notify handler panicked", "id", env.ID, "panic", fmt.Sprintf("%v", r))
+			_ = c.conn.SendError(env.ID, ipc.TypeNotifyResult, "notify handler panicked")
+			return
+		}
+		if !replied {
+			_ = c.conn.SendError(env.ID, ipc.TypeNotifyResult, "notify handler produced no result")
+		}
+	}()
+
 	var req ipc.NotifyRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		log.Warn("invalid notify payload", "error", err)
 		if sendErr := c.conn.SendError(env.ID, ipc.TypeNotifyResult, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
 			log.Warn("failed to send notify error", "error", sendErr)
 		}
+		replied = true // terminal error reply already sent; don't double-send in the defer
 		return
 	}
+	req = sanitizeNotifyRequest(req)
 
-	delivered := showNotification(req)
-	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, ipc.NotifyResult{
-		Delivered: delivered,
-	}); err != nil {
-		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+	var result ipc.NotifyResult
+	if len(req.Actions) > 0 {
+		clicked, shown := showNotifyPrompt(req)
+		if shown {
+			result = ipc.NotifyResult{Delivered: true, ActionClicked: clicked}
+		} else {
+			// No dialog could be put on screen. The user still has to be TOLD:
+			// the #3197 always-warn invariant does not depend on the prompt, so
+			// fall back to the plain toast this rung would otherwise have shown.
+			result = ipc.NotifyResult{Delivered: showNotification(req)}
+		}
+	} else {
+		result = ipc.NotifyResult{Delivered: showNotification(req)}
 	}
+
+	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, result); err != nil {
+		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+		return
+	}
+	replied = true
 }
 
 func (c *Client) handlePamDialog(env *ipc.Envelope) {
@@ -1289,6 +1424,10 @@ func getStringOrDefault(m map[string]any, key, def string) string {
 	}
 	return def
 }
+
+// defaultCancelGraceSeconds mirrors the agent-side default when a script_cancel
+// payload omits graceSeconds. executor.Cancel clamps it to 0..MaxGraceSeconds.
+const defaultCancelGraceSeconds = 5
 
 func getIntOrDefault(m map[string]any, key string, def int) int {
 	if v, ok := m[key].(float64); ok {

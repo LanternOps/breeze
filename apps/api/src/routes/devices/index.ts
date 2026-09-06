@@ -19,6 +19,7 @@ import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
+import { billingRoutes } from './billing';
 import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
@@ -26,9 +27,14 @@ import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
 import { networkRoutes } from './network';
 import { customFieldValuesRoutes } from './customFieldValues';
+import { customFieldImportRoutes } from './customFieldImport';
 import { linksRoutes } from './links';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
+import { optionsRoutes } from './options';
+import { healthRoutes } from './health';
+import { removalConfigRoutes } from './removalConfig';
+import { bulkLifecycleRoutes } from './bulkLifecycle';
 import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
@@ -40,6 +46,23 @@ export const deviceRoutes = new Hono();
 // JWT-only `authMiddleware` and resurrect the 401. Mounting first keeps them
 // clear of every later wildcard auth middleware.
 deviceRoutes.route('/', customFieldValuesRoutes);
+
+// Mount the RMM custom-field VALUE importer (#3257 W08) immediately after them,
+// and BEFORE coreRoutes. Two reasons, both pinned by
+// customFieldImport.mountorder.test.ts:
+//  - `/custom-fields/import*` is a static path that must not be reached through
+//    any later `/:id` matcher.
+//  - This router uses PER-ROUTE auth and must never grow a `.use('*')`: a
+//    wildcard here would attach to every route mounted after it, and — mounted
+//    where it is — would be the same #2066 shadowing of the API-key branch that
+//    the comment above exists to prevent.
+deviceRoutes.route('/', customFieldImportRoutes);
+
+// Mount the server-backed selector before coreRoutes so the static `/options`
+// path cannot be consumed by core's `GET /:id` matcher.
+deviceRoutes.route('/', optionsRoutes);
+
+deviceRoutes.route('/', healthRoutes);
 
 // Mount provision routes FIRST — `/provision` is a static path under /devices
 // that must NOT be eaten by the `/:id` matcher in coreRoutes.
@@ -79,6 +102,17 @@ deviceRoutes.route('/', postureRoutes);
 // Mount the high-power literal sub-resource before core's /:id routes.
 deviceRoutes.route('/', agentRollbackRoutes);
 
+// Mount the Remove-dialog config BEFORE core — `/removal-config` is a static
+// path that must not be eaten by the `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', removalConfigRoutes);
+
+// Mount the bulk lifecycle routes (#2787) BEFORE core — every one of their
+// paths starts with the static segment `bulk`, which core's `/:id` matcher
+// would otherwise eat (`POST /devices/bulk/restore` would reach core's
+// `POST /:id/restore` with the literal id "bulk" and 404). Pinned by
+// bulkLifecycle.mountorder.test.ts.
+deviceRoutes.route('/', bulkLifecycleRoutes);
+
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);
 
@@ -104,6 +138,10 @@ deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
 deviceRoutes.route('/', watchdogLogsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
+// #3205 W06: GET /:id/billing. :id-prefixed, so it cannot be shadowed by core's
+// /:id matcher — mounted here with the other sub-resources, and pinned by
+// index.test.ts so a later static sibling cannot silently reorder it.
+deviceRoutes.route('/', billingRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);

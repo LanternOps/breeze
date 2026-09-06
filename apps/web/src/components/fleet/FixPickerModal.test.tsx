@@ -386,12 +386,74 @@ describe('FixPickerModal — step 3 confirm + dispatch', () => {
     await waitFor(() => expect(remediateFindingMock).toHaveBeenCalledTimes(1));
     const [findingId, payload] = remediateFindingMock.mock.calls[0];
     expect(findingId).toBe(FINDING_ID);
+    // `runAs` is OMITTED while the operator leaves the control on "Script
+    // default" (#4888) — that is what keeps the dispatcher resolving
+    // `scripts.run_as`, including 'elevated', which the launch-time enum
+    // cannot express.
     expect(Object.keys(payload).sort()).toEqual(['actionKind', 'deviceIds', 'parameters', 'scriptId']);
     expect(payload.actionKind).toBe('script');
     expect(payload.scriptId).toBe(SCRIPT_ID);
     expect(payload.deviceIds).toEqual([DEVICE_A, DEVICE_B]);
     expect(payload.parameters).toBeTypeOf('object');
     expect(payload).not.toHaveProperty('commandType');
+  });
+
+  it('sends the run context the operator chose, all the way into the request body (#4888)', async () => {
+    fetchWithAuthMock.mockResolvedValue(scriptsResponse());
+    renderPicker();
+
+    fireEvent.click(screen.getByTestId('fix-picker-action-script'));
+    fireEvent.click(screen.getByTestId('fix-picker-choose-script'));
+    await waitFor(() => expect(screen.getByText('Clear temp files')).toBeTruthy());
+    fireEvent.click(screen.getByText('Clear temp files'));
+    await waitFor(() => expect(screen.getByTestId('fix-picker-selected-script')).toBeTruthy());
+    fireEvent.change(screen.getByTestId('fix-picker-run-as'), { target: { value: 'user' } });
+
+    // The chosen context is surfaced before the operator confirms.
+    goToTargets();
+    fireEvent.click(screen.getByTestId('fix-picker-next'));
+    expect(screen.getByTestId('fix-picker-confirm-run-as').textContent).toContain('Logged-in user');
+
+    fireEvent.click(screen.getByTestId('fix-picker-confirm'));
+
+    await waitFor(() => expect(remediateFindingMock).toHaveBeenCalledTimes(1));
+    // Assert on the actual request body, not merely that the mock fired —
+    // the old code (`_runAs` discarded in handleScriptSelect) would have
+    // called remediateFinding just as reliably, with the value gone.
+    const [, payload] = remediateFindingMock.mock.calls[0];
+    expect(payload.runAs).toBe('user');
+  });
+
+  /**
+   * The picker's OWN run-as select is suppressed here. It has no "script
+   * default" option and resets to an explicit 'system' on every open, so
+   * forwarding its value would silently downgrade an `elevated` remediation
+   * script the moment the Fix flow started honouring the field — a quieter
+   * bug than the discarded-select one this issue is about.
+   */
+  it('hides the script picker\'s own run-as select and offers one that can inherit the default', async () => {
+    fetchWithAuthMock.mockResolvedValue(scriptsResponse());
+    renderPicker();
+
+    fireEvent.click(screen.getByTestId('fix-picker-action-script'));
+    fireEvent.click(screen.getByTestId('fix-picker-choose-script'));
+    await waitFor(() => expect(screen.getByText('Clear temp files')).toBeTruthy());
+    expect(screen.queryByTestId('script-run-as')).toBeNull();
+
+    fireEvent.click(screen.getByText('Clear temp files'));
+    await waitFor(() => expect(screen.getByTestId('fix-picker-run-as')).toBeTruthy());
+    expect((screen.getByTestId('fix-picker-run-as') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('never sends runAs on an actionKind: "command" remediation (the branch is `.strict()` and 400s on it)', async () => {
+    renderPicker();
+    advanceToConfirm('reboot');
+
+    fireEvent.click(screen.getByTestId('fix-picker-confirm'));
+
+    await waitFor(() => expect(remediateFindingMock).toHaveBeenCalledTimes(1));
+    const [, payload] = remediateFindingMock.mock.calls[0];
+    expect(payload).not.toHaveProperty('runAs');
   });
 
   it('sends the service name under the agent payload key `name`', async () => {

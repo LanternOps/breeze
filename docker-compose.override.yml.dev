@@ -11,9 +11,9 @@ services:
     ports:
       - '6379:6379'
 
-  caddy:
-    # Uses canonical docker/Caddyfile.prod mounted by the base compose.
-    # No command override needed — Caddy reads the volume-mounted config.
+  # caddy needs no dev override: it uses the canonical docker/Caddyfile.prod
+  # mounted by the base compose, and the portal (dev server included) is routed
+  # on path alone under /portal — see the @portal block there and #3906.
 
   binaries-init:
     image: alpine:3.19

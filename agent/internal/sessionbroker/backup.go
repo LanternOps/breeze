@@ -275,7 +275,7 @@ func (b *Broker) StopBackupHelperIfIdle() bool {
 // only set it when the connected server has advertised the backup_run_async
 // capability (see websocket.Client.HasServerCapability), since an old server
 // would otherwise parse the ack as a malformed terminal result.
-func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration, async bool) (*ipc.Envelope, error) {
+func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration, async bool, queueAsync ...bool) (*ipc.Envelope, error) {
 	b.mu.RLock()
 	var session *Session
 	var bh *backupHelper
@@ -295,9 +295,10 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		Payload:     payload,
 		TimeoutMs:   timeout.Milliseconds(),
 		Async:       async,
+		QueueAsync:  len(queueAsync) > 0 && queueAsync[0],
 	}
 
-	tracked := async && commandType == backupRunCommandType && bh != nil
+	tracked := async && (commandType == backupRunCommandType || req.QueueAsync) && bh != nil
 	if !tracked {
 		return session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
 	}
@@ -370,7 +371,16 @@ func ackStartedRun(env *ipc.Envelope) bool {
 	if err := json.Unmarshal(env.Payload, &ack); err != nil {
 		return false
 	}
-	return ack.Success
+	if !ack.Success {
+		return false
+	}
+	var admission struct {
+		Started bool `json:"started"`
+		Queued  bool `json:"queued"`
+	}
+	// Older helpers may ignore Async/QueueAsync and return the synchronous
+	// terminal result here. Only explicit admission has an unsolicited finish.
+	return json.Unmarshal([]byte(ack.Stdout), &admission) == nil && (admission.Started || admission.Queued)
 }
 
 // noteBackupRunResult clears the in-flight run once its terminal result has

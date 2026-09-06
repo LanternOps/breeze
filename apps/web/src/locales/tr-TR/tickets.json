@@ -445,6 +445,17 @@
       "feedbackFailed": "Bilet önceliklendirme geri bildirimi kaydedilemedi.",
       "feedbackSaved": "Bilet önceliklendirme geri bildirimi kaydedildi"
     },
+    "aiDraft": {
+      "kindReply": "Yapay zeka tarafından hazırlanan yanıt",
+      "kindResolutionNote": "Yapay zeka tarafından hazırlanan çözüm notu",
+      "sendAsMe": "Benim adıma gönder",
+      "sending": "Gönderiliyor…",
+      "discard": "Vazgeç",
+      "sendFailed": "Yapay zeka taslağı gönderilemedi.",
+      "sent": "Taslak gönderildi",
+      "discardFailed": "Yapay zeka taslağı silinemedi.",
+      "discarded": "Taslak silindi"
+    },
     "resolve": {
       "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
       "submit": "Bileti çözümle"

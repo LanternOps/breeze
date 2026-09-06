@@ -115,7 +115,26 @@ export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number)
   }
 }
 
-export async function revokeAllUserTokens(userId: string): Promise<void> {
+export interface RevokeAllUserTokensOptions {
+  /**
+   * Unix seconds of the moment a REPLACEMENT session was minted for this user
+   * by the same operation that is revoking everything else (MFA enrollment,
+   * recovery-code rotation). The cutoff is clamped strictly below it so the
+   * caller cannot revoke the very token it just handed back.
+   *
+   * The default one-second grace below is not enough on its own: the
+   * replacement JWT's `iat` is stamped inside the transaction, and any stall
+   * over a second between that mint and this post-commit cleanup makes
+   * `iat <= now - 1` true — at which point `/auth/refresh` rejects the fresh
+   * refresh token as revoked and the user is signed out anyway (#4480).
+   */
+  preserveTokensIssuedAtOrAfter?: number;
+}
+
+export async function revokeAllUserTokens(
+  userId: string,
+  options?: RevokeAllUserTokensOptions,
+): Promise<void> {
   const redis = getRedis();
   if (!redis) {
     throw new Error('[token-revocation] Redis unavailable — cannot revoke user tokens');
@@ -124,7 +143,14 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
   // Subtract 1 so tokens minted in the same second as the revocation (e.g.
   // an immediate re-login after password change) are treated as valid.
   // Specific token JTI revocation still covers the exact old token.
-  const cutoff = Math.floor(Date.now() / 1000) - 1;
+  const defaultCutoff = Math.floor(Date.now() / 1000) - 1;
+  const preserveFrom = options?.preserveTokensIssuedAtOrAfter;
+  // Only ever NARROWS the cutoff — a caller can protect its own replacement
+  // token but can never extend revocation forward over sessions the default
+  // would have spared.
+  const cutoff = Number.isFinite(preserveFrom)
+    ? Math.min(defaultCutoff, (preserveFrom as number) - 1)
+    : defaultCutoff;
   try {
     await redis
       .multi()
@@ -160,6 +186,20 @@ export async function revokeAllRefreshTokenFamiliesForUser(
   });
 }
 
+// `users.passwordChangedAt` is a `timestamp` (no tz) column
+// (apps/api/src/db/schema/users.ts). postgres.js parses that offsetless wire
+// value with a bare `new Date(...)`, so the Date object Drizzle hands back
+// carries the UTC wall clock re-read as THIS PROCESS's local time — wrong by
+// exactly the host's UTC offset on any non-UTC host. A caller-supplied string
+// (e.g. an already-serialized `toISOString()` value) is not affected: it
+// carries an explicit 'Z' offset, so `new Date(string).getTime()` is already
+// correct and must NOT be re-corrected here. Same defect class as #4018; see
+// services/sso.ts's `utcMsFromOffsetlessTimestamp` for the canonical writeup
+// and testUtils/pgOffsetlessTimestamp.ts for the test-side simulation.
+function utcMsFromOffsetlessDbTimestamp(value: Date): number {
+  return value.getTime() - value.getTimezoneOffset() * 60_000;
+}
+
 export function isTokenIssuedBeforePasswordChange(
   tokenIssuedAt: number | undefined,
   passwordChangedAt: Date | string | null | undefined
@@ -167,7 +207,7 @@ export function isTokenIssuedBeforePasswordChange(
   if (!passwordChangedAt) return false;
 
   const changedAtMs = passwordChangedAt instanceof Date
-    ? passwordChangedAt.getTime()
+    ? utcMsFromOffsetlessDbTimestamp(passwordChangedAt)
     : new Date(passwordChangedAt).getTime();
   if (!Number.isFinite(changedAtMs)) return false;
 
