@@ -265,8 +265,10 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
  *     Phase D2 (spec decision 6): pull-off/push-on is NOT a skip — the CDC
  *     pass still runs because it is what ADOPTS a Breeze-created Payment
  *     whose phase 2 never landed and what notices a Breeze-origin Payment
- *     deleted in QuickBooks; it just suppresses new QuickBooks-origin imports
- *     (`skipped_pull_disabled`, counted per row).
+ *     deleted in QuickBooks. In that window it touches Breeze-origin rows
+ *     ONLY: every QuickBooks-origin line — a new import, an edit of one
+ *     already imported, or a deletion — is suppressed and counted as
+ *     `skipped_pull_disabled` (review finding 2).
  */
 type ReconcileSkipReason = 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off';
 

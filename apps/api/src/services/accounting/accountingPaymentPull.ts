@@ -488,12 +488,20 @@ async function applyInsideTransaction(
   // (c) Authoritative at-most-once claim, read under the lock.
   const existing = await loadMappingByRemoteId(conn, 'payment', 'Payment', remoteMappingId);
 
-  // (c2) Pull switched off. Only a NEW QuickBooks-origin import is suppressed:
-  // a line that already has a mapping, or that carries Breeze's own marker, is
-  // this connection's outbound work echoing back and must still be processed
-  // (spec decision 6). The skip is never silent — it is a counted outcome the
-  // worker reports once per run as `skippedPullDisabled=<n>` (#4543).
-  if (!existing && !line.breezePaymentId && !conn.pullPayments) {
+  // (c2) Pull switched off. EVERY QuickBooks-origin line is suppressed — a new
+  // import, and equally an EDIT of one already imported (review finding 2). Only
+  // Breeze's OWN outbound work echoing back is still processed: a Breeze-origin
+  // mapping, or a line carrying Breeze's marker for one (spec decision 6).
+  //
+  // The pull-OR-push reconcile gate is what makes the edit arm reachable: with
+  // `pull_payments = false, push_payments = true` the CDC pass runs so it can
+  // adopt, diverge and notice removals for Breeze-origin rows — and until this
+  // check widened, a QuickBooks-origin edit arriving in that same window still
+  // rewrote `invoice_payments`, which is exactly the import the operator
+  // switched off. The skip is never silent — it is a counted outcome the worker
+  // reports once per run as `skippedPullDisabled=<n>` (#4543).
+  const breezeSideLine = existing ? existing.breezeOrigin : Boolean(line.breezePaymentId);
+  if (!conn.pullPayments && !breezeSideLine) {
     return noAudit(result('skipped_pull_disabled', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
 
@@ -1157,6 +1165,22 @@ async function reverseOneInsideTransaction(
   // entry that still owes QuickBooks a delete.
   if (mapping.breezeOrigin) {
     return breezeOriginRemoval(conn, mapping, remotePaymentId, remoteInvoiceId, reason);
+  }
+
+  // QuickBooks-origin, and pull is switched off (review finding 2). The
+  // pull-OR-push reconcile gate runs this pass for a pull-off/push-on
+  // connection so Breeze-origin rows stay reconciled; a QuickBooks-origin
+  // deletion destroying a Breeze `invoice_payments` row in that window is the
+  // import the operator switched off, arriving through the delete door. Counted
+  // as `skippedPullDisabled`, exactly like the edit arm in
+  // `applyAccountingPayment`.
+  if (!conn.pullPayments) {
+    return {
+      result: result(
+        'skipped_pull_disabled', remotePaymentId, remoteInvoiceId, null, mapping.breezeEntityId,
+      ),
+      audit: null,
+    };
   }
 
   // Unlocked discovery read: which invoice owns the mapped payment row?

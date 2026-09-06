@@ -1447,15 +1447,45 @@ describe('pull disabled (spec decision 6, #4543)', () => {
       .resolves.toMatchObject({ outcome: 'replayed' });
   });
 
-  it('still UPDATES an already-imported QuickBooks-origin payment with pull off', async () => {
-    // Only NEW imports are suppressed: a mapping that exists is this
-    // connection's own history, and freezing it would let Breeze drift.
+  it('SKIPS a QuickBooks-origin EDIT with pull off — it must not rewrite the Breeze ledger', async () => {
+    // The reconcile gate widened to pull-OR-push (spec decision 6), so the CDC
+    // pass now runs for a pull-off/push-on connection. Only Breeze-origin work
+    // (adoption, divergence, removed-remotely) is its business there: a
+    // QuickBooks-origin EDIT rewriting `invoice_payments` is precisely the
+    // import the operator switched off.
     currentPayments = [paymentRow()];
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
     await expect(applyAccountingPayment(
-      conn({ pullPayments: false }), { ...LINE, remotePaymentSyncToken: '9' }, runCtx, REALM_FP,
-    )).resolves.toMatchObject({ outcome: 'updated' });
+      conn({ pullPayments: false }), { ...LINE, remotePaymentSyncToken: '9', amountMinor: 9900 }, runCtx, REALM_FP,
+    )).resolves.toMatchObject({ outcome: 'skipped_pull_disabled' });
+    // The money row and the stored token are both untouched.
+    expect(currentPayments[0]).toMatchObject({ amount: paymentRow().amount });
+    expect(currentMappings[1]).toMatchObject({ remoteSyncToken: '0' });
+  });
+
+  it('SKIPS a QuickBooks-origin DELETE with pull off — the Breeze payment row survives', async () => {
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow()];
+
+    const results = await reverseAccountingPayment(
+      conn({ pullPayments: false }), QBO_PAYMENT_ID, runCtx, REALM_FP,
+    );
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped_pull_disabled']);
+    expect(currentPayments).toHaveLength(1);
+    expect(currentMappings).toHaveLength(2);
+  });
+
+  it('still processes a Breeze-origin removal with pull off — that is push-side business', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const results = await reverseAccountingPayment(
+      conn({ pullPayments: false }), QBO_PAYMENT_ID, runCtx, REALM_FP,
+    );
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
   });
 });
 
