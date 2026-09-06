@@ -145,6 +145,8 @@ runDb('serializes an automation link insert against a referenced policy owner mo
     );
 
     moverWork = captureSqlState(() => mover.begin(async (tx) => {
+      // Exercise the reference gate after the system-only ownership guard (#5099).
+      await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       await tx`SELECT pg_catalog.set_config('application_name', ${applicationName}, true)`;
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing feature-policy mover backend pid');
@@ -213,6 +215,8 @@ runDb('makes a link insert wait for and reject a committed referenced-policy own
   let inserterWork: Promise<string | undefined> | undefined;
   try {
     holderWork = holder.begin(async (tx) => {
+      // This fixture models the authorized owner mover, not an ordinary tenant edit.
+      await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       await tx`UPDATE public.configuration_policies
         SET org_id = ${orgB.id}, updated_at = now() WHERE id = ${targetPolicy.id}`;
       moved.resolve();
