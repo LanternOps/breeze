@@ -1,6 +1,7 @@
+import type { DnsAction } from '../../db/schema';
 import type { DnsEvent, DnsProvider } from './index';
 import { DnsProviderHttpError, requestJson } from './http';
-import { asArray, asBoolean, asNumber, asRecord, asString, asStringArray } from './helpers';
+import { asArray, asNumber, asRecord, asString } from './helpers';
 
 export interface UmbrellaProviderConfig {
   organizationId?: string;
@@ -10,6 +11,129 @@ export interface UmbrellaProviderConfig {
 
 /** Cisco's OAuth2 client-credentials token endpoint (Umbrella API). */
 const UMBRELLA_TOKEN_URL = 'https://api.umbrella.com/auth/v2/token';
+
+/**
+ * Next-gen Umbrella Reports API activity feed.
+ *
+ * The legacy "Umbrella Reporting v2" host — `reports.api.umbrella.com`, with
+ * the org as a path segment — was retired with an EOL of September 2023 and
+ * now 404s at Cisco's own gateway ("no Route matched with those values"),
+ * which is the failure #4597 reported once auth (#3271) and the epoch-ms
+ * timestamps (#4637) were fixed. The replacement carries no org id at all: the
+ * OAuth2 token's `sub` claim (`org/<orgId>/client/<apiKey>`) scopes it.
+ */
+const UMBRELLA_ACTIVITY_URL = 'https://api.umbrella.com/reports/v2/activity';
+
+/**
+ * `/reports/v2/activity` is the COMBINED feed — dns, proxy, firewall and
+ * intrusion records share one `data[]`, discriminated by `type`. Only DNS
+ * records are DnsEvents, and the documented way to scope the combined feed is
+ * this header (valid values: dns, proxy, firewall, ip; default `all`). If a
+ * tenant's gateway ignores it, the non-DNS records simply fail to map.
+ */
+const UMBRELLA_TRAFFIC_TYPE_HEADER = { 'x-traffic-type': 'dns' } as const;
+
+/**
+ * "The time range set by the `to` and `from` query parameters cannot exceed 30
+ * days" (Cisco Reporting API docs). An integration that has been broken for
+ * longer than that — the case in #4597 — otherwise asks for a window the API
+ * rejects outright and stays broken after the endpoint fix, so the window is
+ * clamped to the most recent 30 days rather than failing the sync.
+ */
+const UMBRELLA_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** One `{ label, type }` pair off an activity record's `categories[]`. */
+interface UmbrellaLabel {
+  label: string;
+  type?: string;
+}
+
+/**
+ * Read a labelled list (`categories`, `policycategories`, `threats`,
+ * `identities`). Next-gen records use `[{ id, label, type }]`; a plain string
+ * array is accepted too so a shape change drops to a usable label rather than
+ * losing the record. `type` is only read when it is a string — on `identities`
+ * it is itself an object, and must not throw.
+ */
+function asLabels(value: unknown): UmbrellaLabel[] {
+  return asArray(value).flatMap((entry): UmbrellaLabel[] => {
+    const plain = asString(entry);
+    if (plain) return [{ label: plain }];
+
+    const record = asRecord(entry);
+    const label = asString(record?.label) ?? asString(record?.name);
+    if (!label) return [];
+    return [{ label, type: asString(record?.type)?.toLowerCase() }];
+  });
+}
+
+/**
+ * Activity timestamps are epoch milliseconds (`timestamp`). An ISO string is
+ * still parsed so a mixed/older payload degrades instead of dropping.
+ */
+function parseActivityTimestamp(value: unknown): Date | null {
+  const epochMs = asNumber(value);
+  const parsed = epochMs !== undefined ? new Date(epochMs) : new Date(asString(value) ?? '');
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * The activity record schema documents `verdict` as `allowed | blocked`, while
+ * the `verdict` FILTER parameter is documented with `allowed,blocked,proxied`.
+ * `proxied` (sent to the intelligent proxy for inspection) is therefore
+ * handled but not assumed: if it ever appears it maps to the distinct
+ * `redirected` action rather than being silently counted as allowed traffic.
+ */
+function mapVerdict(verdict: string | undefined): DnsAction {
+  if (!verdict) return 'allowed';
+  if (verdict.includes('block')) return 'blocked';
+  if (verdict.includes('proxied') || verdict.includes('redirect')) return 'redirected';
+  return 'allowed';
+}
+
+/**
+ * Map one `data[]` record from the next-gen activity feed onto a `DnsEvent`.
+ *
+ * Returns `[]` for anything unusable so a single malformed record costs that
+ * record, not the whole sync page.
+ */
+function mapActivityRecord(entry: unknown): DnsEvent[] {
+  const record = asRecord(entry);
+  if (!record) return [];
+
+  const domain = asString(record.domain) ?? asLabels(record.domains)[0]?.label;
+  const timestamp = parseActivityTimestamp(record.timestamp ?? record.datetime);
+  if (!domain || !timestamp) return [];
+
+  const categories = asLabels(record.categories);
+  const categoryLabels = categories.map((category) => category.label);
+  // A DNS-security event is classified by its SECURITY category; the content
+  // category ("Business Services") is usually listed first and would
+  // otherwise win and normalize to `unknown` downstream.
+  const primaryCategory = categories.find((category) => category.type === 'security')?.label
+    ?? asLabels(record.policycategories).find((category) => category.type === 'security')?.label
+    ?? categoryLabels[0];
+
+  return [{
+    timestamp,
+    domain,
+    queryType: asString(record.querytype) ?? asString(record.query_type) ?? 'A',
+    action: mapVerdict(asString(record.verdict)?.toLowerCase()),
+    category: primaryCategory,
+    threatType: asLabels(record.threats)[0]?.label ?? asString(record.threattype),
+    sourceIp: asString(record.internalip) ?? asString(record.externalip) ?? asString(record.internal_ip),
+    sourceHostname: asLabels(record.identities)[0]?.label ?? asString(record.identity),
+    // Deliberately unset: the dns/proxy activity schemas document NO per-record
+    // id (no id/requestid/eventid — only intrusion records carry a sessionid),
+    // so the sync job derives a deterministic fallback id from the event's own
+    // fields and dedupes re-synced windows on that.
+    providerEventId: undefined,
+    metadata: {
+      categories: categoryLabels,
+      verdict: asString(record.verdict)
+    }
+  }];
+}
 
 /**
  * Refresh this many ms before the advertised expiry so a token can't lapse
@@ -120,122 +244,49 @@ export class UmbrellaProvider implements DnsProvider {
   }
 
   async syncEvents(since: Date, until: Date): Promise<DnsEvent[]> {
-    const orgId = this.config.organizationId;
-    if (!orgId) {
-      throw new Error('Cisco Umbrella integration requires config.organizationId');
-    }
-
+    // `organizationId` is deliberately NOT read here. The next-gen Reports API
+    // takes no org path segment — the OAuth2 token's own `sub` claim
+    // (`org/<orgId>/client/<apiKey>`) scopes the request — so requiring it
+    // would reject a perfectly valid integration. It stays on the config type
+    // for backward compatibility with rows created before this change (#4597).
     const limit = 1000;
-    const maxPages = 100;
+    const maxRequests = 100;
     const allEvents: DnsEvent[] = [];
-    const seenPageKeys = new Set<string>();
-    let page = 1;
-    let cursor: string | undefined;
 
-    for (let i = 0; i < maxPages; i++) {
-      const url = new URL(`https://reports.api.umbrella.com/v2/organizations/${orgId}/security-activity`);
-      // Cisco's reporting API v2 rejects ISO 8601 strings here with
-      // {"errors":[{"param":"from","msg":"invalid timestamp"...}]}; per its
-      // OpenAPI spec, from/to must be Unix epoch milliseconds as a numeric
-      // string (#4597).
-      url.searchParams.set('from', String(since.getTime()));
-      url.searchParams.set('to', String(until.getTime()));
+    const to = until.getTime();
+    const from = Math.max(since.getTime(), to - UMBRELLA_MAX_WINDOW_MS);
+    let offset = 0;
+
+    for (let request = 0; request < maxRequests; request++) {
+      const url = new URL(UMBRELLA_ACTIVITY_URL);
+      // Epoch milliseconds, not ISO 8601: Cisco rejects ISO strings here with
+      // {"errors":[{"param":"from","error":"invalid timestamp specified"}]}
+      // (#4597 / #4637). Relative forms ("-7days", "now") are also accepted
+      // upstream; explicit bounds keep the sync window deterministic.
+      url.searchParams.set('from', String(from));
+      url.searchParams.set('to', String(to));
       url.searchParams.set('limit', String(limit));
-      if (cursor) {
-        url.searchParams.set('cursor', cursor);
-      } else {
-        url.searchParams.set('page', String(page));
-      }
+      // This endpoint pages by limit/offset only — no cursor, no page token,
+      // and `meta` is documented as an empty object, so there is no total or
+      // has-more to read.
+      url.searchParams.set('offset', String(offset));
 
       const payload = await this.withAuth((authorization) =>
         requestJson<Record<string, unknown>>(url, {
-          headers: { Authorization: authorization }
+          headers: { Authorization: authorization, ...UMBRELLA_TRAFFIC_TYPE_HEADER }
         })
       );
 
-      const requests = asArray(payload.requests ?? payload.data);
-      const mapped = requests.flatMap((entry): DnsEvent[] => {
-        const record = asRecord(entry);
-        if (!record) return [];
+      const records = asArray(payload.data);
+      allEvents.push(...records.flatMap(mapActivityRecord));
 
-        const timestampRaw = asString(record.datetime);
-        const domain = asString(record.domain);
-        if (!timestampRaw || !domain) return [];
-
-        const timestamp = new Date(timestampRaw);
-        if (Number.isNaN(timestamp.getTime())) return [];
-
-        const verdict = asString(record.verdict)?.toLowerCase();
-        const categories = asStringArray(record.categories);
-
-        return [{
-          timestamp,
-          domain,
-          queryType: asString(record.query_type) ?? 'A',
-          action: verdict?.includes('block') ? 'blocked' : 'allowed',
-          category: categories[0],
-          threatType: asString(record.threat_type),
-          sourceIp: asString(record.internal_ip) ?? asString(record.src_ip),
-          sourceHostname: asString(record.identity),
-          providerEventId: asString(record.request_id),
-          metadata: {
-            categories
-          }
-        }];
-      });
-      allEvents.push(...mapped);
-
-      const paging = asRecord(payload.paging)
-        ?? asRecord(payload.meta)
-        ?? asRecord(payload.metadata)
-        ?? asRecord(payload.result_info);
-      const links = asRecord(payload.links);
-
-      const nextCursor = asString(payload.next_cursor)
-        ?? asString(paging?.next_cursor)
-        ?? asString(paging?.cursor)
-        ?? asString(links?.next)
-        ?? asString(payload.next);
-      const nextPage = asNumber(payload.next_page) ?? asNumber(paging?.next_page);
-      const hasMore = asBoolean(payload.has_more) ?? asBoolean(paging?.has_more);
-
-      if (nextCursor) {
-        const key = `cursor:${nextCursor}`;
-        if (seenPageKeys.has(key)) break;
-        seenPageKeys.add(key);
-        if (nextCursor.startsWith('http')) {
-          const nextUrl = new URL(nextCursor);
-          cursor = asString(nextUrl.searchParams.get('cursor')) ?? undefined;
-          page = asNumber(nextUrl.searchParams.get('page')) ?? (page + 1);
-        } else if (/^\d+$/.test(nextCursor)) {
-          cursor = undefined;
-          page = Number(nextCursor);
-        } else {
-          cursor = nextCursor;
-        }
-        continue;
-      }
-
-      if (typeof nextPage === 'number' && nextPage > page) {
-        const key = `page:${nextPage}`;
-        if (seenPageKeys.has(key)) break;
-        seenPageKeys.add(key);
-        cursor = undefined;
-        page = nextPage;
-        continue;
-      }
-
-      if (hasMore === true && requests.length >= limit) {
-        const candidate = page + 1;
-        const key = `page:${candidate}`;
-        if (seenPageKeys.has(key)) break;
-        seenPageKeys.add(key);
-        cursor = undefined;
-        page = candidate;
-        continue;
-      }
-
-      break;
+      // An EMPTY page is the end of the collection — not a short one. Cisco
+      // documents no maximum for `limit`, so a server-side cap below ours
+      // would make every page look "short" and silently truncate the sync.
+      // Advancing by the records actually returned (never `page * limit`)
+      // keeps the walk correct whatever page size the API decides to serve.
+      if (records.length === 0) break;
+      offset += records.length;
     }
 
     return allEvents;
