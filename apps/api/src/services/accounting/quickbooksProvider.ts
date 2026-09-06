@@ -17,6 +17,7 @@ import type {
   ChangeSetPaymentLine,
   ConnectionTokens,
   InvoicePushResult,
+  InvoiceVoidResult,
   PaymentDeleteResult,
   RealmSettings,
   RemoteAddress,
@@ -782,11 +783,14 @@ export class QuickbooksProvider implements AccountingProvider {
   }
 
   /**
-   * The current SyncToken of a QuickBooks Invoice. Only ever called right after
-   * a 5010 stale-object fault, which has just PROVED the Invoice exists — so a
-   * 2xx body without `Invoice.SyncToken` is a malformed response and throws,
-   * rather than being folded into a silent "no token" that would send an
-   * update QuickBooks is guaranteed to reject again.
+   * The current SyncToken of a QuickBooks Invoice. A 2xx body without
+   * `Invoice.SyncToken` is a malformed response and THROWS, rather than being
+   * folded into a silent "no token" that would send a write QuickBooks is
+   * guaranteed to reject again.
+   *
+   * Two callers: right after a 5010 stale-object fault (which has just proved
+   * the Invoice exists), and `voidInvoice` on a mapping that stores no token at
+   * all — there a 404 is the honest answer and propagates as such.
    */
   private async readInvoiceSyncToken(conn: AccountingConnection, remoteInvoiceId: string): Promise<string> {
     const parsed = await this.qboRequest<{ Invoice?: { SyncToken?: string } }>(
@@ -798,20 +802,49 @@ export class QuickbooksProvider implements AccountingProvider {
     return parsed.Invoice.SyncToken;
   }
 
+  /**
+   * Void a QuickBooks Invoice, returning the revision QuickBooks stamped on it
+   * so the caller can persist it (a void bumps the SyncToken).
+   *
+   * SAME STALE-TOKEN DISCIPLINE AS `pushInvoice` (walk item 37, a Phase C bug
+   * live on prod v0.110.0). Breeze's stored SyncToken is NOT authoritative:
+   * QuickBooks bumps an Invoice's revision every time a Payment is applied to
+   * it, so voiding a PAID invoice from Breeze always failed with a 400 on the
+   * stored token and left the invoice mapping in error after five job
+   * attempts. QuickBooks *does* permit voiding an invoice that has a payment
+   * applied — it just wants the live revision — so a 5010 is re-read and
+   * retried EXACTLY ONCE. A second stale fault escapes as the retryable error
+   * it is, rather than spinning against somebody editing the invoice in a loop.
+   *
+   * A NULL stored token is likewise not a refusal any more. An adopted or
+   * re-owned invoice mapping can legitimately carry none, and throwing left an
+   * operator with no route to a QuickBooks void but doing it by hand; the live
+   * revision is simply read first.
+   */
   async voidInvoice(
     conn: AccountingConnection,
     _invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
-  ): Promise<void> {
+  ): Promise<InvoiceVoidResult> {
+    const voidAt = async (syncToken: string): Promise<InvoiceVoidResult> => {
+      const parsed = await this.qboRequest<{ Invoice?: { SyncToken?: string } }>(
+        conn,
+        `invoice?operation=void&minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks invoice void',
+        { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: syncToken }) },
+      );
+      return { syncToken: parsed.Invoice?.SyncToken ?? null };
+    };
+
     if (!mapping.remoteSyncToken) {
-      throw new Error('QuickBooks Invoice void requires the current SyncToken');
+      return await voidAt(await this.readInvoiceSyncToken(conn, mapping.remoteEntityId));
     }
-    await this.qboRequest(
-      conn,
-      'invoice?operation=void&minorversion=70',
-      'QuickBooks invoice void',
-      { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: mapping.remoteSyncToken }) },
-    );
+    try {
+      return await voidAt(mapping.remoteSyncToken);
+    } catch (err) {
+      if (!isQboStaleObject(err)) throw err;
+      return await voidAt(await this.readInvoiceSyncToken(conn, mapping.remoteEntityId));
+    }
   }
 
   async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {

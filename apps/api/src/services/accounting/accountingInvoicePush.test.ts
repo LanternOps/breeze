@@ -376,7 +376,7 @@ beforeEach(() => {
     id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001',
     remoteTaxTotal: '7.00', remoteTotal: '107.00',
   });
-  voidInvoiceMock.mockResolvedValue(undefined);
+  voidInvoiceMock.mockResolvedValue({ syncToken: null });
   fanOutOwedPaymentsMock.mockResolvedValue([]);
   enqueuePaymentPushMock.mockResolvedValue(true);
 });
@@ -1183,6 +1183,29 @@ describe('voidInvoiceInAccounting', () => {
       { remoteEntityId: 'qb-inv-1', remoteSyncToken: '3' },
     );
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.syncStatus).toBe('synced');
+    expect(mapping.lastError).toBeNull();
+  });
+
+  it('persists the SyncToken the void returned, so the NEXT write does not start stale', async () => {
+    // The void bumps the Invoice's revision. Leaving the old token stored just
+    // hands the next push a guaranteed 5010 (walk item 37).
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockResolvedValueOnce({ syncToken: '9' });
+
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.remoteSyncToken).toBe('9');
     expect(mapping.syncStatus).toBe('synced');
     expect(mapping.lastError).toBeNull();
   });

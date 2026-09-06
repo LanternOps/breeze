@@ -142,6 +142,16 @@ export interface AccountingInvoicePayload {
  * currency contract (multi-currency §11). Deliberately wider arity than the
  * Phase-A sketch, which had `voidInvoice(conn, mapping)`.
  */
+/**
+ * What a void tells Breeze. A void BUMPS the Invoice's revision, so the stored
+ * SyncToken is stale the moment it returns — persisting the new one is what
+ * stops the next write starting with a guaranteed 5010. `null` when the
+ * provider's response carried no token; the caller then keeps what it had.
+ */
+export interface InvoiceVoidResult {
+  syncToken: string | null;
+}
+
 export interface AccountingVoidInvoicePayload {
   invoiceId: string;
   docNumber: string | null;
@@ -306,7 +316,7 @@ export interface AccountingProvider {
     conn: AccountingConnection,
     invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
-  ): Promise<void>;
+  ): Promise<InvoiceVoidResult>;
   /**
    * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
    * QuickBooks Payment's amount would rewrite receipt history, and Intuit models

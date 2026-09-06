@@ -71,6 +71,7 @@ import {
   type AccountingInvoicePayload,
   type AccountingVoidInvoicePayload,
   type InvoicePushResult,
+  type InvoiceVoidResult,
 } from './types';
 
 export type AccountingInvoicePushErrorCode =
@@ -955,8 +956,9 @@ export async function voidInvoiceInAccounting(
     remoteSyncToken: mappingRow.remoteSyncToken ?? null,
   };
 
+  let voidResult: InvoiceVoidResult;
   try {
-    await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
+    voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
@@ -968,6 +970,36 @@ export async function voidInvoiceInAccounting(
   }
   // Success: sync_status/last_error are left exactly as they were (still
   // 'synced'/null from the original push) — a void does not change whether
-  // the invoice's LAST sync succeeded, and there is no new remote state to
-  // record beyond what QuickBooks already reflects.
+  // the invoice's LAST sync succeeded.
+  //
+  // The SyncToken IS new state, though: a void bumps the Invoice's revision,
+  // so keeping the old one hands the next write a guaranteed 5010 (walk item
+  // 37). BEST EFFORT ON PURPOSE — QuickBooks has already voided the invoice, so
+  // failing the caller here would report a void that actually happened as an
+  // error, and the stale token is self-healing anyway (`pushInvoice` and
+  // `voidInvoice` both re-read on 5010). Skipped entirely when the response
+  // carried no token, so a tokenless reply cannot NULL out a good one.
+  if (voidResult.syncToken && voidResult.syncToken !== mappingRow.remoteSyncToken) {
+    try {
+      const rows = await runInDbContext(() => db
+        .update(accountingEntityMappings)
+        .set({ remoteSyncToken: voidResult.syncToken, updatedAt: new Date() })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingRow.id),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id }));
+      if (!rows[0]) {
+        captureException(
+          new Error(`void SyncToken persist matched no accounting_entity_mappings row (id=${mappingRow.id})`),
+          undefined,
+          { service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId },
+        );
+      }
+    } catch (dbErr) {
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
+        service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
+      });
+    }
+  }
 }

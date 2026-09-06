@@ -483,12 +483,72 @@ describe('voidInvoice', () => {
     expect(body).toEqual({ Id: '310', SyncToken: '4' });
   });
 
-  it('throws when the mapping has no remoteSyncToken', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
+  it('returns the SyncToken QuickBooks stamped on the void, for the coordinator to persist', async () => {
+    mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '5', status: 'Voided' } });
 
-    await expect(quickbooksProvider.voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: null }))
-      .rejects.toThrow(/SyncToken/);
-    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(quickbooksProvider.voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' }))
+      .resolves.toEqual({ syncToken: '5' });
+  });
+
+  // Walk item 37 / prod v0.110.0: QuickBooks bumps an Invoice's SyncToken every
+  // time a Payment is applied, so voiding a PAID invoice always failed with a
+  // 400 on the stored token and left the mapping in error. QuickBooks does
+  // allow the void — it just wants the live revision.
+  it('re-reads the live SyncToken and retries the void exactly once on a 5010 Stale Object fault', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '7' } }))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '8', status: 'Voided' } }));
+
+    const result = await quickbooksProvider.voidInvoice(
+      conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // First void used the stored (stale) token.
+    expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body))).toEqual({ Id: '310', SyncToken: '4' });
+    // Then a plain GET of the live Invoice.
+    expect(String(fetchMock.mock.calls[1]![0])).toContain('/invoice/310');
+    expect((fetchMock.mock.calls[1]![1] as RequestInit).method ?? 'GET').toBe('GET');
+    // Retry carries the LIVE token.
+    expect(String(fetchMock.mock.calls[2]![0])).toContain('invoice?operation=void');
+    expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body))).toEqual({ Id: '310', SyncToken: '7' });
+    expect(result).toEqual({ syncToken: '8' });
+  });
+
+  it('does not loop on a stale fault: a second 5010 after the re-read propagates', async () => {
+    const stale = () => new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(stale())
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '7' } }))
+      .mockResolvedValueOnce(stale());
+
+    await expect(quickbooksProvider.voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' }))
+      .rejects.toThrow(/failed with 400/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads the live SyncToken FIRST when the mapping has none, instead of refusing the void', async () => {
+    // An adopted or re-owned invoice mapping can legitimately carry no token,
+    // and refusing left the only route to a QuickBooks void as doing it by hand.
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '7' } }))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '8', status: 'Voided' } }));
+
+    const result = await quickbooksProvider.voidInvoice(
+      conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: null },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/invoice/310');
+    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body))).toEqual({ Id: '310', SyncToken: '7' });
+    expect(result).toEqual({ syncToken: '8' });
   });
 });
 

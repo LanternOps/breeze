@@ -67,6 +67,16 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   so a lost response cannot double-book the customer. Previously the re-push
   reported success and re-linked the mapping to the deleted Payment, leaving the
   invoice balance wrong in QuickBooks with no error shown.
+- **Voiding a PAID invoice no longer fails against QuickBooks.** QuickBooks
+  bumps an invoice's revision every time a payment is applied to it, so the
+  void was sent with a stale token and failed with `QuickBooks rejected the
+  invoice sync (HTTP 400)` five times before leaving the mapping in error —
+  even though QuickBooks does allow voiding an invoice that has a payment
+  applied. The void now re-reads the live revision and retries once (the same
+  handling the invoice push already had), reads the revision up front when the
+  mapping has none stored instead of refusing outright, and stores the revision
+  the void returns so the next write does not start stale. **This also fixes
+  v0.110.0**, where the bug is live.
 - The reconcile sweep's gate widened from `pull_payments` to
   `pull_payments OR push_payments`, so a realm with pull off and push on now
   runs the CDC pass (it suppresses new QuickBooks-origin imports, logging
