@@ -199,7 +199,7 @@ describe('custom_field_definitions integrity constraints (#3257 W02)', () => {
      * This test was originally written the other way round, asserting the
      * collision was ALLOWED, to pin the boundary of W02 so that W03's red test
      * would be unambiguous. W03 has since shipped
-     * (`2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql`), so the
+     * (`2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql`), so the
      * collision is now refused — by a BEFORE ROW TRIGGER, not by anything in
      * this file's migration. The assertion is inverted here rather than deleted
      * because the SQLSTATE is what carries the distinction: P0001 (the trigger)

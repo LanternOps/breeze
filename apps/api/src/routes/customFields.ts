@@ -367,7 +367,7 @@ customFieldRoutes.post(
       // operator nothing and hides a one-word fix (rename the key).
       //
       // P0001 is the anti-shadowing trigger (#3257 W03,
-      // 2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql). Its
+      // 2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql). Its
       // message is written to be read by a human: it names the key and which
       // axis already owns it, and deliberately discloses nothing else about the
       // conflicting definition, so it is safe to pass through verbatim.

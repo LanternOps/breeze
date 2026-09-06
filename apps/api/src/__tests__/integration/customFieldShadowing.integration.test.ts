@@ -2,7 +2,7 @@
  * Cross-axis `field_key` shadowing — #3257 W03.
  *
  * Migration under test:
- * `2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql`.
+ * `2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql`.
  *
  * THE RULE. One EFFECTIVE `field_key` namespace per device. `devices.custom_fields`
  * is a flat jsonb object keyed by a bare string, so if an org-owned `udf7` and a
@@ -73,7 +73,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql',
+  '../../../migrations/2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql',
 );
 
 /**

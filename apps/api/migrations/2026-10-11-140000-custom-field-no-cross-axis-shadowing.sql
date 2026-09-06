@@ -1,4 +1,4 @@
--- 2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql   (#3257 W03)
+-- 2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql   (#3257 W03)
 --
 -- ONE EFFECTIVE field_key NAMESPACE PER DEVICE.
 --
@@ -36,7 +36,7 @@
 -- wraps each file in client.begin; only an exception rolls it back), which
 -- would leave prod permanently without the trigger while the ledger claims
 -- otherwise. A read-only preflight
--- (migrations/preflight/2026-10-10-140000-custom-field-shadowing-preflight.sql)
+-- (migrations/preflight/2026-10-11-140000-custom-field-shadowing-preflight.sql)
 -- ran against both prod regions before this merged -- see the PR body.
 --
 -- WHY THE SCOPE ELEVATION, on a file that writes no rows. CLAUDE.md states the
