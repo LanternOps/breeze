@@ -20,7 +20,8 @@ import {
 // Phase 2 wave P2-6 Task A5, #4193; `aiAgentGraduation`, Phase 2 wave P2-5
 // Task 9, #4192; `accountingReconcileWorker`, QuickBooks Phase D Task 4;
 // `ticketOutboxRetention` / `intentOutboxRetention` /
-// `metricAnomalyIncidentRetention`, #4210).
+// `metricAnomalyIncidentRetention`, #4210; `deviceGroupJobs`, dynamic device
+// group re-evaluation, #4630).
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
@@ -46,6 +47,7 @@ const EXPECTED_124_NAMES = [
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
+  'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',

@@ -46,15 +46,33 @@ export function onDeviceChange(eventType: DeviceChangeEventType, handler: Device
 }
 
 /**
- * Emit a device change event
+ * Emit a device change event.
+ *
+ * One handler's failure must not stop the others, but it must not vanish
+ * either: a permanently-throwing evaluation (a malformed filter, an RLS-blind
+ * context) would otherwise leave dynamic groups quietly stale with nothing in
+ * the logs — the #4630 failure mode all over again. Every rejection is logged
+ * at error level, and the emit still resolves so the caller (the BullMQ
+ * worker) treats the job as done rather than retrying a deterministic failure
+ * forever.
  */
 export async function emitDeviceChange(event: DeviceChangeEvent): Promise<void> {
   const handlers = eventHandlers.get(event.type) || [];
+  if (handlers.length === 0) return;
 
-  // Run all handlers (don't fail if one handler fails)
-  await Promise.allSettled(
+  const results = await Promise.allSettled(
     handlers.map(handler => handler(event))
   );
+
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      console.error(
+        `[deviceEvents] handler #${index} for ${event.type} failed `
+        + `(device ${event.deviceId}, org ${event.orgId}):`,
+        result.reason,
+      );
+    }
+  });
 }
 
 /**
@@ -168,11 +186,22 @@ export function createDeviceChangeEvent(
   };
 }
 
+let handlersInitialized = false;
+
 /**
- * Initialize default event handlers
- * This should be called during app startup
+ * Initialize default event handlers.
+ *
+ * Called from `index.ts`'s bootstrap AND from the re-evaluation worker
+ * (`jobs/deviceGroupJobs.ts`), because a `worker`-role process never runs
+ * index.ts at all and would otherwise drain the queue with an empty registry —
+ * a silent no-op. Idempotent: `eventHandlers` is an append-only module
+ * singleton, so a second unguarded call would double-register every handler and
+ * evaluate each device twice.
  */
 export function initializeDeviceEventHandlers(): void {
+  if (handlersInitialized) return;
+  handlersInitialized = true;
+
   // Handler for device updates - re-evaluate group memberships
   onDeviceChange('device.updated', async (event) => {
     if (event.changedFields.length > 0) {
@@ -214,6 +243,11 @@ export function initializeDeviceEventHandlers(): void {
   // Handler for device creation - add to matching dynamic groups
   onDeviceChange('device.created', async (event) => {
     // Get all dynamic groups for the org and evaluate membership
+    // ORDER BY id: evaluateDeviceMembershipForGroup can UPDATE device_groups
+    // (ensureFilterFieldsUsed backfilling filter_fields_used), so two
+    // concurrent evaluations touching the same pair of groups in opposite
+    // orders deadlock (40P01, the #3911 shape). A stable id order makes every
+    // evaluator acquire the group row locks in the same sequence.
     const groups = await db
       .select({ id: deviceGroups.id })
       .from(deviceGroups)
@@ -221,7 +255,8 @@ export function initializeDeviceEventHandlers(): void {
         sql`${deviceGroups.orgId} = ${event.orgId}
           AND ${deviceGroups.type} = 'dynamic'
           AND ${deviceGroups.filterConditions} IS NOT NULL`
-      );
+      )
+      .orderBy(deviceGroups.id);
 
     for (const group of groups) {
       try {
@@ -237,4 +272,13 @@ export function initializeDeviceEventHandlers(): void {
   onDeviceChange('device.deleted', async (event) => {
     await removeDeviceFromAllGroups(event.deviceId);
   });
+}
+
+/**
+ * Test-only: drop every registered handler and re-arm
+ * `initializeDeviceEventHandlers`. Production code must never call this.
+ */
+export function resetDeviceEventHandlersForTests(): void {
+  eventHandlers.clear();
+  handlersInitialized = false;
 }

@@ -38,7 +38,7 @@ import {
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
-import { emitDeviceChange, createDeviceChangeEvent } from '../../events/deviceEvents';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
@@ -1096,19 +1096,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       });
     }
 
-    // #4630 — dynamic device group membership re-evaluation. Only the fields
-    // a filter can actually key on; must be awaited so the DB work it triggers
-    // (groupMembership.ts) runs inside this request's still-open
-    // withDbAccessContext, not after the response has released it.
+    // #4630 — dynamic device group membership re-evaluation. Only the fields a
+    // filter can actually key on.
+    //
+    // NOT awaited, and deliberately no DB or Redis work here: this handler runs
+    // inside `withDbAccessContext`, i.e. a real transaction still holding this
+    // request's pooled Postgres connection and the `UPDATE devices` row lock.
+    // The evaluation itself is unbounded (one filter evaluation per dynamic
+    // group in the org, plus a peripheral-policy enqueue per membership flip),
+    // so it belongs on the queue — see jobs/deviceGroupJobs.ts for the full
+    // rationale. `requestDeviceGroupReevaluation` never rejects.
     const filterableChangedFields = (['hostname', 'osVersion', 'osBuild', 'deviceRole'] as const)
       .filter((field) => deviceUpdates[field] !== undefined);
     if (filterableChangedFields.length > 0) {
-      await emitDeviceChange(createDeviceChangeEvent(
-        'device.updated',
-        device.id,
-        device.orgId,
-        filterableChangedFields,
-      ));
+      void requestDeviceGroupReevaluation({
+        deviceId: device.id,
+        orgId: device.orgId,
+        eventType: 'device.updated',
+        changedFields: [...filterableChangedFields],
+        reason: 'heartbeat_device_change',
+      });
     }
   }
 
