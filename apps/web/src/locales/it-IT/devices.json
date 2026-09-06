@@ -190,6 +190,11 @@
         "message": "Vuoi davvero rimuovere {{hostname}}? Il dispositivo verrà tolto dalla tua flotta attiva e non sarà più monitorato. La cronologia viene conservata e potrai ripristinarlo in seguito.",
         "confirm": "Rimuovi"
       },
+      "permanentDelete": {
+        "title": "Eliminare {{hostname}} definitivamente?",
+        "message": "Questa operazione elimina tutta la cronologia del dispositivo: ticket, avvisi, record di patch e backup. Non è reversibile.",
+        "confirm": "Elimina definitivamente"
+      },
       "clearSessions": {
         "title": "Cancella sessioni",
         "message": "Terminare tutte le sessioni remote attive per {{hostname}}? Verranno disconnessi tutti gli utenti attualmente collegati tramite terminale, desktop o trasferimento file.",

@@ -194,6 +194,11 @@
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
       },
+      "permanentDelete": {
+        "title": "Delete {{hostname}} permanently?",
+        "message": "This deletes all history for this device — tickets, alerts, patch and backup records. It cannot be undone.",
+        "confirm": "Delete permanently"
+      },
       "clearSessions": {
         "title": "Clear Sessions",
         "message": "End all active remote sessions for {{hostname}}? This will disconnect any users currently connected via terminal, desktop, or file transfer.",

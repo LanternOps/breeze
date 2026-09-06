@@ -194,6 +194,11 @@
         "message": "Tem certeza de que deseja remover {{hostname}}? Isso o tirará da sua frota ativa e ele deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
         "confirm": "Remover"
       },
+      "permanentDelete": {
+        "title": "Excluir {{hostname}} permanentemente?",
+        "message": "Isso exclui todo o histórico deste dispositivo: chamados, alertas e registros de patches e backups. Não é possível desfazer.",
+        "confirm": "Excluir permanentemente"
+      },
       "clearSessions": {
         "title": "Encerrar sessões",
         "message": "Encerrar todas as sessões remotas ativas de {{hostname}}? Isso desconectará todos os usuários conectados por terminal, desktop ou transferência de arquivos.",

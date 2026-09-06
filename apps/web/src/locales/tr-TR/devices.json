@@ -194,6 +194,11 @@
         "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
         "confirm": "Çıkar"
       },
+      "permanentDelete": {
+        "title": "{{hostname}} kalıcı olarak silinsin mi?",
+        "message": "Bu işlem, bu cihaza ait tüm geçmişi siler: talepler, uyarılar, yama ve yedekleme kayıtları. Geri alınamaz.",
+        "confirm": "Kalıcı olarak sil"
+      },
       "clearSessions": {
         "title": "Oturumları Temizle",
         "message": "{{hostname}} için tüm etkin uzaktan oturumlar sonlandırılsın mı? Bu, halihazırda terminal, masaüstü veya dosya aktarımı yoluyla bağlı olan tüm kullanıcıların bağlantısını kesecektir.",

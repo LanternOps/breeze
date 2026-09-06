@@ -194,6 +194,11 @@
         "message": "¿Quitar {{hostname}}? Se sacará de su flota activa y dejará de ser supervisado. El historial se conserva y puede restaurarlo más adelante.",
         "confirm": "Quitar"
       },
+      "permanentDelete": {
+        "title": "¿Eliminar {{hostname}} de forma permanente?",
+        "message": "Esto elimina todo el historial de este dispositivo: tickets, alertas y registros de parches y respaldos. No se puede deshacer.",
+        "confirm": "Eliminar permanentemente"
+      },
       "clearSessions": {
         "title": "Borrar sesiones",
         "message": "¿Finalizar todas las sesiones remotas activas para {{hostname}}? Esto desconectará a todos los usuarios actualmente conectados a través de terminal, escritorio o transferencia de archivos.",

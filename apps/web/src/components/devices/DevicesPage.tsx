@@ -109,17 +109,27 @@ function summarizeFailedDevices(names: string[]): string {
 // ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+//
+// #5023: `permanent-delete` belongs here for a stronger reason than any of the
+// others. Bulk purge has always made the operator type the device count
+// (BulkPurgeDialog), while the single row/card kebab fired the same
+// irreversible operation on one click — and unlike `decommission` there is no
+// Restore afterwards. The 5s undo toast is not a substitute for a gate: it
+// starts a countdown the operator has to NOTICE to stop.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete']);
 
 // ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
 // caution-triangle), so the grading has to match the detail page rather than
 // drift from it: DeviceActions.tsx marks shutdown and decommission
 // `destructive` and every other confirm `warning`.
-const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete']);
 
-// The command name is snake_case; the locale keys are camelCase.
-const confirmKeyFor = (action: string): string =>
-  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+// The command name is snake_case / kebab-case; the locale keys are camelCase.
+const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
+  reboot_safe_mode: 'rebootSafeMode',
+  'permanent-delete': 'permanentDelete',
+};
+const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
@@ -1881,7 +1891,14 @@ export default function DevicesPage() {
             setPendingDeviceAction(null);
             void runDeviceAction(p.action, p.device);
           }}
-          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`)}
+          // The hostname is interpolated into the TITLE as well as the message
+          // (#5023): permanentDelete names the device up front — "Delete
+          // {{hostname}} permanently?" — because that is the last thing the
+          // operator reads before an irreversible delete. A no-op for the
+          // existing keys, whose titles carry no placeholder.
+          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`, {
+            hostname: pendingDeviceAction.device.hostname,
+          })}
           message={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.message`, {
             hostname: pendingDeviceAction.device.hostname,
           })}
