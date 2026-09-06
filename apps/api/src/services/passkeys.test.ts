@@ -71,6 +71,18 @@ afterEach(() => {
 });
 
 describe('consumePasskeyChallenge (via verify fns)', () => {
+  it.each([
+    { authEpoch: undefined, mfaEpoch: undefined },
+    { authEpoch: 0, mfaEpoch: 1 },
+    { authEpoch: 1, mfaEpoch: 0 },
+  ])('rejects legacy or stale registration epochs %j before verifying the attestation', async (epochs) => {
+    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration', ...epochs }));
+    await expect(verifyPasskeyRegistration({
+      userId: 'u1', epochs: { authEpoch: 1, mfaEpoch: 1 }, response: {} as never,
+    })).rejects.toThrow(/registration challenge expired/);
+    expect(webauthnMocks.verifyRegistrationResponse).not.toHaveBeenCalled();
+  });
+
   it('passes the stored challenge to @simplewebauthn for authentication', async () => {
     redisMock.getdel.mockResolvedValue(challengeRecord());
     webauthnMocks.verifyAuthenticationResponse.mockResolvedValue({ verified: true });
@@ -89,11 +101,11 @@ describe('consumePasskeyChallenge (via verify fns)', () => {
 
   it('passes the stored challenge to @simplewebauthn for registration', async () => {
     redisMock.getdel.mockResolvedValue(
-      challengeRecord({ purpose: 'registration', challenge: 'reg-challenge' })
+      challengeRecord({ purpose: 'registration', authEpoch: 1, mfaEpoch: 1, challenge: 'reg-challenge' })
     );
     webauthnMocks.verifyRegistrationResponse.mockResolvedValue({ verified: true });
 
-    await verifyPasskeyRegistration({ userId: 'u1', response: {} as never });
+    await verifyPasskeyRegistration({ userId: 'u1', epochs: { authEpoch: 1, mfaEpoch: 1 }, response: {} as never });
 
     expect(redisMock.getdel).toHaveBeenCalledWith('passkey:challenge:registration:u1');
     expect(webauthnMocks.verifyRegistrationResponse).toHaveBeenCalledWith(
@@ -102,7 +114,7 @@ describe('consumePasskeyChallenge (via verify fns)', () => {
   });
 
   it('throws on purpose mismatch (stored registration, requested authentication)', async () => {
-    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration' }));
+    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration', authEpoch: 1, mfaEpoch: 1 }));
 
     await expect(
       verifyPasskeyAuthentication({
@@ -177,7 +189,7 @@ describe('storePasskeyChallenge (via generate fns)', () => {
     webauthnMocks.generateRegistrationOptions.mockResolvedValue({ challenge: 'c' });
 
     await expect(
-      generatePasskeyRegistrationOptions({
+      generatePasskeyRegistrationOptions({ epochs: { authEpoch: 1, mfaEpoch: 1 },
         user: { id: 'u1', email: 'a@b.co' },
       })
     ).rejects.toThrow('Redis unavailable while storing passkey challenge');
@@ -209,7 +221,7 @@ describe('user-verification is required (no silent downgrade)', () => {
   it('generateRegistrationOptions requests userVerification: required', async () => {
     webauthnMocks.generateRegistrationOptions.mockResolvedValue({ challenge: 'c' });
 
-    await generatePasskeyRegistrationOptions({ user: { id: 'u1', email: 'a@b.co' } });
+    await generatePasskeyRegistrationOptions({ epochs: { authEpoch: 1, mfaEpoch: 1 }, user: { id: 'u1', email: 'a@b.co' } });
 
     expect(webauthnMocks.generateRegistrationOptions).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -229,10 +241,10 @@ describe('user-verification is required (no silent downgrade)', () => {
   });
 
   it('verifyRegistration requires user verification', async () => {
-    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration' }));
+    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration', authEpoch: 1, mfaEpoch: 1 }));
     webauthnMocks.verifyRegistrationResponse.mockResolvedValue({ verified: true });
 
-    await verifyPasskeyRegistration({ userId: 'u1', response: {} as never });
+    await verifyPasskeyRegistration({ userId: 'u1', epochs: { authEpoch: 1, mfaEpoch: 1 }, response: {} as never });
 
     expect(webauthnMocks.verifyRegistrationResponse).toHaveBeenCalledWith(
       expect.objectContaining({ requireUserVerification: true })
