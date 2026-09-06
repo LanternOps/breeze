@@ -19,13 +19,13 @@ const CATALOG = {
       capability: 'services_startup',
       tier: 3,
       readOnly: false,
-      operations: [{ key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true }],
+      operations: [{ key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false }],
     },
   ],
   presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
 };
 
-const CEILING = { toolAllowlist: ['manage_services'], supervisedActionKeys: [] };
+const CEILING = { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] };
 
 describe('useAgentToolCatalog', () => {
   beforeEach(() => {
@@ -63,7 +63,7 @@ describe('useAgentToolCatalog', () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
       if (url === '/ai/agents/ceiling?kind=triage') return Promise.resolve(json({ data: CEILING }));
-      if (url === '/ai/agents/ceiling?kind=patch') return Promise.resolve(json({ data: { toolAllowlist: ['run_script'], supervisedActionKeys: [] } }));
+      if (url === '/ai/agents/ceiling?kind=patch') return Promise.resolve(json({ data: { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] } }));
       return Promise.resolve(json({ data: null }));
     });
 
@@ -77,7 +77,7 @@ describe('useAgentToolCatalog', () => {
 
     rerender({ kind: 'patch' });
 
-    await waitFor(() => expect(result.current.ceiling).toEqual({ toolAllowlist: ['run_script'], supervisedActionKeys: [] }));
+    await waitFor(() => expect(result.current.ceiling).toEqual({ toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] }));
     expect(fetchMock).toHaveBeenCalledWith('/ai/agents/ceiling?kind=patch');
   });
 

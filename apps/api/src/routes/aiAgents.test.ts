@@ -399,7 +399,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         operations: [
           {
             key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false,
-            policyDecidable: true, actEligible: true,
+            policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false,
           },
         ],
       },
@@ -3639,23 +3639,23 @@ describe('GET /ai-agents/tool-catalog', () => {
 
 describe('GET /ai-agents/ceiling', () => {
   it('projects the partner baseline allowlist for an org session', async () => {
-    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] });
 
     const res = await buildApp(false, { partnerId: PARTNER_ID }).request('/ai-agents/ceiling?kind=triage');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [] } });
+    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] } });
     expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
   });
 
   it('projects the partner baseline allowlist for a partner-scope session too (a partner token can read its own partner rows)', async () => {
-    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] });
 
     const res = await buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null })
       .request('/ai-agents/ceiling?kind=triage');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [] } });
+    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] } });
     expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
   });
 
@@ -3710,7 +3710,7 @@ describe('POST /ai-agents/preview', () => {
       capability: 'services_startup',
       outcome: 'approval_request',
       preauthorized: false,
-      withinCeiling: true,
+      withinCeiling: true, unattendedBlockedBy: null,
     }]);
     expect(body.data.readOnlyToolCount).toBe(0);
   });
@@ -3727,7 +3727,7 @@ describe('POST /ai-agents/preview', () => {
   });
 
   it('resolves the ceiling for an org-scoped caller previewing an org-owned draft', async () => {
-    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [] });
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
 
     const res = await previewRequest(
       buildApp(false, { partnerId: PARTNER_ID }),
@@ -3739,7 +3739,7 @@ describe('POST /ai-agents/preview', () => {
   });
 
   it('resolves the ceiling for a partner-scope caller previewing an org-owned draft (mirrors GET /ceiling\'s own scope gate)', async () => {
-    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [] });
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
 
     const res = await previewRequest(
       buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null }),

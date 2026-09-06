@@ -318,7 +318,12 @@ export default function AiAgentForm({
       // Surfaces exactly what the server named as unmet/rejected, not just
       // the generic toast — same mapping the guided create flow's `create()`
       // uses, so the two can never read a 422 differently.
-      const fieldIssues = agentSaveIssuesFromError(err, t);
+      // `recipients.userIds` is API-only (the draft never carries it, the
+      // PATCH merge preserves it) but still counts as "selected" here —
+      // a stale user recipient must read as unreachable, not as absent.
+      const fieldIssues = agentSaveIssuesFromError(err, t, {
+        recipientsSelected: draft.roleIds.length > 0 || (agent.recipients?.userIds?.length ?? 0) > 0,
+      });
       if (fieldIssues) setIssues(fieldIssues);
     } finally {
       setSaving(false);
@@ -733,6 +738,12 @@ export default function AiAgentForm({
                 mode={draft.mode}
                 entries={lines(draft.toolAllowlist)}
                 onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+                // The row's own scriptIds, narrowed by the partner ceiling the way
+                // effectivePolicy.ts computes the effective list (partner ∩ org) —
+                // a script only the org row lists is never dispatched unattended.
+                authorizedScriptCount={
+                  (agent.actAssets?.scriptIds ?? []).filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length
+                }
               />
             ) : catalogLoading ? (
               <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">

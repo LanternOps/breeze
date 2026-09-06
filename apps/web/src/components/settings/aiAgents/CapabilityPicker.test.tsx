@@ -17,9 +17,9 @@ const catalog: AgentToolCatalogDto = {
       tier: 3,
       readOnly: false,
       operations: [
-        { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false },
-        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
-        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+        { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
+        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false },
+        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
       ],
     },
     {
@@ -27,14 +27,14 @@ const catalog: AgentToolCatalogDto = {
       capability: 'scripts_commands',
       tier: 3,
       readOnly: false,
-      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true }],
+      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
     {
       name: 'query_devices',
       capability: 'scripts_commands',
       tier: 1,
       readOnly: true,
-      operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false }],
+      operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
   presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [] },
@@ -93,7 +93,7 @@ describe('CapabilityPicker', () => {
   });
 
   it('disables an operation outside the ceiling and shows the not-in-ceiling badge', () => {
-    renderPicker({ ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] } });
+    renderPicker({ ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] } });
 
     const stopCheckbox = screen.getByTestId('operation-checkbox-manage_services:stop') as HTMLInputElement;
     expect(stopCheckbox.disabled).toBe(true);
@@ -108,7 +108,7 @@ describe('CapabilityPicker', () => {
   it('keeps a checked operation outside the ceiling enabled, so a stale grant can still be unchecked', () => {
     const { onChange } = renderPicker({
       entries: ['manage_services:stop'],
-      ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] },
+      ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] },
     });
 
     const stopCheckbox = screen.getByTestId('operation-checkbox-manage_services:stop') as HTMLInputElement;
@@ -148,6 +148,57 @@ describe('CapabilityPicker', () => {
     expect(summary).toHaveTextContent('1 operation across 1 capability');
     expect(summary).not.toHaveTextContent('1 operations');
     expect(summary).not.toHaveTextContent('1 capabilities');
+    // The breakdown inside the parentheses pluralises too (#5048 QA), and is
+    // joined with the locale's list conjunction, like the review card's copy.
+    expect(summary).toHaveTextContent('(1 approval request and 0 logged proposals)');
+    expect(summary).not.toHaveTextContent('1 approval requests');
+  });
+
+  it('search narrows to the matching operations, not the whole capability (#5048 QA)', () => {
+    renderPicker();
+
+    fireEvent.change(screen.getByTestId('capability-picker-search'), { target: { value: 'restart' } });
+
+    expect(screen.getByTestId('operation-row-manage_services:restart')).toBeInTheDocument();
+    expect(screen.queryByTestId('operation-row-manage_services:stop')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('capability-row-scripts_commands')).not.toBeInTheDocument();
+  });
+
+  it('while a search narrows a capability, its header checkbox and count act on the visible operations only (#5064 review)', () => {
+    const { onChange } = renderPicker();
+    fireEvent.change(screen.getByTestId('capability-picker-search'), { target: { value: 'restart' } });
+
+    expect(screen.getByTestId('capability-row-services_startup')).toHaveTextContent('0 of 1 operation');
+    fireEvent.click(screen.getByTestId('capability-checkbox-services_startup'));
+
+    expect(onChange).toHaveBeenLastCalledWith(['manage_services:restart']);
+  });
+
+  it('search on the capability label keeps every operation in that capability visible', () => {
+    renderPicker();
+
+    fireEvent.change(screen.getByTestId('capability-picker-search'), { target: { value: 'Services and startup' } });
+
+    expect(screen.getByTestId('operation-row-manage_services:restart')).toBeInTheDocument();
+    expect(screen.getByTestId('operation-row-manage_services:stop')).toBeInTheDocument();
+  });
+
+  it('act mode: a script-gated run_script reads as an approval request with the script-gate note until a script is authorized (#5048 QA)', () => {
+    const { rerender } = render(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="patch" mode="act" entries={['run_script']} onChange={vi.fn()} />,
+    );
+    const row = screen.getByTestId('operation-row-run_script');
+    expect(row).toHaveTextContent('Approval request');
+    expect(row).not.toHaveTextContent('Executes unattended');
+    expect(screen.getByTestId('operation-note-run_script')).toBeInTheDocument();
+    expect(screen.getByTestId('capability-picker-summary')).toHaveTextContent('1 approval request');
+
+    rerender(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="patch" mode="act" entries={['run_script']} onChange={vi.fn()} authorizedScriptCount={1} />,
+    );
+    expect(screen.getByTestId('operation-row-run_script')).toHaveTextContent('Executes unattended');
+    expect(screen.queryByTestId('operation-note-run_script')).not.toBeInTheDocument();
+    expect(screen.getByTestId('capability-picker-summary')).toHaveTextContent('1 unattended');
   });
 
   it('pluralises the always-on read-only tools count', () => {
@@ -200,7 +251,7 @@ describe('CapabilityPicker', () => {
       ...catalog,
       presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [] },
     };
-    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] };
 
     render(
       <CapabilityPicker

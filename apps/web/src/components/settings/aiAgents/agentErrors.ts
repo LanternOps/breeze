@@ -44,10 +44,23 @@ export const AGENT_ERROR_COPY: Record<string, ((t: TranslateFn) => string) | und
  * actionable copy so the operator sees what to fix rather than a machine
  * token.
  */
-const ACT_PREREQUISITE_COPY: Record<string, (t: TranslateFn) => string> = {
-  recipient: (t) => t('settings:aiAgentsPage.errors.actMissingRecipient'),
+const ACT_PREREQUISITE_COPY: Record<string, (t: TranslateFn, ctx: AgentSaveIssueContext) => string> = {
+  // `recipient` covers two different situations the server folds into one
+  // token (recipients.ts `hasResolvableAgentRecipient`): nothing selected at
+  // all, or roles selected that have no ACTIVE member to notify. Telling an
+  // operator who just ticked a role to "add a recipient" sent them in
+  // circles (#5048 QA) — the caller says which case it is.
+  recipient: (t, ctx) =>
+    ctx.recipientsSelected
+      ? t('settings:aiAgentsPage.errors.actRecipientsUnreachable')
+      : t('settings:aiAgentsPage.errors.actMissingRecipient'),
   act_eligible_tool: (t) => t('settings:aiAgentsPage.errors.actMissingTool'),
 };
+
+export interface AgentSaveIssueContext {
+  /** The draft that was saved carried at least one recipient role/user. */
+  recipientsSelected?: boolean;
+}
 
 /**
  * The structured per-field issues a save's 422 carries, for the two shapes
@@ -55,7 +68,11 @@ const ACT_PREREQUISITE_COPY: Record<string, (t: TranslateFn) => string> = {
  * caller's generic toast (via `AGENT_ERROR_COPY` and `handleActionError`)
  * already covers it and there is nothing further to set as an issue.
  */
-export function agentSaveIssuesFromError(err: unknown, t: TranslateFn): string[] | null {
+export function agentSaveIssuesFromError(
+  err: unknown,
+  t: TranslateFn,
+  ctx: AgentSaveIssueContext = {},
+): string[] | null {
   if (!(err instanceof ActionError)) return null;
 
   if (err.code === 'act_prerequisites_not_met') {
@@ -63,7 +80,7 @@ export function agentSaveIssuesFromError(err: unknown, t: TranslateFn): string[]
     const missing = Array.isArray(body?.missing)
       ? body.missing.filter((entry): entry is string => typeof entry === 'string')
       : [];
-    return missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t) ?? entry);
+    return missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t, ctx) ?? entry);
   }
 
   // Wave 5 Part B (#3827) / #5049: both codes carry the identical

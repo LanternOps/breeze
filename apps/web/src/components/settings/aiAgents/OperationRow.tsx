@@ -29,6 +29,10 @@ export interface OperationRowProps {
   showKey: boolean;
   policyDecidableTitle: string;
   notInCeilingLabel: string;
+  /** Why `outcome` is not `unattended` even though the operation is
+   *  act-eligible in act mode (#5048 QA: `run_script` until a script is
+   *  authorized). Rendered under the label; omitted when nothing blocks it. */
+  note?: string;
   onToggle: (key: string) => void;
 }
 
@@ -42,13 +46,19 @@ export default function OperationRow({
   showKey,
   policyDecidableTitle,
   notInCeilingLabel,
+  note,
   onToggle,
 }: OperationRowProps) {
+  const noteId = `operation-note-${op.key.replace(/[^A-Za-z0-9_-]+/g, '-')}`;
   return (
     <li className="flex items-start gap-2 py-1.5 pl-6" data-testid={`operation-row-${op.key}`}>
       <input
         type="checkbox"
         className="mt-0.5 h-4 w-4 shrink-0 rounded border focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+        // The label, outcome badge and note are siblings, not a <label>, so
+        // name the control explicitly and attach the note as its description.
+        aria-label={`${label} — ${outcomeLabel}`}
+        aria-describedby={note ? noteId : undefined}
         checked={checked}
         // A stale grant outside the current ceiling must stay removable —
         // only block a NEW selection outside the ceiling, never block
@@ -70,6 +80,11 @@ export default function OperationRow({
           />
         )}
         {!withinCeiling && <span className={badgeClass('muted', { size: 'sm' })}>{notInCeilingLabel}</span>}
+        {note && (
+          <span id={noteId} className="basis-full text-xs text-muted-foreground" data-testid={`operation-note-${op.key}`}>
+            {note}
+          </span>
+        )}
       </span>
     </li>
   );

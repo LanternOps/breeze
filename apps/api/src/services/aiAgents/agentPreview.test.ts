@@ -29,15 +29,15 @@ const catalog: AgentToolCatalogDto = {
       operations: [
         {
           key: 'manage_services:list', action: 'list', tier: 1, readOnly: true,
-          policyDecidable: false, actEligible: false,
+          policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false,
         },
         {
           key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false,
-          policyDecidable: true, actEligible: true,
+          policyDecidable: true, actEligible: true, actRequiresAuthorizedScripts: false,
         },
         {
           key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false,
-          policyDecidable: true, actEligible: false,
+          policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false,
         },
       ],
     },
@@ -47,7 +47,7 @@ const catalog: AgentToolCatalogDto = {
       tier: 3,
       readOnly: false,
       operations: [
-        { key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true },
+        { key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true },
       ],
     },
     {
@@ -58,7 +58,7 @@ const catalog: AgentToolCatalogDto = {
       operations: [
         {
           key: 'manage_alerts:acknowledge', action: 'acknowledge', tier: 2, readOnly: false,
-          policyDecidable: false, actEligible: false,
+          policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false,
         },
       ],
     },
@@ -68,7 +68,7 @@ const catalog: AgentToolCatalogDto = {
       tier: 1,
       readOnly: true,
       operations: [
-        { key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false },
+        { key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
       ],
     },
   ],
@@ -85,13 +85,17 @@ function draft(overrides: Partial<{
   kind: PreviewAiAgentInput['kind'];
   toolAllowlist: string[];
   supervisedActionKeys: string[];
+  scriptIds: string[];
   cooldownSeconds: number;
 }> = {}): PreviewAiAgentInput {
   return previewAiAgentSchema.parse({
     kind: overrides.kind ?? 'triage',
     mode: overrides.mode ?? 'shadow',
     toolAllowlist: overrides.toolAllowlist ?? [],
-    actAssets: { supervisedActionKeys: overrides.supervisedActionKeys ?? [] },
+    actAssets: {
+      supervisedActionKeys: overrides.supervisedActionKeys ?? [],
+      ...(overrides.scriptIds ? { scriptIds: overrides.scriptIds } : {}),
+    },
     ...(overrides.cooldownSeconds === undefined ? {} : { cooldownSeconds: overrides.cooldownSeconds }),
   });
 }
@@ -154,7 +158,7 @@ describe('buildAgentPreview', () => {
   });
 
   it('narrows withinCeiling per-operation against the ceiling allowlist (bare-as-wildcard)', () => {
-    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] };
     const preview = buildAgentPreview(draft({ toolAllowlist: ['manage_services'] }), ceiling, catalog);
     const byKey = Object.fromEntries(preview.operations.map((op) => [op.key, op]));
     expect(byKey['manage_services:restart']!.withinCeiling).toBe(true);
@@ -167,8 +171,50 @@ describe('buildAgentPreview', () => {
   });
 
   it('act mode: an act-eligible operation is unattended', () => {
-    const preview = buildAgentPreview(draft({ mode: 'act', toolAllowlist: ['run_script'] }), null, catalog);
-    expect(preview.operations).toEqual([expect.objectContaining({ key: 'run_script', outcome: 'unattended' })]);
+    const preview = buildAgentPreview(draft({ mode: 'act', toolAllowlist: ['manage_services:restart'] }), null, catalog);
+    expect(preview.operations).toEqual([
+      expect.objectContaining({ key: 'manage_services:restart', outcome: 'unattended', unattendedBlockedBy: null }),
+    ]);
+  });
+
+  it('act mode: run_script is an approval request until a script is authorized, and says why (#5048 QA)', () => {
+    // The guided create flow never sends scriptIds — the schema defaults it
+    // to [] — so the card must not promise an unattended run the resolver
+    // (remediationActResolver.ts) would refuse.
+    const noScripts = buildAgentPreview(draft({ mode: 'act', toolAllowlist: ['run_script'] }), null, catalog);
+    expect(noScripts.operations).toEqual([
+      expect.objectContaining({ key: 'run_script', outcome: 'approval_request', unattendedBlockedBy: 'authorized_scripts' }),
+    ]);
+
+    const withScript = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: ['3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b'] }),
+      null,
+      catalog,
+    );
+    expect(withScript.operations).toEqual([
+      expect.objectContaining({ key: 'run_script', outcome: 'unattended', unattendedBlockedBy: null }),
+    ]);
+
+    // Shadow never dispatches anything, so nothing is "blocked" either.
+    const shadow = buildAgentPreview(draft({ mode: 'shadow', toolAllowlist: ['run_script'] }), null, catalog);
+    expect(shadow.operations[0]).toMatchObject({ outcome: 'approval_request', unattendedBlockedBy: null });
+  });
+
+  it('act mode: an org draft\'s scriptIds only count where the partner ceiling also lists them (effective = partner ∩ org)', () => {
+    const script = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+    const orgOnly = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script] }),
+      { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] },
+      catalog,
+    );
+    expect(orgOnly.operations[0]).toMatchObject({ outcome: 'approval_request', unattendedBlockedBy: 'authorized_scripts' });
+
+    const both = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script] }),
+      { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [script] },
+      catalog,
+    );
+    expect(both.operations[0]).toMatchObject({ outcome: 'unattended', unattendedBlockedBy: null });
   });
 
   it('act mode: a non-act-eligible tier-3 operation still falls back to approval_request', () => {
@@ -192,17 +238,17 @@ describe('buildAgentPreview', () => {
   });
 
   it('preauthorized: intersects the ceiling ceiling and the draft supervisedActionKeys (bare-as-wildcard)', () => {
-    const ceiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services'] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services'], scriptIds: [] };
     const admitted = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'], scriptIds: [] }),
       ceiling,
       catalog,
     );
     expect(admitted.operations[0]!.preauthorized).toBe(true);
 
-    const notInCeiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services:stop'] };
+    const notInCeiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services:stop'], scriptIds: [] };
     const refused = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'], scriptIds: [] }),
       notInCeiling,
       catalog,
     );
@@ -211,14 +257,14 @@ describe('buildAgentPreview', () => {
 
   it('preauthorized: with no ceiling (partner draft), membership is against the draft\'s own supervisedActionKeys', () => {
     const preview = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services'], scriptIds: [] }),
       null,
       catalog,
     );
     expect(preview.operations[0]!.preauthorized).toBe(true);
 
     const notAuthorized = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] }),
       null,
       catalog,
     );

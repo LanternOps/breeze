@@ -295,7 +295,9 @@ const namespaceDuplicateBaselines = {
     // same word in French (already accepted above in this namespace).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 167,
+    // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
+    // "{{count}} minutes" spell identically in French.
+    'settings.json': 169,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -395,7 +397,9 @@ const namespaceDuplicateBaselines = {
     // same word in Canadian French (already accepted above in this namespace).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 172,
+    // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
+    // "{{count}} minutes" spell identically in French.
+    'settings.json': 174,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

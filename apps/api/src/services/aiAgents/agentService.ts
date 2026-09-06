@@ -7,7 +7,7 @@ import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
 import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
-import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
+import { ACT_ELIGIBLE_TOOL_NAMES, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -161,8 +161,8 @@ function hasActEligibleSurface(
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
   const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
   const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
-  if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
-  if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
+  if (intersecting.some((entry) => !SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return true;
+  if (!intersecting.some((entry) => SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
 }
 

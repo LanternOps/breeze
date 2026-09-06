@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AI_AGENT_KINDS, SUPPORTED_AGENT_MODES, type AiAgentDto } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
-import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
@@ -10,6 +10,7 @@ import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import SetupStepper from '../../setup/SetupStepper';
 import { useAgentToolCatalog } from './useAgentToolCatalog';
 import { ALERT_SEVERITY_KINDS, buildAgentSaveBody, draftFrom, firstFreeKind, freeKinds, type Draft } from './agentDraft';
+import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './agentErrors';
 import type { PolicyDecidableKeyOption } from './PolicyKeysCheckboxes';
 import PurposeStep from './steps/PurposeStep';
 import WhatItDoesStep from './steps/WhatItDoesStep';
@@ -39,29 +40,6 @@ type EditSection = 'purpose' | 'does' | 'safety';
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 /**
- * Machine token -> operator-facing sentence. Mirrors `AiAgentForm.tsx`'s
- * `AGENT_ERROR_COPY` exactly (duplicated rather than imported: the two forms
- * build DIFFERENT bodies — this one only ever creates — and keeping a create-
- * only copy map here is clearer than importing a map with edit-only entries
- * this flow can never reach, e.g. `mode_not_supported` DOES apply here too,
- * so it stays; nothing in this list is unique to the drawer).
- */
-const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) | undefined> = {
-  agent_kind_exists: (t) => t('aiAgentsPage.errors.kindExists'),
-  mode_not_supported: (t) => t('aiAgentsPage.errors.modeNotSupported'),
-  act_prerequisites_not_met: (t) => t('aiAgentsPage.errors.actPrerequisitesNotMet'),
-  invalid_supervised_action_keys: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
-  supervised_keys_grant_only: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
-};
-
-/** `missing[]` entries from the server's `act_prerequisites_not_met` 422 —
- *  same mapping as `AiAgentForm.tsx`'s `ACT_PREREQUISITE_COPY`. */
-const ACT_PREREQUISITE_COPY: Record<string, (t: (key: string) => string) => string> = {
-  recipient: (t) => t('aiAgentsPage.errors.actMissingRecipient'),
-  act_eligible_tool: (t) => t('aiAgentsPage.errors.actMissingTool'),
-};
-
-/**
  * The four-step guided create flow (spec §4.6, Task 13 #5051): Purpose and
  * posture -> What it does -> Safety and oversight -> Review and create.
  * Renders full-width in place of the agents list while open. Owns ONE
@@ -80,15 +58,31 @@ export default function AgentCreateFlow({
   const { t } = useTranslation('settings');
   const orgScope = useOrgScope();
 
-  const [draft, setDraft] = useState<Draft>(() =>
-    draftFrom(null, {
-      ownerScope: defaultOwnerScope,
-      kind: firstFreeKind(agents, defaultOwnerScope, orgScope.orgId) ?? AI_AGENT_KINDS[0],
-    }),
-  );
+  const [draft, setDraft] = useState<Draft>(() => {
+    // An org-only agent only ever OVERRIDES a partner-wide baseline of its
+    // kind (#4170); with no baseline yet, the hook's org-owned default (a
+    // focused org) would produce an agent that does nothing. A partner-scope
+    // session with the selector shown starts partner-wide instead in that
+    // case — the operator can still pick "This organization only" (#5048 QA).
+    const orgKind = firstFreeKind(agents, 'organization', orgScope.orgId) ?? AI_AGENT_KINDS[0];
+    const partnerWideInstead =
+      showOwnerScope
+      && defaultOwnerScope === 'organization'
+      && !partnerBaselineKinds.has(orgKind)
+      && freeKinds(agents, 'partner', orgScope.orgId).length > 0;
+    const ownerScope: OwnerScope = partnerWideInstead ? 'partner' : defaultOwnerScope;
+    return draftFrom(null, {
+      ownerScope,
+      kind: firstFreeKind(agents, ownerScope, orgScope.orgId) ?? AI_AGENT_KINDS[0],
+    });
+  });
   const patch = useCallback((values: Partial<Draft>) => setDraft((current) => ({ ...current, ...values })), []);
 
   const [step, setStep] = useState(0);
+  // Furthest step the operator has reached — every step up to it stays
+  // reachable from the stepper (an "Edit" link from Review sends them back;
+  // returning should not cost three Next clicks — #5048 QA).
+  const [maxStepReached, setMaxStepReached] = useState(0);
   const [issues, setIssues] = useState<string[]>([]);
   const [forceNameError, setForceNameError] = useState(false);
   const [actAck, setActAck] = useState(false);
@@ -167,35 +161,56 @@ export default function AgentCreateFlow({
   const stepLabel = (key: StepKey) => t(/* i18n-dynamic */ `aiAgentsPage.flow.steps.${key}.label`);
   const stepDescription = (key: StepKey) => t(/* i18n-dynamic */ `aiAgentsPage.flow.steps.${key}.description`);
 
-  const goBack = () => setStep((current) => Math.max(0, current - 1));
-
-  const goNext = () => {
-    if (step === 0) {
-      const problems: string[] = [];
-      if (!draft.name.trim()) {
-        problems.push(t('aiAgentsPage.issues.name'));
-        setForceNameError(true);
-      }
-      if (problems.length > 0) {
-        setIssues(problems);
-        return;
-      }
+  /** The gate for LEAVING step `index` forward — the same checks whether the
+   *  operator clicks Next or jumps ahead from the stepper. */
+  const validateStep = (index: number): string[] => {
+    const problems: string[] = [];
+    if (index === 0 && !draft.name.trim()) {
+      problems.push(t('aiAgentsPage.issues.name'));
+      setForceNameError(true);
     }
-    if (step === 1 && ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
-      setIssues([t('aiAgentsPage.issues.severities')]);
-      return;
+    if (index === 1 && ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
+      problems.push(t('aiAgentsPage.issues.severities'));
     }
-    setIssues([]);
-    setStep((current) => Math.min(STEP_KEYS.length - 1, current + 1));
+    return problems;
   };
 
-  const goToSection = (section: EditSection) => setStep(STEP_KEYS.indexOf(section));
+  const goToStep = (target: number) => {
+    const clamped = Math.max(0, Math.min(STEP_KEYS.length - 1, target));
+    if (clamped > step) {
+      // Validate every step being left behind, not just the current one: a
+      // step edited earlier and then backed out of is only ever re-checked
+      // here (its own Next was never clicked again). The first failing step
+      // becomes the current one, so the issue always names a control that is
+      // on screen.
+      for (let index = step; index < clamped; index += 1) {
+        const problems = validateStep(index);
+        if (problems.length > 0) {
+          setIssues(problems);
+          setStep(index);
+          return;
+        }
+      }
+      setIssues([]);
+    }
+    // A backward move (Back, or an Edit link from Review) keeps whatever is
+    // showing — that is how a server 422 from Create stays visible on the
+    // step the operator is sent back to fix it on.
+    setStep(clamped);
+    setMaxStepReached((reached) => Math.max(reached, clamped));
+  };
+
+  const goBack = () => goToStep(step - 1);
+  const goNext = () => goToStep(step + 1);
+  const goToSection = (section: EditSection) => goToStep(STEP_KEYS.indexOf(section));
 
   // Mirrors AiAgentForm.tsx's Save disable condition: an act-mode transition
   // needs the acknowledgement before the operator can move past this step —
   // there is nothing else here for "Next" to gate on for act mode, since a
   // create draft is always "entering" act the first time it's selected.
   const nextDisabled = step === 0 && ((enteringActMode && !actAck) || kindsExhausted);
+  // The same gate applies to a forward jump from the stepper.
+  const reachableStep = nextDisabled ? step : maxStepReached;
 
   const create = useCallback(async () => {
     if (saving) return;
@@ -223,29 +238,12 @@ export default function AgentCreateFlow({
       created = result.data;
     } catch (err) {
       handleActionError(err, t('aiAgentsPage.toasts.saveFailed'));
-      if (err instanceof ActionError && err.code === 'act_prerequisites_not_met') {
-        const errBody = err.body as { missing?: unknown } | undefined;
-        const missing = Array.isArray(errBody?.missing)
-          ? errBody.missing.filter((entry): entry is string => typeof entry === 'string')
-          : [];
-        setIssues(missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t) ?? entry));
-      }
-      if (
-        err instanceof ActionError
-        && (err.code === 'invalid_supervised_action_keys' || err.code === 'supervised_keys_grant_only')
-      ) {
-        const errBody = err.body as { rejected?: unknown } | undefined;
-        const rejected = Array.isArray(errBody?.rejected)
-          ? errBody.rejected.filter(
-              (entry): entry is { key: string; reason: string } =>
-                typeof entry === 'object'
-                && entry !== null
-                && typeof (entry as { key?: unknown }).key === 'string'
-                && typeof (entry as { reason?: unknown }).reason === 'string',
-            )
-          : [];
-        setIssues(rejected.map((entry) => t('aiAgentsPage.errors.supervisedKeyRejected', { key: entry.key, reason: entry.reason })));
-      }
+      // Same mapping the edit drawer uses (`agentErrors.ts`), so the two
+      // surfaces can never read a 422 differently. The issues render above
+      // whichever step the operator lands on, so an Edit link back to
+      // Safety keeps the reason in view.
+      const fieldIssues = agentSaveIssuesFromError(err, t, { recipientsSelected: draft.roleIds.length > 0 });
+      if (fieldIssues) setIssues(fieldIssues);
     } finally {
       setSaving(false);
     }
@@ -272,7 +270,8 @@ export default function AgentCreateFlow({
         <SetupStepper
           steps={STEP_KEYS.map((key) => ({ label: stepLabel(key), description: stepDescription(key) }))}
           currentStep={step}
-          onStepClick={setStep}
+          onStepClick={goToStep}
+          reachableStep={reachableStep}
           orientation="vertical"
           ariaLabel={t('aiAgentsPage.flow.stepperAriaLabel')}
         />
@@ -318,7 +317,7 @@ export default function AgentCreateFlow({
             />
           )}
           {step === 3 && (
-            <ReviewStep draft={draft} patch={patch} orgId={orgScope.orgId} orgName={orgName} onEdit={goToSection} />
+            <ReviewStep draft={draft} patch={patch} orgId={orgScope.orgId} orgName={orgName} roles={roles} onEdit={goToSection} />
           )}
         </div>
       </div>

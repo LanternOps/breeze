@@ -1616,7 +1616,8 @@
       "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren.",
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
-      "notDisabled": "Dieser Agent ist bereits aktiv."
+      "notDisabled": "Dieser Agent ist bereits aktiv.",
+      "actRecipientsUnreachable": "Die ausgewählten Benachrichtigungsrollen haben keine aktiven Mitglieder, sodass niemand gefragt werden könnte. Wählen Sie eine Rolle mit Mitgliedern, bevor Sie den Handlungsmodus aktivieren."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1724,7 +1725,8 @@
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
-      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt."
+      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
+      "recipientRoleNoMembers": "keine aktiven Mitglieder"
     },
     "policyKeys": {
       "tools": {
@@ -2644,12 +2646,12 @@
       "capabilityCount_one": "{{count}} Fähigkeit",
       "capabilityCount_other": "{{count}} Fähigkeiten",
       "summary": {
-        "shadow_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
-        "shadow_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
-        "act_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
-        "act_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
-        "off_one": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgang in {{capabilityPhrase}} betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge).",
-        "off_other": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgänge in {{capabilityPhrase}} betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge)."
+        "shadow_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{breakdown}}); führt nichts unbeaufsichtigt aus.",
+        "shadow_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{breakdown}}); führt nichts unbeaufsichtigt aus.",
+        "act_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{breakdown}}); führt geeignete Vorgänge unbeaufsichtigt aus.",
+        "act_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{breakdown}}); führt geeignete Vorgänge unbeaufsichtigt aus.",
+        "off_one": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgang in {{capabilityPhrase}} betreffen ({{breakdown}}).",
+        "off_other": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgänge in {{capabilityPhrase}} betreffen ({{breakdown}})."
       },
       "modeLine": {
         "shadow": "Schattenmodus: Nichts davon läuft von selbst. Genehmigungsanfragen gehen an einen Techniker; risikoarme Änderungen werden als Vorschlag protokolliert und nie ausgeführt.",
@@ -2657,7 +2659,14 @@
         "off": "Aus: Dieser Agent läuft nicht, daher hat nichts davon bisher eine Wirkung."
       },
       "catalogUnavailable": "Der Tool-Katalog konnte nicht geladen werden. Sie können die Berechtigungsliste weiterhin direkt unten bearbeiten.",
-      "loading": "Fähigkeiten werden geladen…"
+      "loading": "Fähigkeiten werden geladen…",
+      "approvalRequestCount_one": "{{count}} Genehmigungsanfrage",
+      "approvalRequestCount_other": "{{count}} Genehmigungsanfragen",
+      "loggedProposalCount_one": "{{count}} protokollierter Vorschlag",
+      "loggedProposalCount_other": "{{count}} protokollierte Vorschläge",
+      "unattendedCount_one": "{{count}} unbeaufsichtigt",
+      "unattendedCount_other": "{{count}} unbeaufsichtigt",
+      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist."
     },
     "summary": {
       "edit": "Bearbeiten",
@@ -2682,7 +2691,6 @@
         "ticketWrites": "Schreibt Ticket-Updates, ohne auf einen Techniker zu warten."
       },
       "canRead": "Geräte-, Warnungs- und Flottendaten für {{scope}}: Inventar, Metriken, Protokolle, Patches, Backups, Tickets und Prüfhistorie ({{count}} schreibgeschützte Tools, immer aktiv).",
-      "mayPropose": "{{operations}} Operationen in {{capabilities}} Fähigkeiten: {{approvalRequests}} lösen eine Genehmigungsanfrage aus, über die ein Techniker entscheidet, und {{loggedProposals}} werden als Vorschläge protokolliert und nie ausgeführt.",
       "mayProposeNone": "Dieser Agent schlägt noch keine Operationen vor.",
       "unrecognisedLabel": "Vom aktuellen Tool-Katalog nicht erkannt:",
       "executesUnattendedNone": "Nichts. Der Schattenmodus beobachtet und schlägt nur vor; ohne Genehmigung eines Technikers läuft nichts.",
@@ -2690,9 +2698,27 @@
       "executesUnattendedList": "Führt {{list}} aus, ohne auf die Genehmigung eines Technikers zu warten.",
       "preauthorizedNote": "Einige davon sind vorautorisierte Operationen, die im Voraus durch das Vier-Augen-Prüfverfahren gewährt wurden.",
       "neverTouchesEmpty": "Noch nichts geschützt.",
-      "limits": "Bis zu {{devices}} Geräte pro Lauf, {{runsPerHour}} Läufe pro Stunde, {{minutes}} Minuten pro Lauf, ein Tagesbudget von {{budget}}, höchstens {{fleetPercent}} der Flotte pro Tag und {{cooldown}} Minuten zwischen zwei Läufen auf demselben Gerät.",
-      "approvers": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approversNone": "Es sind noch keine Rollen konfiguriert, daher wird niemand benachrichtigt."
+      "limits": "Bis zu {{devices}} pro Lauf, {{runs}}, {{minutes}} pro Lauf, ein Tagesbudget von {{budget}}, höchstens {{fleetPercent}} der Flotte pro Tag und {{cooldown}} zwischen zwei Läufen auf demselben Gerät.",
+      "approversNone": "Es sind noch keine Rollen konfiguriert, daher wird niemand benachrichtigt.",
+      "mayPropose_one": "{{count}} Operation in {{capabilityPhrase}}: {{breakdown}}.",
+      "mayPropose_other": "{{count}} Operationen in {{capabilityPhrase}}: {{breakdown}}.",
+      "approvalCount_one": "{{count}} löst eine Genehmigungsanfrage aus, über die ein Techniker entscheidet",
+      "approvalCount_other": "{{count}} lösen eine Genehmigungsanfrage aus, über die ein Techniker entscheidet",
+      "loggedCount_one": "{{count}} wird als Vorschlag protokolliert und nie ausgeführt",
+      "loggedCount_other": "{{count}} werden als Vorschläge protokolliert und nie ausgeführt",
+      "unattendedCount_one": "{{count}} läuft unbeaufsichtigt",
+      "unattendedCount_other": "{{count}} laufen unbeaufsichtigt",
+      "deviceCount_one": "{{count}} Gerät",
+      "deviceCount_other": "{{count}} Geräte",
+      "runsPerHourCount_one": "{{count}} Lauf pro Stunde",
+      "runsPerHourCount_other": "{{count}} Läufe pro Stunde",
+      "minuteCount_one": "{{count}} Minute",
+      "minuteCount_other": "{{count}} Minuten",
+      "approvers_one": "{{roles}} wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approvers_other": "{{roles}} werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_one": "{{count}} Rolle wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_other": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "scriptGateNote": "{{list}} läuft erst unbeaufsichtigt, wenn ein Skript für diesen Agenten autorisiert ist; bis dahin wird eine Genehmigungsanfrage ausgelöst."
     },
     "flow": {
       "title": "Neuer Agent",

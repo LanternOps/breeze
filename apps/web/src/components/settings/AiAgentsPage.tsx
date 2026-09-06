@@ -310,11 +310,15 @@ export default function AiAgentsPage() {
   const showFirstRun = loaded && !error && agents.length === 0;
   const showAllDisabled = loaded && !error && live.length === 0 && disabled.length > 0;
 
+  // Disabled until the list has loaded: the create flow's first-render
+  // defaults (free kind, partner-wide vs org-only) read `agents` and
+  // `partnerBaselineKinds`, which are empty until then (#5064 review).
   const createButton = (testId: string) => (
     <button
       type="button"
       onClick={startCreate}
-      className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+      disabled={!loaded}
+      className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       data-testid={testId}
     >
       <Plus className="h-4 w-4" />

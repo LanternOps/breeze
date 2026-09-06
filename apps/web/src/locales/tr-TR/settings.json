@@ -1616,7 +1616,8 @@
       "actMissingTool": "Uygula modunu etkinleştirmeden önce en az bir uygulanabilir aracı izin verin veya bir betiği yetkilendirin.",
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
-      "notDisabled": "Bu aracı zaten etkin."
+      "notDisabled": "Bu aracı zaten etkin.",
+      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1724,7 +1725,8 @@
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
-      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez."
+      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
+      "recipientRoleNoMembers": "etkin üye yok"
     },
     "policyKeys": {
       "tools": {
@@ -2644,12 +2646,12 @@
       "capabilityCount_one": "{{count}} yetenek",
       "capabilityCount_other": "{{count}} yetenek",
       "summary": {
-        "shadow_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
-        "shadow_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
-        "act_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
-        "act_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
-        "off_one": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri).",
-        "off_other": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri)."
+        "shadow_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "shadow_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "act_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); uygun işlemleri gözetimsiz çalıştırır.",
+        "act_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{breakdown}}); uygun işlemleri gözetimsiz çalıştırır.",
+        "off_one": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{breakdown}}).",
+        "off_other": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{breakdown}})."
       },
       "modeLine": {
         "shadow": "Gölge modu: aşağıdakilerin hiçbiri kendiliğinden çalışmaz. Onay istekleri bir teknisyene gider; düşük riskli değişiklikler öneri olarak kaydedilir ve hiçbir zaman yürütülmez.",
@@ -2657,7 +2659,14 @@
         "off": "Kapalı: bu aracı çalışmıyor, bu yüzden aşağıdakilerin henüz hiçbir etkisi yok."
       },
       "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz.",
-      "loading": "Yetenekler yükleniyor…"
+      "loading": "Yetenekler yükleniyor…",
+      "approvalRequestCount_one": "{{count}} onay isteği",
+      "approvalRequestCount_other": "{{count}} onay isteği",
+      "loggedProposalCount_one": "{{count}} kayıtlı öneri",
+      "loggedProposalCount_other": "{{count}} kayıtlı öneri",
+      "unattendedCount_one": "{{count}} gözetimsiz",
+      "unattendedCount_other": "{{count}} gözetimsiz",
+      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır."
     },
     "summary": {
       "edit": "Düzenle",
@@ -2682,7 +2691,6 @@
         "ticketWrites": "Bir teknisyeni beklemeden talep güncellemeleri yazar."
       },
       "canRead": "{{scope}} için cihaz, uyarı ve filo verileri: envanter, metrikler, günlükler, yamalar, yedekler, talepler ve denetim geçmişi ({{count}} salt okunur araç, her zaman etkin).",
-      "mayPropose": "{{capabilities}} yetenek genelinde {{operations}} işlem: {{approvalRequests}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur, {{loggedProposals}} tanesi ise öneri olarak kaydedilir ve asla çalıştırılmaz.",
       "mayProposeNone": "Bu aracı henüz herhangi bir işlem önermiyor.",
       "unrecognisedLabel": "Geçerli araç kataloğu tarafından tanınmıyor:",
       "executesUnattendedNone": "Hiçbir şey. Gölge modu yalnızca gözlemler ve önerir; bir teknisyenin onayı olmadan hiçbir şey çalışmaz.",
@@ -2690,9 +2698,27 @@
       "executesUnattendedList": "Bir teknisyenin onayını beklemeden {{list}} çalıştırır.",
       "preauthorizedNote": "Bunlardan bazıları, dört göz inceleme süreciyle önceden verilmiş ön yetkilendirilmiş işlemlerdir.",
       "neverTouchesEmpty": "Henüz hiçbir şey korunmuyor.",
-      "limits": "Çalıştırma başına en fazla {{devices}} cihaz, saatte {{runsPerHour}} çalıştırma, çalıştırma başına {{minutes}} dakika, günlük {{budget}} bütçe, günde filonun en fazla {{fleetPercent}}'i ve aynı cihazda çalıştırmalar arasında {{cooldown}} dakika.",
-      "approvers": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
-      "approversNone": "Henüz hiçbir rol yapılandırılmadı, bu yüzden kimseye bildirim gönderilmeyecek."
+      "limits": "Çalıştırma başına en fazla {{devices}}, {{runs}}, çalıştırma başına {{minutes}}, günlük {{budget}} bütçe, günde filonun en fazla {{fleetPercent}}'i ve aynı cihazda çalıştırmalar arasında {{cooldown}}.",
+      "approversNone": "Henüz hiçbir rol yapılandırılmadı, bu yüzden kimseye bildirim gönderilmeyecek.",
+      "mayPropose_one": "{{capabilityPhrase}} genelinde {{count}} işlem: {{breakdown}}.",
+      "mayPropose_other": "{{capabilityPhrase}} genelinde {{count}} işlem: {{breakdown}}.",
+      "approvalCount_one": "{{count}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur",
+      "approvalCount_other": "{{count}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur",
+      "loggedCount_one": "{{count}} tanesi öneri olarak kaydedilir ve asla çalıştırılmaz",
+      "loggedCount_other": "{{count}} tanesi öneri olarak kaydedilir ve asla çalıştırılmaz",
+      "unattendedCount_one": "{{count}} tanesi gözetimsiz çalışır",
+      "unattendedCount_other": "{{count}} tanesi gözetimsiz çalışır",
+      "deviceCount_one": "{{count}} cihaz",
+      "deviceCount_other": "{{count}} cihaz",
+      "runsPerHourCount_one": "saatte {{count}} çalıştırma",
+      "runsPerHourCount_other": "saatte {{count}} çalıştırma",
+      "minuteCount_one": "{{count}} dakika",
+      "minuteCount_other": "{{count}} dakika",
+      "approvers_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur."
     },
     "flow": {
       "title": "Yeni ajan",

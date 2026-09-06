@@ -281,6 +281,17 @@ export const ACT_ELIGIBLE_TOOL_NAMES: readonly string[] = ACT_MANIFEST
   .filter((toolName) => toolName !== remediationSuggestion.toolName);
 
 /**
+ * Manifest tools whose unattended dispatch ALSO needs an authorized asset on
+ * the agent row: `run_script` matches on `scriptId`, and both the activation
+ * prerequisite (agentService.ts's `hasActEligibleSurface`) and the resolver
+ * (remediationActResolver.ts) refuse a script absent from
+ * `actAssets.scriptIds`. Consumed by the tool catalog so the picker and the
+ * review card report "approval request until a script is authorized" instead
+ * of an unattended outcome the run loop would never produce (#5048 QA).
+ */
+export const SCRIPT_GATED_ACT_TOOLS: ReadonlySet<string> = new Set(['run_script']);
+
+/**
  * Pure, no I/O (see the module docstring). Returns the first manifest entry
  * whose `toolName` matches AND whose `matches(input)` is true, or null.
  * `execute_command` has — and will only ever have via a quorum decision —

@@ -23,7 +23,7 @@ import {
 import { toolActionEnum } from '../aiToolActions';
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
-import { ACT_MANIFEST } from './actManifest';
+import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 
 export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
@@ -379,6 +379,10 @@ function resolveOperation(toolName: string, action: string | null): AgentToolOpe
     // input never carries, so probing `resolveActOperation` here always came
     // back null for them.
     actEligible: ACT_ELIGIBLE_OPERATION_KEYS.has(opKey) && !readOnly,
+    // The outcome rule (packages/shared agentOutcome.ts) downgrades this to an
+    // approval request while the row has no authorized script — the same
+    // gate hasActEligibleSurface / remediationActResolver apply at runtime.
+    actRequiresAuthorizedScripts: SCRIPT_GATED_ACT_TOOLS.has(toolName),
   };
 }
 

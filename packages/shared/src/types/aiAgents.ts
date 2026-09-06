@@ -571,6 +571,13 @@ export interface AgentToolOperationDto {
   policyDecidable: boolean;
   /** `key`'s tool (at this action) is one `ACT_MANIFEST` can dispatch unattended. */
   actEligible: boolean;
+  /**
+   * `actEligible` holds only while the agent's `actAssets.scriptIds` is
+   * non-empty (`run_script` — the run loop refuses an unauthorized script and
+   * proposes instead). The outcome rule (`outcomeFor`, packages/shared) turns
+   * this into an approval request until a script is authorized.
+   */
+  actRequiresAuthorizedScripts: boolean;
 }
 
 /** One agent-reachable tool's catalog entry — `capability` is an `AgentCapabilityId`. */
@@ -608,6 +615,14 @@ export interface AgentToolCatalogDto {
 export interface AgentCeilingDto {
   toolAllowlist: string[];
   supervisedActionKeys: string[];
+  /**
+   * The baseline's `actAssets.scriptIds`. The effective policy an org agent
+   * runs under is `intersect(partner.scriptIds, org.scriptIds)`
+   * (`effectivePolicy.ts`), so a script the org row lists but the baseline
+   * does not is never dispatched unattended — the preview and the edit
+   * drawer intersect against this before counting authorized scripts.
+   */
+  scriptIds: string[];
 }
 
 /**
@@ -642,6 +657,14 @@ export interface AgentPreviewDto {
      * reachable via a bare multi-op expansion) -> `'logged_proposal'`.
      */
     outcome: 'approval_request' | 'logged_proposal' | 'unattended';
+    /**
+     * Non-null when act mode WOULD dispatch this operation unattended but a
+     * prerequisite is still missing — today only `'authorized_scripts'`
+     * (`run_script` with an empty `actAssets.scriptIds`), in which case
+     * `outcome` is the truthful `'approval_request'`. Lets the review card say
+     * why rather than silently downgrade.
+     */
+    unattendedBlockedBy: 'authorized_scripts' | null;
     /** `key` is inside the intersection of the ceiling's and the draft's own `supervisedActionKeys` (or just the draft's own, on a partner draft with no ceiling). */
     preauthorized: boolean;
     /** `true` unconditionally when there is no ceiling (a partner draft, or an org draft with no live partner baseline yet). */

@@ -1616,7 +1616,8 @@
       "actMissingTool": "Consenti almeno uno strumento idoneo per la modalità Agire, oppure autorizza uno script, prima di attivarla.",
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
-      "notDisabled": "Questo agente è già attivo."
+      "notDisabled": "Questo agente è già attivo.",
+      "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire."
     },
     "actions": {
       "add": "Nuovo agente",
@@ -1724,7 +1725,8 @@
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
-      "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione."
+      "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
+      "recipientRoleNoMembers": "nessun membro attivo"
     },
     "policyKeys": {
       "tools": {
@@ -2644,12 +2646,12 @@
       "capabilityCount_one": "{{count}} capacità",
       "capabilityCount_other": "{{count}} capacità",
       "summary": {
-        "shadow_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); non esegue nulla senza supervisione.",
-        "shadow_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); non esegue nulla senza supervisione.",
-        "act_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); esegue le operazioni idonee senza supervisione.",
-        "act_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); esegue le operazioni idonee senza supervisione.",
-        "off_one": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate).",
-        "off_other": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate)."
+        "shadow_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{breakdown}}); non esegue nulla senza supervisione.",
+        "shadow_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{breakdown}}); non esegue nulla senza supervisione.",
+        "act_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{breakdown}}); esegue le operazioni idonee senza supervisione.",
+        "act_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{breakdown}}); esegue le operazioni idonee senza supervisione.",
+        "off_one": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazione in {{capabilityPhrase}} ({{breakdown}}).",
+        "off_other": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazioni in {{capabilityPhrase}} ({{breakdown}})."
       },
       "modeLine": {
         "shadow": "Modalità Ombra: nulla di quanto segue viene eseguito da solo. Le richieste di approvazione vengono inviate a un tecnico; le modifiche a basso rischio vengono registrate come proposte e non vengono mai eseguite.",
@@ -2657,7 +2659,14 @@
         "off": "Disattivato: questo agente non è in esecuzione, quindi nulla di quanto segue ha ancora effetto."
       },
       "catalogUnavailable": "Impossibile caricare il catalogo degli strumenti. È comunque possibile modificare l'elenco dei permessi direttamente qui sotto.",
-      "loading": "Caricamento delle capacità…"
+      "loading": "Caricamento delle capacità…",
+      "approvalRequestCount_one": "{{count}} richiesta di approvazione",
+      "approvalRequestCount_other": "{{count}} richieste di approvazione",
+      "loggedProposalCount_one": "{{count}} proposta registrata",
+      "loggedProposalCount_other": "{{count}} proposte registrate",
+      "unattendedCount_one": "{{count}} senza supervisione",
+      "unattendedCount_other": "{{count}} senza supervisione",
+      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente."
     },
     "summary": {
       "edit": "Modifica",
@@ -2682,7 +2691,6 @@
         "ticketWrites": "Scrive aggiornamenti del ticket senza attendere un tecnico."
       },
       "canRead": "Dati di dispositivi, avvisi e flotta per {{scope}}: inventario, metriche, log, patch, backup, ticket e cronologia di controllo ({{count}} strumenti di sola lettura, sempre attivi).",
-      "mayPropose": "{{operations}} operazioni distribuite su {{capabilities}} funzionalità: {{approvalRequests}} generano una richiesta di approvazione decisa da un tecnico, e {{loggedProposals}} vengono registrate come proposte e non vengono mai eseguite.",
       "mayProposeNone": "Questo agente non propone ancora alcuna operazione.",
       "unrecognisedLabel": "Non riconosciute dall'attuale catalogo di strumenti:",
       "executesUnattendedNone": "Nulla. La modalità shadow si limita a osservare e proporre; nulla viene eseguito senza l'approvazione di un tecnico.",
@@ -2690,9 +2698,27 @@
       "executesUnattendedList": "Esegue {{list}} senza attendere l'approvazione di un tecnico.",
       "preauthorizedNote": "Alcune di queste sono operazioni preautorizzate, concesse in anticipo tramite il processo di revisione a quattro occhi.",
       "neverTouchesEmpty": "Non è ancora protetto nulla.",
-      "limits": "Fino a {{devices}} dispositivi per esecuzione, {{runsPerHour}} esecuzioni all'ora, {{minutes}} minuti per esecuzione, un budget giornaliero di {{budget}}, non più del {{fleetPercent}} della flotta al giorno, e {{cooldown}} minuti tra un'esecuzione e l'altra sullo stesso dispositivo.",
-      "approvers": "Vengono interpellati {{count}} ruoli, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
-      "approversNone": "Non sono ancora stati configurati ruoli, quindi nessuno verrà notificato."
+      "limits": "Fino a {{devices}} per esecuzione, {{runs}}, {{minutes}} per esecuzione, un budget giornaliero di {{budget}}, non più del {{fleetPercent}} della flotta al giorno, e {{cooldown}} tra un'esecuzione e l'altra sullo stesso dispositivo.",
+      "approversNone": "Non sono ancora stati configurati ruoli, quindi nessuno verrà notificato.",
+      "mayPropose_one": "{{count}} operazione distribuita su {{capabilityPhrase}}: {{breakdown}}.",
+      "mayPropose_other": "{{count}} operazioni distribuite su {{capabilityPhrase}}: {{breakdown}}.",
+      "approvalCount_one": "{{count}} genera una richiesta di approvazione decisa da un tecnico",
+      "approvalCount_other": "{{count}} generano una richiesta di approvazione decisa da un tecnico",
+      "loggedCount_one": "{{count}} viene registrata come proposta e non viene mai eseguita",
+      "loggedCount_other": "{{count}} vengono registrate come proposte e non vengono mai eseguite",
+      "unattendedCount_one": "{{count}} viene eseguita senza supervisione",
+      "unattendedCount_other": "{{count}} vengono eseguite senza supervisione",
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivi",
+      "runsPerHourCount_one": "{{count}} esecuzione all'ora",
+      "runsPerHourCount_other": "{{count}} esecuzioni all'ora",
+      "minuteCount_one": "{{count}} minuto",
+      "minuteCount_other": "{{count}} minuti",
+      "approvers_one": "Viene interpellato {{roles}}, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "approvers_other": "Vengono interpellati {{roles}}, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "approversCount_one": "Viene interpellato {{count}} ruolo, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "approversCount_other": "Vengono interpellati {{count}} ruoli, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "scriptGateNote": "{{list}} verrà eseguito senza supervisione solo dopo che uno script sarà autorizzato per questo agente; fino ad allora genera una richiesta di approvazione."
     },
     "flow": {
       "title": "Nuovo agente",

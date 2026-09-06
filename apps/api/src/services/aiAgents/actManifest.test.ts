@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
-import { ACT_ELIGIBLE_TOOL_NAMES, ACT_MANIFEST, resolveActOperation } from './actManifest';
+import { ACT_ELIGIBLE_TOOL_NAMES, ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS, resolveActOperation } from './actManifest';
 
 const RUN_DEVICE_ID = 'device-aaaa-1111';
 const OTHER_DEVICE_ID = 'device-bbbb-2222';
@@ -44,6 +44,19 @@ describe('ACT_MANIFEST frozen key set', () => {
     ]);
     expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('remediation_suggestion');
     expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('execute_command');
+  });
+
+  it('SCRIPT_GATED_ACT_TOOLS is exactly run_script — the one manifest tool whose dispatch also needs actAssets.scriptIds (#5048 QA)', () => {
+    // Three consumers read this set or its meaning: agentToolCatalog.ts
+    // (actRequiresAuthorizedScripts -> the shared outcome rule),
+    // agentService.ts's hasActEligibleSurface (activation prerequisite), and
+    // remediationActResolver.ts's per-script gate, which is inherently
+    // script-shaped (it matches on suggestion.scriptId). A member the
+    // manifest cannot dispatch, or a second asset-gated tool wired into only
+    // some of those, would let the catalog promise an outcome the run loop
+    // never produces — so the set is pinned as a literal, like the key set.
+    expect([...SCRIPT_GATED_ACT_TOOLS].sort()).toEqual(['run_script']);
+    for (const toolName of SCRIPT_GATED_ACT_TOOLS) expect(ACT_ELIGIBLE_TOOL_NAMES).toContain(toolName);
   });
 
   it('ACT_ELIGIBLE_TOOL_NAMES is a subset of the real registered agent-SDK tool set — containment contract (#3826 review)', () => {

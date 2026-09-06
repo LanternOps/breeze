@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { AgentCeilingDto, AgentToolCatalogDto, AiAgentKind } from '@breeze/shared';
 import { badgeClass } from '../../aiAgents/statusBadge';
+import { resolvedFormattingLocale } from '@/lib/i18n/format';
 import {
   capabilityState,
   entriesToSelection,
@@ -10,6 +11,7 @@ import {
   outcomeFor,
   selectionToEntries,
   summarise,
+  unattendedBlockedBy,
   type AgentModeLike,
 } from './capabilityModel';
 import OperationRow from './OperationRow';
@@ -24,6 +26,11 @@ export interface CapabilityPickerProps {
   onChange: (entries: string[]) => void;
   /** Seeds the initially-uncontrolled "Show tool names" switch; the switch always manages its own state after mount. */
   showToolNames?: boolean;
+  /** `actAssets.scriptIds.length` of the row being edited. Defaults to 0 —
+   *  the guided create flow cannot authorize scripts — which keeps a
+   *  script-gated `run_script` shown as the approval request the run loop
+   *  would actually produce, not an unattended run it never would (#5048 QA). */
+  authorizedScriptCount?: number;
 }
 
 /** `manage_startup_items` -> "Manage startup items". Last-resort label for a
@@ -67,9 +74,11 @@ export default function CapabilityPicker({
   entries,
   onChange,
   showToolNames,
+  authorizedScriptCount = 0,
 }: CapabilityPickerProps) {
   const { t } = useTranslation('settings');
   const [search, setSearch] = useState('');
+  const outcomeContext = useMemo(() => ({ authorizedScriptCount }), [authorizedScriptCount]);
   // Uncontrolled: `showToolNames` only seeds the initial value. There is no
   // callback prop to report changes back up, by design — this is a per-viewer
   // display preference, not part of the persisted selection.
@@ -126,9 +135,60 @@ export default function CapabilityPicker({
   const mutatingOpsFor = (capabilityId: string) =>
     catalog.tools.filter((tool) => tool.capability === capabilityId).flatMap((tool) => tool.operations.filter((op) => !op.readOnly));
 
-  const toggleCapability = (capabilityId: string) => {
+  const searchLower = search.trim().toLowerCase();
+  type CatalogTool = AgentToolCatalogDto['tools'][number];
+  type CatalogOperation = CatalogTool['operations'][number];
+  // A search narrows each capability to the operations that match it; only
+  // when NO operation matches but the capability's own label/description
+  // does are all of its operations shown (#5048 QA — "isolate" used to
+  // surface all twelve security operations because the capability blurb
+  // mentions isolating devices, burying the one matching row). Computed
+  // ONCE per search term: the header checkbox, its "N of M" count, the
+  // capability list and the rows all read the same map, so nothing the
+  // operator cannot see is ever toggled on their behalf. Labels are resolved
+  // through `t` directly here (rather than the render-scoped helpers above)
+  // so the memo's inputs are exactly the search term, the catalog and `t`.
+  const visibleOpKeysByCapability = useMemo(() => {
+    const matches = (text: string) => text.toLowerCase().includes(searchLower);
+    const tl = (name: string) => t(/* i18n-dynamic */ `aiAgentsPage.catalog.tools.${name}`, { defaultValue: sentenceCase(name) });
+    const al = (toolName: string, action: string | null) =>
+      action === null
+        ? tl(toolName)
+        : t(/* i18n-dynamic */ `aiAgentsPage.catalog.actions.${toolName}.${action}`, { defaultValue: sentenceCase(action) });
+    const operationMatches = (tool: CatalogTool, op: CatalogOperation): boolean =>
+      matches(tool.name) || matches(tl(tool.name)) || matches(op.key) || matches(al(tool.name, op.action));
+    const capabilityItselfMatches = (id: string): boolean =>
+      matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.label`, { defaultValue: sentenceCase(id) }))
+      || matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.description`, { defaultValue: '' }));
+
+    const map = new Map<string, ReadonlySet<string> | null>();
+    for (const cap of catalog.capabilities) {
+      if (!searchLower) {
+        map.set(cap.id, null); // null = unrestricted
+        continue;
+      }
+      const matching = new Set<string>();
+      for (const tool of catalog.tools) {
+        if (tool.capability !== cap.id) continue;
+        for (const op of tool.operations) if (!op.readOnly && operationMatches(tool, op)) matching.add(op.key);
+      }
+      if (matching.size > 0) map.set(cap.id, matching);
+      else if (capabilityItselfMatches(cap.id)) map.set(cap.id, null);
+      // else: absent = the capability is hidden entirely
+    }
+    return map;
+  }, [searchLower, catalog, t]);
+  const visibleOpsFor = (capabilityId: string): CatalogOperation[] => {
+    const keys = visibleOpKeysByCapability.get(capabilityId);
     const ops = mutatingOpsFor(capabilityId);
-    const state = capabilityState(capabilityId, selected, catalog, ceiling);
+    return keys === null || keys === undefined ? ops : ops.filter((op) => keys.has(op.key));
+  };
+  const stateFor = (capabilityId: string) =>
+    capabilityState(capabilityId, selected, catalog, ceiling, visibleOpKeysByCapability.get(capabilityId) ?? null);
+
+  const toggleCapability = (capabilityId: string) => {
+    const ops = visibleOpsFor(capabilityId);
+    const state = stateFor(capabilityId);
     const next = new Set(selected);
     if (state.checked === 'all') {
       for (const op of ops) next.delete(op.key);
@@ -164,40 +224,36 @@ export default function CapabilityPicker({
     commit(next);
   };
 
-  const searchLower = search.trim().toLowerCase();
-  const capabilityMatchesSearch = (capabilityId: string): boolean => {
-    if (!searchLower) return true;
-    if (capabilityLabel(capabilityId).toLowerCase().includes(searchLower)) return true;
-    for (const tool of catalog.tools) {
-      if (tool.capability !== capabilityId) continue;
-      if (tool.name.toLowerCase().includes(searchLower)) return true;
-      if (toolLabel(tool.name).toLowerCase().includes(searchLower)) return true;
-      for (const op of tool.operations) {
-        if (op.key.toLowerCase().includes(searchLower)) return true;
-        if (actionLabel(tool.name, op.action).toLowerCase().includes(searchLower)) return true;
-      }
-    }
-    return false;
-  };
-
   const readOnlyTools = catalog.tools.filter((tool) => tool.readOnly);
   const withOperations = catalog.capabilities.filter((cap) => mutatingOpsFor(cap.id).length > 0);
-  const visible = withOperations.filter((cap) => capabilityMatchesSearch(cap.id));
+  const visible = withOperations.filter((cap) => visibleOpKeysByCapability.has(cap.id));
   const primaryCapabilities = searchLower ? visible : visible.filter((cap) => touchedIds.has(cap.id));
   const moreCapabilities = searchLower ? [] : visible.filter((cap) => !touchedIds.has(cap.id));
 
-  const summary = summarise(selected, catalog, mode);
+  const summary = useMemo(() => summarise(selected, catalog, mode, outcomeContext), [selected, catalog, mode, outcomeContext]);
+  // Each count pluralises on its own (#5048 QA: "1 approval requests"), so the
+  // parenthetical is assembled from pre-pluralised phrases and interpolated
+  // as one `breakdown` string — i18next drives a key's plural form off a
+  // single `count`, which the sentence already spends on the operations.
+  // Joined with the locale's own list conjunction, the same way the review
+  // card (`AgentSummaryCard.tsx`) renders its copy of this breakdown.
+  const breakdown = new Intl.ListFormat(resolvedFormattingLocale(), { style: 'long', type: 'conjunction' }).format([
+    t('aiAgentsPage.catalog.approvalRequestCount', { count: summary.approvalRequests }),
+    t('aiAgentsPage.catalog.loggedProposalCount', { count: summary.loggedProposals }),
+    ...(mode === 'act' ? [t('aiAgentsPage.catalog.unattendedCount', { count: summary.unattended.length })] : []),
+  ]);
   const searchInputId = useId();
   const showNamesLabelId = useId();
 
   const renderCapability = (capabilityId: string) => {
     const cap = catalog.capabilities.find((c) => c.id === capabilityId);
     if (!cap) return null;
-    const state = capabilityState(capabilityId, selected, catalog, ceiling);
+    const state = stateFor(capabilityId);
     const isOpen = expanded.has(capabilityId) || searchLower !== '';
-    const enabledOps = mutatingOpsFor(capabilityId);
+    const enabledOps = visibleOpsFor(capabilityId);
     const capDisabled = enabledOps.length > 0 && enabledOps.every((op) => !isWithinCeiling(op.key, ceiling));
     const capTools = catalog.tools.filter((tool) => tool.capability === capabilityId && tool.operations.some((op) => !op.readOnly));
+    const visibleKeys = visibleOpKeysByCapability.get(capabilityId) ?? null;
 
     return (
       <li key={capabilityId} data-testid={`capability-row-${capabilityId}`}>
@@ -253,13 +309,19 @@ export default function CapabilityPicker({
         {isOpen && (
           <div className="space-y-2 border-t bg-muted/20 px-3 py-2">
             {capTools.map((tool) => {
-              const mutating = tool.operations.filter((op) => !op.readOnly);
+              const allMutating = tool.operations.filter((op) => !op.readOnly);
+              const mutating = visibleKeys === null ? allMutating : allMutating.filter((op) => visibleKeys.has(op.key));
+              if (mutating.length === 0) return null;
               return (
                 <div key={tool.name}>
-                  {mutating.length > 1 && <p className="pl-6 text-xs font-semibold text-muted-foreground">{toolLabel(tool.name)}</p>}
+                  {/* The tool heading keys off the tool's FULL operation count, so a
+                      search that narrows a multi-op tool to one row still says
+                      which tool that row belongs to. */}
+                  {allMutating.length > 1 && <p className="pl-6 text-xs font-semibold text-muted-foreground">{toolLabel(tool.name)}</p>}
                   <ul>
                     {mutating.map((op) => {
-                      const outcome = outcomeFor(op, mode);
+                      const outcome = outcomeFor(op, mode, outcomeContext);
+                      const blockedBy = unattendedBlockedBy(op, mode, outcomeContext);
                       return (
                         <OperationRow
                           key={op.key}
@@ -272,6 +334,7 @@ export default function CapabilityPicker({
                           showKey={showNames}
                           policyDecidableTitle={t('aiAgentsPage.catalog.preauthorizable')}
                           notInCeilingLabel={t('aiAgentsPage.catalog.notInCeiling')}
+                          note={blockedBy === 'authorized_scripts' ? t('aiAgentsPage.catalog.scriptGateNote') : undefined}
                           onToggle={toggleOperation}
                         />
                       );
@@ -419,8 +482,7 @@ export default function CapabilityPicker({
           // pluralising "capabilities" inside the summary string itself.
           count: summary.operations,
           capabilityPhrase: t('aiAgentsPage.catalog.capabilityCount', { count: summary.capabilities }),
-          approvalRequests: summary.approvalRequests,
-          loggedProposals: summary.loggedProposals,
+          breakdown,
         })}
       </p>
     </div>

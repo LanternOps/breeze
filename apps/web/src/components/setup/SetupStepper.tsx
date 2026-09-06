@@ -24,11 +24,26 @@ interface SetupStepperProps {
    *  the label (plus an optional `description`) beside each one — the
    *  left-rail pattern the AI agent create flow (spec §4.6) needs. */
   orientation?: 'horizontal' | 'vertical';
+  /** Highest step index the caller allows jumping FORWARD to (a step the
+   *  operator has already visited, e.g. after an "Edit" link from a review
+   *  step sent them back). Completed steps are always clickable; without
+   *  this, nothing ahead of `currentStep` is — the original behaviour. The
+   *  caller still owns validation of the steps being skipped over. */
+  reachableStep?: number;
 }
 
-export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabel, orientation = 'horizontal' }: SetupStepperProps) {
+export default function SetupStepper({
+  steps,
+  currentStep,
+  onStepClick,
+  ariaLabel,
+  orientation = 'horizontal',
+  reachableStep = -1,
+}: SetupStepperProps) {
   const { t } = useTranslation('auth');
   const label = ariaLabel ?? t('setup.stepper.ariaLabel');
+  const clickable = (index: number): boolean =>
+    !!onStepClick && index !== currentStep && (index < currentStep || index <= reachableStep);
 
   if (orientation === 'vertical') {
     return (
@@ -36,7 +51,11 @@ export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabe
         {steps.map((step, index) => {
           const isCompleted = index < currentStep;
           const isCurrent = index === currentStep;
-          const isClickable = isCompleted && !!onStepClick;
+          const isClickable = clickable(index);
+          // A visited step ahead of the current one: reachable, but not yet
+          // "completed" from here — painted distinctly from an upcoming step
+          // so the shortcut back to it is visible, not just hoverable.
+          const isReachableAhead = isClickable && index > currentStep;
           const isLast = index === steps.length - 1;
 
           return (
@@ -45,18 +64,24 @@ export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabe
                 <button
                   type="button"
                   disabled={!isClickable}
-                  onClick={() => isClickable && onStepClick(index)}
+                  onClick={() => isClickable && onStepClick?.(index)}
                   aria-current={isCurrent ? 'step' : undefined}
+                  // A completed circle swaps its number for an icon, which
+                  // would otherwise leave the button with no accessible name
+                  // (#5048 QA) — the number + label names it in every state.
+                  aria-label={`${index + 1}. ${step.label}`}
                   className={cn(
                     'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
                     isCompleted && 'bg-primary text-primary-foreground',
                     isCurrent && 'bg-primary text-primary-foreground ring-2 ring-primary/30 ring-offset-2 ring-offset-background',
-                    !isCompleted && !isCurrent && 'bg-muted text-muted-foreground',
+                    isReachableAhead && 'bg-background text-foreground ring-1 ring-inset ring-primary/50',
+                    !isCompleted && !isCurrent && !isReachableAhead && 'bg-muted text-muted-foreground',
                     isClickable && 'cursor-pointer',
                   )}
                   data-testid={`setup-stepper-step-${index}`}
+                  data-reachable={isReachableAhead || undefined}
                 >
-                  {isCompleted ? <Check className="h-4 w-4" /> : index + 1}
+                  {isCompleted ? <Check className="h-4 w-4" aria-hidden="true" /> : index + 1}
                 </button>
                 {/* The connector between this circle and the next — a plain
                     1px line, not a progress bar: the circles themselves
@@ -67,12 +92,13 @@ export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabe
                 <button
                   type="button"
                   disabled={!isClickable}
-                  onClick={() => isClickable && onStepClick(index)}
+                  onClick={() => isClickable && onStepClick?.(index)}
                   className={cn(
                     'text-left text-sm font-medium',
-                    (isCurrent || isCompleted) && 'text-foreground',
-                    !isCompleted && !isCurrent && 'text-muted-foreground',
+                    (isCurrent || isCompleted || isReachableAhead) && 'text-foreground',
+                    !isCompleted && !isCurrent && !isReachableAhead && 'text-muted-foreground',
                     isClickable && 'cursor-pointer hover:underline',
+                    isReachableAhead && 'underline decoration-dotted underline-offset-2',
                   )}
                 >
                   {step.label}
@@ -93,14 +119,18 @@ export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabe
       {steps.map((step, index) => {
         const isCompleted = index < currentStep;
         const isCurrent = index === currentStep;
-        const isClickable = isCompleted && onStepClick;
+        const isClickable = clickable(index);
 
         return (
           <div key={step.label} className="flex items-center gap-2">
             <button
               type="button"
               disabled={!isClickable}
-              onClick={() => isClickable && onStepClick(index)}
+              onClick={() => isClickable && onStepClick?.(index)}
+              // The label span below is hidden under the `sm` breakpoint, so
+              // without this a completed step is an enabled button with an
+              // empty accessible name on a narrow viewport.
+              aria-label={`${index + 1}. ${step.label}`}
               className={cn(
                 'flex items-center gap-2',
                 isClickable && 'cursor-pointer'
@@ -115,7 +145,7 @@ export default function SetupStepper({ steps, currentStep, onStepClick, ariaLabe
                   !isCompleted && !isCurrent && 'bg-muted text-muted-foreground'
                 )}
               >
-                {isCompleted ? <Check className="h-4 w-4" /> : index + 1}
+                {isCompleted ? <Check className="h-4 w-4" aria-hidden="true" /> : index + 1}
               </div>
               <span
                 className={cn(
