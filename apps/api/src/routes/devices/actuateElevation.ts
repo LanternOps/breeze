@@ -154,6 +154,7 @@ actuateElevationRoutes.post(
           orgId: elevationRequests.orgId,
           status: elevationRequests.status,
           targetExecutablePath: elevationRequests.targetExecutablePath,
+          targetExecutableHash: elevationRequests.targetExecutableHash,
           subjectUsername: elevationRequests.subjectUsername,
           metadata: elevationRequests.metadata,
           approvedAt: elevationRequests.approvedAt,
@@ -264,6 +265,7 @@ actuateElevationRoutes.post(
             elevationRequestId: data.elevationRequestId,
             timeoutMs: data.timeoutMs ?? 8000,
             targetPath: elevation.targetExecutablePath ?? '',
+            targetHash: elevation.targetExecutableHash ?? '',
             commandLine: typeof metadata.command_line === 'string' ? metadata.command_line : '',
             // Path B places the elevated process in the requesting user's live
             // session; the agent resolves this name to a session id (falls back

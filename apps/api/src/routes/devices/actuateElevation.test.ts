@@ -597,6 +597,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
         elevationRow: {
           ...SAMPLE_ELEVATION,
           targetExecutablePath: 'C:\\Windows\\System32\\mmc.exe',
+          targetExecutableHash: 'a'.repeat(64),
           subjectUsername: 'CORP\\alice',
           metadata: { command_line: 'mmc.exe devmgmt.msc' },
         } as never,
@@ -623,6 +624,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
         expect.objectContaining({
           payload: expect.objectContaining({
             targetPath: 'C:\\Windows\\System32\\mmc.exe',
+            targetHash: 'a'.repeat(64),
             commandLine: 'mmc.exe devmgmt.msc',
             subjectUsername: 'CORP\\alice',
           }),
@@ -737,7 +739,12 @@ describe('POST /devices/:id/actuate-elevation', () => {
       expect(res.status).toBe(201);
       expect(commandValues).toHaveBeenCalledWith(
         expect.objectContaining({
-          payload: expect.objectContaining({ targetPath: '', commandLine: '', subjectUsername: '' }),
+          payload: expect.objectContaining({
+            targetPath: '',
+            targetHash: '',
+            commandLine: '',
+            subjectUsername: '',
+          }),
         }),
       );
     });
