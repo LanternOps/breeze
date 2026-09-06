@@ -61,15 +61,27 @@ CREATE OR REPLACE FUNCTION public.breeze_config_policy_parent_compatible(
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
-  SELECT CASE
-    WHEN child_org IS NOT NULL THEN
-      parent_org = child_org
-      OR (parent_org IS NULL AND parent_partner IS NOT NULL
-          AND parent_partner = (SELECT o.partner_id FROM public.organizations o WHERE o.id = child_org))
-    WHEN child_partner IS NOT NULL THEN
-      parent_org IS NULL AND parent_partner = child_partner
-    ELSE false
-  END;
+  -- STRICTLY two-valued. Every comparison here can yield NULL — `parent_org =
+  -- child_org` is NULL whenever parent_org IS NULL (a partner-wide parent), and
+  -- the organizations sub-select yields NULL for an org that is missing or
+  -- RLS-invisible. Under three-valued logic `NULL OR false` is NULL, `NOT NULL`
+  -- is NULL, and an `IF NOT compatible(...)` guard then does NOT fire: a
+  -- cross-partner partner-wide parent would be silently ACCEPTED. The outer
+  -- COALESCE collapses every unknown to false so the answer is always a real
+  -- boolean and always fails closed. (The callers additionally test
+  -- `IS NOT TRUE` rather than `NOT`, as defence in depth.)
+  SELECT COALESCE(
+    CASE
+      WHEN child_org IS NOT NULL THEN
+        parent_org = child_org
+        OR (parent_org IS NULL AND parent_partner IS NOT NULL
+            AND parent_partner = (SELECT o.partner_id FROM public.organizations o WHERE o.id = child_org))
+      WHEN child_partner IS NOT NULL THEN
+        parent_org IS NULL AND parent_partner = child_partner
+      ELSE false
+    END,
+    false
+  );
 $$;
 
 -- Not a public oracle for "does org X belong to partner P".
@@ -110,7 +122,7 @@ BEGIN
       FROM public.configuration_policies cp WHERE cp.id = NEW.parent_policy_id;
     IF NOT FOUND
        OR p.parent_policy_id IS NOT NULL
-       OR NOT public.breeze_config_policy_parent_compatible(NEW.org_id, NEW.partner_id, p.org_id, p.partner_id) THEN
+       OR public.breeze_config_policy_parent_compatible(NEW.org_id, NEW.partner_id, p.org_id, p.partner_id) IS NOT TRUE THEN
       RAISE EXCEPTION USING ERRCODE = '23514',
         CONSTRAINT = 'configuration_policies_parent_guard',
         MESSAGE = 'parent configuration policy not found or not eligible';
@@ -130,7 +142,7 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM public.configuration_policies c
        WHERE c.parent_policy_id = NEW.id
-         AND NOT public.breeze_config_policy_parent_compatible(c.org_id, c.partner_id, NEW.org_id, NEW.partner_id)
+         AND public.breeze_config_policy_parent_compatible(c.org_id, c.partner_id, NEW.org_id, NEW.partner_id) IS NOT TRUE
     ) THEN
       RAISE EXCEPTION USING ERRCODE = '23514',
         CONSTRAINT = 'configuration_policies_parent_guard',
