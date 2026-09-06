@@ -20,6 +20,8 @@ export type ConfigPolicy = {
   // null = partner-wide ("All organizations") policy (#1724)
   orgId: string | null;
   partnerId?: string | null;
+  // Present when this policy inherits from a baseline (#5080).
+  parentPolicyId?: string | null;
   // Owning org's name, joined in by the list API for org-owned policies.
   orgName?: string | null;
   createdAt?: string;

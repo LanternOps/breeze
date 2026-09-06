@@ -38,7 +38,7 @@ import { i18n } from "@/lib/i18n";
 // `/constants` subpath isn't wired up here, so import from the root, which
 // re-exports it.
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
-import type { FeatureType, FeatureLink } from './featureTabs/types';
+import type { FeatureType, FeatureLink, ParentPolicySummary } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
 import { useFeatureLink } from './featureTabs/useFeatureLink';
 import AssignmentsTab from './AssignmentsTab';
@@ -76,6 +76,9 @@ type PolicyDetail = {
   createdAt?: string;
   updatedAt?: string;
   featureLinks: FeatureLink[];
+  parentPolicyId: string | null;
+  parentPolicy: ParentPolicySummary | null;
+  childPolicies: { id: string; name: string }[];
 };
 const createStatusConfig = (): Record<
   string,
