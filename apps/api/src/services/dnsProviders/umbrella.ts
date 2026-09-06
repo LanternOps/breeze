@@ -332,11 +332,13 @@ export class UmbrellaProvider implements DnsProvider {
       offset += records.length;
 
       if (request === maxRequests - 1) {
-        // Budget exhausted with a full page still coming back: the remainder
-        // is not fetched, and the next run starts from `until`, so it is lost.
+        // Budget exhausted on a non-empty page, so the end of the collection
+        // was never reached. Anything left is not fetched, and the next run
+        // starts from `until`, so it is lost rather than retried.
         console.warn(
-          `[UmbrellaProvider] activity sync reached the ${maxRequests}-request cap with more ` +
-          'results available; some in-window events were not fetched this run.'
+          `[UmbrellaProvider] activity sync reached the ${maxRequests}-request cap without ` +
+          'reaching the end of the collection; any remaining in-window events were not ' +
+          'fetched this run.'
         );
       }
     }
