@@ -1,0 +1,97 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organization",
+    "header": {
+      "type": {
+        "customer": "Customer",
+        "internal": "Internal"
+      },
+      "primaryContact": "Primary contact",
+      "noPrimaryContact": "No primary contact",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} sites",
+      "scopeChip": "Workspace: {{orgName}}",
+      "scopeChipHint": "Your workspace is set to another organization. This page always shows {{orgName}}.",
+      "created": "Customer since {{date}}"
+    },
+    "actions": {
+      "workHere": "Work in this org",
+      "workHereToast": "Switched to {{orgName}}",
+      "settings": "Settings",
+      "more": "More actions",
+      "archive": "Archive",
+      "merge": "Merge",
+      "restore": "Restore",
+      "retry": "Try again"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "contacts": "Contacts",
+      "sites": "Sites",
+      "devices": "Devices",
+      "tickets": "Tickets",
+      "billing": "Contracts & Billing",
+      "activity": "Activity"
+    },
+    "comingSoon": {
+      "title": "Coming shortly",
+      "description": "This tab lands in the next update of the organization record."
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Devices",
+        "devicesSub": "{{online}} of {{total}} online",
+        "alerts": "Open alerts",
+        "alertsSub": "{{critical}} critical · {{high}} high",
+        "tickets": "Open tickets",
+        "ticketsSub": "{{count}} awaiting customer",
+        "contracts": "Active contracts",
+        "contractsSub": "Next renewal {{date}}",
+        "contractsNoRenewal": "No upcoming renewal",
+        "invoices": "Outstanding",
+        "invoicesSub": "Next due {{date}}",
+        "invoicesOverdue_one": "{{count}} overdue",
+        "invoicesOverdue_other": "{{count}} overdue",
+        "invoicesNothingDue": "Nothing due",
+        "contacts": "Contacts",
+        "portalUsers": "Portal users",
+        "sites": "Sites"
+      },
+      "activity": {
+        "title": "Recent activity",
+        "empty": "No recorded activity yet.",
+        "viewAll": "View all activity"
+      },
+      "criticalAlerts": {
+        "title": "Open critical alerts",
+        "empty": "No open critical alerts.",
+        "viewAll": "View all alerts"
+      },
+      "lastActivity": "Last activity {{date}}",
+      "noSummary": "Summary counts are unavailable right now."
+    },
+    "archived": {
+      "banner": "This organization is archived and read only. Restore it to make changes.",
+      "restoreError": "Could not restore this organization."
+    },
+    "lifecycle": {
+      "inaccessible": "This organization is {{status}}, so its live data is not available. You can still see it in the organizations list.",
+      "backToList": "Back to organizations"
+    },
+    "unavailable": {
+      "title": "Not available in this workspace",
+      "description": "Organization records are a partner-level view. Your sign-in is scoped to a single organization, so there is nothing to switch between here.",
+      "action": "Go to the dashboard"
+    },
+    "notFound": {
+      "title": "Organization not found",
+      "description": "This organization does not exist, or you no longer have access to it.",
+      "action": "Back to organizations"
+    },
+    "error": {
+      "title": "Could not load this organization",
+      "description": "Something went wrong fetching the record. Check your connection and try again."
+    },
+    "loading": "Loading organization…"
+  }
+}
