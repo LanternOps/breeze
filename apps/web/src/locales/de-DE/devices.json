@@ -2121,6 +2121,10 @@
     },
     "goBack": "Zurück",
     "lastSeen": "Zuletzt gesehen {{time}}",
+    "live": {
+      "webUiOpened": "Web-Oberfläche in neuem Tab geöffnet",
+      "refreshed": "Gerätedetails aktualisiert"
+    },
     "loading": "Netzwerkgerät wird geladen...",
     "manageInDiscovery": "In Discovery verwalten",
     "manuallySet": "Manuell eingestellt",
@@ -2136,8 +2140,7 @@
         "mgmt": "Verwaltung",
         "remote": "Fernzugriff",
         "print": "Drucken",
-        "file": "Dateifreigabe",
-        "other": ""
+        "file": "Dateifreigabe"
       }
     },
     "proxyPort": "Port",

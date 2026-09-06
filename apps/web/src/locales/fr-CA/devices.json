@@ -2121,6 +2121,10 @@
     },
     "goBack": "Retour",
     "lastSeen": "Dernière vue {{time}}",
+    "live": {
+      "webUiOpened": "L'interface Web s'est ouverte dans un nouvel onglet",
+      "refreshed": "Détails de l'appareil actualisés"
+    },
     "loading": "Chargement du dispositif réseau...",
     "manageInDiscovery": "Gérer dans Découverte",
     "manuallySet": "Réglé manuellement",
@@ -2136,8 +2140,7 @@
         "mgmt": "Gestion",
         "remote": "Accès à distance",
         "print": "Impression",
-        "file": "Partage de fichiers",
-        "other": ""
+        "file": "Partage de fichiers"
       }
     },
     "proxyPort": "Port",

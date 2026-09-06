@@ -2121,6 +2121,10 @@
     },
     "goBack": "Go back",
     "lastSeen": "Last seen {{time}}",
+    "live": {
+      "webUiOpened": "Web UI opened in a new tab",
+      "refreshed": "Device details refreshed"
+    },
     "loading": "Loading network device...",
     "manageInDiscovery": "Manage in Discovery",
     "manuallySet": "Manually set",
@@ -2136,8 +2140,7 @@
         "mgmt": "Management",
         "remote": "Remote access",
         "print": "Printing",
-        "file": "File sharing",
-        "other": ""
+        "file": "File sharing"
       }
     },
     "proxyPort": "Port",

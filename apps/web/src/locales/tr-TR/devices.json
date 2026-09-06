@@ -2121,6 +2121,10 @@
     },
     "goBack": "Geri dön",
     "lastSeen": "Son görülme {{time}}",
+    "live": {
+      "webUiOpened": "Web arayüzü yeni bir sekmede açıldı",
+      "refreshed": "Cihaz ayrıntıları yenilendi"
+    },
     "loading": "Ağ cihazı yükleniyor...",
     "manageInDiscovery": "Discovery'de yönetin",
     "manuallySet": "Manüel olarak ayarlandı",
@@ -2136,8 +2140,7 @@
         "mgmt": "Yönetim",
         "remote": "Uzaktan erişim",
         "print": "Yazdırma",
-        "file": "Dosya paylaşımı",
-        "other": ""
+        "file": "Dosya paylaşımı"
       }
     },
     "proxyPort": "Bağlantı noktası",

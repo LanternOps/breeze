@@ -2121,6 +2121,10 @@
     },
     "goBack": "Volver",
     "lastSeen": "Visto por última vez {{time}}",
+    "live": {
+      "webUiOpened": "La interfaz web se abrió en una pestaña nueva",
+      "refreshed": "Detalles del dispositivo actualizados"
+    },
     "loading": "Cargando dispositivo de red...",
     "manageInDiscovery": "Administrar en descubrimiento",
     "manuallySet": "Establecer manualmente",
@@ -2136,8 +2140,7 @@
         "mgmt": "Administración",
         "remote": "Acceso remoto",
         "print": "Impresión",
-        "file": "Uso compartido de archivos",
-        "other": ""
+        "file": "Uso compartido de archivos"
       }
     },
     "proxyPort": "Puerto",

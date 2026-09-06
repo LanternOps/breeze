@@ -2121,6 +2121,10 @@
     },
     "goBack": "Torna indietro",
     "lastSeen": "Ultima rilevazione {{time}}",
+    "live": {
+      "webUiOpened": "L'interfaccia web è stata aperta in una nuova scheda",
+      "refreshed": "Dettagli del dispositivo aggiornati"
+    },
     "loading": "Caricamento del dispositivo di rete...",
     "manageInDiscovery": "Gestisci nel rilevamento",
     "manuallySet": "Impostato manualmente",
@@ -2136,8 +2140,7 @@
         "mgmt": "Gestione",
         "remote": "Accesso remoto",
         "print": "Stampa",
-        "file": "Condivisione file",
-        "other": ""
+        "file": "Condivisione file"
       }
     },
     "proxyPort": "Porta",

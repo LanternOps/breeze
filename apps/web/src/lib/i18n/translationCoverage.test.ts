@@ -209,10 +209,7 @@ const namespaceDuplicateBaselines = {
     'common.json': 105,
     // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
     // and "Description" (snmpFields.sysDescr) are identical French cognates.
-    // +1: networkDeviceDetailPage.ports.kind.other is an intentionally empty
-    // label (no kind badge for uncatalogued/plain ports) — identical (empty)
-    // in every catalog.
-    'devices.json': 138,
+    'devices.json': 137,
     'discovery.json': 15,
     'integrations.json': 38,
     'patches.json': 20,
@@ -292,10 +289,7 @@ const namespaceDuplicateBaselines = {
     'common.json': 107,
     // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
     // and "Description" (snmpFields.sysDescr) are identical French cognates.
-    // +1: networkDeviceDetailPage.ports.kind.other is an intentionally empty
-    // label (no kind badge for uncatalogued/plain ports) — identical (empty)
-    // in every catalog.
-    'devices.json': 138,
+    'devices.json': 137,
     'discovery.json': 15,
     'integrations.json': 40,
     'patches.json': 20,
@@ -377,10 +371,7 @@ const namespaceDuplicateBaselines = {
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
     'common.json': 105,
-    // +1: networkDeviceDetailPage.ports.kind.other is an intentionally empty
-    // label (no kind badge for uncatalogued/plain ports) — identical (empty)
-    // in every catalog.
-    'devices.json': 147,
+    'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
@@ -498,10 +489,7 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     'billing.json': 20,
     'common.json': 48,
-    // +1: networkDeviceDetailPage.ports.kind.other is an intentionally empty
-    // label (no kind badge for uncatalogued/plain ports) — identical (empty)
-    // in every catalog.
-    'devices.json': 78,
+    'devices.json': 77,
     'discovery.json': 9,
     'integrations.json': 22,
     'patches.json': 11,
