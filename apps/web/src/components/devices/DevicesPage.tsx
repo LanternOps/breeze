@@ -14,6 +14,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
@@ -171,6 +172,12 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
+  // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
+  // (#import-definitions / #import-values) internally, so this only tracks
+  // whether either of those hashes means the wizard is open at all.
+  const [showRmmImport, setShowRmmImport] = useHashState<boolean>(false, (h) =>
+    h === 'import-definitions' || h === 'import-values' ? true : undefined,
+  );
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
@@ -1585,6 +1592,17 @@ export default function DevicesPage() {
           </div>
           <button
             type="button"
+            data-testid="devices-page-import-rmm"
+            onClick={() => {
+              window.location.hash = 'import-definitions';
+              setShowRmmImport(true);
+            }}
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            {t('devicesPage.importFromRmm')}
+          </button>
+          <button
+            type="button"
             onClick={() => setShowAddDevice(true)}
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
@@ -1722,6 +1740,16 @@ export default function DevicesPage() {
       )}
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
+
+      {showRmmImport && (
+        <RmmCustomFieldImport
+          organizationId={orgScope.status === 'resolved' && orgScope.scope !== 'all' ? orgScope.orgId : null}
+          onClose={() => {
+            window.location.hash = '';
+            setShowRmmImport(false);
+          }}
+        />
+      )}
 
       <CreateGroupModal
         isOpen={showCreateGroup}

@@ -1802,6 +1802,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
+    "importFromRmm": "Import from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",

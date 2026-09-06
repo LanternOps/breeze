@@ -4186,6 +4186,7 @@
     },
     "actions": {
       "add": "Add Custom Field",
+      "importFromRmm": "Import from another RMM",
       "addFirst": "Add your first custom field",
       "addChoice": "Add Choice",
       "createField": "Create Field",
