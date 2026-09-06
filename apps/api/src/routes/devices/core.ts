@@ -359,6 +359,48 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
 ] as const;
 
 /**
+ * Alert-axis sibling of {@link CUSTOM_ORG_REWRITE_TABLES} (#4867): tables that
+ * denormalize `org_id` and hang off `alerts`, but have NO `device_id` column —
+ * so the generic {@link getDeviceOrgDenormalizedTables} loop in moveOrg.ts
+ * (which keys on `WHERE device_id = ...`) cannot reach them, and neither can
+ * the DB-side `breeze_cascade_device_org_id()` trigger, whose
+ * `breeze_device_child_orgid_tables()` discovery finds tables BY that same
+ * device_id column. Each gets a dedicated hand-written UPDATE inside the
+ * move-org transaction, keyed on the alert (or, for a group-level verdict, on
+ * the correlation group).
+ *
+ * Leaving them behind is not a neutral no-op: every alert-facing reader pins
+ * these rows to the ALERT's own org — `hideAiNoiseCondition` and
+ * `correlationMetadataCondition` (routes/alerts/alerts.ts), plus
+ * `latestVerdictsForAlerts` / `latestVerdictForGroup`
+ * (services/aiAgents/alertVerdicts.ts) — so a row still stamped with the
+ * source org is invisible to the org that now owns the alert, and that alert
+ * permanently loses its AI-noise suppression and correlation badge. Nothing
+ * regenerates them: the verdict scheduler is event-driven off `alert.triggered`
+ * (jobs/alertVerdictScheduler.ts) and never re-scans existing alerts.
+ *
+ * ORDER IS LOAD-BEARING, but for a different reason than the ticket list's:
+ * member -> group -> verdict, because each later statement's predicate reads
+ * the rows the earlier one just re-stamped (the group's "every member alert is
+ * now in the target org" test reads `alerts.org_id` from the generic loop, and
+ * the verdict's group leg reads `alert_correlation_groups.org_id` from the
+ * group statement). None of the three carries a composite tenant FK, so there
+ * is no 23503 ordering hazard of the kind the ticket chain above is ordered
+ * for. These statements run AFTER that chain, extending — never reordering —
+ * services/ticketOrgMoveLockOrder.ts's documented order.
+ *
+ * moveOrg.coverage.test.ts DERIVES the expected membership from the schema
+ * (org_id + no device_id + an FK path to `alerts`), so the next alert child
+ * cannot skip both paths the way these three did; moveOrg.test.ts pins the real
+ * statement sequence to this array's order.
+ */
+export const ALERT_CHILD_ORG_REWRITE_TABLES = [
+  'alert_correlation_members',
+  'alert_correlation_groups',
+  'ai_alert_verdicts',
+] as const;
+
+/**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
  * EVERY write path that changes devices.site_id must rewrite each row's
  * site_id in the same transaction, or those rows strand under the OLD
