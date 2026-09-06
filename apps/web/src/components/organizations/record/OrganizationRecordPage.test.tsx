@@ -241,8 +241,11 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: 'Devices' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Overview' })).toBeTruthy();
+    // OverflowTabs renders its visible tabs as role="tab" inside a
+    // role="tablist" nav (#5090) — querying them as role="button" finds
+    // nothing, which silently made the negative assertion below vacuous.
+    expect(screen.queryByRole('tab', { name: 'Devices' })).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
   });
 
   it('falls back to Overview when the hash names a tab this user cannot see', async () => {
