@@ -23,7 +23,7 @@ const envelope = (record: Record<string, unknown>) => ({
 });
 
 const cases = [
-  ['configuration-policies', configurationPolicyExportEnvelopeSchema, { sourceScope: 'organization', name: 'P', description: null, status: 'active', features: [{ id: ID, type: 'patch', policyId: null, settings: { schedule: 'weekly' } }] }],
+  ['configuration-policies', configurationPolicyExportEnvelopeSchema, { sourceScope: 'organization', name: 'P', description: null, status: 'active', parentPolicyId: null, features: [{ id: ID, type: 'patch', policyId: null, settings: { schedule: 'weekly' } }] }],
   ['configuration-assignments', configurationAssignmentExportEnvelopeSchema, { policyId: ID, policyName: 'P', sourceScope: 'organization', level: 'organization', targetId: ORG_ID, priority: 0, roleFilter: null, osFilter: null }],
   ['scripts', scriptExportEnvelopeSchema, { sourceScope: 'organization', name: 'S', description: null, category: null, osTypes: ['linux'], language: 'bash', content: 'true', parameters: null, timeoutSeconds: 30, runAs: 'system', version: 1, exitCodeSeverityMapping: null }],
   ['automations', automationExportEnvelopeSchema, { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [] }],
