@@ -377,7 +377,7 @@ export default function MonitoringTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitoring",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "monitoring");
@@ -391,7 +391,7 @@ export default function MonitoringTab({
     clearError();
     const result = await save(null, {
       featureType: "monitoring",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "monitoring");

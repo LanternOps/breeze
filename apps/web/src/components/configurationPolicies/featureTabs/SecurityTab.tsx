@@ -104,7 +104,6 @@ export default function SecurityTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
 }: FeatureTabProps) {
   useTranslation("policies");
   const dayOfWeekOptions = createDayOfWeekOptions();
@@ -152,7 +151,7 @@ export default function SecurityTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "security",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "security");

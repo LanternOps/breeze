@@ -100,7 +100,6 @@ export default function SensitiveDataTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
 }: FeatureTabProps) {
   useTranslation("policies");
   const DETECTION_CLASSES = createDetectionClasses();
@@ -165,7 +164,7 @@ export default function SensitiveDataTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "sensitive_data",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "sensitive_data");

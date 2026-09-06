@@ -85,7 +85,6 @@ export default function RemoteAccessTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
 }: FeatureTabProps) {
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
@@ -138,7 +137,7 @@ export default function RemoteAccessTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "remote_access",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "remote_access");
