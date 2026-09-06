@@ -7,7 +7,7 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Custom Fields let you attach structured metadata to devices that goes beyond the built-in attributes (hostname, OS type, tags, etc.). You define field definitions at the organisation or partner level, then set values on individual devices. This is useful for tracking asset numbers, purchase dates, warranty expiry, department assignments, compliance status, and any other data specific to your environment.
 
-Migrating custom fields in bulk from another RMM? See [Migrating to Breeze](/migration/overview/#backfill-custom-fields-from-the-incumbent) for the **Import from another RMM** wizard, which drives the same definitions and values endpoints this page documents.
+Migrating custom fields in bulk from another RMM? See [Migrating to Breeze](/migration/overview/#alongside-this-phase-backfill-custom-fields-from-the-incumbent) for the **Import from another RMM** wizard, which drives the same definitions and values endpoints this page documents.
 
 ---
 
@@ -16,7 +16,7 @@ Migrating custom fields in bulk from another RMM? See [Migrating to Breeze](/mig
 Custom Fields has two layers:
 
 1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner, and a `fieldKey` is unique **per owner** -- see [Uniqueness and shadowing](#uniqueness-and-shadowing).
-2. **Field values** -- stored in a dedicated `device_custom_field_values` table, one row per device/definition pair, and validated against the definition's declared type on every write. The `custom_fields` JSONB column on the device record is maintained as a read-only projection of that table for backward compatibility -- every existing reader of `devices.custom_fields` keeps working unchanged. Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
+2. **Field values** -- stored in a dedicated `device_custom_field_values` table, one row per device/definition pair, and validated against the definition's declared type on every write. The `custom_fields` JSONB column on the device record is maintained as a trigger-rebuilt projection of that table (plus any pre-existing key that doesn't match the enforced `field_key` pattern, preserved as-is) for backward compatibility -- every existing reader of `devices.custom_fields` keeps working unchanged. Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
 
 ---
 
@@ -56,7 +56,7 @@ You can also set a `defaultValue` on the definition. If a device does not have a
 
 ## Uniqueness and shadowing
 
-Two rules keep a `fieldKey` unambiguous, both enforced in the database and both surfaced as `409` before this feature shipped a bulk importer, since a mismatched key is otherwise silently ambiguous data corruption:
+Two rules keep a `fieldKey` unambiguous, both enforced in the database and returned as `409` -- both predate this page's bulk importer and are what the importer relies on rather than re-implementing, since a mismatched key is otherwise silently ambiguous data corruption:
 
 - **`fieldKey` is unique per owner.** Two definitions cannot share a key on the same axis (two organisation-owned fields, or two partner-wide fields). Creating a duplicate returns `409 { code: "field-key-duplicate" }`.
 - **An organisation-owned key cannot shadow an all-organisations key, or vice versa.** If `asset_tag` already exists as a partner-wide field, no organisation under that partner can also define an organisation-owned `asset_tag` (and the reverse). Creating a shadowing definition returns `409 { code: "field-key-shadowed" }`.
@@ -165,7 +165,7 @@ curl -X POST /api/v1/custom-fields \
 
 ## Setting values on devices
 
-Custom field values live in the `custom_fields` JSONB column on the `devices` table. To set or update values, send a `PATCH` request to the device endpoint with a `customFields` object whose keys correspond to field keys:
+Values are set by sending a `PATCH` request to the device endpoint with a `customFields` object whose keys correspond to field keys. The request/response shape is unchanged from before this feature's normalized storage landed: you still read and write the same `customFields` object on the device record -- see [Database schema](#database-schema) for where it's actually stored now.
 
 ```bash
 curl -X PATCH /api/v1/devices/<device-id> \
@@ -194,7 +194,7 @@ Each value must first match the Zod wire schema (`string`, `number`, `boolean`, 
 | `invalid_type` | The value's shape doesn't match the field's declared `type`. |
 | `out_of_range` | A `number` value falls outside the field's `min`/`max`. |
 | `not_a_choice` | A `dropdown` value isn't one of the field's declared `options.choices`. |
-| `too_long` | A `text` value exceeds the field's `maxLength`. |
+| `too_long` | A `text` value exceeds the fixed 10,000-character limit. (`options.maxLength` on a definition is a client-side UI hint only -- it is not enforced by this check.) |
 | `invalid_date` | A `date` value doesn't parse. |
 | `not_applicable_to_device` | The field's `deviceTypes` excludes this device's OS. |
 
@@ -308,7 +308,7 @@ curl "/api/v1/custom-fields?type=dropdown&search=department" \
 
 ### Filtering devices by custom field values
 
-Custom field values are stored as JSONB on each device. In the current implementation, device list queries (`GET /api/v1/devices`) do not directly filter by custom field values in query parameters. To find devices with specific custom field values, retrieve the device list and filter client-side, or use PostgreSQL JSONB queries if you have direct database access.
+Device list queries (`GET /api/v1/devices`) do not directly filter by custom field values in query parameters. To find devices with specific custom field values, retrieve the device list and filter client-side, or -- if you have direct database access -- query `device_custom_field_values` (see [Database schema](#database-schema)) rather than the device's `custom_fields` JSONB projection; the normalized table carries an `(org_id, field_key, value_text)` index and is the source of truth.
 
 ---
 
@@ -364,7 +364,7 @@ Custom field values now appear in the tenant GDPR export (each value's `field_ke
 
 ## The `warranty` mapping target
 
-The **Import from another RMM** wizard (see [Migrating to Breeze](/migration/overview/#backfill-custom-fields-from-the-incumbent)) can map a source column onto `warranty` instead of a custom field. This is not a custom field at all -- it writes `device_warranty`'s start date, end date, and manufacturer directly, and drives the warranty-expiry alerting the rest of the platform already has. A mapped warranty value is **never applied over data a manufacturer API lookup already supplied** unless the operator explicitly opts in to overriding it on that import; provider-sourced warranty data is treated as more authoritative than a bulk import by default.
+The **Import from another RMM** wizard (see [Migrating to Breeze](/migration/overview/#alongside-this-phase-backfill-custom-fields-from-the-incumbent)) can map a source column onto `warranty` instead of a custom field. This is not a custom field at all -- it writes `device_warranty`'s start date, end date, and manufacturer directly, and drives the warranty-expiry alerting the rest of the platform already has. A mapped warranty value is **never applied over data a manufacturer API lookup already supplied** unless the operator explicitly opts in to overriding it on that import; provider-sourced warranty data is treated as more authoritative than a bulk import by default.
 
 ---
 
@@ -461,7 +461,8 @@ Device values are stored one row per device/definition pair in `device_custom_fi
 | `org_id` | UUID | Denormalised from the device, for tenant scoping |
 | `definition_id` | UUID | References `custom_field_definitions.id` (`ON DELETE CASCADE`) |
 | `field_key` | VARCHAR(100) | Denormalised from the definition, so a value survives being read without a join |
-| `value_text` / `value_number` / `value_boolean` / `value_date` | typed columns | Exactly one populated, matching the definition's `type` |
+| `value_text` / `value_number` / `value_bool` / `value_date` | typed columns | At most one populated, matching the definition's `type`. All four `NULL` means the value was explicitly cleared. |
+| `source` | VARCHAR(32) | `manual`, `api`, `script`, `import`, or `backfill` -- how the value was written |
 
 The `custom_fields` JSONB column on `devices` is retained as a trigger-maintained **projection** of this table -- it is rebuilt on every write and is read-only in practice; writing it directly is reverted by the next value write. Existing integrations that read `devices.custom_fields` keep working unchanged.
 

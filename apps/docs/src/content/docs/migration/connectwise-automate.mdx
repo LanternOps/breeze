@@ -57,12 +57,14 @@ ORDER BY days_stale DESC;
 
 ```sql
 -- EDFs (Extra Data Fields) at computer scope
-SELECT comp.Name AS hostname, ef.Name AS field, ed.Value
+SELECT comp.ComputerID, comp.Name AS hostname, ef.Name AS field, ed.Value
 FROM extradatavalues ed
 JOIN extrafield ef ON ef.ID = ed.ExtraFieldID
 JOIN computers comp ON comp.ComputerID = ed.ExtraDataID
 WHERE ed.EDFType = 2 AND ed.Value <> '';
 ```
+
+`ComputerID` is the durable identifier the wizard uses below to make a second import exact — keep it in the export.
 
 Export to CSV, reshape to `organization,site`, and feed [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
 
