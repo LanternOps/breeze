@@ -68,6 +68,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
+    'organizations.json': 4, // W01 #5075: cognates — "Sites", "{{count}} site(s)"
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -161,6 +162,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
+    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -254,6 +256,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 142,
     'discovery.json': 15,
     'integrations.json': 38,
+    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -356,6 +359,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 142,
     'discovery.json': 15,
     'integrations.json': 40,
+    'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -467,6 +471,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
+    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -542,6 +547,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
+    'organizations.json': 1, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -607,6 +613,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 83,
     'discovery.json': 9,
     'integrations.json': 22,
+    'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",

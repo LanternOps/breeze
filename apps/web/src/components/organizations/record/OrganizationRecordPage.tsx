@@ -224,7 +224,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           icon={<Building2 className="h-7 w-7" aria-hidden="true" />}
           title={lifecycleOrg.name}
           description={t('orgRecord.lifecycle.inaccessible', {
-            status: statusLabelKey ? tSettings(statusLabelKey) : lifecycleOrg.status,
+            status: statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : lifecycleOrg.status,
           })}
           detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
           actionLabel={t('orgRecord.lifecycle.backToList')}
@@ -250,7 +250,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
   const overflowTabs: OverflowTab[] = tabs.map((tab) => ({
     id: tab,
-    label: t(`orgRecord.tabs.${tab}` as const),
+    label: t(/* i18n-dynamic */ `orgRecord.tabs.${tab}`),
     icon: TAB_ICONS[tab],
   }));
 

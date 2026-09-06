@@ -61,7 +61,7 @@ export default function OrgRecordHeader({
   const statusKey = org.status as Organization['status'];
   const statusClass = statusColors[statusKey] ?? 'border-border bg-muted text-muted-foreground';
   const statusLabelKey = statusLabelKeys[statusKey];
-  const statusLabel = statusLabelKey ? tSettings(statusLabelKey) : org.status;
+  const statusLabel = statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : org.status;
 
   const primary = summary?.contacts?.primary ?? null;
   const siteCount = summary?.sites.count;
