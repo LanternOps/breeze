@@ -324,7 +324,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // breeze_has_partner_access (partner-wide) branch. CHECK
   // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
   // forge proof: aiAgentsPartnerRls.integration.test.ts.
-  'ai_agents',
   // ai_agent_schedules (Phase 2 wave P2-2, #4189): a schedule is org-scoped
   // (org_id set, an override of a partner baseline) OR partner-wide
   // (partner_id set, org_id NULL, the baseline). Created dual-axis from day
@@ -334,7 +333,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // asserts the breeze_has_partner_access (partner-wide) branch. CHECK
   // ai_agent_schedules_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: aiAgentSchedulesPartnerRls.integration.test.ts.
-  'ai_agent_schedules',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
@@ -346,7 +344,6 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // breeze_has_org_access), so this entry is the only guard that asserts the
   // partner-axis (breeze_has_partner_access) branch — the dual-axis blindspot.
   // A functional breeze_app insert test lives in client-ai-templates-rls.integration.test.ts.
-  'client_ai_prompt_templates',
   // configuration_policies (#1724): a policy is org-scoped (org_id set,
   // partner_id NULL — the original shape) OR partner-wide (partner_id set,
   // org_id NULL — "all orgs"). Converted from org-only to dual-axis in
@@ -588,11 +585,8 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
-  'ai_agents',
-  'ai_agent_schedules',
   'access_reviews',
   'custom_field_definitions',
-  'client_ai_prompt_templates',
   'configuration_policies',
   'cis_baselines',
   'software_catalog',
@@ -639,10 +633,7 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
 // review found "documented shrink-only, nothing enforces it" let a future
 // author add an entry and go green.
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
-  ['ai_agents', 'TODO(#4942): no breeze_current_partner_id() SELECT branch yet.'],
-  ['ai_agent_schedules', 'TODO(#4943): no breeze_current_partner_id() SELECT branch yet.'],
   ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
-  ['client_ai_prompt_templates', 'TODO(#4945): no breeze_current_partner_id() SELECT branch yet.'],
 ]);
 
 // Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
@@ -654,12 +645,9 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
 // follow-up issue, not a free ride into an already-frozen exemption. Both
 // constants are asserted by 'the partner-wide SELECT branch exemption map
 // only shrinks' below.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 4;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 1;
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
-  'ai_agents',
-  'ai_agent_schedules',
   'custom_field_definitions',
-  'client_ai_prompt_templates',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

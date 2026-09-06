@@ -209,6 +209,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'execute_command (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query)', description: 'Mutating system commands, file reads, and commands that can return unredacted credential/PII-bearing content (service binary paths, raw event log messages)', category: 'Remote Access & Control' },
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
+      // #4767 — the cancel tool requests a stop on an in-flight script
+      // execution. Noted as missing from this registry in #4990's PR body
+      // when the API side (script_cancel command dispatch) shipped; there is
+      // no automated check that catches the next tool this registry misses.
+      { name: 'cancel_script_execution', description: 'Request a stop on a running script execution', category: 'Remote Access & Control' },
       { name: 'computer_control', description: 'Send input actions to device', category: 'Remote Access & Control' },
       { name: 'create_remote_session', description: 'Create remote terminal or file session', category: 'Remote Access & Control' },
       { name: 'take_screenshot', description: 'Capture device screenshot', category: 'Remote Access & Control' },

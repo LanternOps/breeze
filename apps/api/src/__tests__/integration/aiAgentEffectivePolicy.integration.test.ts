@@ -9,10 +9,18 @@ import { AI_AGENT_POLICY_SNAPSHOT_VERSION } from '@breeze/shared';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 // resolveEffectiveAgent against REAL Postgres. A mocked-DB unit test cannot
-// cover this: the partner-wide row is invisible to an org-scoped RLS context
-// (breeze.accessible_partner_ids is [] for scope='organization'), and the read
-// returns ZERO ROWS rather than raising — so a missing elevation silently
-// resolves every agent to "no baseline" instead of failing loudly (#2822).
+// cover this: the merge semantics (tighten-only intersection of the partner
+// baseline with the org row) only exist once both rows are actually readable,
+// and a resolver that fails to see the baseline returns ZERO ROWS rather than
+// raising — so it silently resolves every agent to "no baseline" instead of
+// failing loudly (#2822).
+//
+// Historically the baseline was invisible to an org-scoped RLS context
+// (breeze.accessible_partner_ids is [] for scope='organization') and the
+// resolver bought the read with a partner-axis escalation. Since #4942 the
+// `ai_agents_partner_wide_select` branch makes it readable through RLS itself;
+// the resolver's escalation is now redundant but is left in place deliberately
+// (removing it is a separate follow-up).
 
 const createdAgents: string[] = [];
 const SYSTEM_CTX: DbAccessContext = {
@@ -76,19 +84,22 @@ describe('resolveEffectiveAgent under real RLS', () => {
   it('reads the partner baseline from an ORG-scoped context and tightens to it', async () => {
     const { partner, org } = await seed({ partnerWide: true, org: true });
 
-    // Proof that the elevation is load-bearing: the SAME context reading the
-    // table directly cannot see the partner-wide row at all. Without
-    // readWithPartnerAxisVisibility the resolver sees exactly this — zero rows,
-    // no error — and every agent silently resolves to "no baseline".
+    // #4942 flipped this. It used to assert the partner-wide row was INVISIBLE
+    // to the same org context, and that invisibility is what made the resolver's
+    // `readWithPartnerAxisVisibility` escalation (#2822) load-bearing: without
+    // it the resolver saw zero rows — no error — and every agent silently
+    // resolved to "no baseline". `ai_agents_partner_wide_select`
+    // (2026-10-11-150000-ai-partner-wide-select.sql) now grants that read
+    // through RLS directly, so the escalation is redundant for this table.
+    // Removing it is a deliberate follow-up, not part of this change.
     const directlyVisible = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select().from(aiAgents),
     );
-    expect(directlyVisible.some((r) => r.orgId === null)).toBe(false);
+    expect(directlyVisible.some((r) => r.orgId === null)).toBe(true);
 
     const resolved = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       resolveEffectiveAgent(AUTH, org.id, 'triage'),
     );
-    // If the partner-axis elevation were missing this would be null, not a merge.
     expect(resolved, 'partner-wide baseline was invisible to the org context').not.toBeNull();
     expect(resolved!.effective.mode).toBe('shadow');            // org asked for 'act'
     expect(resolved!.effective.toolAllowlist).toEqual(['run_script']); // intersection

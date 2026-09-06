@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Play } from 'lucide-react';
 import ExecutionHistory, { type ScriptExecution } from './ExecutionHistory';
@@ -13,6 +13,8 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { usePermissions } from '@/lib/permissions';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -27,8 +29,14 @@ type ScriptWithDetails = Script & {
   content?: string;
 };
 
+// #4767 — mirrors the ScriptTestRunner.tsx poll cadence. While any execution
+// is `running` or `cancelling` the list can go stale (a stop resolving, or a
+// run simply finishing) with nothing else on this page to re-trigger a fetch.
+const POLL_INTERVAL_MS = 2000;
+
 export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageProps) {
   const { t } = useTranslation('scripts');
+  const { permissions } = usePermissions();
   const [script, setScript] = useState<ScriptWithDetails | null>(null);
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -75,7 +83,18 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         throw new Error(t('scriptExecutionsPage.errors.fetchExecutions'));
       }
       const data = await response.json();
-      setExecutions(asList(data, 'executions'));
+      const list = asList(data, 'executions') as ScriptExecution[];
+      setExecutions(list);
+      // #4767 review: the details modal holds its own snapshot
+      // (selectedExecution), so without this a Stop/Force-stop clicked from
+      // INSIDE the modal never reflects back into it — the header would keep
+      // reading "Running" and stay clickable after a successful cancel,
+      // inviting a second request that only ever gets a 409.
+      setSelectedExecution((prev) => {
+        if (!prev) return prev;
+        const updated = list.find((e) => e.id === prev.id);
+        return updated ? { ...prev, ...updated } : prev;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptExecutionsPage.errors.generic'));
     } finally {
@@ -100,6 +119,47 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     fetchExecutions();
     fetchSites();
   }, [fetchScript, fetchExecutions, fetchSites]);
+
+  // #4767 — poll while a Stop is in flight (or a run is simply still going) so
+  // "Stopping…" doesn't freeze forever once the device (or the reaper) settles
+  // it. Keyed on a boolean rather than the executions array itself so the
+  // interval isn't torn down and recreated on every poll tick.
+  const hasActiveExecutions = useMemo(
+    () => executions.some((execution) => execution.status === 'running' || execution.status === 'cancelling'),
+    [executions],
+  );
+  useEffect(() => {
+    if (!hasActiveExecutions) return;
+    const timer = setInterval(() => {
+      fetchExecutions();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [hasActiveExecutions, fetchExecutions]);
+
+  const handleCancel = useCallback(async (execution: ScriptExecution, graceSeconds: number) => {
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/scripts/executions/${execution.id}/cancel`, {
+            method: 'POST',
+            body: JSON.stringify({ graceSeconds }),
+          }),
+        errorFallback: t('executionHistory.errors.cancelFailed'),
+        // The route's 409 body is a dynamic message ("Cannot cancel execution
+        // with status: completed"), not a machine token — matched by prefix
+        // rather than exact-equality against a `code` field the route never
+        // sends.
+        friendly: (token) =>
+          typeof token === 'string' && token.startsWith('Cannot cancel execution with status')
+            ? t('executionHistory.errors.noLongerCancellable')
+            : undefined,
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      await fetchExecutions();
+    } catch (err) {
+      handleActionError(err, t('executionHistory.errors.cancelFailed'));
+    }
+  }, [t, fetchExecutions]);
 
   const handleViewDetails = (execution: ScriptExecution) => {
     // Open immediately with the list row, then upgrade with the full record —
@@ -149,6 +209,9 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
   ) => {
+    // runaction-exempt: this throws to ScriptExecutionModal, which renders the
+    // failure (or the per-target admission result) inline in its own form —
+    // a toast on top would be redundant, not a silent failure.
     const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
       method: 'POST',
       body: JSON.stringify({ deviceIds, parameters, runAs })
@@ -288,6 +351,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       <ExecutionHistory
         executions={executions}
         onViewDetails={handleViewDetails}
+        onCancel={handleCancel}
+        permissions={permissions}
         showScriptName={false}
       />
 
@@ -298,6 +363,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           isOpen={true}
           onClose={handleCloseDetails}
           onRunAgain={handleRunAgain}
+          onCancel={handleCancel}
+          permissions={permissions}
         />
       )}
 

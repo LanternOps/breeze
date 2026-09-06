@@ -190,21 +190,42 @@ describe('custom_field_definitions integrity constraints (#3257 W02)', () => {
 
     /**
      * The org axis and the partner axis are independent indexes, so an
-     * org-owned `udf7` and a partner-wide `udf7` can coexist at the DB level.
-     * That collision is real but is NOT this migration's job: W03 adds the
-     * cross-axis anti-shadowing trigger. Pinning it here documents the
-     * boundary so W03's own red test is unambiguous about what changed.
+     * org-owned `udf7` and a partner-wide `udf7` still coexist happily as far as
+     * THIS migration's two partial unique indexes are concerned — neither one
+     * can see the other axis, and no index could (the partner half of the pair
+     * is reached through `organizations.partner_id`, which is not on the
+     * org-owned row at all).
+     *
+     * This test was originally written the other way round, asserting the
+     * collision was ALLOWED, to pin the boundary of W02 so that W03's red test
+     * would be unambiguous. W03 has since shipped
+     * (`2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql`), so the
+     * collision is now refused — by a BEFORE ROW TRIGGER, not by anything in
+     * this file's migration. The assertion is inverted here rather than deleted
+     * because the SQLSTATE is what carries the distinction: P0001 (the trigger)
+     * proves the indexes did NOT grow a cross-axis rule, where a 23505 would
+     * mean someone "simplified" W02 into a composite unique index and silently
+     * broke per-axis uniqueness.
+     *
+     * Full coverage of the rule — both directions, tenant scopes, UPDATE, the
+     * deploy-abort path — lives in `customFieldShadowing.integration.test.ts`.
      */
-    it('does NOT (yet) block an org-owned key that shadows a partner-wide one — that is W03', async () => {
+    it('leaves cross-axis shadowing to W03s trigger, which refuses it with P0001 (not 23505)', async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
 
       await insertDefinition({ partnerId: partner.id, name: 'UDF 9', fieldKey: 'udf9_shadow' });
-      await insertDefinition({ orgId: org.id, name: 'UDF 9 org override', fieldKey: 'udf9_shadow' });
+
+      await expectSqlState(
+        () => insertDefinition({
+          orgId: org.id, name: 'UDF 9 org override', fieldKey: 'udf9_shadow',
+        }),
+        'P0001',
+      );
 
       const rows = await sys(() => db.execute(sql`
         SELECT id FROM custom_field_definitions WHERE field_key = 'udf9_shadow'`));
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(1);
     });
   });
 
