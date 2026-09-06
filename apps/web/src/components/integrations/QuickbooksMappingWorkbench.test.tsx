@@ -131,6 +131,21 @@ describe("QuickbooksMappingWorkbench", () => {
             lastError: null,
           },
         }),
+      )
+      // The confirm auto-syncs (see the auto-sync suite below).
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            breezeEntityType: "org",
+            breezeEntityId: ORG_ID,
+            remoteEntityType: "Customer",
+            remoteEntityId: "qb-12",
+            linkStatus: "confirmed",
+            syncStatus: "synced",
+            lastSyncedAt: "2026-09-06T00:00:00Z",
+            lastError: null,
+          },
+        }),
       );
 
     render(
@@ -163,8 +178,12 @@ describe("QuickbooksMappingWorkbench", () => {
       decision: "confirmed",
       remoteEntityId: "qb-12",
     });
-    // Updated in place from the PUT response — no second GET was issued.
-    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    // Updated in place from the PUT/sync responses — no second list GET was
+    // issued (the only follow-up call is the auto-sync POST).
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchWithAuthMock.mock.calls[2]![0])).toBe(
+      "/accounting/quickbooks/mappings/sync",
+    );
     await waitFor(() =>
       expect(
         screen.getByTestId(`quickbooks-mapping-linkstatus-${ORG_ID}`),
@@ -176,7 +195,22 @@ describe("QuickbooksMappingWorkbench", () => {
     const pending = pendingResponse();
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
-      .mockReturnValueOnce(pending.promise);
+      .mockReturnValueOnce(pending.promise)
+      // The confirm auto-syncs once the PUT resolves.
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            breezeEntityType: "org",
+            breezeEntityId: ORG_ID,
+            remoteEntityType: "Customer",
+            remoteEntityId: "qb-12",
+            linkStatus: "confirmed",
+            syncStatus: "synced",
+            lastSyncedAt: "2026-08-31T00:00:00Z",
+            lastError: null,
+          },
+        }),
+      );
 
     render(
       <QuickbooksMappingWorkbench
@@ -189,10 +223,10 @@ describe("QuickbooksMappingWorkbench", () => {
 
     fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
 
-    // Still "pending" — the PUT hasn't resolved yet.
+    // Still "Not synced" — the PUT hasn't resolved yet.
     expect(
       screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`),
-    ).toHaveTextContent(/pending/i);
+    ).toHaveTextContent("Not synced");
 
     pending.resolve(
       await jsonResponse({
@@ -212,7 +246,7 @@ describe("QuickbooksMappingWorkbench", () => {
     await waitFor(() =>
       expect(
         screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`),
-      ).toHaveTextContent(/synced/i),
+      ).toHaveTextContent("In QuickBooks"),
     );
   });
 
@@ -333,7 +367,7 @@ describe("QuickbooksMappingWorkbench", () => {
     await waitFor(() =>
       expect(
         screen.getByTestId(`quickbooks-mapping-status-${ITEM_ID}`),
-      ).toHaveTextContent(/synced/i),
+      ).toHaveTextContent("In QuickBooks"),
     );
   });
 
@@ -735,6 +769,189 @@ describe("QuickbooksMappingWorkbench remote candidate search", () => {
 
     const status = await screen.findByTestId(`quickbooks-mapping-status-${ORG_ID}`);
     expect(status).toHaveTextContent("Synced with tax difference");
-    expect(status).not.toHaveTextContent("Pending");
+    expect(status).not.toHaveTextContent("Not synced");
+  });
+});
+
+describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
+  const confirmedPending = {
+    breezeEntityType: "org",
+    breezeEntityId: ORG_ID,
+    remoteEntityType: "Customer",
+    remoteEntityId: "qb-12",
+    linkStatus: "confirmed",
+    syncStatus: "pending",
+    lastSyncedAt: null,
+    lastError: null,
+  };
+  const confirmedSynced = {
+    ...confirmedPending,
+    syncStatus: "synced",
+    lastSyncedAt: "2026-09-06T00:00:00Z",
+  };
+
+  function syncCalls() {
+    return fetchWithAuthMock.mock.calls.filter((c) =>
+      String(c[0]).includes("/accounting/quickbooks/mappings/sync"),
+    );
+  }
+
+  it("pushes the row to QuickBooks immediately after Confirm match, without a second click", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
+      .mockResolvedValueOnce(jsonResponse({ data: confirmedPending }))
+      .mockResolvedValueOnce(jsonResponse({ data: confirmedSynced }));
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+
+    await waitFor(() => expect(syncCalls()).toHaveLength(1));
+    const syncCall = syncCalls()[0]!;
+    expect((syncCall[1] as RequestInit).method).toBe("POST");
+    expect(JSON.parse((syncCall[1] as RequestInit).body as string)).toMatchObject({
+      breezeEntityType: "org",
+      breezeEntityId: ORG_ID,
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent(
+        "In QuickBooks",
+      ),
+    );
+  });
+
+  it("pushes the row to QuickBooks immediately after Create new", async () => {
+    const createdSynced = {
+      breezeEntityType: "catalog_item",
+      breezeEntityId: ITEM_ID,
+      remoteEntityType: "Item",
+      remoteEntityId: "qb-item-77",
+      linkStatus: "create_new",
+      syncStatus: "synced",
+      lastSyncedAt: "2026-09-06T00:00:00Z",
+      lastError: null,
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // income accounts
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { ...createdSynced, remoteEntityId: null, syncStatus: "pending" } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: createdSynced }));
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-create-${ITEM_ID}`));
+
+    await waitFor(() => expect(syncCalls()).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ITEM_ID}`)).toHaveTextContent(
+        "In QuickBooks",
+      ),
+    );
+  });
+
+  it("does NOT push to QuickBooks after an Unlink decision", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: { ...confirmedPending, remoteEntityId: null, linkStatus: "unlinked" },
+        }),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-unlink-${ORG_ID}`));
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-linkstatus-${ORG_ID}`)).toHaveTextContent(
+        /unlink/i,
+      ),
+    );
+    expect(syncCalls()).toHaveLength(0);
+  });
+
+  it("reports a failed auto-sync as Sync failed with the error text on the row", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
+      .mockResolvedValueOnce(jsonResponse({ data: confirmedPending }))
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "QuickBooks rejected the customer name" }, 502),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+
+    expect(await screen.findByTestId(`quickbooks-mapping-error-${ORG_ID}`)).toHaveTextContent(
+      /rejected the customer name/i,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent(
+        "Sync failed",
+      ),
+    );
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+  });
+
+  it("labels an unsynced confirmed row 'Not synced' and explains it in a tooltip", async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ ...suggestedOrgProposal, linkStatus: "confirmed" }] }),
+    );
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+
+    const status = await screen.findByTestId(`quickbooks-mapping-status-${ORG_ID}`);
+    expect(status).toHaveTextContent("Not synced");
+    expect(status).toHaveAttribute(
+      "title",
+      "Confirmed in Breeze, not sent to QuickBooks yet",
+    );
+  });
+
+  it("reflects the synced mapping in the suggested-match column and the combobox", async () => {
+    // The row starts with NO suggestion at all ("No match" / "—"). After a sync
+    // returns the linked remote id, the row must show the link without the
+    // operator reloading the whole list.
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [ambiguousOrgProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { ...confirmedSynced, remoteEntityId: "qb-99" } }),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveValue("");
+    expect(screen.getByTestId(`quickbooks-mapping-confidence-${ORG_ID}`)).toHaveTextContent(
+      /ambiguous/i,
+    );
+
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-sync-${ORG_ID}`));
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveValue("qb-99"),
+    );
+    expect(screen.getByTestId(`quickbooks-mapping-confidence-${ORG_ID}`)).toHaveTextContent(
+      /linked/i,
+    );
   });
 });

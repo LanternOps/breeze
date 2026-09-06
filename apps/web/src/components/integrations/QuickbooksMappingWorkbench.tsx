@@ -176,6 +176,14 @@ export default function QuickbooksMappingWorkbench({
     }
   }
 
+  /**
+   * Folds a curated mapping returned by the PUT/POST endpoints back into the
+   * row it belongs to. The remote id, the confidence label and the row's own
+   * pending selection all move together: the sync response is the only place
+   * the newly created/linked QuickBooks id ever appears, so a row that ignored
+   * it kept telling the operator "No match" and showed "—" in the combobox
+   * until the whole list was reloaded (paper cut #2).
+   */
   function applyMapping(mapping: CuratedMapping) {
     setProposals((prev) =>
       prev
@@ -185,14 +193,67 @@ export default function QuickbooksMappingWorkbench({
                   ...p,
                   linkStatus: mapping.linkStatus,
                   syncStatus: mapping.syncStatus,
-                  proposedRemoteId: mapping.remoteEntityId ?? p.proposedRemoteId,
+                  proposedRemoteId: mapping.remoteEntityId,
+                  // The mapping payload carries no display name. Keep the one
+                  // we already have when the id is unchanged; otherwise drop it
+                  // so the picker labels the option with the id rather than
+                  // another record's name.
+                  proposedRemoteName:
+                    mapping.remoteEntityId && mapping.remoteEntityId === p.proposedRemoteId
+                      ? p.proposedRemoteName
+                      : null,
+                  // A persisted remote id IS a link, not a guess — the same
+                  // rule the API applies in confidenceForMapping().
+                  confidence: mapping.remoteEntityId ? "existing_link" : "none",
                   lastError: mapping.lastError,
                 }
               : p,
           )
         : prev,
     );
+    // Drop the row's local pick so the select falls through to the server's
+    // stored remote id (they agree after a successful decision, and after a
+    // create/unlink the server's value is the truthful one).
+    setRemoteSelection((prev) => {
+      if (!(mapping.breezeEntityId in prev)) return prev;
+      const next = { ...prev };
+      delete next[mapping.breezeEntityId];
+      return next;
+    });
     setRowError((prev) => ({ ...prev, [mapping.breezeEntityId]: mapping.lastError }));
+  }
+
+  /** Local-only failure marker: a rejected sync never returns a mapping, so
+   *  without this the row kept its "Not synced" badge and only the toast said
+   *  anything had gone wrong. */
+  function markSyncFailed(id: string, message: string) {
+    setProposals((prev) =>
+      prev
+        ? prev.map((p) =>
+            p.breezeEntityId === id ? { ...p, syncStatus: "error", lastError: message } : p,
+          )
+        : prev,
+    );
+    setRowError((prev) => ({ ...prev, [id]: message }));
+  }
+
+  /** The sync request itself, without row-busy/error bookkeeping, so the
+   *  auto-sync that follows a decision reuses exactly the "Sync now" call. */
+  async function requestSync(p: MappingProposal) {
+    const res = await runAction<{ data: CuratedMapping }>({
+      request: () =>
+        fetchWithAuth("/accounting/quickbooks/mappings/sync", {
+          method: "POST",
+          body: JSON.stringify({
+            breezeEntityType: p.breezeEntityType,
+            breezeEntityId: p.breezeEntityId,
+          }),
+        }),
+      errorFallback: t("quickbooksMapping.failedToSyncEntity"),
+      successMessage: t("quickbooksMapping.entitySynced"),
+      onUnauthorized,
+    });
+    applyMapping(res.data);
   }
 
   async function decide(p: MappingProposal, decision: MappingDecision, remoteEntityId?: string) {
@@ -216,6 +277,21 @@ export default function QuickbooksMappingWorkbench({
         onUnauthorized,
       });
       applyMapping(res.data);
+      // The PUT only RECORDS the decision — nothing reaches QuickBooks until a
+      // sync runs. Operators read the saved row as "done" and left ~10 confirmed
+      // customers unsynced on prod (paper cut #1), so push it straight away and
+      // keep "Sync now" as the manual retry. An unlink has nothing to push.
+      if (decision !== "unlinked") {
+        try {
+          await requestSync(p);
+        } catch (err) {
+          if (err instanceof ActionError && err.status !== 401) {
+            markSyncFailed(id, err.message);
+          } else {
+            handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
+          }
+        }
+      }
     } catch (err) {
       if (err instanceof ActionError && err.status !== 401) {
         setRowError((prev) => ({ ...prev, [id]: err.message }));
@@ -232,20 +308,10 @@ export default function QuickbooksMappingWorkbench({
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
     try {
-      const res = await runAction<{ data: CuratedMapping }>({
-        request: () =>
-          fetchWithAuth("/accounting/quickbooks/mappings/sync", {
-            method: "POST",
-            body: JSON.stringify({ breezeEntityType: p.breezeEntityType, breezeEntityId: id }),
-          }),
-        errorFallback: t("quickbooksMapping.failedToSyncEntity"),
-        successMessage: t("quickbooksMapping.entitySynced"),
-        onUnauthorized,
-      });
-      applyMapping(res.data);
+      await requestSync(p);
     } catch (err) {
       if (err instanceof ActionError && err.status !== 401) {
-        setRowError((prev) => ({ ...prev, [id]: err.message }));
+        markSyncFailed(id, err.message);
       } else {
         handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
       }
@@ -411,14 +477,19 @@ export default function QuickbooksMappingWorkbench({
                     : p.confidence === "existing_link"
                       ? t("quickbooksMapping.linkedMatch")
                       : t("quickbooksMapping.suggestedMatch");
+              // "Pending" read as "Breeze is working on it"; it actually means
+              // the decision never left Breeze. Name the three states after
+              // where the record IS, and explain the unsynced one in a tooltip.
               const statusLabel =
                 p.syncStatus === "synced"
-                  ? t("quickbooksMapping.synced")
+                  ? t("quickbooksMapping.inQuickbooks")
                   : p.syncStatus === "synced_with_tax_variance"
                     ? t("quickbooksMapping.syncedWithTaxVariance")
                     : p.syncStatus === "error"
-                      ? t("quickbooksMapping.syncError")
-                      : t("quickbooksMapping.pending");
+                      ? t("quickbooksMapping.syncFailed")
+                      : t("quickbooksMapping.notSynced");
+              const statusTitle =
+                p.syncStatus === "pending" ? t("quickbooksMapping.notSyncedHint") : undefined;
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
               const syncGated = syncGatedFor(p);
               const error = rowError[id];
@@ -429,7 +500,14 @@ export default function QuickbooksMappingWorkbench({
                     <div className="font-medium">{p.breezeDisplayName}</div>
                     <div
                       data-testid={`quickbooks-mapping-status-${id}`}
-                      className="text-xs text-muted-foreground"
+                      title={statusTitle}
+                      className={
+                        p.syncStatus === "error"
+                          ? "text-xs text-red-700"
+                          : p.syncStatus === "pending"
+                            ? "text-xs text-amber-700"
+                            : "text-xs text-muted-foreground"
+                      }
                     >
                       {statusLabel}
                     </div>
