@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
-      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
-      "toolSuggestLabel": "Bekanntes Werkzeug hinzufügen",
-      "toolSuggestHint": "Die Vorschläge stammen aus dem Register richtlinienentscheidbarer Aktionen und sind nicht die vollständige Werkzeugliste. Alles andere, was dieser Agent nutzen darf, kann oben weiterhin eingetippt werden.",
-      "toolSuggestAdd": "Hinzufügen"
+      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt."
     },
     "policyKeys": {
       "tools": {

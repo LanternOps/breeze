@@ -27,6 +27,8 @@ import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerSc
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
+import CapabilityPicker from './aiAgents/CapabilityPicker';
+import { useAgentToolCatalog } from './aiAgents/useAgentToolCatalog';
 
 // Severities come from @breeze/shared, the same constant the server validator
 // uses. A local copy meant draftFrom() would silently DROP a stored severity
@@ -426,14 +428,11 @@ export default function AiAgentForm({
   const permissionsHeadingId = useId();
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
-  const toolSuggestInputId = useId();
-  const toolSuggestListId = useId();
   const rolesGroupBaseId = useId();
   const severitiesGroupId = useId();
   const policyKeyNoteBaseId = useId();
   const nameInputId = useId();
   const nameErrorId = useId();
-  const [toolSuggestion, setToolSuggestion] = useState('');
   /** Name has been left at least once. Until then an empty Name is "not
    *  filled in yet", not an error — a form that goes red before the operator
    *  has reached the field is scolding them for a field they were on their
@@ -462,33 +461,6 @@ export default function AiAgentForm({
       : t(/* i18n-dynamic */ `aiAgentsPage.policyKeys.actions.${entry.toolName}.${entry.action}`, {
         defaultValue: sentenceCase(entry.action),
       });
-
-  /**
-   * Autocomplete source for the tool allowlist. There is no tool-name
-   * registry endpoint: `ACT_ELIGIBLE_TOOL_NAMES` is API-only and the
-   * allowlist's own validator accepts any `TOOL_REF`-shaped string, so the
-   * closest thing the client can source is the policy-decidable registry it
-   * already fetched — offered as BOTH the bare tool name and the scoped
-   * `tool:action` form, the two shapes `checkAgentGuardrails` admits.
-   */
-  const toolSuggestions = useMemo(() => {
-    const names = new Set<string>();
-    for (const entry of policyKeys) {
-      names.add(entry.toolName);
-      names.add(entry.key);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, [policyKeys]);
-
-  const addSuggestedTool = () => {
-    const value = toolSuggestion.trim();
-    if (value === '') return;
-    // `lines()` is the same de-duplicating reader the save body uses, so an
-    // entry already present (however the operator typed it) never doubles.
-    const next = [...new Set([...lines(draft.toolAllowlist), value])];
-    patch({ toolAllowlist: next.join('\n') });
-    setToolSuggestion('');
-  };
 
   // ---- Mode: the privileged choice --------------------------------------
   const modeHeadingId = useId();
@@ -640,6 +612,19 @@ export default function AiAgentForm({
       cancelled = true;
     };
   }, []);
+
+  // Task 10 (#5050): the capability picker replaces the free-text tool
+  // allowlist textarea. `catalog` is fetched once per mount; `ceiling`
+  // re-fetches whenever kind or ownerScope changes (only meaningful for an
+  // organization-owned draft — see the hook's own doc). Neither fetch ever
+  // blocks this form: a failed/absent catalog falls back to the old
+  // textarea below (see the Permissions section).
+  const { catalog: fetchedCatalog, ceiling } = useAgentToolCatalog({ kind: draft.kind, ownerScope: draft.ownerScope });
+  // Defensive, same reasoning as the policy-decidable-keys row filter above:
+  // this catalog is server-owned, so a shape the picker cannot use must
+  // degrade to the textarea fallback, never crash the form on
+  // `catalog.tools`/`catalog.presets`.
+  const catalog = fetchedCatalog && Array.isArray(fetchedCatalog.tools) && fetchedCatalog.presets ? fetchedCatalog : null;
 
   const save = useCallback(async () => {
     if (saving) return;
@@ -1433,45 +1418,35 @@ export default function AiAgentForm({
                 {t('aiAgentsPage.sections.permissionsDescription')}
               </p>
             </div>
-            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
-            {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
-            {/* No tool-name registry endpoint exists (the API's
-                ACT_ELIGIBLE_TOOL_NAMES / the MCP tool set are server-only), so
-                this is autocomplete over the ONE name source the client already
-                holds — the policy-decidable registry this form fetches for the
-                act-mode section. Deliberately labelled as a partial list rather
-                than presented as the closed set of tools. */}
-            {toolSuggestions.length > 0 && (
-              <div className="space-y-1">
-                <label className="block text-xs font-medium" htmlFor={toolSuggestInputId}>
-                  {t('aiAgentsPage.fields.toolSuggestLabel')}
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    id={toolSuggestInputId}
-                    className={`${inputCls} font-mono sm:w-64`}
-                    list={toolSuggestListId}
-                    value={toolSuggestion}
-                    onChange={(e) => setToolSuggestion(e.target.value)}
-                    data-testid="ai-agent-toolallowlist-suggest"
-                  />
-                  <datalist id={toolSuggestListId} data-testid="ai-agent-toolallowlist-suggestions">
-                    {toolSuggestions.map((name) => (
-                      <option key={name} value={name} />
-                    ))}
-                  </datalist>
-                  <button
-                    type="button"
-                    onClick={addSuggestedTool}
-                    disabled={toolSuggestion.trim() === ''}
-                    className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-60"
-                    data-testid="ai-agent-toolallowlist-add"
-                  >
-                    {t('aiAgentsPage.fields.toolSuggestAdd')}
-                  </button>
-                </div>
-                <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolSuggestHint')}</p>
-              </div>
+            {/* Task 10 (#5050): the free-text tool-allowlist textarea and its
+                autocomplete datalist are replaced by the server-backed
+                capability picker (spec §4.5) — it lists only tools this
+                agent can actually reach, grouped by capability, with
+                per-operation outcome and ceiling badges. `entries`/`onChange`
+                round-trip through the SAME newline-string draft field the
+                textarea used, so the save body at `policy.toolAllowlist`
+                above is untouched.
+                The picker's own catalog+ceiling fetch (`useAgentToolCatalog`)
+                never blocks this form: `catalog === null` — no catalog yet,
+                or the fetch failed — falls back to the original textarea so
+                an operator can still edit permissions by hand. */}
+            {catalog ? (
+              <CapabilityPicker
+                catalog={catalog}
+                ceiling={ceiling}
+                kind={draft.kind}
+                mode={draft.mode}
+                entries={lines(draft.toolAllowlist)}
+                onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+              />
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-unavailable">
+                  {t('aiAgentsPage.catalog.catalogUnavailable')}
+                </p>
+                <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
+                {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
+              </>
             )}
             <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.protectedHint')}</p>
             <div className="grid gap-3 md:grid-cols-3">

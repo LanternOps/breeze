@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
-      "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
-      "toolSuggestLabel": "Ajouter un outil connu",
-      "toolSuggestHint": "Les suggestions proviennent du registre des actions décidables par politique, qui n’est pas la liste complète des outils. Tout autre outil permis à cet agent peut encore être saisi ci-dessus.",
-      "toolSuggestAdd": "Ajouter"
+      "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action."
     },
     "policyKeys": {
       "tools": {

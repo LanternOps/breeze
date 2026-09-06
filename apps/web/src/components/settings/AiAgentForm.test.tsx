@@ -27,7 +27,7 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
-import { AI_AGENT_KINDS } from '@breeze/shared';
+import { AI_AGENT_KINDS, type AgentToolCatalogDto } from '@breeze/shared';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -88,9 +88,50 @@ function makeAgent(overrides: Partial<AiAgentDto> = {}): AiAgentDto {
   };
 }
 
+// Task 10 (#5050) — same fixture as CapabilityPicker.test.tsx / capabilityModel.test.ts
+// (Task 7), kept identical so every suite touching the catalog exercises the
+// same shape. `presets.triage` names `manage_services:restart`, which lines
+// up with `makeAgent`'s default `kind: 'triage'` below.
+const CATALOG: AgentToolCatalogDto = {
+  capabilities: [
+    { id: 'services_startup', tone: 'standard' },
+    { id: 'scripts_commands', tone: 'standard' },
+  ],
+  tools: [
+    {
+      name: 'manage_services',
+      capability: 'services_startup',
+      tier: 3,
+      readOnly: false,
+      operations: [
+        { key: 'manage_services:list', action: 'list', tier: 2, readOnly: true, policyDecidable: false, actEligible: false },
+        { key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false, policyDecidable: true, actEligible: true },
+        { key: 'manage_services:stop', action: 'stop', tier: 3, readOnly: false, policyDecidable: true, actEligible: false },
+      ],
+    },
+    {
+      name: 'run_script',
+      capability: 'scripts_commands',
+      tier: 3,
+      readOnly: false,
+      operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true }],
+    },
+    {
+      name: 'query_devices',
+      capability: 'scripts_commands',
+      tier: 1,
+      readOnly: true,
+      operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false }],
+    },
+  ],
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+};
+
 function mockEndpoints(registry: RegistryRow[] = []): void {
   fetchMock.mockImplementation((url: string) => {
     if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: registry }));
+    if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+    if (url.startsWith('/ai/agents/ceiling')) return Promise.resolve(json({ data: null }));
     // The single-org shape AiAgentGraduationPanel's `normalize` accepts — a
     // body it rejects renders the panel's error state and floods the run with
     // console noise that has nothing to do with these assertions.
@@ -305,6 +346,8 @@ describe('AiAgentForm — org-owned supervised keys are grant-only (#5049)', () 
   it('surfaces the supervised_keys_grant_only 422 as a per-key issue, same as invalid_supervised_action_keys', async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: REGISTRY }));
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url.startsWith('/ai/agents/ceiling')) return Promise.resolve(json({ data: null }));
       if (url === '/ai/agents/a1' && init?.method === 'PATCH') {
         return Promise.resolve(json(
           {
@@ -333,6 +376,66 @@ describe('AiAgentForm — org-owned supervised keys are grant-only (#5049)', () 
     expect(await screen.findByTestId('ai-agent-issues')).toBeInTheDocument();
     expect(screen.getByText('manage_services:restart: grant_only')).toBeInTheDocument();
   });
+});
+
+// Task 10 (#5050) — the capability picker replaces the free-text tool
+// allowlist textarea and its autocomplete datalist inside Permissions. The
+// picker's catalog/ceiling fetch must never block the form: a failed catalog
+// falls back to the original textarea rather than leaving Permissions empty.
+describe('AiAgentForm — capability picker wiring (#5050)', () => {
+  it('renders the picker inside Permissions and removes the old allowlist textarea and suggestions datalist', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({ agent: makeAgent() });
+
+    const permissions = await screen.findByTestId('ai-agent-permissions');
+    expect(await within(permissions).findByTestId('capability-picker')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-toolallowlist')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-toolallowlist-suggestions')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-toolallowlist-suggest')).toBeNull();
+  });
+
+  it('saves the selected operation as a scoped toolAllowlist entry', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({ agent: makeAgent() });
+
+    await screen.findByTestId('capability-picker');
+    fireEvent.click(screen.getByTestId('operation-checkbox-manage_services:restart'));
+
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+
+    expect(writeBody().toolAllowlist).toEqual(['manage_services:restart']);
+  });
+
+  it('falls back to the free-text textarea, with a hint, when the catalog fetch fails', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({}, false, 500));
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: REGISTRY }));
+      if (url.startsWith('/ai/agents/ceiling')) return Promise.resolve(json({ data: null }));
+      if (url.startsWith('/ai/agents/graduation')) {
+        return Promise.resolve(json({
+          data: { rows: [], actOpReliability: [], promoteThreshold: null, policyDecideEnabled: true },
+        }));
+      }
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    renderForm({ agent: makeAgent() });
+
+    expect(await screen.findByTestId('ai-agent-catalog-unavailable')).toHaveTextContent(
+      'Could not load the tool catalog. You can still edit the permissions list directly below.',
+    );
+    expect(screen.getByTestId('ai-agent-toolallowlist')).toBeInTheDocument();
+    expect(screen.queryByTestId('capability-picker')).toBeNull();
+  });
+
+  // (d) an org-owned agent in act mode renders the policy-decide fieldset
+  // read-only — see 'AiAgentForm — org-owned supervised keys are grant-only
+  // (#5049)' above; that suite already covers this identically, so it is not
+  // duplicated here.
 });
 
 describe('AiAgentForm — alert severities', () => {

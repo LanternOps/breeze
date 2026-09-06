@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
-      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
-      "toolSuggestLabel": "Bilinen bir araç ekle",
-      "toolSuggestHint": "Öneriler, araçların tam listesi olmayan politikayla karara bağlanabilir eylemler kaydından gelir. Bu aracının kullanabileceği diğer araçlar yukarıya yine de yazılabilir.",
-      "toolSuggestAdd": "Ekle"
+      "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez."
     },
     "policyKeys": {
       "tools": {

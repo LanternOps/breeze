@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
-      "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
-      "toolSuggestLabel": "Aggiungi uno strumento noto",
-      "toolSuggestHint": "I suggerimenti provengono dal registro delle azioni decidibili dalla policy, che non è l’elenco completo degli strumenti. Qualsiasi altro strumento consentito a questo agente si può comunque digitare qui sopra.",
-      "toolSuggestAdd": "Aggiungi"
+      "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione."
     },
     "policyKeys": {
       "tools": {

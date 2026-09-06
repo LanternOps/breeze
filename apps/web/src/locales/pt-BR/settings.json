@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização",
       "enabledHint": "«Ativado» e o modo são chaves separadas e uma execução precisa das duas: com isto desligado nada roda, seja qual for o modo, e no modo Desligado nada roda mesmo com isto ligado.",
       "enabledCreateHint": "Novos agentes são criados desligados. Revise a lista de ferramentas permitidas e os limites abaixo e depois ligue isto quando quiser que o agente comece a rodar.",
-      "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação.",
-      "toolSuggestLabel": "Adicionar uma ferramenta conhecida",
-      "toolSuggestHint": "As sugestões vêm do registro de ações decidíveis por política, que não é a lista completa de ferramentas. Qualquer outra permitida a este agente ainda pode ser digitada acima.",
-      "toolSuggestAdd": "Adicionar"
+      "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação."
     },
     "policyKeys": {
       "tools": {

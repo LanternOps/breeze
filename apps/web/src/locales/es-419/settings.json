@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
       "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
-      "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
-      "toolSuggestLabel": "Agregar una herramienta conocida",
-      "toolSuggestHint": "Las sugerencias vienen del registro de acciones decidibles por política, que no es la lista completa de herramientas. Cualquier otra que este agente pueda usar todavía se puede escribir arriba.",
-      "toolSuggestAdd": "Agregar"
+      "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación."
     },
     "policyKeys": {
       "tools": {

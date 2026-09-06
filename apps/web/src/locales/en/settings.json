@@ -1723,10 +1723,7 @@
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
-      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
-      "toolSuggestLabel": "Add a known tool",
-      "toolSuggestHint": "Suggestions come from the policy-decidable action registry, which is not the full list of tools. Anything else this agent may use can still be typed above.",
-      "toolSuggestAdd": "Add"
+      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode."
     },
     "policyKeys": {
       "tools": {
