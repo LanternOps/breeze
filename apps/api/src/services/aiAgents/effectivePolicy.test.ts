@@ -658,6 +658,7 @@ describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
     expect(result).toEqual({
       toolAllowlist: ['manage_services', 'run_script:execute'],
       supervisedActionKeys: ['manage_services:restart'],
+      scriptIds: [],
     });
   });
 
@@ -666,7 +667,7 @@ describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
 
     const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
 
-    expect(result).toEqual({ toolAllowlist: [], supervisedActionKeys: [] });
+    expect(result).toEqual({ toolAllowlist: [], supervisedActionKeys: [], scriptIds: [] });
   });
 
   it('elevates the read the same way loadPartnerBaselineKinds does', async () => {
@@ -684,7 +685,7 @@ describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
 
     const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
 
-    expect(result).toEqual({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
+    expect(result).toEqual({ toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] });
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });

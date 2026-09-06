@@ -158,7 +158,7 @@ describe('buildAgentPreview', () => {
   });
 
   it('narrows withinCeiling per-operation against the ceiling allowlist (bare-as-wildcard)', () => {
-    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] };
     const preview = buildAgentPreview(draft({ toolAllowlist: ['manage_services'] }), ceiling, catalog);
     const byKey = Object.fromEntries(preview.operations.map((op) => [op.key, op]));
     expect(byKey['manage_services:restart']!.withinCeiling).toBe(true);
@@ -200,6 +200,23 @@ describe('buildAgentPreview', () => {
     expect(shadow.operations[0]).toMatchObject({ outcome: 'approval_request', unattendedBlockedBy: null });
   });
 
+  it('act mode: an org draft\'s scriptIds only count where the partner ceiling also lists them (effective = partner ∩ org)', () => {
+    const script = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+    const orgOnly = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script] }),
+      { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] },
+      catalog,
+    );
+    expect(orgOnly.operations[0]).toMatchObject({ outcome: 'approval_request', unattendedBlockedBy: 'authorized_scripts' });
+
+    const both = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script] }),
+      { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [script] },
+      catalog,
+    );
+    expect(both.operations[0]).toMatchObject({ outcome: 'unattended', unattendedBlockedBy: null });
+  });
+
   it('act mode: a non-act-eligible tier-3 operation still falls back to approval_request', () => {
     const preview = buildAgentPreview(
       draft({ mode: 'act', toolAllowlist: ['manage_services:stop'] }),
@@ -221,17 +238,17 @@ describe('buildAgentPreview', () => {
   });
 
   it('preauthorized: intersects the ceiling ceiling and the draft supervisedActionKeys (bare-as-wildcard)', () => {
-    const ceiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services'] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services'], scriptIds: [] };
     const admitted = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'], scriptIds: [] }),
       ceiling,
       catalog,
     );
     expect(admitted.operations[0]!.preauthorized).toBe(true);
 
-    const notInCeiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services:stop'] };
+    const notInCeiling: AgentCeilingDto = { toolAllowlist: [], supervisedActionKeys: ['manage_services:stop'], scriptIds: [] };
     const refused = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services:restart'], scriptIds: [] }),
       notInCeiling,
       catalog,
     );
@@ -240,14 +257,14 @@ describe('buildAgentPreview', () => {
 
   it('preauthorized: with no ceiling (partner draft), membership is against the draft\'s own supervisedActionKeys', () => {
     const preview = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services'] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: ['manage_services'], scriptIds: [] }),
       null,
       catalog,
     );
     expect(preview.operations[0]!.preauthorized).toBe(true);
 
     const notAuthorized = buildAgentPreview(
-      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] }),
+      draft({ toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] }),
       null,
       catalog,
     );

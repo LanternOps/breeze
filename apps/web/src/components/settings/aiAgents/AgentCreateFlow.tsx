@@ -180,15 +180,22 @@ export default function AgentCreateFlow({
     if (clamped > step) {
       // Validate every step being left behind, not just the current one: a
       // step edited earlier and then backed out of is only ever re-checked
-      // here (its own Next was never clicked again).
-      const problems: string[] = [];
-      for (let index = step; index < clamped; index += 1) problems.push(...validateStep(index));
-      if (problems.length > 0) {
-        setIssues(problems);
-        return;
+      // here (its own Next was never clicked again). The first failing step
+      // becomes the current one, so the issue always names a control that is
+      // on screen.
+      for (let index = step; index < clamped; index += 1) {
+        const problems = validateStep(index);
+        if (problems.length > 0) {
+          setIssues(problems);
+          setStep(index);
+          return;
+        }
       }
+      setIssues([]);
     }
-    setIssues([]);
+    // A backward move (Back, or an Edit link from Review) keeps whatever is
+    // showing — that is how a server 422 from Create stays visible on the
+    // step the operator is sent back to fix it on.
     setStep(clamped);
     setMaxStepReached((reached) => Math.max(reached, clamped));
   };

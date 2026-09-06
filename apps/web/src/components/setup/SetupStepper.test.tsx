@@ -66,6 +66,17 @@ describe('SetupStepper', () => {
     expect(screen.getByTestId('setup-stepper-step-2')).toHaveAccessibleName('3. Safety');
   });
 
+  it('names the horizontal buttons too, since their label span is hidden below the sm breakpoint (#5064 review)', () => {
+    render(<SetupStepper steps={STEPS} currentStep={2} ariaLabel="Steps" onStepClick={vi.fn()} />);
+    expect(screen.getByTestId('setup-stepper-step-0')).toHaveAccessibleName('1. Purpose');
+  });
+
+  it('paints a reachable step ahead of the current one distinctly from an upcoming one (#5064 review)', () => {
+    render(<SetupStepper steps={STEPS} currentStep={0} ariaLabel="Steps" orientation="vertical" onStepClick={vi.fn()} reachableStep={1} />);
+    expect(screen.getByTestId('setup-stepper-step-1')).toHaveAttribute('data-reachable', 'true');
+    expect(screen.getByTestId('setup-stepper-step-2')).not.toHaveAttribute('data-reachable');
+  });
+
   it('marks the current step with aria-current="step" only in the vertical layout', () => {
     render(<SetupStepper steps={STEPS} currentStep={2} ariaLabel="Steps" orientation="vertical" />);
     expect(screen.getByTestId('setup-stepper-step-2')).toHaveAttribute('aria-current', 'step');

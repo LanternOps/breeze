@@ -84,9 +84,16 @@ export function capabilityState(
   capabilityId: string,
   selected: Set<string>,
   catalog: AgentToolCatalogDto,
-  ceiling: AgentCeilingDto | null = null
+  ceiling: AgentCeilingDto | null = null,
+  /** Restrict the tri-state to these operation keys — the picker passes the
+   *  operations a search left visible, so the header checkbox and its
+   *  "N of M" count never describe rows the operator cannot see. */
+  onlyKeys: ReadonlySet<string> | null = null
 ): { checked: 'all' | 'some' | 'none'; selectedCount: number; totalCount: number } {
-  const ops = catalog.tools.filter((t) => t.capability === capabilityId).flatMap(mutating);
+  const ops = catalog.tools
+    .filter((t) => t.capability === capabilityId)
+    .flatMap(mutating)
+    .filter((op) => onlyKeys === null || onlyKeys.has(op.key));
   const opsInCeiling = ops.filter((op) => isWithinCeiling(op.key, ceiling));
   const totalCount = opsInCeiling.length;
   // Counted over ALL mutating ops, not just the in-ceiling ones: a stale

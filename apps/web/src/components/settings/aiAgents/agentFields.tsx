@@ -88,11 +88,13 @@ export interface RoleOption {
    *  roles rather than dropped — a recipient must never disappear because a
    *  field it never had is missing. */
   scope?: 'partner' | 'organization';
-  /** Active members holding the role, as GET /roles projects it. A role with
-   *  0 can be selected but can never be notified — the server refuses act
-   *  mode over it (`recipients.ts`), so the fieldset says so up front
-   *  (#5048 QA). Optional: an older API build omits it. */
-  userCount?: number;
+  /** ACTIVE members holding the role (`users.status = 'active'`), as GET
+   *  /roles projects it — the same population the AI-agent recipient
+   *  resolver (`recipients.ts`) can notify, unlike `userCount`, which also
+   *  counts deactivated members. A role with 0 can be selected but can never
+   *  be notified — the server refuses act mode over it — so the fieldset
+   *  says so up front (#5048 QA). Optional: an older API build omits it. */
+  activeUserCount?: number;
 }
 
 function roleScope(role: RoleOption): 'partner' | 'organization' {
@@ -173,7 +175,7 @@ export function RecipientRolesFieldset({
                         data-testid={`ai-agent-role-${role.id}`}
                       />
                       {role.name}
-                      {role.userCount === 0 && (
+                      {role.activeUserCount === 0 && (
                         <span className="text-xs text-muted-foreground" data-testid={`ai-agent-role-${role.id}-no-members`}>
                           ({t('settings:aiAgentsPage.fields.recipientRoleNoMembers')})
                         </span>

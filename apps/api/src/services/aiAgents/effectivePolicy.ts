@@ -369,7 +369,7 @@ export async function loadPartnerBaselineKinds(
  * The partner-wide baseline's tool ceiling for ONE kind, projected for an
  * org-scoped caller that cannot read the partner row itself. Same
  * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two
- * allowlists leaves this function.
+ * allowlists and the baseline's authorized script ids leaves this function.
  */
 export async function loadPartnerBaselineCeiling(
   partnerId: string | null,
@@ -391,6 +391,7 @@ export async function loadPartnerBaselineCeiling(
   return {
     toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
     supervisedActionKeys: actAssets.supervisedActionKeys ?? [],
+    scriptIds: actAssets.scriptIds ?? [],
   };
 }
 

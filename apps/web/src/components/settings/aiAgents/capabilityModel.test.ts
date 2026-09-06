@@ -77,7 +77,7 @@ describe('capabilityModel', () => {
       unreachableTools: [],
     };
     // Ceiling admits 2 of the 3 mutating operations.
-    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart', 'manage_services:stop'], supervisedActionKeys: [] };
+    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart', 'manage_services:stop'], supervisedActionKeys: [], scriptIds: [] };
 
     expect(capabilityState('services_startup', new Set(['manage_services:restart', 'manage_services:stop']), threeOpCatalog, ceiling))
       .toEqual({ checked: 'all', selectedCount: 2, totalCount: 2 });
@@ -119,7 +119,7 @@ describe('capabilityModel', () => {
   });
 
   it('treats a bare ceiling entry as a wildcard', () => {
-    const ceiling = { toolAllowlist: ['manage_services'], supervisedActionKeys: [] };
+    const ceiling = { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [] };
     expect(isWithinCeiling('manage_services:stop', ceiling)).toBe(true);
     expect(isWithinCeiling('run_script', ceiling)).toBe(false);
     expect(isWithinCeiling('run_script', null)).toBe(true);

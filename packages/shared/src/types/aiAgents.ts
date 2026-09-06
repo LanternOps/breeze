@@ -615,6 +615,14 @@ export interface AgentToolCatalogDto {
 export interface AgentCeilingDto {
   toolAllowlist: string[];
   supervisedActionKeys: string[];
+  /**
+   * The baseline's `actAssets.scriptIds`. The effective policy an org agent
+   * runs under is `intersect(partner.scriptIds, org.scriptIds)`
+   * (`effectivePolicy.ts`), so a script the org row lists but the baseline
+   * does not is never dispatched unattended — the preview and the edit
+   * drawer intersect against this before counting authorized scripts.
+   */
+  scriptIds: string[];
 }
 
 /**

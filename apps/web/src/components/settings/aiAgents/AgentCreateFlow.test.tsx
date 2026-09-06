@@ -87,7 +87,7 @@ function makeAgents(): AiAgentDto[] {
 
 function mockEndpoints(overrides: {
   registry?: Array<{ key: string; toolName: string; action: string | null; note: string }>;
-  roles?: Array<{ id: string; name: string; scope?: 'partner' | 'organization'; userCount?: number }>;
+  roles?: Array<{ id: string; name: string; scope?: 'partner' | 'organization'; activeUserCount?: number }>;
   rolesStatus?: number;
   preview?: unknown;
   createStatus?: number;
@@ -276,7 +276,7 @@ describe('AgentCreateFlow — recipients (#5048 QA)', () => {
   }
 
   it('marks a role with no active members so the operator is not steered into an unreachable recipient', async () => {
-    mockEndpoints({ roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', userCount: 0 }, { id: 'r-1', name: 'Partner Admin', scope: 'partner', userCount: 1 }] });
+    mockEndpoints({ roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', activeUserCount: 0 }, { id: 'r-1', name: 'Partner Admin', scope: 'partner', activeUserCount: 1 }] });
     renderFlow();
     await advanceToSafety();
     expect(screen.getByTestId('ai-agent-role-r-empty-no-members')).toBeInTheDocument();
@@ -285,7 +285,7 @@ describe('AgentCreateFlow — recipients (#5048 QA)', () => {
 
   it('explains a recipient 422 as "no active members" when a role WAS selected, and carries it to Safety via Edit', async () => {
     mockEndpoints({
-      roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', userCount: 0 }],
+      roles: [{ id: 'r-empty', name: 'Partner Technician', scope: 'partner', activeUserCount: 0 }],
       createStatus: 422,
       createBody: { error: 'act_prerequisites_not_met: recipient', code: 'act_prerequisites_not_met', missing: ['recipient'] },
     });
@@ -298,6 +298,40 @@ describe('AgentCreateFlow — recipients (#5048 QA)', () => {
     const issues = await screen.findByTestId('ai-agent-issues');
     expect(issues.textContent).toMatch(/no active members/i);
     expect(issues.textContent).not.toMatch(/Add at least one/i);
+
+    // The Edit link back to Safety must keep the reason in view (a backward
+    // move never clears issues — #5064 review). The card arrives after the
+    // debounced preview, so wait for its Edit link rather than assume it.
+    fireEvent.click(await screen.findByTestId('agent-summary-row-approvers-edit', {}, { timeout: 2000 }));
+    await screen.findByTestId('ai-agent-limit-devices');
+    expect(screen.getByTestId('ai-agent-issues').textContent).toMatch(/no active members/i);
+  });
+});
+
+describe('AgentCreateFlow — forward jumps (#5064 review)', () => {
+  it('lands on the first failing step when a stepper jump skips over an invalid one, so the issue names a control on screen', async () => {
+    mockEndpoints();
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Triage bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('agent-summary-card');
+
+    // Back to What it does, clear the severities, back to Purpose, then jump to Review.
+    fireEvent.click(screen.getByTestId('agent-summary-row-mayPropose-edit'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('ai-agent-severity-critical'));
+    fireEvent.click(screen.getByTestId('ai-agent-severity-high'));
+    fireEvent.click(screen.getByTestId('setup-stepper-step-0'));
+    await screen.findByTestId('ai-agent-name');
+    fireEvent.click(screen.getByTestId('setup-stepper-step-3'));
+
+    expect(await screen.findByTestId('ai-agent-issues')).toHaveTextContent(/severity/i);
+    expect(screen.getByTestId('ai-agent-permissions')).toBeInTheDocument(); // step 2, where the control lives
+    expect(screen.queryByTestId('agent-summary-card')).toBeNull();
   });
 });
 

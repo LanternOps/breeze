@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { AgentCeilingDto, AgentToolCatalogDto, AiAgentKind } from '@breeze/shared';
 import { badgeClass } from '../../aiAgents/statusBadge';
+import { resolvedFormattingLocale } from '@/lib/i18n/format';
 import {
   capabilityState,
   entriesToSelection,
@@ -134,9 +135,60 @@ export default function CapabilityPicker({
   const mutatingOpsFor = (capabilityId: string) =>
     catalog.tools.filter((tool) => tool.capability === capabilityId).flatMap((tool) => tool.operations.filter((op) => !op.readOnly));
 
-  const toggleCapability = (capabilityId: string) => {
+  const searchLower = search.trim().toLowerCase();
+  type CatalogTool = AgentToolCatalogDto['tools'][number];
+  type CatalogOperation = CatalogTool['operations'][number];
+  // A search narrows each capability to the operations that match it; only
+  // when NO operation matches but the capability's own label/description
+  // does are all of its operations shown (#5048 QA — "isolate" used to
+  // surface all twelve security operations because the capability blurb
+  // mentions isolating devices, burying the one matching row). Computed
+  // ONCE per search term: the header checkbox, its "N of M" count, the
+  // capability list and the rows all read the same map, so nothing the
+  // operator cannot see is ever toggled on their behalf. Labels are resolved
+  // through `t` directly here (rather than the render-scoped helpers above)
+  // so the memo's inputs are exactly the search term, the catalog and `t`.
+  const visibleOpKeysByCapability = useMemo(() => {
+    const matches = (text: string) => text.toLowerCase().includes(searchLower);
+    const tl = (name: string) => t(/* i18n-dynamic */ `aiAgentsPage.catalog.tools.${name}`, { defaultValue: sentenceCase(name) });
+    const al = (toolName: string, action: string | null) =>
+      action === null
+        ? tl(toolName)
+        : t(/* i18n-dynamic */ `aiAgentsPage.catalog.actions.${toolName}.${action}`, { defaultValue: sentenceCase(action) });
+    const operationMatches = (tool: CatalogTool, op: CatalogOperation): boolean =>
+      matches(tool.name) || matches(tl(tool.name)) || matches(op.key) || matches(al(tool.name, op.action));
+    const capabilityItselfMatches = (id: string): boolean =>
+      matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.label`, { defaultValue: sentenceCase(id) }))
+      || matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.description`, { defaultValue: '' }));
+
+    const map = new Map<string, ReadonlySet<string> | null>();
+    for (const cap of catalog.capabilities) {
+      if (!searchLower) {
+        map.set(cap.id, null); // null = unrestricted
+        continue;
+      }
+      const matching = new Set<string>();
+      for (const tool of catalog.tools) {
+        if (tool.capability !== cap.id) continue;
+        for (const op of tool.operations) if (!op.readOnly && operationMatches(tool, op)) matching.add(op.key);
+      }
+      if (matching.size > 0) map.set(cap.id, matching);
+      else if (capabilityItselfMatches(cap.id)) map.set(cap.id, null);
+      // else: absent = the capability is hidden entirely
+    }
+    return map;
+  }, [searchLower, catalog, t]);
+  const visibleOpsFor = (capabilityId: string): CatalogOperation[] => {
+    const keys = visibleOpKeysByCapability.get(capabilityId);
     const ops = mutatingOpsFor(capabilityId);
-    const state = capabilityState(capabilityId, selected, catalog, ceiling);
+    return keys === null || keys === undefined ? ops : ops.filter((op) => keys.has(op.key));
+  };
+  const stateFor = (capabilityId: string) =>
+    capabilityState(capabilityId, selected, catalog, ceiling, visibleOpKeysByCapability.get(capabilityId) ?? null);
+
+  const toggleCapability = (capabilityId: string) => {
+    const ops = visibleOpsFor(capabilityId);
+    const state = stateFor(capabilityId);
     const next = new Set(selected);
     if (state.checked === 'all') {
       for (const op of ops) next.delete(op.key);
@@ -172,57 +224,36 @@ export default function CapabilityPicker({
     commit(next);
   };
 
-  const searchLower = search.trim().toLowerCase();
-  const textMatches = (text: string) => text.toLowerCase().includes(searchLower);
-  type CatalogTool = AgentToolCatalogDto['tools'][number];
-  type CatalogOperation = CatalogTool['operations'][number];
-  const operationMatchesSearch = (tool: CatalogTool, op: CatalogOperation): boolean =>
-    textMatches(tool.name)
-    || textMatches(toolLabel(tool.name))
-    || textMatches(op.key)
-    || textMatches(actionLabel(tool.name, op.action));
-  // A search narrows each capability to the operations that match it; only
-  // when NO operation matches but the capability's own label/description
-  // does are all of its operations shown (#5048 QA — "isolate" used to
-  // surface all twelve security operations because the capability blurb
-  // mentions isolating devices, burying the one matching row).
-  const capabilityItselfMatches = (capabilityId: string): boolean =>
-    textMatches(capabilityLabel(capabilityId)) || textMatches(capabilityDescription(capabilityId));
-  const anyOperationMatches = (capabilityId: string): boolean =>
-    catalog.tools.some(
-      (tool) => tool.capability === capabilityId && tool.operations.some((op) => !op.readOnly && operationMatchesSearch(tool, op)),
-    );
-  const capabilityMatchesSearch = (capabilityId: string): boolean =>
-    !searchLower || anyOperationMatches(capabilityId) || capabilityItselfMatches(capabilityId);
-
   const readOnlyTools = catalog.tools.filter((tool) => tool.readOnly);
   const withOperations = catalog.capabilities.filter((cap) => mutatingOpsFor(cap.id).length > 0);
-  const visible = withOperations.filter((cap) => capabilityMatchesSearch(cap.id));
+  const visible = withOperations.filter((cap) => visibleOpKeysByCapability.has(cap.id));
   const primaryCapabilities = searchLower ? visible : visible.filter((cap) => touchedIds.has(cap.id));
   const moreCapabilities = searchLower ? [] : visible.filter((cap) => !touchedIds.has(cap.id));
 
-  const summary = summarise(selected, catalog, mode, outcomeContext);
+  const summary = useMemo(() => summarise(selected, catalog, mode, outcomeContext), [selected, catalog, mode, outcomeContext]);
   // Each count pluralises on its own (#5048 QA: "1 approval requests"), so the
   // parenthetical is assembled from pre-pluralised phrases and interpolated
   // as one `breakdown` string — i18next drives a key's plural form off a
   // single `count`, which the sentence already spends on the operations.
-  const breakdown = [
+  // Joined with the locale's own list conjunction, the same way the review
+  // card (`AgentSummaryCard.tsx`) renders its copy of this breakdown.
+  const breakdown = new Intl.ListFormat(resolvedFormattingLocale(), { style: 'long', type: 'conjunction' }).format([
     t('aiAgentsPage.catalog.approvalRequestCount', { count: summary.approvalRequests }),
     t('aiAgentsPage.catalog.loggedProposalCount', { count: summary.loggedProposals }),
     ...(mode === 'act' ? [t('aiAgentsPage.catalog.unattendedCount', { count: summary.unattended.length })] : []),
-  ].join(', ');
+  ]);
   const searchInputId = useId();
   const showNamesLabelId = useId();
 
   const renderCapability = (capabilityId: string) => {
     const cap = catalog.capabilities.find((c) => c.id === capabilityId);
     if (!cap) return null;
-    const state = capabilityState(capabilityId, selected, catalog, ceiling);
+    const state = stateFor(capabilityId);
     const isOpen = expanded.has(capabilityId) || searchLower !== '';
-    const enabledOps = mutatingOpsFor(capabilityId);
+    const enabledOps = visibleOpsFor(capabilityId);
     const capDisabled = enabledOps.length > 0 && enabledOps.every((op) => !isWithinCeiling(op.key, ceiling));
     const capTools = catalog.tools.filter((tool) => tool.capability === capabilityId && tool.operations.some((op) => !op.readOnly));
-    const showAllOps = !searchLower || !anyOperationMatches(capabilityId);
+    const visibleKeys = visibleOpKeysByCapability.get(capabilityId) ?? null;
 
     return (
       <li key={capabilityId} data-testid={`capability-row-${capabilityId}`}>
@@ -279,7 +310,7 @@ export default function CapabilityPicker({
           <div className="space-y-2 border-t bg-muted/20 px-3 py-2">
             {capTools.map((tool) => {
               const allMutating = tool.operations.filter((op) => !op.readOnly);
-              const mutating = showAllOps ? allMutating : allMutating.filter((op) => operationMatchesSearch(tool, op));
+              const mutating = visibleKeys === null ? allMutating : allMutating.filter((op) => visibleKeys.has(op.key));
               if (mutating.length === 0) return null;
               return (
                 <div key={tool.name}>

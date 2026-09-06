@@ -95,7 +95,13 @@ export function buildAgentPreview(
   // an act-eligible `run_script` is only unattended for a script in
   // `actAssets.scriptIds`. The guided create flow never sets it, so its
   // preview truthfully shows an approval request, with the reason attached.
-  const outcomeContext = { authorizedScriptCount: input.actAssets.scriptIds.length };
+  // Intersected with the ceiling the same way `effectivePolicy.ts` narrows
+  // `scriptIds` (partner ∩ org) — an org row listing a script the baseline
+  // does not is still only ever proposed.
+  const authorizedScriptIds = ceiling
+    ? input.actAssets.scriptIds.filter((id) => ceiling.scriptIds.includes(id))
+    : input.actAssets.scriptIds;
+  const outcomeContext = { authorizedScriptCount: authorizedScriptIds.length };
 
   const operations = [...opsByKey.values()].map((op) => {
     const { tool, action } = splitEntry(op.key);
