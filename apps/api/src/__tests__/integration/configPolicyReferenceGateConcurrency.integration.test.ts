@@ -323,6 +323,12 @@ runDb('serializes reverse writes to sensitive-data candidates with one UUID', as
       'sensitive-data mover',
     );
     secondWork = sqlState(() => second.begin(async (tx) => {
+      // #5099's ownership-immutable guard rejects a configuration_policies
+      // owner change outside system scope (23514) before this statement ever
+      // reaches the reference-gate race this test exercises. Elect system
+      // scope so the pre-existing FK/gate serialization (23503) is still
+      // what's under test here, not the newer guard.
+      await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing sensitive fallback backend');
       secondEntered.resolve(backend.pid);
