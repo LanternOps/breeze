@@ -99,8 +99,10 @@ Enforced twice:
    this row as parent (incoming), against the ownership rule and the one-level rule. It also
    enforces immutability: any UPDATE where `parent_policy_id IS DISTINCT FROM` the old value is
    rejected, including `NULL → value`, so an existing baseline can never acquire a parent later.
-   It reads the other rows as the invoking role, so under FORCE RLS a parent the caller cannot see
-   is treated as not found. Any UPDATE that changes `org_id` or `partner_id` is rejected outright
+   The trigger function is `SECURITY DEFINER` like the existing PAM move guard
+   (`breeze_guard_pam_device_org_move`): the ownership **rule** is what rejects a cross-tenant
+   edge, and the service layer masks "not visible" as "not found" before the insert ever reaches
+   the trigger. Any UPDATE that changes `org_id` or `partner_id` is rejected outright
    unless `breeze_current_scope() = 'system'`: the HTTP API never changes ownership, org merge
    runs in system context, and this closes the blind spot where a partner-scoped invoker could
    move a baseline while RLS hides some of its children from the incoming-edge check. Because it is a constraint trigger, org merge's
@@ -213,7 +215,7 @@ so this is documented on the registry entry, not handled.
   `createConfigPolicySchema`). Validated per Ownership rule. `updateConfigPolicySchema` does not
   accept it.
 - `GET /configuration-policies/:id`: adds `parentPolicyId: string | null`,
-  `parentPolicy: { id, name, status, featureLinks } | null` (the parent's **assembled** links, the
+  `parentPolicy: { id, name, status, orgId, featureLinks } | null` (the parent's **assembled** links, the
   same shape `listFeatureLinks` returns), `childPolicies: { id, name }[]`. `featureLinks` stays
   the policy's **own** links (the editor must never show inherited rows as authored).
   The parent embed is fetched server-side through RLS, **not** through `policyAccessCondition`:
