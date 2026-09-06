@@ -28,7 +28,7 @@
  * is provenance, not a guess.
  */
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import { db } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
@@ -298,6 +298,17 @@ function findExactMatch<T extends { id: string }>(
   return { candidate: null, ambiguous: false };
 }
 
+/**
+ * `organizations.type <> 'quick_support'`.
+ *
+ * A function rather than a shared constant so each query composes its own
+ * fragment. Mirrors the exclusion `GET /orgs/organizations` already applies
+ * (routes/orgs.ts) — the hidden org sits inside `accessibleOrgIds` by design so
+ * RLS lets a tech reach their own support session, which means every query that
+ * enumerates or resolves a customer org has to exclude it explicitly.
+ */
+const notQuickSupportOrg = () => ne(organizations.type, 'quick_support');
+
 async function proposeOrgMappings(
   partnerId: string,
   conn: AccountingConnection,
@@ -334,7 +345,16 @@ async function buildOrgProposals(
   const orgs = await db
     .select()
     .from(organizations)
-    .where(and(eq(organizations.partnerId, partnerId), isNull(organizations.deletedAt)));
+    .where(and(
+      eq(organizations.partnerId, partnerId),
+      // The per-partner 'quick_support' org is a real `organizations` row that
+      // only holds ephemeral Quick Support sessions — it is never a customer
+      // and must never be offered as a QuickBooks Customer to map. Same
+      // exclusion GET /orgs/organizations already applies (routes/orgs.ts), and
+      // this query bypasses that route entirely.
+      notQuickSupportOrg(),
+      isNull(organizations.deletedAt),
+    ));
 
   const mappingRows = await db
     .select()
@@ -584,6 +604,12 @@ async function loadOwnedOrg(orgId: string, partnerId: string): Promise<OrgRow> {
     .where(and(
       eq(organizations.id, orgId),
       eq(organizations.partnerId, partnerId),
+      // Defense in depth for the proposal-list exclusion in
+      // `buildOrgProposals`: the decision/sync routes take the Breeze entity id
+      // from the request body, so hiding the hidden org from the list is not on
+      // its own enough to keep it out of QuickBooks. A stale mapping row (or a
+      // hand-rolled call) resolves to `entity_not_found` here instead.
+      notQuickSupportOrg(),
       isNull(organizations.deletedAt),
     ));
   const org = rows[0] as OrgRow | undefined;

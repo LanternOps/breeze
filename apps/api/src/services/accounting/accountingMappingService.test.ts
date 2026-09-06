@@ -101,6 +101,7 @@ import {
 const PARTNER = 'p1';
 const ORG_A = 'org-a';
 const ORG_B = 'org-b';
+const QUICK_SUPPORT_ORG = 'org-quick-support';
 const ITEM_A = 'item-a';
 
 function connectedConn(overrides: Record<string, unknown> = {}) {
@@ -126,6 +127,8 @@ function pgUniqueViolation(constraint: string) {
 
 interface OrgRow {
   id: string; name: string; email?: string; taxId?: string | null; currencyCode?: string;
+  /** `organizations.type` — defaults to 'customer' in `stubReads`. */
+  type?: 'customer' | 'internal' | 'quick_support';
   billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
   billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
 }
@@ -159,6 +162,30 @@ function conditionContainsValue(obj: unknown, value: string, seen = new Set<unkn
   return false;
 }
 
+/**
+ * Finds a BOUND PARAMETER carrying `value` in a compiled drizzle condition.
+ *
+ * Deliberately narrower than `conditionContainsValue` above, and NOT
+ * interchangeable with it: a drizzle `Column` holds a reference to its whole
+ * `Table`, and a pg enum column carries its `enumValues` array — so a plain
+ * deep search for 'quick_support' reaches `organizations.type`'s enum
+ * DEFINITION and returns true for a query that never filters on it (verified:
+ * `and(eq(organizations.partnerId, 'p1'), isNull(organizations.deletedAt))`
+ * matches). Only a `Param` — the node `ne(col, value)` emits, identified by its
+ * `encoder` — counts here.
+ */
+function conditionHasBoundParam(obj: unknown, value: string, seen = new Set<unknown>()): boolean {
+  if (obj && typeof obj === 'object') {
+    if (seen.has(obj)) return false;
+    seen.add(obj);
+    if ('encoder' in obj && (obj as { value?: unknown }).value === value) return true;
+    for (const v of Object.values(obj as Record<string, unknown>)) {
+      if (conditionHasBoundParam(v, value, seen)) return true;
+    }
+  }
+  return false;
+}
+
 // Mutable across a single test: `accounting_entity_mappings` reads/writes all
 // share this array, so a syncMappedEntity call that persists a remote ref is
 // immediately visible to the NEXT call in the same test (create-then-retry
@@ -179,6 +206,7 @@ function stubReads(opts: {
 } = {}) {
   const orgRows = (opts.orgs ?? []).map((o) => ({
     deletedAt: null,
+    type: 'customer' as const,
     billingContact: o.email ? { email: o.email } : null,
     taxId: null,
     currencyCode: 'USD',
@@ -202,7 +230,18 @@ function stubReads(opts: {
           throw new Error('query issued without partner scoping — every read must filter by partnerId');
         }
         let rows: unknown[];
-        if (table === organizations) rows = orgRows;
+        // The hidden per-partner `quick_support` org is a real row under the
+        // partner, so every org read in this service has to exclude it the way
+        // GET /orgs/organizations already does. The stub applies that predicate
+        // ONLY when the compiled condition actually carries the literal — a
+        // query that forgets `ne(organizations.type, 'quick_support')` sees the
+        // hidden row exactly as Postgres would, so the assertion discriminates
+        // instead of passing on a mock that filters for the code.
+        if (table === organizations) {
+          rows = conditionHasBoundParam(cond, 'quick_support')
+            ? orgRows.filter((o) => o.type !== 'quick_support')
+            : orgRows;
+        }
         else if (table === organizationExternalLinks) rows = linkRows;
         else if (table === catalogItems) rows = itemRows;
         else if (table === accountingEntityMappings) rows = currentMappingRows;
@@ -426,6 +465,26 @@ describe('listMappingProposals — org matching priority', () => {
     const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
 
     expect(result).toEqual([]);
+  });
+
+  it('excludes the hidden quick_support organization from the proposal list', async () => {
+    // The per-partner 'quick_support' org holds ephemeral Quick Support
+    // sessions. It is a real `organizations` row under the partner and is
+    // inside `accessibleOrgIds` by design (RLS), so — exactly like GET
+    // /orgs/organizations (routes/orgs.ts) — the mapping proposal query has to
+    // exclude it, or the Integrations page offers "Quick Support" as a
+    // QuickBooks Customer to map.
+    stubReads({
+      orgs: [
+        { id: ORG_A, name: 'Acme' },
+        { id: QUICK_SUPPORT_ORG, name: 'Quick Support', type: 'quick_support' },
+      ],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support' }]);
+
+    const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
+
+    expect(result.map((p) => p.breezeEntityId)).toEqual([ORG_A]);
   });
 
   it('scopes every DB read to the partner (enforced by stubReads on every test in this suite)', async () => {
@@ -710,6 +769,17 @@ describe('saveMappingDecision', () => {
 
   it('throws entity_not_found for a Breeze org id that does not belong to this partner', async () => {
     stubReads({ orgs: [] });
+    await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+
+  it('throws entity_not_found for the hidden quick_support org (never pushable as a QuickBooks Customer)', async () => {
+    // Defense in depth for the list filter above: hiding the row from the
+    // proposal list is not enough on its own, because the decision route takes
+    // the org id from the request body. A stale mapping row (or a hand-rolled
+    // call) must not be able to push the hidden org to QuickBooks.
+    stubReads({ orgs: [{ id: ORG_A, name: 'Quick Support', type: 'quick_support' }] });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support', syncToken: '0' }]);
+
     await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
   });
 
