@@ -7,14 +7,16 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Custom Fields let you attach structured metadata to devices that goes beyond the built-in attributes (hostname, OS type, tags, etc.). You define field definitions at the organisation or partner level, then set values on individual devices. This is useful for tracking asset numbers, purchase dates, warranty expiry, department assignments, compliance status, and any other data specific to your environment.
 
+Migrating custom fields in bulk from another RMM? See [Migrating to Breeze](/migration/overview/#backfill-custom-fields-from-the-incumbent) for the **Import from another RMM** wizard, which drives the same definitions and values endpoints this page documents.
+
 ---
 
 ## How it works
 
 Custom Fields has two layers:
 
-1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner.
-2. **Field values** -- stored as a JSONB object on each device record (`custom_fields` column). Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
+1. **Field definitions** -- created via the `/api/v1/custom-fields` endpoints. A definition declares the field's name, key, data type, validation options, and which device types it applies to. Definitions are scoped to either an organisation or a partner, and a `fieldKey` is unique **per owner** -- see [Uniqueness and shadowing](#uniqueness-and-shadowing).
+2. **Field values** -- stored in a dedicated `device_custom_field_values` table, one row per device/definition pair, and validated against the definition's declared type on every write. The `custom_fields` JSONB column on the device record is maintained as a read-only projection of that table for backward compatibility -- every existing reader of `devices.custom_fields` keeps working unchanged. Values are set by patching the device via `PATCH /api/v1/devices/:id` with a `customFields` key-value map. Values are merged with any existing custom fields on the device rather than replacing them.
 
 ---
 
@@ -47,8 +49,19 @@ When creating a field definition you can supply an `options` object to constrain
 You can also set a `defaultValue` on the definition. If a device does not have an explicit value for the field, the default is used. Setting `required: true` indicates that the field should always be populated for applicable devices.
 
 <Aside>
-  Validation options are stored on the definition for use by the UI and any future server-side enforcement. The current device PATCH endpoint accepts any value that matches the Zod schema (`string`, `number`, `boolean`, or `null`) without cross-referencing the definition's options at write time.
+  Every value is validated against the field's declared `type` and `options` on every write path -- `PATCH /api/v1/devices/:id`, `PATCH /api/v1/devices/:id/custom-fields`, and script write-back. See [Accepted value types](#accepted-value-types) for the rejection codes.
 </Aside>
+
+---
+
+## Uniqueness and shadowing
+
+Two rules keep a `fieldKey` unambiguous, both enforced in the database and both surfaced as `409` before this feature shipped a bulk importer, since a mismatched key is otherwise silently ambiguous data corruption:
+
+- **`fieldKey` is unique per owner.** Two definitions cannot share a key on the same axis (two organisation-owned fields, or two partner-wide fields). Creating a duplicate returns `409 { code: "field-key-duplicate" }`.
+- **An organisation-owned key cannot shadow an all-organisations key, or vice versa.** If `asset_tag` already exists as a partner-wide field, no organisation under that partner can also define an organisation-owned `asset_tag` (and the reverse). Creating a shadowing definition returns `409 { code: "field-key-shadowed" }`.
+
+Both rules exist because a value can only be attributed to one definition. Without them, a device could resolve two different definitions for the same key -- disagreeing on `type` -- with no way to tell which one a stored value belongs to.
 
 ---
 
@@ -173,14 +186,23 @@ curl -X PATCH /api/v1/devices/<device-id> \
 
 ### Accepted value types
 
-The device update endpoint validates each custom field value against this schema:
+Each value must first match the Zod wire schema (`string`, `number`, `boolean`, or `null` -- `null` removes the field), then be validated against the **target definition's own declared `type` and `options`**. A value that fails either check is rejected -- not silently stored -- with `400 { error, code: "invalid-custom-field-value", fields: [{ fieldKey, reason }] }`. `reason` is one of:
 
-| Allowed type | Notes |
+| Reason | Meaning |
 |---|---|
-| `string` | Maximum 10,000 characters |
-| `number` | Integer or decimal |
-| `boolean` | `true` or `false` |
-| `null` | Removes the field from the device |
+| `unknown_field` | No custom field definition visible to this device's organisation owns that key. |
+| `invalid_type` | The value's shape doesn't match the field's declared `type`. |
+| `out_of_range` | A `number` value falls outside the field's `min`/`max`. |
+| `not_a_choice` | A `dropdown` value isn't one of the field's declared `options.choices`. |
+| `too_long` | A `text` value exceeds the field's `maxLength`. |
+| `invalid_date` | A `date` value doesn't parse. |
+| `not_applicable_to_device` | The field's `deviceTypes` excludes this device's OS. |
+
+This applies to both `PATCH /api/v1/devices/:id` and `PATCH /api/v1/devices/:id/custom-fields`, and to [script write-back](#writing-custom-fields-from-a-script) (whose own rejection reasons are listed separately, below).
+
+<Aside type="caution">
+  A caller that previously stored free-form strings under a `number` or `dropdown` field, or wrote a key with no matching definition at all, now gets a `400` on that write. Existing stored values are untouched -- this only affects new writes.
+</Aside>
 
 ---
 
@@ -313,7 +335,7 @@ curl -X PATCH /api/v1/custom-fields/<field-id> \
 
 ## Deleting a field definition
 
-`DELETE /api/v1/custom-fields/:id` removes the definition. This does not automatically remove corresponding values from the `custom_fields` JSONB on existing devices -- those values become orphaned but remain on the device record until explicitly cleared.
+`DELETE /api/v1/custom-fields/:id` removes the definition **and cascades to every stored value under it** -- a value can never outlive its definition, since the value table's foreign key is `ON DELETE CASCADE`. The device's `customFields` projection updates in the same transaction. This is different from earlier behaviour, where a deleted definition left its values orphaned in the device's JSONB; deletion is now destructive of the data, not just the schema, so treat it accordingly.
 
 ```bash
 curl -X DELETE /api/v1/custom-fields/<field-id> \
@@ -333,6 +355,16 @@ All mutating operations on custom field definitions are recorded in the audit lo
 | `custom_field.delete` | A field definition is deleted |
 
 Device-level custom field value changes are logged under the `device.update` audit action when the device is patched.
+
+---
+
+## Values in exports and the partner API
+
+Custom field values now appear in the tenant GDPR export (each value's `field_key` and stored value land in the export archive), and the partner configuration API returns **one record per datum**. Previously, if an organisation-owned and an all-organisations definition happened to share a `fieldKey` -- an anti-shadowing gap now closed, see [Uniqueness and shadowing](#uniqueness-and-shadowing) -- the same value could be exported twice. Both fixes follow from the same underlying change: values are read from `device_custom_field_values` (one row is one datum) rather than from the device's JSONB, which had no way to distinguish "one value" from "one value counted twice."
+
+## The `warranty` mapping target
+
+The **Import from another RMM** wizard (see [Migrating to Breeze](/migration/overview/#backfill-custom-fields-from-the-incumbent)) can map a source column onto `warranty` instead of a custom field. This is not a custom field at all -- it writes `device_warranty`'s start date, end date, and manufacturer directly, and drives the warranty-expiry alerting the rest of the platform already has. A mapped warranty value is **never applied over data a manufacturer API lookup already supplied** unless the operator explicitly opts in to overriding it on that import; provider-sourced warranty data is treated as more authoritative than a bulk import by default.
 
 ---
 
@@ -421,7 +453,17 @@ Field definitions are stored in the `custom_field_definitions` table:
 | `created_at` | TIMESTAMP | Creation timestamp |
 | `updated_at` | TIMESTAMP | Last modification timestamp |
 
-Device values are stored in the `custom_fields` JSONB column on the `devices` table as a flat key-value object.
+Device values are stored one row per device/definition pair in `device_custom_field_values`:
+
+| Column | Type | Description |
+|---|---|---|
+| `device_id` | UUID | References `devices.id` (`ON DELETE CASCADE`) |
+| `org_id` | UUID | Denormalised from the device, for tenant scoping |
+| `definition_id` | UUID | References `custom_field_definitions.id` (`ON DELETE CASCADE`) |
+| `field_key` | VARCHAR(100) | Denormalised from the definition, so a value survives being read without a join |
+| `value_text` / `value_number` / `value_boolean` / `value_date` | typed columns | Exactly one populated, matching the definition's `type` |
+
+The `custom_fields` JSONB column on `devices` is retained as a trigger-maintained **projection** of this table -- it is rebuilt on every write and is read-only in practice; writing it directly is reverted by the next value write. Existing integrations that read `devices.custom_fields` keep working unchanged.
 
 ---
 
@@ -442,9 +484,9 @@ When creating a field definition, supply at most one of `orgId` or `partnerId`. 
 
 Verify that the `PATCH /api/v1/devices/:id` request includes a `customFields` key in the JSON body, not `custom_fields`. The API expects camelCase property names. Also confirm that each value is a `string`, `number`, `boolean`, or `null` -- objects and arrays are not accepted as values.
 
-### Deleted definition but values remain on devices
+### Deleted a definition and the values are gone
 
-Deleting a field definition does not cascade to device values. The values in the `custom_fields` JSONB column on each device persist after the definition is removed. To clean up orphaned values, patch each affected device with the field key set to `null`.
+This is expected: `DELETE /api/v1/custom-fields/:id` cascades to every stored value under that definition, and the device's `customFields` projection reflects the deletion immediately. There is no undo -- re-creating a definition with the same `fieldKey` does not restore the old values, because it is a new definition with a new id. If you need the data back, restore from a backup taken before the delete.
 
 ### "Custom field not found" on GET/PATCH/DELETE
 

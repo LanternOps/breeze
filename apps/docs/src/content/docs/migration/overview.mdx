@@ -50,7 +50,7 @@ Set expectations with your team and your customers before you start. Nothing bel
 | Scripts | **Sometimes** | Portable if the source engine is PowerShell/bash-based. Not portable from step-based engines — see below. |
 | Monitors & alert thresholds | **You rebuild them** | Re-author as Breeze [monitors](/features/service-monitoring/) and [alert rules](/features/alerts/). Treat as an opportunity to prune. |
 | Patch policies | **You rebuild them** | Map to Breeze [patch policies](/features/patch-management/) and update rings. |
-| Custom fields / UDFs / EDFs | **Scriptable** | Export from source, re-create as Breeze [custom fields](/features/custom-fields/), backfill per device. |
+| Custom fields / UDFs / EDFs | **Scriptable** | Export from source, re-create as Breeze [custom fields](/features/custom-fields/), then backfill values with the **Import from another RMM** wizard — its own pass, described below. |
 | Documentation / passwords | **Out of scope** | Usually lives in IT Glue / Hudu / a PSA, not the RMM. Verify before assuming. |
 | Tickets | **Out of scope** | Lives in your PSA. Re-point the PSA at Breeze via [PSA integrations](/features/psa-integrations/); the ticket history stays where it is. |
 
@@ -67,7 +67,9 @@ This is the single largest variable in migration cost, and it is determined enti
 
 ---
 
-## The Seven Phases
+## The Phases
+
+Seven phases take you from decision to decommission, plus one additional pass — the custom-field backfill — slotted in after enrollment is verified. It is deliberately not folded into the Phase 0–6 numbering the per-vendor guides use for enrollment and decommission, since it runs on its own schedule and is safe to repeat.
 
 <Steps>
 
@@ -138,7 +140,17 @@ This is the single largest variable in migration cost, and it is determined enti
 
    Do not proceed to Phase 6 for any customer until their gap is zero or every remaining device is explicitly accounted for.
 
-6. ### Phase 5 — Re-point integrations and rebuild content
+6. ### Backfill custom fields from the incumbent
+
+   This is a **second pass, run only after devices exist in Breeze** — it depends on Phase 4's device list, not the enrollment push itself. Use the **Import from another RMM** wizard (Settings → Custom Fields, or the Devices page) rather than a hand-rolled join:
+
+   1. **Import field definitions first.** One CSV row is one incumbent field *slot* (e.g. Datto's `udf1`–`udf30`), not a device record. The wizard previews what will be created, what already exists, and what conflicts before anything is written.
+   2. **Then import values**, mapping CSV columns to a device identifier (hostname, serial number, or the incumbent's own device ID), to the custom fields just created, or to the `warranty` mapping target.
+   3. **Record the incumbent's device UID on this first run** by mapping its per-device identifier column (Datto `uid`, NinjaOne device id, Automate `ComputerID`, N-central device ID) to **Source device ID**. The wizard records it in a durable link, so a later re-import — after more devices have enrolled — resolves by that exact id instead of a fuzzy hostname match.
+
+   It is **safe to re-run**: an already-applied value is left alone by default (an explicit override option exists if you need it), and a device that resolves to more than one candidate is never guessed for you — you pick from a ranked list. See the per-vendor page for exactly what each source exports and what is out of scope, and [Custom Fields](/features/custom-fields/) for the destination fields' own behaviour.
+
+7. ### Phase 5 — Re-point integrations and rebuild content
 
    Run in parallel here. With agents reporting into Breeze:
 
@@ -149,7 +161,7 @@ This is the single largest variable in migration cost, and it is determined enti
    - Re-point EDR, DNS filtering, backup, and documentation integrations.
    - Re-create technician accounts, roles, and MFA. Do this properly rather than mirroring the incumbent's grown-over-time permission sprawl.
 
-7. ### Phase 6 — Cut over and decommission
+8. ### Phase 6 — Cut over and decommission
 
    Only after a customer's verification gap is zero:
 
@@ -189,6 +201,7 @@ For a typical 1,500-endpoint, 60-customer MSP. Scale the middle phases with cust
 | 2 — Rebuild tenancy tree | Week 2 | Hours (scripted) |
 | 3 — Agent deployment waves | Weeks 3–6 | 1 day per wave |
 | 4 — Verification | Weeks 3–8 | Ongoing, ~2h/customer |
+| Custom-field backfill (2nd pass, after Phase 4) | Weeks 4–8, repeatable | Hours per customer (wizard-driven) |
 | 5 — Integrations & content rebuild | Weeks 3–8 | The long pole — 1–3 weeks |
 | 6 — Cutover & decommission | Weeks 8–12 | ~1h/customer |
 

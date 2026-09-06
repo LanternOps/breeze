@@ -152,7 +152,22 @@ Rank by alert volume over the last 90 days and rebuild the top of the list partn
 
 ## EDFs → Custom Fields
 
-Map computer-scope EDFs to Breeze [custom fields](/features/custom-fields/), and client/location-scope EDFs to organization-level fields or your PSA. Backfill by joining the EDF export against Breeze devices on hostname.
+Automate EDFs (Extra Data Fields) exist at computer, location, and client scope. Only **computer-scope EDFs** (`EDFType = 2` in the query above) map onto Breeze [custom fields](/features/custom-fields/) — they become **partner-wide** field definitions, since Automate has no per-organization computer scope narrower than the whole install.
+
+**Location- and client-scope EDFs are out of scope for the importer.** There is no Breeze custom-field owner that maps to "one location" or "one client" more precisely than an organization, and guessing wrong here means re-typing every value later. Re-home that data as organization-level fields by hand, or leave it in your PSA if it is already tracked there — do not force it through the bulk importer.
+
+Use the **Import from another RMM** wizard (Settings → Custom Fields, or the Devices page) for the computer-scope fields:
+
+<Steps>
+
+1. Export computer-scope EDFs with the SQL query above (or the REST equivalent) and confirm which `ExtraFieldID`s are actually populated.
+2. Open the wizard, choose **ConnectWise Automate**, and import the definitions with owner **All organizations**.
+3. On the values step, map `ComputerID` to **Source device ID** (and `hostname` as a fallback identifier) and each EDF column to the matching custom field.
+4. **`ComputerID` is the durable identifier** [Custom Fields](/features/custom-fields/) records on this first run — map it even when hostname alone would resolve most rows, so a later re-import after more devices enroll resolves exactly rather than by hostname guess.
+
+</Steps>
+
+A row the wizard can't resolve to exactly one device is reported, never guessed at. Re-run after each enrollment wave; an already-applied value is left alone by default.
 
 ---
 
