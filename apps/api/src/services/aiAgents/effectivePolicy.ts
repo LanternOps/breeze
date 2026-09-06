@@ -10,6 +10,7 @@ import {
   aiAgentRecipientsSchema,
   aiAgentTriggersSchema,
   minAgentMode,
+  type AgentCeilingDto,
   type AiAgentKind,
   type AiAgentLimits,
   type AiAgentPolicy,
@@ -31,6 +32,7 @@ import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
 import { aiBudgets } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
+import { intersectToolRefs } from './toolAllowlist';
 
 type PolicyRowFields = Pick<
   AiAgentRow,
@@ -227,7 +229,7 @@ export function mergeAgentPolicies(
     ),
     mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
     model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
-    toolAllowlist: pick('toolAllowlist', intersect(partner.toolAllowlist, org.toolAllowlist), 'merged'),
+    toolAllowlist: pick('toolAllowlist', intersectToolRefs(partner.toolAllowlist, org.toolAllowlist), 'merged'),
     protectedResources: pick('protectedResources', {
       services: union(partner.protectedResources.services, org.protectedResources.services),
       paths: union(partner.protectedResources.paths, org.protectedResources.paths),
@@ -292,7 +294,7 @@ export function mergeAgentPolicies(
     // tests here do), so the merge itself must not assume the key is present.
     actAssets: pick('actAssets', {
       scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
-      supervisedActionKeys: intersect(
+      supervisedActionKeys: intersectToolRefs(
         partner.actAssets.supervisedActionKeys ?? [],
         org.actAssets.supervisedActionKeys ?? [],
       ),
@@ -310,6 +312,19 @@ export function mergeAgentPolicies(
   };
 
   return { effective, provenance };
+}
+
+/**
+ * The "live partner-wide baseline row" predicate, shared by every reader that
+ * projects the partner axis: `loadPartnerBaselineKinds`, `loadPartnerBaselineCeiling`,
+ * and `resolveEffectiveAgentInner`'s own partner-row lookup. `kind` is
+ * optional because `loadPartnerBaselineKinds` scans every kind at once — the
+ * other two callers pin a single kind.
+ */
+function livePartnerBaselineWhere(partnerId: string, kind?: AiAgentKind) {
+  return kind === undefined
+    ? and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), isNull(aiAgents.disabledAt))
+    : and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), eq(aiAgents.kind, kind), isNull(aiAgents.disabledAt));
 }
 
 /**
@@ -341,17 +356,42 @@ export async function loadPartnerBaselineKinds(
     db
       .select({ kind: aiAgents.kind })
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, partnerId),
-        isNull(aiAgents.orgId),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(partnerId))
       // Bounded by the partial unique index (`ai_agents_partner_kind_uq`): at
       // most one live partner-wide row per kind, so this can never return more
       // than AI_AGENT_KINDS.length rows.
       .limit(AI_AGENT_KINDS.length));
 
   return new Set(rows.map((row) => row.kind));
+}
+
+/**
+ * The partner-wide baseline's tool ceiling for ONE kind, projected for an
+ * org-scoped caller that cannot read the partner row itself. Same
+ * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two
+ * allowlists leaves this function.
+ */
+export async function loadPartnerBaselineCeiling(
+  partnerId: string | null,
+  kind: AiAgentKind,
+): Promise<AgentCeilingDto | null> {
+  if (!partnerId) return null;
+
+  const rows = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ toolAllowlist: aiAgents.toolAllowlist, actAssets: aiAgents.actAssets })
+      .from(aiAgents)
+      .where(livePartnerBaselineWhere(partnerId, kind))
+      .limit(1));
+
+  const row = rows[0];
+  if (!row) return null;
+
+  const actAssets = aiAgentActAssetsSchema.parse(row.actAssets ?? {});
+  return {
+    toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
+    supervisedActionKeys: actAssets.supervisedActionKeys ?? [],
+  };
 }
 
 export type ResolvedAgent = AiAgentPolicySnapshot;
@@ -425,12 +465,7 @@ async function resolveEffectiveAgentInner(
     db
       .select()
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, org.partnerId),
-        isNull(aiAgents.orgId),
-        eq(aiAgents.kind, kind),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(org.partnerId, kind))
       .limit(1));
 
   // No partner baseline means the org override cannot self-enable the agent.

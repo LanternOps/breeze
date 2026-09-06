@@ -554,6 +554,54 @@ export interface AiAgentDto {
 }
 
 /**
+ * Agent tool catalog (spec `2026-09-06-ai-agent-builder-design.md` §4.1). One
+ * operation within a reachable tool's catalog entry: a bare tool (no
+ * discriminator) has exactly one operation with `action: null` whose `key`
+ * equals the tool name; a multi-operation tool has one entry per
+ * discriminator value with `key: '<tool>:<action>'`. `tier`/`readOnly` are
+ * resolved through `checkGuardrails`, never hand-declared — see
+ * `apps/api/src/services/aiAgents/agentToolCatalog.ts`.
+ */
+export interface AgentToolOperationDto {
+  key: string;
+  action: string | null;
+  tier: 1 | 2 | 3;
+  readOnly: boolean;
+  /** `key` is a member of `POLICY_DECIDABLE_TIER3`. */
+  policyDecidable: boolean;
+  /** `key`'s tool (at this action) is one `ACT_MANIFEST` can dispatch unattended. */
+  actEligible: boolean;
+}
+
+/** One agent-reachable tool's catalog entry — `capability` is an `AgentCapabilityId`. */
+export interface AgentToolCatalogToolDto {
+  name: string;
+  capability: string;
+  tier: 1 | 2 | 3;
+  /** True only when every operation on this tool is read-only. */
+  readOnly: boolean;
+  operations: AgentToolOperationDto[];
+}
+
+/** `GET /ai/agents/tool-catalog` response body's `data`. */
+export interface AgentToolCatalogDto {
+  capabilities: { id: string; tone: 'standard' | 'high' }[];
+  tools: AgentToolCatalogToolDto[];
+  presets: Record<AiAgentKind, string[]>;
+}
+
+/**
+ * `GET /ai/agents/ceiling?kind=` response body's `data` — the partner-wide
+ * baseline's tool ceiling for one `kind`, projected for an org-scoped caller
+ * that cannot read the partner row itself. `null` for a partner/system-scope
+ * session or when no live baseline exists for that kind.
+ */
+export interface AgentCeilingDto {
+  toolAllowlist: string[];
+  supervisedActionKeys: string[];
+}
+
+/**
  * Wave 4 Part B — act mode verdicts.
  *
  * `execution` reports the tool dispatch outcome for a manifest-matched call

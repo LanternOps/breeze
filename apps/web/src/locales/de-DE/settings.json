@@ -2135,6 +2135,7 @@
       "thresholdPerOrgNote": "Jede Organisation ermittelt ihren eigenen Schwellenwert für die Freigabe, daher werden die bestätigten Ausführungen hier ohne Zielwert angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Zielwert zu sehen.",
       "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
+      "grantOnlyHint": "Vorab autorisierte Schlüssel für den Agenten einer Organisation werden nur über das Freigabestufen-Panel von einem zweiten Genehmiger erteilt – und auch dort wieder entzogen.",
       "promote": "Hochstufen",
       "revoke": "Widerrufen",
       "emptyTitle": "Noch keine Nachweise",
