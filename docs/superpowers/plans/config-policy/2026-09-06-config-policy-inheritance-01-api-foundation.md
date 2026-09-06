@@ -23,6 +23,7 @@ branch: feature/5080-config-policy-inheritance/wave-5081
 - Migration filename `2026-10-12-100000-config-policy-inheritance.sql`; before pushing, confirm it sorts after the newest file in `apps/api/migrations` on `origin/main` (`ls apps/api/migrations | sort | tail -1`), rename later in the day if not.
 - Migration is idempotent, contains **no DML**, no inner `BEGIN`/`COMMIT`.
 - FK on `parent_policy_id` is the default `NO ACTION`. Not `RESTRICT`, not `SET NULL`.
+- SQL guards are two-valued: `COALESCE(..., false)` inside every boolean guard function and `IS NOT TRUE` at every call site, never `IF NOT f()`. A lookup miss in an authorization decision is a deny.
 - `parent_policy_id` is immutable after insert (any change, including `NULL → value`, is rejected). Ownership (`org_id`, `partner_id`) changes are rejected unless `public.breeze_current_scope() = 'system'`.
 - Ownership rule: org child → parent in the same org **or** partner-wide of the org's partner; partner-wide child → partner-wide parent of the same partner. Parent must have `parent_policy_id IS NULL`. `parent.id <> child.id`.
 - View is `WITH (security_invoker = true)`, granted `SELECT` to `breeze_app`, declared in Drizzle with `.existing()`. An inherited row keeps the **parent link's `id`**.
@@ -86,15 +87,22 @@ CREATE OR REPLACE FUNCTION public.breeze_config_policy_parent_compatible(
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
-  SELECT CASE
-    WHEN child_org IS NOT NULL THEN
-      parent_org = child_org
-      OR (parent_org IS NULL AND parent_partner IS NOT NULL
-          AND parent_partner = (SELECT o.partner_id FROM public.organizations o WHERE o.id = child_org))
-    WHEN child_partner IS NOT NULL THEN
-      parent_org IS NULL AND parent_partner = child_partner
-    ELSE false
-  END;
+  -- STRICTLY two-valued. `parent_org = child_org` is NULL whenever parent_org IS
+  -- NULL (a partner-wide parent); `NULL OR false` is NULL and `IF NOT NULL` never
+  -- fires, so without the COALESCE a cross-partner parent was silently ACCEPTED
+  -- (found by the live-DB forge in W01, PR #5099). Callers test `IS NOT TRUE`.
+  SELECT COALESCE(
+    CASE
+      WHEN child_org IS NOT NULL THEN
+        parent_org = child_org
+        OR (parent_org IS NULL AND parent_partner IS NOT NULL
+            AND parent_partner = (SELECT o.partner_id FROM public.organizations o WHERE o.id = child_org))
+      WHEN child_partner IS NOT NULL THEN
+        parent_org IS NULL AND parent_partner = child_partner
+      ELSE false
+    END,
+    false
+  );
 $$;
 
 CREATE OR REPLACE FUNCTION public.breeze_config_policy_parent_guard()
@@ -125,7 +133,7 @@ BEGIN
       FROM public.configuration_policies WHERE id = NEW.parent_policy_id;
     IF NOT FOUND
        OR p.parent_policy_id IS NOT NULL
-       OR NOT public.breeze_config_policy_parent_compatible(NEW.org_id, NEW.partner_id, p.org_id, p.partner_id) THEN
+       OR public.breeze_config_policy_parent_compatible(NEW.org_id, NEW.partner_id, p.org_id, p.partner_id) IS NOT TRUE THEN
       RAISE EXCEPTION USING ERRCODE = '23514',
         CONSTRAINT = 'configuration_policies_parent_guard',
         MESSAGE = 'parent configuration policy not found or not eligible';
@@ -143,7 +151,7 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM public.configuration_policies c
        WHERE c.parent_policy_id = NEW.id
-         AND NOT public.breeze_config_policy_parent_compatible(c.org_id, c.partner_id, NEW.org_id, NEW.partner_id)
+         AND public.breeze_config_policy_parent_compatible(c.org_id, c.partner_id, NEW.org_id, NEW.partner_id) IS NOT TRUE
     ) THEN
       RAISE EXCEPTION USING ERRCODE = '23514',
         CONSTRAINT = 'configuration_policies_parent_guard',
