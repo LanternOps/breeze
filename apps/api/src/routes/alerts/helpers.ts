@@ -20,6 +20,7 @@ import {
   validatePagerDutyConfig,
   validatePushoverConfig,
 } from '../../services/notificationSenders';
+import { canReadPartnerWideRows } from '../../services/partnerWideAccess';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
 export type AlertTemplateRow = typeof alertTemplates.$inferSelect;
@@ -113,11 +114,21 @@ export async function getAlertRuleWithOrgCheck(
   }
 
   // Dual-axis access (#2128): org-owned rules via org access; partner-wide
-  // rules (orgId NULL) via the caller's own partner (or system scope). Writes
-  // are additionally gated on canManagePartnerWidePolicies at the routes.
+  // rules (orgId NULL) only for system scope or the owning partner's own
+  // PARTNER-scoped token.
+  //
+  // Org tokens carry a partnerId too (`middleware/auth.ts` feeds it into
+  // DbAccessContext.currentPartnerId), so matching on partnerId alone handed
+  // every partner-wide rule to every org user under that partner. RLS is not a
+  // backstop here: alert_rules' partner-wide SELECT branch deliberately makes
+  // those rows readable from an org context, so this gate is the whole control
+  // (#4952). It also makes the by-id paths agree with the list route, which
+  // already restricts the partner-wide arm to `auth.scope === 'partner'`
+  // (`rules.ts` GET /alerts/rules). Writes are additionally gated on
+  // canManagePartnerWidePolicies at the routes.
   const hasAccess = rule.orgId !== null
     ? ensureOrgAccess(rule.orgId, auth)
-    : auth.scope === 'system' || (!!auth.partnerId && rule.partnerId === auth.partnerId);
+    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, rule.partnerId);
   if (!hasAccess) {
     return null;
   }

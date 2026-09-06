@@ -7,6 +7,7 @@ import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   canManagePartnerWidePolicies,
+  canReadPartnerWideRows,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import {
@@ -146,6 +147,10 @@ actionRoutes.post(
     const result = await evaluatePolicy(policy, {
       source: 'policies-route',
       requestRemediation: true,
+      // Runs in the CALLER's context, so the remediation-automation lookup must
+      // apply the caller's partner-wide visibility rather than the worker's
+      // system visibility (#4952).
+      auth,
     });
 
     writeRouteAudit(c, {
@@ -182,7 +187,7 @@ actionRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const targetAutomationId = await resolvePolicyRemediationAutomationId(policy);
+    const targetAutomationId = await resolvePolicyRemediationAutomationId(policy, auth);
     if (!targetAutomationId) {
       return c.json({
         error: 'No remediation automation is configured on this policy',
@@ -195,6 +200,19 @@ actionRoutes.post(
     // partner-wide policy (org_id NULL, #2129) accepts an explicit automation
     // from any org under the owning partner OR the partner's own
     // partner-wide automations.
+    //
+    // The partner-wide arm is gated on canReadPartnerWideRows (#4952). This
+    // route enqueues with NO target argument, so automationRuntime expands a
+    // partner-wide automation across every org under the partner: without the
+    // gate an org admin holding devices:write on an org-owned policy could run
+    // an automation against OTHER orgs' devices.
+    //
+    // RLS does not backstop this. Org tokens carry a partnerId
+    // (DbAccessContext.currentPartnerId), and automations' partner-wide SELECT
+    // branch deliberately makes those rows readable from an org context, so
+    // this gate is the whole control — mirrors canAccessAutomation in
+    // routes/automations.ts, which already restricts the same rows to partner
+    // and system scope.
     let automationOwnerCondition;
     if (policy.orgId) {
       const [policyOrg] = await db
@@ -202,26 +220,34 @@ actionRoutes.post(
         .from(organizations)
         .where(eq(organizations.id, policy.orgId))
         .limit(1);
-      automationOwnerCondition = policyOrg?.partnerId
+      const partnerWideVisible = canReadPartnerWideRows(auth, policyOrg?.partnerId ?? null);
+      automationOwnerCondition = policyOrg?.partnerId && partnerWideVisible
         ? or(
             eq(automations.orgId, policy.orgId),
             and(isNull(automations.orgId), eq(automations.partnerId, policyOrg.partnerId))
           )
         : eq(automations.orgId, policy.orgId);
     } else {
-      automationOwnerCondition = or(
-        inArray(
-          automations.orgId,
-          db
-            .select({ id: organizations.id })
-            .from(organizations)
-            // The hidden 'quick_support' org never owns automations — keep it out
-            // of the partner-wide ownership set. (The by-id lookup above is left
-            // alone; it resolves one known org.)
-            .where(and(eq(organizations.partnerId, policy.partnerId ?? ''), ne(organizations.type, 'quick_support')))
-        ),
-        and(isNull(automations.orgId), eq(automations.partnerId, policy.partnerId ?? ''))
+      // A partner-wide policy already required partner-wide administration
+      // above (partnerWideWriteDenied), so the caller is system or a full
+      // partner admin; assert the partner match anyway rather than trusting a
+      // second gate to have run.
+      const orgOwnedArm = inArray(
+        automations.orgId,
+        db
+          .select({ id: organizations.id })
+          .from(organizations)
+          // The hidden 'quick_support' org never owns automations — keep it out
+          // of the partner-wide ownership set. (The by-id lookup above is left
+          // alone; it resolves one known org.)
+          .where(and(eq(organizations.partnerId, policy.partnerId ?? ''), ne(organizations.type, 'quick_support')))
       );
+      automationOwnerCondition = canReadPartnerWideRows(auth, policy.partnerId)
+        ? or(
+            orgOwnedArm,
+            and(isNull(automations.orgId), eq(automations.partnerId, policy.partnerId ?? ''))
+          )
+        : orgOwnedArm;
     }
 
     const [automation] = await db
@@ -236,6 +262,15 @@ actionRoutes.post(
       .limit(1);
 
     if (!automation) {
+      return c.json({ error: 'Remediation automation not found for this organization' }, 404);
+    }
+
+    // Defense in depth on the loaded row (#4952). The WHERE above already
+    // drops the partner-wide arm for a caller that may not read it, but this
+    // route is the fleet-fan-out path — re-check the row itself so a future
+    // edit to the condition builder cannot silently reopen it. 404, not 403:
+    // no oracle distinguishing "absent" from "another tenant's".
+    if (automation.orgId === null && !canReadPartnerWideRows(auth, automation.partnerId)) {
       return c.json({ error: 'Remediation automation not found for this organization' }, 404);
     }
 

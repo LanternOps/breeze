@@ -643,13 +643,6 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
   ['ai_agent_schedules', 'TODO(#4943): no breeze_current_partner_id() SELECT branch yet.'],
   ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
   ['client_ai_prompt_templates', 'TODO(#4945): no breeze_current_partner_id() SELECT branch yet.'],
-  ['alert_rules', 'TODO(#4949): no breeze_current_partner_id() SELECT branch yet.'],
-  // Known gap found during W03 of #4673: automation_policies is read by
-  // buildPolicyProbeConfigUpdate, which is exactly why that resolver still
-  // escalates via the #1105 pattern instead of reading through RLS.
-  ['automation_policies', 'TODO(#4950): no breeze_current_partner_id() SELECT branch yet.'],
-  ['automation_resource_bindings', 'TODO(#4951): no breeze_current_partner_id() SELECT branch yet.'],
-  ['automations', 'TODO(#4952): no breeze_current_partner_id() SELECT branch yet.'],
 ]);
 
 // Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
@@ -661,16 +654,12 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
 // follow-up issue, not a free ride into an already-frozen exemption. Both
 // constants are asserted by 'the partner-wide SELECT branch exemption map
 // only shrinks' below.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 8;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 4;
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
   'custom_field_definitions',
   'client_ai_prompt_templates',
-  'alert_rules',
-  'automation_policies',
-  'automation_resource_bindings',
-  'automations',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
