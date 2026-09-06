@@ -366,9 +366,26 @@ export async function recordAgentMutation(
 
 /**
  * The set of agents this caller may see, on either ownership axis. Partner-wide
- * rows are added only for partner-scoped callers: an org token carries a
- * partnerId but never passes breeze_has_partner_access, so RLS would hide those
- * rows from it regardless — the app layer must not be looser than RLS.
+ * rows are added only for PARTNER-scoped callers.
+ *
+ * LOAD-BEARING, and no longer merely mirroring RLS. It used to be both: an org
+ * token carries a partnerId but never passes breeze_has_partner_access, so RLS
+ * hid partner-wide rows from it regardless and this predicate only avoided being
+ * looser than the database. Since
+ * migrations/2026-10-11-150000-ai-partner-wide-select.sql, ai_agents carries a
+ * separate FOR SELECT policy `org_id IS NULL AND partner_id =
+ * breeze_current_partner_id()`, and an org token DOES populate that GUC — so RLS
+ * now permits an org-scoped SELECT of the caller's own partner's partner-wide
+ * agents. This `auth.scope === 'partner'` gate is what still keeps them out of
+ * org-scoped listings and, crucially, out of `getAgent` — which is what
+ * `POST /ai/agents/:id/runs` (routes/aiAgents.ts) resolves the agent through
+ * before enqueuing a run. An org token cannot resolve a partner-wide agent id,
+ * so it cannot execute the MSP's shared agent. That containment is now an
+ * APP-LAYER property, not an RLS one. Do not "simplify" this to a bare
+ * orgCondition-plus-partner OR on the grounds that RLS will catch it — RLS will
+ * not. (Writes are unaffected either way: the new policy is SELECT-only, so
+ * UPDATE/DELETE targeting of partner-wide rows still requires
+ * breeze_has_partner_access.)
  */
 function accessibleAgentCondition(auth: AuthContext) {
   return auth.scope === 'partner' && auth.partnerId
@@ -387,11 +404,13 @@ export async function listAgents(
   // version of this comment claimed the opposite — that contextless meant a
   // full bypass — which inverted the failure mode on a multi-tenant surface.
   //
-  // The app-layer predicate stays anyway, for two reasons that are real: the
-  // unit-test path mocks the db and has no RLS at all, and the old signature
-  // (_auth, ignored) made an unfiltered read look authorized to the next caller.
-  // Partner-wide rows are only added for partner-scoped callers: an org token
-  // carries a partnerId but never passes breeze_has_partner_access.
+  // The app-layer predicate stays anyway, for three reasons that are real: the
+  // unit-test path mocks the db and has no RLS at all; the old signature
+  // (_auth, ignored) made an unfiltered read look authorized to the next caller;
+  // and since 2026-10-11-150000-ai-partner-wide-select.sql it is STRICTER than
+  // RLS rather than a mirror of it — see accessibleAgentCondition above for why
+  // the `auth.scope === 'partner'` gate is now the only thing keeping
+  // partner-wide agents out of org-scoped listings and org-triggered runs.
   const ownerScope = accessibleAgentCondition(auth);
 
   return db

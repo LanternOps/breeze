@@ -224,7 +224,16 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
     );
   });
 
-  it('org token cannot see the partner baseline row; partner token can', async () => {
+  // #4943 flipped the first half of this. It used to assert an org token could
+  // not see the partner baseline at all; `ai_agent_schedules_partner_wide_select`
+  // (2026-10-11-150000-ai-partner-wide-select.sql) now grants exactly that read,
+  // SELECT-only, for the caller's OWN partner — the read the effective-schedule
+  // path previously bought with a nested system-context escalation (#1105). Org
+  // tokens still never pass `breeze_has_partner_access`, so an org can neither
+  // rewrite nor delete the MSP's baseline; the hijack probe below is the proof.
+  // Cross-partner isolation and the other two tables:
+  // aiPartnerWideSelect.integration.test.ts.
+  it('org token can READ (never write) the partner baseline row; partner token can', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const by = await creator(partner.id);
@@ -239,7 +248,20 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
     const seenByOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select().from(aiAgentSchedules),
     );
-    expect(seenByOrg.find((row) => row.id === baseline!.id)).toBeUndefined();
+    expect(seenByOrg.find((row) => row.id === baseline!.id)?.id).toBe(baseline!.id);
+
+    // FOR SELECT only. RLS hides the row from the write command rather than
+    // raising, so the ROW COUNT is the assertion with teeth — "it didn't throw"
+    // would be satisfied by a successful hijack.
+    const hijack = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(aiAgentSchedules)
+        .set({ cron: '59 23 * * *' })
+        .where(eq(aiAgentSchedules.id, baseline!.id))
+        .returning({ id: aiAgentSchedules.id }),
+    );
+    expect(hijack).toEqual([]);
+
     const seenByPartner = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
       db.select().from(aiAgentSchedules),
     );
