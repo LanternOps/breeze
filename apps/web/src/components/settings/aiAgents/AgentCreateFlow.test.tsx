@@ -477,6 +477,23 @@ describe('AgentCreateFlow — Safety step (moved from AiAgentsPage.test.tsx)', (
     expect(limits().maxDevicesPerRun).toBe(1);
   });
 
+  it('shows no unattended-authorization registry for an organization-owned act-mode CREATE draft — it holds no keys and the grant path lives in the drawer (#5063 review)', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    mockEndpoints({ registry: [{ key: 'manage_services:restart', toolName: 'manage_services', action: 'restart', note: '' }] });
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
+    expect(screen.getByTestId('ai-agent-owner-org')).toBeChecked();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Org act bot' } });
+    fireEvent.click(screen.getByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+
+    expect(screen.queryByTestId('ai-agent-policy-decide')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-supervised-keys-grant-only-hint')).toBeNull();
+  });
+
   it('collapses a partner draft\'s supervised-key registry behind a summary while shadow/off, mirroring the drawer', async () => {
     mockEndpoints();
     renderFlow(); // defaultOwnerScope: 'partner', mode defaults to 'shadow'

@@ -124,6 +124,28 @@ describe('useAgentToolCatalog', () => {
     expect(result.current.catalog).toEqual(CATALOG);
   });
 
+  it('reports ceilingResolved only once an org draft\'s ceiling fetch has settled, and immediately for a partner draft (#5063 review)', async () => {
+    let resolveCeiling: (value: Response) => void = () => {};
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url.startsWith('/ai/agents/ceiling')) return new Promise<Response>((resolve) => { resolveCeiling = resolve; });
+      return Promise.resolve(json({ data: null }));
+    });
+    const { result, rerender } = renderHook(
+      ({ ownerScope }: { ownerScope: 'organization' | 'partner' }) => useAgentToolCatalog({ kind: 'triage', ownerScope }),
+      { initialProps: { ownerScope: 'organization' as 'organization' | 'partner' } },
+    );
+    await waitFor(() => expect(result.current.catalog).not.toBeNull());
+    expect(result.current.ceilingResolved).toBe(false);
+    expect(result.current.ceiling).toBeNull();
+
+    resolveCeiling(json({ data: null }));
+    await waitFor(() => expect(result.current.ceilingResolved).toBe(true));
+
+    rerender({ ownerScope: 'partner' });
+    await waitFor(() => expect(result.current.ceilingResolved).toBe(true));
+  });
+
   it('reports loading false once the catalog fetch fails', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ error: 'boom' }, false, 500));

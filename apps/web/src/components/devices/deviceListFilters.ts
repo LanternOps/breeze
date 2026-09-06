@@ -10,8 +10,12 @@
 
 export interface ListFilters {
   search: string;
+  // VPN facet ('all' | 'any' | provider id). Optional so older callers and
+  // tests that only know about search keep working; absent means 'all'.
+  vpn?: string;
 }
 
 export const DEFAULT_LIST_FILTERS: ListFilters = {
   search: '',
+  vpn: 'all',
 };
