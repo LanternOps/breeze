@@ -188,6 +188,16 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
   consumers('accountingReconcileWorker'),
+  // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
+  // entries, each read rather than inferred. None is feature-flag gated and
+  // each constructs exactly one Worker unconditionally, so all three are
+  // plain-required (`redis`). removedDevicePurge already attached under its
+  // registry key on main; deviceGroupJobs attaches as
+  // 'deviceGroupReevaluationWorker'; deviceBulkPurge received its
+  // attachWorkerObservability hook in this merge-forward.
+  consumers('deviceBulkPurge'),
+  consumers('removedDevicePurge'),
+  consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as

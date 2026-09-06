@@ -32,6 +32,7 @@ import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { createAuditLog } from '../services/auditService';
 import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { purgeRemovedDevice, DeviceLifecycleError } from '../services/deviceLifecycle';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'device-bulk-purge';
 const JOB_NAME = 'device-bulk-purge';
@@ -252,6 +253,7 @@ export function createDeviceBulkPurgeWorker(): Worker {
 export async function initializeDeviceBulkPurgeWorker(): Promise<void> {
   try {
     purgeWorker = createDeviceBulkPurgeWorker();
+    attachWorkerObservability(purgeWorker, 'deviceBulkPurge');
     purgeWorker.on('error', (error) => {
       console.error('[DeviceBulkPurge] Worker error:', error);
       captureException(error);
