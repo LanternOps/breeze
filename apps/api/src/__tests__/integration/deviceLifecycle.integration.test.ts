@@ -35,8 +35,8 @@ import { eq, sql } from 'drizzle-orm';
 
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
-import { db, withSystemDbAccessContext } from '../../db';
-import { deviceCommands, devices } from '../../db/schema';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { alerts, deviceCommands, devices } from '../../db/schema';
 import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { purgeRemovedDevice, restoreRemovedDevice } from '../../services/deviceLifecycle';
 import {
@@ -124,6 +124,17 @@ async function queueRemoveUninstall(deviceId: string, actorUserId: string): Prom
       }
     }),
   );
+}
+
+/** Org-scoped RLS context, the shape `authMiddleware` builds for an org-token request. */
+function orgContext(orgId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -360,5 +371,77 @@ describe('deviceLifecycle (integration)', () => {
     expect(result.purged).toEqual([]);
     expect(result.skipped).toEqual([{ deviceId: device.id, code: 'UNINSTALL_PENDING' }]);
     expect(await deviceExists(device.id)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #5023 wave 05 — single permanent delete must run the cascade in a SYSTEM
+  // db context, matching this file's own `withSystemDbAccessContext` calls
+  // above and `jobs/deviceBulkPurge.ts`'s `purgeOne`. Before this wave, the
+  // route ran the cascade under the CALLER's org-scoped context instead
+  // (reproduced directly here via `orgContext`, without going through HTTP —
+  // this file already drives `purgeRemovedDevice` the same way every test
+  // above does).
+  // -------------------------------------------------------------------------
+  it('an org-scoped cascade context leaves an RLS-hidden cascade row behind and fails the whole delete; a system-scoped context (matching the route since wave 05) removes it cleanly', async () => {
+    const tenant = await seedTenant();
+    const device = await seedDevice(tenant.orgId, tenant.siteId);
+
+    // Poison the cascade with a row `tenant.orgId`'s own context cannot see:
+    // an `alerts` row stamped with a DIFFERENT org. Nothing in normal
+    // operation produces this shape (the alerts service always stamps the
+    // triggering device's own org) — it stands in for the general hazard
+    // `services/deviceDeletion.ts` documents for `abuse_endpoint_fingerprints`
+    // (a cascade table an RLS policy can hide from the deleting context),
+    // reproduced with a table whose FK is NOT `ON DELETE SET NULL`/`CASCADE`
+    // (`alerts_device_id_devices_id_fk` is NO ACTION — verified against this
+    // stack's live schema), so an invisible row actually BLOCKS the parent
+    // delete instead of being silently cleaned up by the FK regardless of
+    // RLS the way abuse_endpoint_fingerprints's detach is.
+    const otherOrg = await createOrganization({ partnerId: tenant.partnerId, status: 'active' });
+    await withSystemDbAccessContext(() =>
+      db.insert(alerts).values({
+        deviceId: device.id,
+        orgId: otherOrg.id,
+        severity: 'critical',
+        status: 'active',
+        title: 'cross-org cascade poison fixture (#5023 wave 05)',
+      }),
+    );
+
+    // OLD behaviour: the cascade runs entirely inside the CALLER's own-org
+    // context — what the route did before this wave. The poisoned alert is
+    // invisible under `tenant.orgId`'s policy, so the cascade's
+    // `DELETE FROM alerts ...` misses it, and the final `DELETE FROM devices`
+    // then hits the NO ACTION foreign key: the whole purge fails and nothing
+    // is removed, rather than silently stranding just the one row.
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(tenant.orgId), () =>
+        db.transaction((tx) => purgeRemovedDevice(tx, device.id)),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    // Pin the SQLSTATE, not just "it threw": a vacuous `rejects.toThrow()`
+    // would also pass if the fixture were wrong for an unrelated reason.
+    // Drizzle wraps the postgres-js PostgresError in a DrizzleQueryError
+    // whose own `.code` is undefined — the SQLSTATE lives on `.cause` (same
+    // unwrap hazard `routes/devices/core.ts` documents for this route).
+    expect((caught as { cause?: { code?: string } } | undefined)?.cause?.code).toBe('23503');
+    expect(await deviceExists(device.id)).toBe(true);
+    expect(
+      await getTestDb().select({ id: alerts.id }).from(alerts).where(eq(alerts.deviceId, device.id)),
+    ).toHaveLength(1);
+
+    // NEW behaviour: escalate exactly as the route does since this wave.
+    // System context sees every row regardless of org, so both the child
+    // delete and the parent delete succeed.
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id))),
+    );
+    expect(await deviceExists(device.id)).toBe(false);
+    expect(
+      await getTestDb().select({ id: alerts.id }).from(alerts).where(eq(alerts.deviceId, device.id)),
+    ).toHaveLength(0);
   });
 });

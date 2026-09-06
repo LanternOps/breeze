@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
@@ -2011,8 +2011,43 @@ coreRoutes.delete(
     //     worse than telling the operator to wait. The response therefore
     //     drops `agentUninstallSent`/`warning`: there is nothing best-effort
     //     left to report.
+    // #5023 wave 05 — the cascade runs in a SYSTEM db context, matching
+    // `jobs/deviceBulkPurge.ts`'s `purgeOne`. Before this wave, the cascade ran
+    // under the CALLER's tenant-scoped context (the one `withDbAccessContext`
+    // opened for this request), and `services/deviceDeletion.ts` documents that
+    // at least one cascade table (`abuse_endpoint_fingerprints`) is
+    // deliberately invisible under tenant RLS policy — so this single-device
+    // path could strand rows that bulk purge (which has always run in a system
+    // context) removes cleanly.
+    //
+    // Authorisation is unaffected and stays exactly where it is: both the
+    // `getDeviceWithOrgAndSiteCheck` chokepoint above and the decommissioned
+    // pre-check just above run BEFORE this escalation, entirely inside the
+    // ordinary tenant-scoped request context. A caller who fails either check
+    // never reaches a system-scoped connection.
+    //
+    // `runOutsideDbContext` MUST wrap `withSystemDbAccessContext`, not the
+    // other way around: this route is already inside the request's
+    // `withDbAccessContext` transaction (the auth middleware opens one for
+    // every request — #1105), and opening a second nested context without
+    // first exiting the first would pin two pooled connections for the
+    // duration of this call instead of one (CLAUDE.md's DB context helpers
+    // contract).
+    //
+    // `purgeRemovedDevice`'s own `SELECT ... devices FOR UPDATE` + status
+    // re-check still runs, now strictly BETTER than before: under system
+    // context the devices row is fully visible, so that lock actually holds. In
+    // the old tenant-scoped path, an RLS-filtered row would have silently
+    // locked nothing (see the `deviceDeletion.ts` comment on
+    // `deleteDeviceCascade`'s parent lock) — a hazard this escalation closes as
+    // a side effect, not just for the invisible child table it targets.
     try {
-      const purge = await db.transaction((tx) => purgeRemovedDevice(tx, deviceId));
+      const purge = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(
+          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId)),
+          'devices.permanentDelete',
+        ),
+      );
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
     } catch (err: unknown) {
