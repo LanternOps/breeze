@@ -1,14 +1,27 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, Square, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
-import { executionRowStatusConfig as statusConfig } from './executionStatus';
-import type { ExecutionStatus } from '@breeze/shared';
+import { executionRowStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
+import type { ExecutionStatus, CancelState } from '@breeze/shared';
 import type { RunContextValue } from '@/components/common/RunContext';
+import { hasPermission } from '@/lib/permissions';
+import type { Permission } from '@/stores/auth';
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
+
+// #4767 — the only statuses a Stop request is meaningful against. `cancelling`
+// itself is not offered a NEW stop (that's the Force-stop path below), it gets
+// the disabled "Stopping…" affordance instead.
+const CANCELLABLE_STATUSES = new Set<ExecutionStatus>(['pending', 'queued', 'running']);
+
+// Mirrors the API's own default (apps/api/src/services/scriptCancellation.ts) —
+// shown here only as what the primary Stop action requests; Force stop always
+// sends 0 regardless of this constant.
+const DEFAULT_GRACE_SECONDS = 5;
 
 // #2698: per-run summary of the script custom-field write-back. Mirrors
 // `ScriptCustomFieldWriteSummary` in apps/api/src/db/schema/scripts.ts — kept
@@ -53,11 +66,22 @@ export type ScriptExecution = {
   // no room for a compact indicator without crowding the table.
   runAs?: RunContextValue | null;
   targetSessionId?: number | null;
+  // #4767 — set once a stop was requested; drives resolveExecutionStatusLabel's
+  // "too late" / "stop failed" copy once the execution reaches a terminal
+  // status. Absent/null means no cancel was ever requested.
+  cancelState?: CancelState | null;
 };
 
 type ExecutionHistoryProps = {
   executions: ScriptExecution[];
   onViewDetails?: (execution: ScriptExecution) => void;
+  // #4767 — wired by ScriptExecutionsPage via runAction. Omitted entirely (no
+  // Stop affordance rendered) where the host page has no cancel endpoint to
+  // call, mirroring the onRunAgain optionality pattern in ExecutionDetails.
+  onCancel?: (execution: ScriptExecution, graceSeconds: number) => Promise<void> | void;
+  // UX-only gate (the API re-checks scripts:execute server-side) — Stop is
+  // HIDDEN, never merely disabled, without it.
+  permissions?: Permission[];
   pageSize?: number;
   showScriptName?: boolean;
   timezone?: string;
@@ -126,6 +150,8 @@ function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): str
 export default function ExecutionHistory({
   executions,
   onViewDetails,
+  onCancel,
+  permissions,
   pageSize = 10,
   showScriptName = true,
   timezone
@@ -137,6 +163,24 @@ export default function ExecutionHistory({
   const [currentPage, setCurrentPage] = useState(1);
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  // #4767 — the execution currently in the Stop confirm dialog, and (a
+  // superset while the request is in flight) the one whose Stop/Force-stop
+  // button must show the ConfirmDialog's isLoading state. Tracked by row
+  // rather than a single boolean since any row in view could be the target.
+  const [confirming, setConfirming] = useState<ScriptExecution | null>(null);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const canCancel = hasPermission(permissions, 'scripts', 'execute');
+
+  const handleConfirmCancel = async (execution: ScriptExecution, graceSeconds: number) => {
+    if (!onCancel) return;
+    setSubmittingId(execution.id);
+    try {
+      await onCancel(execution, graceSeconds);
+    } finally {
+      setSubmittingId(null);
+      setConfirming(null);
+    }
+  };
 
   const toggleSort = (column: string) => {
     if (sortColumn === column) {
@@ -354,9 +398,9 @@ export default function ExecutionHistory({
                       )}>
                         <StatusIcon className={cn(
                           'h-3 w-3',
-                          execution.status === 'running' && 'animate-spin'
+                          (execution.status === 'running' || execution.status === 'cancelling') && 'animate-spin'
                         )} />
-                        {t(/* i18n-dynamic */ `executionHistory.${statusConfig[execution.status].label}`)}
+                        {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -387,7 +431,26 @@ export default function ExecutionHistory({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-end">
+                      <div className="flex items-center justify-end gap-1">
+                        {onCancel && canCancel && (CANCELLABLE_STATUSES.has(execution.status) || execution.status === 'cancelling') && (
+                          <button
+                            type="button"
+                            data-testid="cancel-execution"
+                            disabled={execution.status === 'cancelling'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (execution.status !== 'cancelling') setConfirming(execution);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                            title={execution.status === 'cancelling'
+                              ? t('executionHistory.status.cancelling')
+                              : t('executionHistory.actions.stop')}
+                          >
+                            {execution.status === 'cancelling'
+                              ? <Loader2 className="h-4 w-4 animate-spin" />
+                              : <Square className="h-4 w-4" />}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {
@@ -440,6 +503,32 @@ export default function ExecutionHistory({
             </button>
           </div>
         </div>
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setConfirming(null)}
+          onConfirm={() => void handleConfirmCancel(confirming, DEFAULT_GRACE_SECONDS)}
+          title={t('executionHistory.actions.confirmStopTitle')}
+          message={t('executionHistory.actions.confirmStopMessage', {
+            script: confirming.scriptName ?? confirming.deviceHostname,
+          })}
+          variant="warning"
+          confirmLabel={t('executionHistory.actions.stop')}
+          confirmTestId="confirm-stop"
+          isLoading={submittingId === confirming.id}
+        >
+          <button
+            type="button"
+            data-testid="confirm-force-stop"
+            disabled={submittingId === confirming.id}
+            onClick={() => void handleConfirmCancel(confirming, 0)}
+            className="text-sm font-medium text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('executionHistory.actions.forceStop')}
+          </button>
+        </ConfirmDialog>
       )}
     </div>
   );

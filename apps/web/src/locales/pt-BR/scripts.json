@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} aprovados",
       "failed": "{{count}} com falha",
-      "skipped": "{{count}} ignorados"
+      "skipped": "{{count}} ignorados",
+      "cancelled": "{{count}} cancelados"
     },
     "duration": "Duração: {{duration}}",
     "progress": {
@@ -265,7 +266,13 @@
     },
     "actions": {
       "hideLogs": "Ocultar logs",
-      "viewLogs": "Ver logs"
+      "viewLogs": "Ver logs",
+      "cancelRun": "Cancelar execução",
+      "partnerScopeTooltip": "Esta execução se aplica a todas as organizações da sua conta de parceiro. Peça a um administrador de parceiro completo para cancelá-la, ou interrompa execuções individuais nos seus próprios dispositivos.",
+      "confirmCancelRunTitle": "Cancelar esta execução?",
+      "confirmCancelRunMessage": "O Breeze interromperá cada execução de script que esta execução ainda estiver aguardando. Ações já em andamento podem terminar antes de poderem ser interrompidas.",
+      "uncancellableActions_one": "{{count}} ação não pôde ser interrompida e pode continuar em execução por conta própria.",
+      "uncancellableActions_other": "{{count}} ações não puderam ser interrompidas e podem continuar em execução por conta própria."
     },
     "timestamps": {
       "started": "Iniciada em: {{date}}",
@@ -304,6 +311,9 @@
       "untitled": "Script",
       "awaiting": "Aguardando a resposta do agente…",
       "truncated": "Saída truncada — consulte o histórico de scripts do dispositivo para ver o texto completo."
+    },
+    "errors": {
+      "cancelRun": "Não foi possível cancelar a execução."
     }
   },
   "automationsPage": {
@@ -717,11 +727,19 @@
     },
     "empty": "Nenhuma execução encontrada. Tente ajustar os filtros.",
     "actions": {
-      "viewDetails": "Ver detalhes"
+      "viewDetails": "Ver detalhes",
+      "stop": "Interromper",
+      "forceStop": "Interromper imediatamente",
+      "confirmStopTitle": "Interromper esta execução?",
+      "confirmStopMessage": "O Breeze pedirá ao dispositivo que interrompa {{script}}. Isso pode levar alguns segundos — “Interromper imediatamente” pula o período de tolerância e encerra o processo na hora."
     },
     "pagination": {
       "showing": "Mostrando {{start}} a {{end}} de {{total}}",
       "page": "Página {{page}} de {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Esta execução já foi concluída e não pode mais ser interrompida.",
+      "cancelFailed": "Falha ao interromper a execução."
     }
   },
   "scriptAiInput": {

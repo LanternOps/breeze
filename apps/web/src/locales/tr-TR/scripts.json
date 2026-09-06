@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} geçti",
       "failed": "{{count}} başarısız oldu",
-      "skipped": "{{count}} atlandı"
+      "skipped": "{{count}} atlandı",
+      "cancelled": "{{count}} iptal edildi"
     },
     "duration": "Süre: {{duration}}\n__BREEZE_TOKEN_1__ cihazdan ",
     "progress": {
@@ -265,7 +266,13 @@
     },
     "actions": {
       "hideLogs": "Günlükleri Gizle",
-      "viewLogs": "Günlükleri Görüntüle"
+      "viewLogs": "Günlükleri Görüntüle",
+      "cancelRun": "Çalıştırmayı iptal et",
+      "partnerScopeTooltip": "Bu çalıştırma, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir. İptal etmesi için tam yetkili bir iş ortağı yöneticisinden isteyin veya bunun yerine kendi cihazlarınızdaki tek tek yürütmeleri durdurun.",
+      "confirmCancelRunTitle": "Bu çalıştırma iptal edilsin mi?",
+      "confirmCancelRunMessage": "Breeze, bu çalıştırmanın hâlâ beklediği her komut dosyası yürütmesini durduracak. Zaten devam etmekte olan işlemler durdurulmadan önce tamamlanabilir.",
+      "uncancellableActions_one": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "uncancellableActions_other": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir."
     },
     "timestamps": {
       "started": "Başlangıç: {{date}}",
@@ -304,6 +311,9 @@
       "untitled": "Komut Dosyası",
       "awaiting": "Temsilcinin rapor vermesi bekleniyor…",
       "truncated": "Çıktı kesildi — tam metin için cihazın komut dosyası geçmişine bakın."
+    },
+    "errors": {
+      "cancelRun": "Çalıştırma iptal edilemedi."
     }
   },
   "automationsPage": {
@@ -717,11 +727,19 @@
     },
     "empty": "Hiçbir yürütme bulunamadı. Filtrelerinizi ayarlamayı deneyin.",
     "actions": {
-      "viewDetails": "Ayrıntıları görüntüle"
+      "viewDetails": "Ayrıntıları görüntüle",
+      "stop": "Durdur",
+      "forceStop": "Hemen durdur",
+      "confirmStopTitle": "Bu yürütme durdurulsun mu?",
+      "confirmStopMessage": "Breeze, cihazdan {{script}} işlemini durdurmasını isteyecek. Bu birkaç saniye sürebilir — “Hemen durdur” bekleme süresini atlar ve işlemi anında sonlandırır."
     },
     "pagination": {
       "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
       "page": "Sayfa {{page}} / {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Bu yürütme zaten tamamlandı ve artık durdurulamaz.",
+      "cancelFailed": "Yürütme durdurulamadı."
     }
   },
   "scriptAiInput": {
