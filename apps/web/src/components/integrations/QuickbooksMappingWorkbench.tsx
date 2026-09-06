@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
+import { showToast } from "../shared/Toast";
 import { useHashTab } from "@/lib/useHashState";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
@@ -223,18 +224,25 @@ export default function QuickbooksMappingWorkbench({
     setRowError((prev) => ({ ...prev, [mapping.breezeEntityId]: mapping.lastError }));
   }
 
-  /** Local-only failure marker: a rejected sync never returns a mapping, so
-   *  without this the row kept its "Not synced" badge and only the toast said
-   *  anything had gone wrong. */
-  function markSyncFailed(id: string, message: string) {
-    setProposals((prev) =>
-      prev
-        ? prev.map((p) =>
-            p.breezeEntityId === id ? { ...p, syncStatus: "error", lastError: message } : p,
-          )
-        : prev,
-    );
-    setRowError((prev) => ({ ...prev, [id]: message }));
+  /**
+   * Single handler for a rejected sync, shared by the manual button and the
+   * post-decision auto-sync.
+   *
+   * It deliberately does NOT touch `syncStatus`. The API only persists
+   * `syncStatus='error'` once a QuickBooks call actually failed; its pre-flight
+   * refusals (currency_mismatch, income_account_required, item_price_required,
+   * mapping_not_ready) leave the row `pending`. Painting a local "Sync failed"
+   * badge over those made the row disagree with the server and silently flip
+   * back to "Not synced" on the next load, with nothing left explaining why.
+   * The reason is surfaced on the row instead (plus runAction's toast), and the
+   * badge only reads "Sync failed" when a mapping really carries that status.
+   */
+  function handleSyncFailure(id: string, err: unknown) {
+    if (err instanceof ActionError && err.status !== 401) {
+      setRowError((prev) => ({ ...prev, [id]: err.message }));
+    } else {
+      handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
+    }
   }
 
   /** The sync request itself, without row-busy/error bookkeeping, so the
@@ -260,6 +268,11 @@ export default function QuickbooksMappingWorkbench({
     const id = p.breezeEntityId;
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
+    // The PUT only RECORDS the decision — nothing reaches QuickBooks until a
+    // sync runs. Operators read the saved row as "done" and left ~10 confirmed
+    // customers unsynced on prod (paper cut #1), so push it straight away and
+    // keep "Sync now" as the manual retry. An unlink has nothing to push.
+    const autoSyncs = decision !== "unlinked";
     try {
       const res = await runAction<{ data: CuratedMapping }>({
         request: () =>
@@ -273,22 +286,23 @@ export default function QuickbooksMappingWorkbench({
             }),
           }),
         errorFallback: t("quickbooksMapping.failedToSaveMapping"),
-        successMessage: t("quickbooksMapping.mappingSaved"),
+        // One click, one outcome. When the push follows, the sync's own toast
+        // is the result the operator cares about; a "Mapping saved" toast in
+        // front of it just doubles the noise.
+        ...(autoSyncs ? {} : { successMessage: t("quickbooksMapping.mappingSaved") }),
         onUnauthorized,
       });
       applyMapping(res.data);
-      // The PUT only RECORDS the decision — nothing reaches QuickBooks until a
-      // sync runs. Operators read the saved row as "done" and left ~10 confirmed
-      // customers unsynced on prod (paper cut #1), so push it straight away and
-      // keep "Sync now" as the manual retry. An unlink has nothing to push.
-      if (decision !== "unlinked") {
-        try {
-          await requestSync(p);
-        } catch (err) {
-          if (err instanceof ActionError && err.status !== 401) {
-            markSyncFailed(id, err.message);
-          } else {
-            handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
+      if (autoSyncs) {
+        // The saved row, not the button that produced it, decides whether the
+        // push is allowed — the same gate "Sync now" applies.
+        if (syncGatedForMapping(res.data)) {
+          showToast({ message: t("quickbooksMapping.mappingSaved"), type: "success" });
+        } else {
+          try {
+            await requestSync(p);
+          } catch (err) {
+            handleSyncFailure(id, err);
           }
         }
       }
@@ -310,11 +324,7 @@ export default function QuickbooksMappingWorkbench({
     try {
       await requestSync(p);
     } catch (err) {
-      if (err instanceof ActionError && err.status !== 401) {
-        markSyncFailed(id, err.message);
-      } else {
-        handleActionError(err, t("quickbooksMapping.failedToSyncEntity"));
-      }
+      handleSyncFailure(id, err);
     } finally {
       setRowBusy((prev) => ({ ...prev, [id]: false }));
     }
@@ -352,8 +362,16 @@ export default function QuickbooksMappingWorkbench({
   // never touches the income account, so only a `create_new` row's sync
   // (which may still be an unpersisted create) is gated.
   const createGated = entityType === "catalog_item" && !savedIncomeAccountRef;
+  /** One gate, applied to whichever record carries the row's link status —
+   *  the loaded proposal for the button, the PUT response for the auto-sync. */
+  function syncGatedForLinkStatus(linkStatus: MappingLinkStatus): boolean {
+    return entityType === "catalog_item" && linkStatus === "create_new" && !savedIncomeAccountRef;
+  }
   function syncGatedFor(p: MappingProposal): boolean {
-    return entityType === "catalog_item" && p.linkStatus === "create_new" && !savedIncomeAccountRef;
+    return syncGatedForLinkStatus(p.linkStatus);
+  }
+  function syncGatedForMapping(mapping: CuratedMapping): boolean {
+    return syncGatedForLinkStatus(mapping.linkStatus);
   }
 
   return (
@@ -488,8 +506,13 @@ export default function QuickbooksMappingWorkbench({
                     : p.syncStatus === "error"
                       ? t("quickbooksMapping.syncFailed")
                       : t("quickbooksMapping.notSynced");
+              // The hint explains a decision the operator made; a row they
+              // never touched is unsynced simply because nothing was decided.
               const statusTitle =
-                p.syncStatus === "pending" ? t("quickbooksMapping.notSyncedHint") : undefined;
+                p.syncStatus === "pending" &&
+                (p.linkStatus === "confirmed" || p.linkStatus === "create_new")
+                  ? t("quickbooksMapping.notSyncedHint")
+                  : undefined;
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
               const syncGated = syncGatedFor(p);
               const error = rowError[id];

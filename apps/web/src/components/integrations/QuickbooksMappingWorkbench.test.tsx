@@ -392,6 +392,21 @@ describe("QuickbooksMappingWorkbench", () => {
             lastError: null,
           },
         }),
+      )
+      // An income account IS saved, so the decision auto-syncs.
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            breezeEntityType: "catalog_item",
+            breezeEntityId: ITEM_ID,
+            remoteEntityType: "Item",
+            remoteEntityId: "qb-item-101",
+            linkStatus: "create_new",
+            syncStatus: "synced",
+            lastSyncedAt: "2026-09-06T00:00:00Z",
+            lastError: null,
+          },
+        }),
       );
 
     render(
@@ -821,6 +836,12 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
         "In QuickBooks",
       ),
     );
+    // One click, one outcome: the PUT is a step on the way to the push, so
+    // only the sync's own toast is shown.
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
   });
 
   it("pushes the row to QuickBooks immediately after Create new", async () => {
@@ -882,7 +903,7 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     expect(syncCalls()).toHaveLength(0);
   });
 
-  it("reports a failed auto-sync as Sync failed with the error text on the row", async () => {
+  it("reports a failed auto-sync on the row without faking a persisted error status", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
       .mockResolvedValueOnce(jsonResponse({ data: confirmedPending }))
@@ -900,12 +921,111 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     expect(await screen.findByTestId(`quickbooks-mapping-error-${ORG_ID}`)).toHaveTextContent(
       /rejected the customer name/i,
     );
+    // The badge must NOT claim a persisted failure. The API only writes
+    // syncStatus='error' after a provider call fails; a pre-flight refusal
+    // (currency_mismatch, income_account_required, item_price_required,
+    // mapping_not_ready) leaves the row `pending`, so a locally faked "Sync
+    // failed" reverts to "Not synced" on the next refresh with nothing
+    // explaining why. The reason lives in the row's error text instead.
+    expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent(
+      "Not synced",
+    );
+    expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).not.toHaveTextContent(
+      "Sync failed",
+    );
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+  });
+
+  it("shows 'Sync failed' only when the mapping itself carries syncStatus=error", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            ...confirmedPending,
+            syncStatus: "error",
+            lastError: "QuickBooks: Duplicate Name Exists Error",
+          },
+        }),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-sync-${ORG_ID}`));
+
     await waitFor(() =>
       expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent(
         "Sync failed",
       ),
     );
-    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    expect(screen.getByTestId(`quickbooks-mapping-error-${ORG_ID}`)).toHaveTextContent(
+      /duplicate name/i,
+    );
+  });
+
+  it("does NOT auto-sync a create_new item row while the income account is unset", async () => {
+    // The Create new button is already gated, but the PUT response is what
+    // decides the row's real link status — a decision that comes back as
+    // create_new must obey the same gate the manual Sync now button does,
+    // instead of firing a request the API is guaranteed to refuse.
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // income accounts
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposalConfirmed] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            breezeEntityType: "catalog_item",
+            breezeEntityId: ITEM_ID,
+            remoteEntityType: "Item",
+            remoteEntityId: null,
+            linkStatus: "create_new",
+            syncStatus: "pending",
+            lastSyncedAt: null,
+            lastError: null,
+          },
+        }),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ITEM_ID}`));
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-linkstatus-${ITEM_ID}`)).toHaveTextContent(
+        /create new/i,
+      ),
+    );
+    expect(syncCalls()).toHaveLength(0);
+    // The decision still saved, so the operator gets exactly one success
+    // toast and no error about a sync that was never attempted.
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("gives a never-decided suggested row no 'confirmed in Breeze' tooltip", async () => {
+    // The hint explains a decision the operator made. A row they have not
+    // touched is unsynced because nothing was decided, not because Breeze is
+    // sitting on a confirmation.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({ data: [suggestedOrgProposal] }),
+    );
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+
+    const status = await screen.findByTestId(`quickbooks-mapping-status-${ORG_ID}`);
+    expect(status).toHaveTextContent("Not synced");
+    expect(status).not.toHaveAttribute("title");
   });
 
   it("labels an unsynced confirmed row 'Not synced' and explains it in a tooltip", async () => {
