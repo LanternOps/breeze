@@ -51,7 +51,14 @@ export class DeviceLifecycleError extends Error {
 }
 
 export interface RestoreResult {
-  device: typeof devices.$inferSelect;
+  /**
+   * The updated row. Optional because `.returning()` is typed as an array —
+   * in practice the row is present (we hold FOR UPDATE on it and the lock
+   * already established that it exists and is visible under this context), but
+   * every caller reads it defensively rather than asserting a non-null that
+   * only holds by argument.
+   */
+  device: typeof devices.$inferSelect | undefined;
   uninstallAlreadyDispatched: boolean;
 }
 

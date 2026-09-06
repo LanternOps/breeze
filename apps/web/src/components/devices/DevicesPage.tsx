@@ -1415,7 +1415,7 @@ export default function DevicesPage() {
     setActionInProgress(true);
     try {
       const started = await startBulkPurge(targets.map(d => d.id));
-      showToast({ type: 'info', message: t('devicesPage.toasts.bulkPurgeStarted', { count: started.accepted }) });
+      showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeStarted', { count: started.accepted }) });
       if (started.rejected.length > 0) {
         // A partial rejection is NOT an error — the accepted devices are being
         // deleted. Say which ones were left out and why, or they silently
