@@ -54,7 +54,11 @@ import {
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
   InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
-import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
+import {
+  loadPartnerBaselineKinds,
+  resolveEffectiveAgent,
+  resolveEffectiveAgentSystem,
+} from '../services/aiAgents/effectivePolicy';
 import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
 import { demoteSupervisedKey } from '../services/aiAgents/supervisedKeyDemote';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
@@ -337,16 +341,27 @@ aiAgentsRoutes.get(
     // Batched, never per row: the settings page renders every agent this
     // caller owns, and a per-row query would be one round trip per agent.
     const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    // #4170: one query for the whole page, same convention as loadLastRuns
+    // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
+    // so the list can flag an org row the resolver would treat as inert) and
+    // as its own top-level set (`partnerBaselineKinds`, so the create form can
+    // warn before a kind's org row exists at all to read the per-row flag
+    // off of).
+    const partnerBaselineKinds = await loadPartnerBaselineKinds(auth.partnerId);
     return c.json({
       data: rows.map((row) => {
         const last = lastRuns.get(row.id);
         return {
           ...mapRow(row),
+          // A partner-wide row IS the baseline, so it is always effective by
+          // definition; an org row is effective only if its own kind has one.
+          hasPartnerBaseline: row.partnerId !== null || partnerBaselineKinds.has(row.kind),
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
         };
       }),
+      partnerBaselineKinds: Array.from(partnerBaselineKinds),
     });
   },
 );

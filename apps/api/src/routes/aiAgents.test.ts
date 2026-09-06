@@ -48,6 +48,7 @@ const {
   resolveEffectiveAgentSystemMock,
   loadGraduationRowsMock,
   loadActOpReliabilityMock,
+  loadPartnerBaselineKindsMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -90,6 +91,11 @@ const {
   resolveEffectiveAgentSystemMock: vi.fn(),
   loadGraduationRowsMock: vi.fn(),
   loadActOpReliabilityMock: vi.fn(),
+  // #4170 — GET / 's per-row `hasPartnerBaseline` flag and top-level
+  // `partnerBaselineKinds` set. Own unit coverage is
+  // effectivePolicy.test.ts's `loadPartnerBaselineKinds` describe block;
+  // these route tests exercise only how GET / consumes the result.
+  loadPartnerBaselineKindsMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -279,6 +285,7 @@ vi.mock('../db', () => ({
 vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
   resolveEffectiveAgentSystem: resolveEffectiveAgentSystemMock,
+  loadPartnerBaselineKinds: loadPartnerBaselineKindsMock,
 }));
 
 vi.mock('../services/aiAgents/graduationService', () => ({
@@ -392,6 +399,7 @@ beforeEach(() => {
   authOkMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
+  loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
   verifyDeviceAccessMock.mockResolvedValue({
     device: { id: DEVICE_ID, orgId: ORG_ID, siteId: null },
   });
@@ -3269,7 +3277,7 @@ describe('GET /ai-agents', () => {
     const res = await buildApp().request('/ai-agents');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [] });
+    expect(await res.json()).toEqual({ data: [], partnerBaselineKinds: [] });
     expect(selectDistinctOnMock).not.toHaveBeenCalled();
   });
 
@@ -3298,6 +3306,74 @@ describe('GET /ai-agents', () => {
 
     expect(res.status).toBe(200);
     expect(listAgentsMock).toHaveBeenCalledWith(expect.anything(), { includeDisabled: false });
+  });
+});
+
+// #4170 — an org-only row is override-only by design
+// (effectivePolicy.ts's `if (!partnerRow) return null`), but nothing told
+// the list or the create form when a row is inert for exactly that reason.
+describe('GET /ai-agents — hasPartnerBaseline (#4170)', () => {
+  beforeEach(() => {
+    selectDistinctOnMock.mockReturnValue(distinctChain([]));
+  });
+
+  it('reports false on an org row whose kind has no partner-wide baseline', async () => {
+    listAgentsMock.mockResolvedValue([agentRow({ orgId: ORG_ID, partnerId: null, kind: 'triage' })]);
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].hasPartnerBaseline).toBe(false);
+    expect(body.partnerBaselineKinds).toEqual([]);
+  });
+
+  it('reports true on an org row whose kind DOES have a partner-wide baseline', async () => {
+    listAgentsMock.mockResolvedValue([agentRow({ orgId: ORG_ID, partnerId: null, kind: 'triage' })]);
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set(['triage']));
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].hasPartnerBaseline).toBe(true);
+    expect(body.partnerBaselineKinds).toEqual(['triage']);
+  });
+
+  it('always reports true for a partner-wide row itself, regardless of the baseline set', async () => {
+    listAgentsMock.mockResolvedValue([agentRow({ orgId: null, partnerId: PARTNER_ID, kind: 'patch' })]);
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
+
+    const res = await buildApp(false, { scope: 'partner', partnerId: PARTNER_ID }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].hasPartnerBaseline).toBe(true);
+  });
+
+  it("pins the baseline lookup to the caller's own partnerId", async () => {
+    listAgentsMock.mockResolvedValue([agentRow({ orgId: ORG_ID, partnerId: null })]);
+
+    await buildApp(false, { partnerId: PARTNER_ID }).request('/ai-agents');
+
+    expect(loadPartnerBaselineKindsMock).toHaveBeenCalledWith(PARTNER_ID);
+  });
+
+  it('computes the baseline set in ONE call for the whole page, never per row', async () => {
+    listAgentsMock.mockResolvedValue([
+      agentRow({ id: AGENT_ID, orgId: ORG_ID, partnerId: null, kind: 'triage' }),
+      agentRow({ id: OTHER_ORG_ID, orgId: ORG_ID, partnerId: null, kind: 'patch' }),
+    ]);
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set(['triage']));
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineKindsMock).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.data.find((row: { id: string }) => row.id === AGENT_ID).hasPartnerBaseline).toBe(true);
+    expect(body.data.find((row: { id: string }) => row.id === OTHER_ORG_ID).hasPartnerBaseline).toBe(false);
   });
 });
 
