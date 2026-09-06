@@ -85,3 +85,70 @@ describe('RemoteAccessTab — clipboard policy toggles', () => {
     });
   });
 });
+
+// #5080: Remote Access gains the same isInherited/effectiveLink/Override/
+// Revert treatment as the other inline-settings tabs (mirrors PamTab.tsx).
+describe('RemoteAccessTab inheritance (#5080)', () => {
+  const onLinkChanged = vi.fn();
+  const inheritedProps: FeatureTabProps = { ...baseProps, onLinkChanged };
+
+  beforeEach(() => {
+    saveMock.mockClear();
+    removeMock.mockClear();
+    onLinkChanged.mockClear();
+  });
+
+  function parentLinkWith(overrides: Record<string, unknown>) {
+    return {
+      id: 'link-parent',
+      featureType: 'remote_access' as const,
+      featurePolicyId: null,
+      inlineSettings: { maxConcurrentTunnels: 5, ...overrides },
+    };
+  }
+
+  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+    render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
+
+    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    // maxConcurrentTunnels defaults to 5; the parent link's distinctive
+    // override (12) must be reflected in the (read-only) field.
+    expect((screen.getByDisplayValue('12') as HTMLInputElement).value).toBe('12');
+  });
+
+  it("Override saves a copy of the inherited settings as the policy's own link", () => {
+    render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+
+    expect(saveMock).toHaveBeenCalled();
+    const [existingId, payload] = saveMock.mock.calls[0] as unknown as [
+      string | null,
+      { featureType: string; featurePolicyId: string | null; inlineSettings: Record<string, unknown> },
+    ];
+    expect(existingId).toBeNull();
+    expect(payload.featureType).toBe('remote_access');
+    expect(payload.featurePolicyId).toBeNull();
+    expect(payload.inlineSettings).toMatchObject({ maxConcurrentTunnels: 12 });
+  });
+
+  it('Revert to Parent removes the override', () => {
+    const existingLink = {
+      id: 'link-own',
+      featureType: 'remote_access' as const,
+      featurePolicyId: null,
+      inlineSettings: { maxConcurrentTunnels: 8 },
+    };
+    render(
+      <RemoteAccessTab
+        {...inheritedProps}
+        existingLink={existingLink}
+        parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+
+    expect(removeMock).toHaveBeenCalledWith('link-own');
+  });
+});
