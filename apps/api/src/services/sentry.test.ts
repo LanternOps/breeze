@@ -773,7 +773,7 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // like the one this test guards against (see the comment above) fails
     // LOUDLY as a count mismatch, instead of silently extracting zero keys
     // for a skipped call and passing anyway.
-    ['accounting/accountingInvoicePush.ts', 7],
+    ['accounting/accountingInvoicePush.ts', 8], // +1: Phase D2 payment fan-out capture
     ['accounting/accountingMappingService.ts', 5],
   ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
     const source = readFileSync(

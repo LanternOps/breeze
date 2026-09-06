@@ -1236,7 +1236,7 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      expect.objectContaining({ service: 'accountingInvoicePush', phase: 'payment-fan-out' }),
+      expect.objectContaining({ service: 'accountingInvoicePush', invoice_id: expect.any(String) }),
     );
   });
 

@@ -862,9 +862,13 @@ export async function pushInvoiceToAccounting(
       for (const mappingId of owed) await enqueueAccountingPaymentPush(mappingId, partnerId);
     }
   } catch (err) {
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', invoiceId: inv.id, phase: 'payment-fan-out',
-    });
+    // Tag keys must be in sentry.ts ALLOWED_TAG_NAMES (guarded by
+    // sentry.test.ts, #4828) — the phase rides in the error message instead.
+    captureException(
+      new Error(`payment-fan-out failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err }),
+      undefined,
+      { service: 'accountingInvoicePush', invoice_id: inv.id },
+    );
   }
 
   return {
