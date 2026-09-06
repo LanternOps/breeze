@@ -15,6 +15,7 @@ export type NetworkAssetExtras = {
   model?: string | null;
   netbiosName?: string | null;
   siteId?: string | null;
+  siteName?: string | null;
   firstSeenAt?: string | null;
   snmpMonitoringEnabled?: boolean;
   networkMonitoringEnabled?: boolean;
