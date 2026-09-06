@@ -18,6 +18,11 @@
  * composite self-FK that stops an org override disagreeing with its
  * baseline's kind, the widened `profile` CHECK, the new `report_type` enum
  * label, and the reports/report_runs system-principal shape CHECK.
+ *
+ * #4455 adds the case deferred with wave P2-2: the same dual-axis rules read
+ * through `scheduleService.listSchedules` from an ORG-scoped token, where the
+ * caller's own override rows are the only leg its RLS has to carry — the
+ * partner baseline reaches that call through the partner-axis escape instead.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -26,6 +31,8 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, aiAgentSchedules, actionIntents, devices, reports } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+import { listSchedules } from '../../services/aiAgents/scheduleService';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const createdSchedules: string[] = [];
@@ -888,5 +895,207 @@ describe('reports execution-scope system principal (2026-09-24-b)', () => {
         ),
       '23505',
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4455 — `scheduleService.listSchedules` from an ORG-scoped token.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Everything above proves the TABLE's dual-axis RLS with raw `db.select()`s.
+// What none of it proves is the read path an org technician actually takes:
+// `listSchedules` under an organization context, where the partner baseline is
+// fetched through `readWithPartnerAxisVisibility` (an org token carries
+// `accessiblePartnerIds: []`, so `breeze_has_partner_access` is false for it)
+// while the org's OWN override rows are read under its own RLS with no escape.
+//
+// That second half is the one that matters. If an org token could not read its
+// own `ai_agent_schedules` rows, `overridesFor` would return zero rows and
+// `listSchedules` would answer `override: null` carrying the BASELINE's full
+// sweep kinds — a tighten-only override silently un-tightened, with no error
+// anywhere and nothing in the logs. An org that switched a check off would get
+// it back on. Only a live DB can see that, and only through the service: a
+// mocked unit suite returns whatever the mock was told to return.
+//
+// The assertions are written for ORG-OWNED rows only, deliberately. Whether the
+// baseline itself reaches the DTO through the partner-axis escape or through a
+// partner-wide SELECT branch is #4943's business; pinning the mechanism here
+// would make this suite fail when that lands. What is pinned is the ORG axis:
+// the caller's own override is legible to it, its CONTENT (not merely its
+// existence) drives the effective merge, and no other org's override appears.
+describe('scheduleService.listSchedules — org-scoped token (#4455)', () => {
+  const BASELINE_KINDS: AiSweepKind[] = ['disk_pressure', 'stale_agents', 'pending_reboots'];
+
+  /**
+   * The app-layer twin of `orgContext` below it. `scope: 'organization'` is
+   * what routes `listSchedules` away from its partner branch and into the
+   * org-centric one under test.
+   */
+  function orgAuth(orgId: string, partnerId: string, userId: string): AuthContext {
+    return {
+      principal: 'user_session',
+      user: { id: userId, email: 'org@example.com', name: 'Org User', isPlatformAdmin: false },
+      token: null,
+      partnerId,
+      orgId,
+      scope: 'organization',
+      accessibleOrgIds: [orgId],
+      orgCondition: (col: unknown) => eq(col as never, orgId),
+      canAccessOrg: (id: string) => id === orgId,
+    } as unknown as AuthContext;
+  }
+
+  /**
+   * One partner-wide triage agent, one partner baseline sweeping all three
+   * kinds, and one override per entry of `overrides` — each narrowing to a
+   * DIFFERENT single kind, so a leaked override is identifiable by content and
+   * not merely present.
+   */
+  async function seedBaseline(overrides: Array<{ enabled?: boolean }> = []) {
+    const partner = await createPartner();
+    const createdBy = await creator(partner.id);
+    const agentId = await createAgent(partner.id, createdBy);
+    const orgs = [] as Array<{
+      id: string;
+      userId: string;
+      overrideId: string | null;
+      enabled: boolean;
+      kinds: AiSweepKind[];
+    }>;
+
+    for (let index = 0; index < overrides.length; index++) {
+      const org = await createOrganization({ partnerId: partner.id });
+      const user = await createUser({ partnerId: partner.id, orgId: org.id });
+      orgs.push({
+        id: org.id,
+        userId: user.id,
+        overrideId: null,
+        enabled: overrides[index]!.enabled ?? true,
+        kinds: [BASELINE_KINDS[index % BASELINE_KINDS.length]!],
+      });
+    }
+
+    const [baseline] = await withDbAccessContext(partnerContext(partner.id, orgs.map((org) => org.id)), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: BASELINE_KINDS,
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy,
+        })
+        .returning(),
+    );
+    createdSchedules.push(baseline!.id);
+
+    for (const entry of orgs) {
+      const [override] = await withDbAccessContext(orgContext(entry.id, partner.id), () =>
+        db
+          .insert(aiAgentSchedules)
+          .values({
+            cron: BASE.cron,
+            sweepKinds: entry.kinds,
+            enabled: entry.enabled,
+            orgId: entry.id,
+            partnerId: null,
+            agentId,
+            baselineScheduleId: baseline!.id,
+            createdBy,
+          })
+          .returning(),
+      );
+      createdSchedules.push(override!.id);
+      entry.overrideId = override!.id;
+    }
+
+    return { partnerId: partner.id, agentId, baselineId: baseline!.id, orgs };
+  }
+
+  function listAsOrg(fx: { partnerId: string }, org: { id: string; userId: string }) {
+    return withDbAccessContext(orgContext(org.id, fx.partnerId), () =>
+      listSchedules(orgAuth(org.id, fx.partnerId, org.userId), {}),
+    );
+  }
+
+  it("reads the caller's OWN override row under its own RLS and merges it tighten-only", async () => {
+    const fx = await seedBaseline([{}, {}]);
+    const [orgA, orgB] = fx.orgs;
+
+    const listed = await listAsOrg(fx, orgA!);
+
+    expect(listed).toHaveLength(1);
+    const dto = listed[0]!;
+    // THE assertion this case exists for: an org token can read its own
+    // override row at all. Without the org-axis SELECT branch this is `null`
+    // and the effective kinds below silently widen back to the baseline's.
+    expect(dto.override?.id).toBe(orgA!.overrideId);
+    expect(dto.override?.sweepKinds).toEqual(['disk_pressure']);
+    expect(dto.effective.sweepKinds).toEqual(['disk_pressure']);
+    expect(dto.effective.enabled).toBe(true);
+    // The row it tightens is the partner's baseline.
+    expect(dto.id).toBe(fx.baselineId);
+    expect(dto.ownerScope).toBe('partner');
+    // Aggregate-only `last_run_summary` is stripped for org callers — it counts
+    // every org under the partner.
+    expect(dto.lastRunSummary).toBeNull();
+    // Sibling org's override appears nowhere in this answer.
+    expect(JSON.stringify(listed)).not.toContain(orgB!.overrideId!);
+  });
+
+  it('gives every org its own override — three orgs, three different answers', async () => {
+    const fx = await seedBaseline([{}, {}, {}]);
+
+    for (const [index, org] of fx.orgs.entries()) {
+      const listed = await listAsOrg(fx, org);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]!.override?.id, `org ${index} saw the wrong override`).toBe(org.overrideId);
+      expect(listed[0]!.effective.sweepKinds).toEqual(org.kinds);
+      for (const [otherIndex, other] of fx.orgs.entries()) {
+        if (otherIndex === index) continue;
+        expect(JSON.stringify(listed)).not.toContain(other.overrideId!);
+      }
+    }
+  });
+
+  it('answers override: null with the BASELINE kinds for an org that never overrode', async () => {
+    // The discriminating control for the two cases above: "override present"
+    // and "override absent" must be observably different answers, or asserting
+    // on `override.id` would be vacuous.
+    const fx = await seedBaseline([{}]);
+    const plainOrg = await createOrganization({ partnerId: fx.partnerId });
+    const plainUser = await createUser({ partnerId: fx.partnerId, orgId: plainOrg.id });
+
+    const listed = await listAsOrg(fx, { id: plainOrg.id, userId: plainUser.id });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.override).toBeNull();
+    expect(listed[0]!.effective.sweepKinds).toEqual(BASELINE_KINDS);
+    expect(JSON.stringify(listed)).not.toContain(fx.orgs[0]!.overrideId!);
+  });
+
+  it('reads the override CONTENT, not just its existence — a disabled override disables the schedule', async () => {
+    const fx = await seedBaseline([{ enabled: false }]);
+
+    const listed = await listAsOrg(fx, fx.orgs[0]!);
+
+    expect(listed[0]!.override?.id).toBe(fx.orgs[0]!.overrideId);
+    expect(listed[0]!.override?.enabled).toBe(false);
+    expect(listed[0]!.effective.enabled).toBe(false);
+    // The baseline stays enabled — this is the ORG's opt-out, not the partner's.
+    expect(listed[0]!.enabled).toBe(true);
+  });
+
+  it('refuses an orgId the org token cannot access', async () => {
+    const fx = await seedBaseline([{}]);
+    const stranger = await createOrganization({ partnerId: fx.partnerId });
+
+    await expect(
+      withDbAccessContext(orgContext(fx.orgs[0]!.id, fx.partnerId), () =>
+        listSchedules(orgAuth(fx.orgs[0]!.id, fx.partnerId, fx.orgs[0]!.userId), { orgId: stranger.id }),
+      ),
+    ).rejects.toThrow(/denied/i);
   });
 });

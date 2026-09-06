@@ -66,13 +66,40 @@ export function matchesCronField(
   return false;
 }
 
-function getZonedDateParts(date: Date, timeZone: string): {
-  minute: number;
-  hour: number;
-  dayOfMonth: number;
-  month: number;
-  dayOfWeek: number;
-} {
+/**
+ * One `Intl.DateTimeFormat` per zone, reused for the process lifetime (#4450).
+ *
+ * Constructing a formatter resolves and validates the zone against the whole
+ * IANA database, which costs far more than formatting with it — and the fixed
+ * 5-minute AI sweep tick asks `isCronDue` about EVERY candidate minute of a
+ * 24 h lookback, per schedule (`services/aiAgents/sweepOccurrence.ts` walks
+ * back one minute at a time). That is up to 1441 constructions per schedule
+ * per tick, all for the same (zone, options) pair, so it grows with the
+ * schedule count for no benefit. The options below depend on NOTHING but the
+ * zone, and a formatter is immutable once built, so the zone is a complete
+ * cache key.
+ *
+ * Bounded because the zone reaches here straight from a DB column: a row
+ * carrying garbage must not be able to grow this without limit. Only
+ * successfully constructed formatters are ever stored (an invalid zone throws
+ * out of the constructor, exactly as before, and is retried rather than
+ * remembered), and at the limit the map is dropped wholesale and rebuilt —
+ * cheaper to reason about than an eviction order, and the pathological case it
+ * protects against is one that degrades to the pre-memoisation behaviour, not
+ * one that breaks.
+ */
+const FORMATTER_CACHE_LIMIT = 64;
+const zonedFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** Test seam (#4450): drop the memoised zone formatters. */
+export function resetCronDueFormatterCache(): void {
+  zonedFormatters.clear();
+}
+
+function zonedFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = zonedFormatters.get(timeZone);
+  if (cached) return cached;
+
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
@@ -84,7 +111,19 @@ function getZonedDateParts(date: Date, timeZone: string): {
     weekday: 'short',
   });
 
-  const parts = formatter.formatToParts(date);
+  if (zonedFormatters.size >= FORMATTER_CACHE_LIMIT) zonedFormatters.clear();
+  zonedFormatters.set(timeZone, formatter);
+  return formatter;
+}
+
+function getZonedDateParts(date: Date, timeZone: string): {
+  minute: number;
+  hour: number;
+  dayOfMonth: number;
+  month: number;
+  dayOfWeek: number;
+} {
+  const parts = zonedFormatter(timeZone).formatToParts(date);
   const lookup = new Map(parts.map((part) => [part.type, part.value]));
 
   const weekday = lookup.get('weekday') ?? 'Sun';
