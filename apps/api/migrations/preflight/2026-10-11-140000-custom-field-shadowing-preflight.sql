@@ -39,11 +39,21 @@
 -- this preflight exists to prevent, so it must not be reachable from the
 -- preflight itself.
 --
--- Query (0) makes blindness self-evident rather than silent: it prints the
--- effective scope and a total row count on BOTH axes. If `total_rows` is 0 on
--- a region that demonstrably has custom fields configured, or if
--- `effective_scope` is not 'system', you are blind — fix the connection, do
--- NOT report "clean".
+-- Query (0) prints the effective scope and a row count on BOTH axes, and the
+-- `DO` block after it makes a blind connection FAIL CLOSED rather than merely
+-- self-evident: it raises, which aborts the transaction, so query (a) below
+-- cannot return a reassuring empty result set at all — it errors with 25P02
+-- instead. That matters because the whole point of this file is that an
+-- operator decides "merge / don't merge" from query (a)'s emptiness, and
+-- "empty because clean" and "empty because blind" are indistinguishable by
+-- eye. Leaving it to a human to cross-check two columns before trusting a
+-- third result is exactly the reasoning-from-a-blind-read this file exists to
+-- prevent, so it is enforced mechanically here the same way it is in the
+-- migration.
+--
+-- A zero `total_rows` is NOT raised on: a region can legitimately have no
+-- custom fields at all (breeze-eu had 0 when this shipped). Only the scope is
+-- machine-checkable; the counts are for the human record.
 --
 -- Wrapped in BEGIN READ ONLY / ROLLBACK so the elevation is transaction-local
 -- (set_config's third argument is is_local=true, which needs an explicit
@@ -66,6 +76,25 @@ SELECT public.breeze_current_scope()                              AS effective_s
        count(*) FILTER (WHERE org_id IS NOT NULL)                 AS org_rows,
        count(*) FILTER (WHERE partner_id IS NOT NULL)             AS partner_rows
   FROM public.custom_field_definitions;
+
+-- (0b) FAIL CLOSED on a blind connection. Printing the scope above is not
+--      enough: the decision this file drives is made from query (a)'s
+--      EMPTINESS, and "empty because clean" looks exactly like "empty because
+--      RLS-blind". Raising here aborts the transaction, so query (a) cannot
+--      return a reassuring empty result at all — it errors with 25P02
+--      ("current transaction is aborted") and the operator cannot mistake it
+--      for a pass. `RAISE EXCEPTION` is legal inside `BEGIN READ ONLY`; the
+--      ROLLBACK at the bottom simply closes the aborted transaction.
+DO $$
+DECLARE eff text;
+BEGIN
+  SELECT public.breeze_current_scope() INTO eff;
+  IF eff <> 'system' THEN
+    RAISE EXCEPTION
+      'PREFLIGHT IS RLS-BLIND: effective scope is %, not system. Query (a) below would return an EMPTY result while seeing nothing. Do NOT report "clean" -- fix the connection and re-run.', eff
+      USING ERRCODE = 'P0001';
+  END IF;
+END $$;
 
 -- (a) Cross-axis shadowed keys: an org-owned field_key that also exists as a
 --     partner-wide field_key under that org's OWN partner. Must be EMPTY.

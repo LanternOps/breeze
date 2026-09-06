@@ -8,7 +8,7 @@
  * is a flat jsonb object keyed by a bare string, so if an org-owned `udf7` and a
  * partner-wide `udf7` can both exist for one org, that one datum has two
  * definitions: the partner export emits two records for it (the identity hash
- * includes `f.id` — routes/partnerApi/configuration.ts:433,440), W05's
+ * includes `f.id` — routes/partnerApi/configuration.ts:436,439), W05's
  * `device_custom_field_values` cannot project back into the jsonb without loss,
  * and W05's backfill cannot attribute an existing blob value to either one.
  *
@@ -295,15 +295,25 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
       createdKeys.push('shadow_oracle');
       const hiddenId = (seeded as { id: string }[])[0]!.id;
 
-      let raised: unknown;
-      try {
-        await insertDefinition({ orgId: org.id, name: 'Mine', fieldKey: 'shadow_oracle' });
-      } catch (err) {
-        raised = err;
-      }
-      const detail = JSON.stringify(raised);
-      expect(detail).not.toContain(hiddenId);
-      expect(detail).not.toContain('Secret Partner Field Name');
+      const message = await messageOf(
+        () => insertDefinition({ orgId: org.id, name: 'Mine', fieldKey: 'shadow_oracle' }),
+      );
+
+      // POSITIVE CONTROL FIRST — do not remove. A bare pair of `not.toContain`
+      // assertions passes trivially against an empty string, and an earlier
+      // draft of this test read the message with `JSON.stringify(raised)`,
+      // which yields exactly that: postgres.js sets `.message` through
+      // `Error`'s constructor, so it stays NON-ENUMERABLE even after the
+      // `Object.assign`, and drizzle's wrapper serializes to
+      // `{"query":…,"params":…,"cause":{"code":"P0001","severity":…}}` with no
+      // message at all. The test passed while proving nothing — it would have
+      // stayed green if the trigger were changed to embed the conflicting
+      // definition's id and name directly. Asserting the message is non-empty
+      // and DOES name the key is what makes the two negatives meaningful.
+      expect(message).toContain('shadow_oracle');
+
+      expect(message).not.toContain(hiddenId);
+      expect(message).not.toContain('Secret Partner Field Name');
     });
 
     /**
@@ -336,6 +346,30 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
       await insertDefinition({ orgId: orgTwo.id, name: 'Rack', fieldKey: 'shadow_rack' });
 
       expect(await countByKey('shadow_rack')).toBe(2);
+    });
+
+    /**
+     * The trigger's one early exit: if `NEW.org_id` resolves to no organization,
+     * `owner_partner` is NULL and there is no partner namespace to check. The
+     * row is doomed anyway — `org_id` carries an FK, and FK checks are AFTER-row
+     * triggers, so they run once this BEFORE-row trigger returns.
+     *
+     * This pins the SQLSTATE rather than just "it failed", because the two
+     * outcomes are meaningfully different to whoever reads the error: 23503
+     * ("no such organization") is the truth, where a P0001 would tell them their
+     * field key collides with a partner-wide field that does not exist. A future
+     * "simplification" that raised P0001 whenever the partner could not be
+     * resolved would pass a bare `rejects.toThrow()` and fail this.
+     */
+    it('defers a nonexistent org_id to the foreign key (23503), not a bogus shadowing error', async () => {
+      await expectSqlState(
+        () => insertDefinition({
+          orgId: '99999999-9999-9999-9999-999999999999',
+          name: 'Bogus',
+          fieldKey: 'shadow_missing_org',
+        }),
+        '23503',
+      );
     });
 
     /**
@@ -403,6 +437,33 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
            WHERE field_key = 'shadow_move' AND org_id = ${orgUnderA.id}::uuid`)),
         'P0001',
       );
+    });
+
+    /**
+     * The mirror of the rename above, on the OTHER branch. `partner_id` and
+     * `field_key` are both in the trigger's `UPDATE OF` list, but until this
+     * test the `ELSIF NEW.partner_id IS NOT NULL` arm was only ever reached by
+     * INSERT — an UPDATE-shaped regression in that arm (e.g. a future
+     * `TG_OP = 'INSERT'` guard added to it) would have gone unnoticed.
+     */
+    it('refuses renaming a partner-wide key onto one an org already owns', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      await insertDefinition({ orgId: org.id, name: 'Rack', fieldKey: 'shadow_pw_rename_target' });
+      await insertDefinition({
+        partnerId: partner.id, name: 'Elsewhere', fieldKey: 'shadow_pw_rename_source',
+      });
+
+      await expectSqlState(
+        () => sys(() => db.execute(sql`
+          UPDATE custom_field_definitions
+             SET field_key = 'shadow_pw_rename_target'
+           WHERE field_key = 'shadow_pw_rename_source'`)),
+        'P0001',
+      );
+      expect(await countByKey('shadow_pw_rename_source')).toBe(1);
+      expect(await countByKey('shadow_pw_rename_target')).toBe(1);
     });
 
     /**
@@ -577,10 +638,22 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
 
         expect(raised, 'the migration must ABORT, not warn and continue').toBeDefined();
         expect(pgErrorCode(raised)).toBe('P0001');
+
+        // Read the message off the node carrying the SQLSTATE, NOT off
+        // `JSON.stringify(raised)`. This replay passes the whole migration file
+        // as the query text, and drizzle puts that text in the serialized
+        // error's `query` field — so a `JSON.stringify` match for
+        // "cross-axis shadowed key" succeeds against the migration's OWN SOURCE
+        // (the string is right there in its RAISE), whether or not the
+        // exception was ever raised. That is how the first draft of this test
+        // passed while asserting nothing. `.message` is non-enumerable and
+        // never appears in the serialized form at all.
+        const message = String(pgErrorNode(raised)?.message ?? '');
+        expect(message).toMatch(/cross-axis shadowed key/);
         // The operator must be able to act without running a second query.
-        const detail = JSON.stringify(raised);
-        expect(detail).toMatch(/cross-axis shadowed key/);
-        expect(detail).toMatch(/reconcile them by hand before deploying/);
+        expect(message).toMatch(/reconcile them by hand before deploying/);
+        // …and the count must be real, not the literal '%' placeholder.
+        expect(message).toMatch(/has 1 cross-axis shadowed key/);
       } finally {
         await sys(() => db.delete(customFieldDefinitions).where(
           inArray(customFieldDefinitions.fieldKey, ['dirty_shadow']),

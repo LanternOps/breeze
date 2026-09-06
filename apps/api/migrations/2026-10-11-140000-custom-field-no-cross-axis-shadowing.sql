@@ -10,7 +10,7 @@
 --
 --   1. The partner export emits TWO records for the one datum, each under a
 --      different synthetic id, because the identity hash includes f.id
---      (routes/partnerApi/configuration.ts:433,440).
+--      (routes/partnerApi/configuration.ts:436,439).
 --   2. #3257 W05's normalized device_custom_field_values table cannot project
 --      back into the jsonb without loss -- two definition_ids, one key.
 --   3. W05's backfill cannot attribute an EXISTING blob value to one of the
@@ -162,6 +162,15 @@ END $$;
 --     fixed. The elevation here is bounded to this function body, which does
 --     nothing but two SELECTs and a RAISE -- no writes, no dynamic SQL.
 --
+-- ON `CONSTRAINT =` IN THE RAISEs. P0001 is Postgres's GENERIC code for any
+-- unqualified RAISE EXCEPTION, so a route branching on the code alone would
+-- mislabel a future unrelated P0001 raised by some other trigger on this table.
+-- Setting CONSTRAINT makes the error self-identifying: it lands on the driver
+-- error as `constraint_name`, reachable via pgErrorNode(), so a caller that
+-- ever needs to disambiguate can, without parsing the message. Nothing depends
+-- on it today (routes/customFields.ts matches P0001, which is currently unique
+-- to this trigger on this table) -- it is here so that stays cheap to fix.
+--
 -- ON THE ERROR MESSAGE. It names the field_key and the axis it collides on,
 -- and deliberately NOTHING else -- not the other definition's id, name, or
 -- owning org. An org-scoped caller cannot otherwise see partner-wide rows, so
@@ -196,7 +205,15 @@ BEGIN
       FROM public.organizations o
      WHERE o.id = NEW.org_id;
 
-    -- An org with no partner has no partner-wide namespace to collide in.
+    -- owner_partner can only be NULL when the SELECT found NO ROW, i.e.
+    -- NEW.org_id does not reference an existing organization
+    -- (organizations.partner_id is itself NOT NULL, so a real org always has
+    -- one). There is no partner namespace to check against, and the row is
+    -- doomed regardless: custom_field_definitions.org_id carries an FK, and FK
+    -- checks run AFTER BEFORE-ROW triggers, so returning here hands the write
+    -- to the FK, which rejects it with 23503. Raising our own P0001 instead
+    -- would replace an accurate "no such organization" with a misleading
+    -- shadowing message.
     IF owner_partner IS NULL THEN
       RETURN NEW;
     END IF;
@@ -212,7 +229,7 @@ BEGIN
 
     IF conflicting IS NOT NULL THEN
       RAISE EXCEPTION 'custom field key "%" already exists as an all-organizations field for this partner', NEW.field_key
-        USING ERRCODE = 'P0001';
+        USING ERRCODE = 'P0001', CONSTRAINT = 'custom_field_definitions_no_shadow';
     END IF;
 
   ELSIF NEW.partner_id IS NOT NULL THEN
@@ -227,7 +244,7 @@ BEGIN
 
     IF conflicting IS NOT NULL THEN
       RAISE EXCEPTION 'custom field key "%" is already defined by at least one organization under this partner', NEW.field_key
-        USING ERRCODE = 'P0001';
+        USING ERRCODE = 'P0001', CONSTRAINT = 'custom_field_definitions_no_shadow';
     END IF;
   END IF;
 
