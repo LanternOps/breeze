@@ -127,6 +127,8 @@ export async function resetAllFactors(tx: Tx, userId: string): Promise<MfaFactor
   };
 }
 
+class TombstoneAlreadyResurrected extends Error {}
+
 /**
  * Admin-path composite (cross-user by definition, so the system-context
  * escalation lives here; authorization — requirePermission, requireMfa,
@@ -134,15 +136,33 @@ export async function resetAllFactors(tx: Tx, userId: string): Promise<MfaFactor
  * mfa_epoch bump → family revoke → resetAllFactors; then post-commit cleanup,
  * remote-session teardown, and the best-effort pending-artifact sweep.
  */
-export async function resetAllFactorsAndInvalidate(userId: string, reason: string): Promise<AdminFactorResetResult> {
+export function resetAllFactorsAndInvalidate(userId: string, reason: string): Promise<AdminFactorResetResult>;
+export function resetAllFactorsAndInvalidate(userId: string, reason: string, options: { onlyIfTombstone: true }): Promise<AdminFactorResetResult | null>;
+export async function resetAllFactorsAndInvalidate(userId: string, reason: string, options?: { onlyIfTombstone: true }): Promise<AdminFactorResetResult | null> {
   let inventory: MfaFactorInventory | undefined;
-  const result = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      invalidateMfaAssuranceAfterFactorChange(userId, reason, async (tx) => {
-        inventory = await resetAllFactors(tx, userId);
-      }),
-    ),
-  );
+  let result: FactorChangeResult;
+  try {
+    result = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        invalidateMfaAssuranceAfterFactorChange(userId, reason, async (tx) => {
+          // The epoch UPDATE already holds the user lock. An invite can have
+          // resurrected the account since the caller's preliminary read; abort
+          // this transaction (including epoch/family writes) in that case.
+          if (options?.onlyIfTombstone) {
+            const [user] = await tx.select({ status: users.status, passwordHash: users.passwordHash })
+              .from(users).where(eq(users.id, userId)).limit(1);
+            if (!user || user.status !== 'disabled' || user.passwordHash !== null) {
+              throw new TombstoneAlreadyResurrected();
+            }
+          }
+          inventory = await resetAllFactors(tx, userId);
+        }),
+      ),
+    );
+  } catch (error) {
+    if (error instanceof TombstoneAlreadyResurrected) return null;
+    throw error;
+  }
   if (!inventory) {
     throw new Error('resetAllFactorsAndInvalidate: factor write did not run');
   }
@@ -159,6 +179,7 @@ export async function resetAllFactorsAndInvalidate(userId: string, reason: strin
 export function pendingFactorArtifactKeys(userId: string): string[] {
   return [
     `mfa:setup:${userId}`,
+    `sms:phone-setup:${userId}`,
     `passkey:challenge:registration:${userId}`,
     `passkey:challenge:authentication:${userId}`,
   ];

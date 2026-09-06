@@ -20,7 +20,7 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { refreshTokenFamilies, userPasskeys, users } from '../../db/schema';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
-import { MfaFactorResetContextError, resetAllFactors } from '../../services/mfaFactorReset';
+import { MfaFactorResetContextError, resetAllFactors, resetAllFactorsAndInvalidate } from '../../services/mfaFactorReset';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -50,6 +50,20 @@ async function seedProtectedUser() {
 }
 
 describe('resetAllFactors — RLS guard, atomicity, disabled rows (RMM-QA-166)', () => {
+  it('rolls back a stale tombstone preflight when a concurrent invite already resurrected the account', async () => {
+    const { user } = await seedProtectedUser();
+    const familyId = await mintRefreshTokenFamily(user.id);
+    const before = await readUser(user.id);
+    // Model the stale preflight decision: another invite has already committed
+    // resurrection and enrollment by the time the reset acquires its lock.
+    const result = await resetAllFactorsAndInvalidate(user.id, 'invite-resurrect', { onlyIfTombstone: true });
+    expect(result).toBeNull();
+    expect(await readUser(user.id)).toEqual(before);
+    expect(await passkeyCount(user.id)).toBe(1);
+    const [family] = await getTestDb().select().from(refreshTokenFamilies).where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(family?.revokedAt).toBeNull();
+  });
+
   it('I-4: refuses to run under a tenant context and leaves the passkey + mfa_enabled untouched', async () => {
     const { partner, user } = await seedProtectedUser();
 

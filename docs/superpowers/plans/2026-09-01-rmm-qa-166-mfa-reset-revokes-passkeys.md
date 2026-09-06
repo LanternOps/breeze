@@ -1,5 +1,11 @@
 # RMM-QA-166 — Admin MFA Reset and User Neutralization Revoke Passkeys — Implementation Plan
 
+## September 6 continuation
+
+The original implementation tasks below describe the prior completed branch and are not instructions to repeat them. The active continuation follows the September 6 addendum in the design document: bring existing PR #4920 onto main `686a4f6a75a3d0f90baa587910dc4b39b66e1588`; bind TOTP/passkey/SMS pending enrollment to authenticated epochs; fence terminal phone/secondary-passkey writes against concurrent reset; recheck tombstones under the reset lock; sweep pending artifacts on membership/review revocation; execute real-database acceptance and obtain independent exact-head review/CI. Historical no-change-to-`mfaAssurance` and D8/D9 assumptions are superseded by the reproduced security failures. Legacy unbound pending enrollments fail closed and must be restarted. No migration is required.
+
+The original references to post-commit cleanup must be read with the corrected outer-transaction boundary in that addendum: the inherited assurance primitive's cleanup can run while the system/request context transaction remains open. This round does not redesign shared lifecycle transaction ownership or claim otherwise. Local implementation/review/CI, maintainer merge, candidate verification, and formal QA closure remain separate states. Stop at the reviewed open PR.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every "this user's second factor is gone" operation (admin `POST /users/:id/mfa/reset`, last-membership neutralization, tombstone re-invite, access-review revocation) actually strip every factor — TOTP, SMS/phone, recovery codes, pending setup artifacts, and **`user_passkeys` rows** — through one in-transaction factor-reset service, so a reset user is no longer "protected" by a lost passkey, can re-enroll password-only, and the admin can reset a passkey-only leftover.

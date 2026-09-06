@@ -143,7 +143,7 @@ describe('resetAllFactorsAndInvalidate', () => {
     });
   });
 
-  it('escalates to system context, folds resetAllFactors into the assurance primitive, then sweeps the three keys after commit', async () => {
+  it('escalates to system context, folds resetAllFactors into the assurance primitive, then sweeps the four keys after commit', async () => {
     const order: string[] = [];
     runOutsideDbContextMock.mockImplementation((fn: () => unknown) => { order.push('runOutsideDbContext'); return fn(); });
     withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => { order.push('withSystemDbAccessContext'); return fn(); });
@@ -159,7 +159,7 @@ describe('resetAllFactorsAndInvalidate', () => {
 
     expect(order).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext', 'invalidate:begin', 'invalidate:committed', 'redis.del']);
     expect(invalidateMock).toHaveBeenCalledWith(USER, 'admin-mfa-reset', expect.any(Function));
-    expect(redisDelMock).toHaveBeenCalledWith(`mfa:setup:${USER}`, `passkey:challenge:registration:${USER}`, `passkey:challenge:authentication:${USER}`);
+    expect(redisDelMock).toHaveBeenCalledWith(`mfa:setup:${USER}`, `sms:phone-setup:${USER}`, `passkey:challenge:registration:${USER}`, `passkey:challenge:authentication:${USER}`);
     expect(result).toEqual({
       mfaEpoch: 9,
       cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true },
@@ -185,8 +185,8 @@ describe('resetAllFactorsAndInvalidate', () => {
 describe('sweepPendingFactorArtifacts', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it('lists exactly the three per-user keys', () => {
-    expect(pendingFactorArtifactKeys(USER)).toEqual([`mfa:setup:${USER}`, `passkey:challenge:registration:${USER}`, `passkey:challenge:authentication:${USER}`]);
+  it('lists exactly the four per-user keys', () => {
+    expect(pendingFactorArtifactKeys(USER)).toEqual([`mfa:setup:${USER}`, `sms:phone-setup:${USER}`, `passkey:challenge:registration:${USER}`, `passkey:challenge:authentication:${USER}`]);
   });
 
   it('swallows a Redis error, reports it to Sentry and returns false', async () => {

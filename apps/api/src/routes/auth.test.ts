@@ -1901,7 +1901,7 @@ describe('auth routes', () => {
         source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
       });
       const mockRedis = {
-        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123' })),
+        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1 })),
         del: vi.fn(),
         setex: vi.fn(),
       };
@@ -1923,7 +1923,7 @@ describe('auth routes', () => {
     it('confirms setup via the consuming consumeMFAToken verifier', async () => {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'SETUPSECRET123',
+          secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: ['CODE-0001', 'CODE-0002']
         })),
         del: vi.fn().mockResolvedValue(1),
@@ -1975,7 +1975,7 @@ describe('auth routes', () => {
     function mockPasswordlessPendingSetup(row: Record<string, unknown> = {}) {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'SETUPSECRET123',
+          secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: ['CODE-0001', 'CODE-0002']
         })),
         del: vi.fn().mockResolvedValue(1),
@@ -2106,7 +2106,7 @@ describe('auth routes', () => {
     function mockPendingSetup() {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'SETUPSECRET123',
+          secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: ['CODE-0001', 'CODE-0002']
         })),
         del: vi.fn().mockResolvedValue(1),
@@ -3060,7 +3060,7 @@ describe('auth routes', () => {
       const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'MFASECRET123',
+          secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: setupRecoveryCodes
         })),
         setex: vi.fn(),
@@ -3130,7 +3130,7 @@ describe('auth routes', () => {
       });
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(getRedis).mockReturnValue({
-        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123' })),
+        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1 })),
         del: vi.fn(),
         setex: vi.fn(),
       } as any);
@@ -3194,7 +3194,7 @@ describe('auth routes', () => {
       const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'MFASECRET123',
+          secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: setupRecoveryCodes
         })),
         setex: vi.fn(),
@@ -3268,7 +3268,7 @@ describe('auth routes', () => {
     function mockProtectedUserWithPendingSetup() {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
-          secret: 'MFASECRET123',
+          secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
           recoveryCodes: ['CODE-0001', 'CODE-0002']
         })),
         setex: vi.fn(),
@@ -3536,7 +3536,7 @@ describe('auth routes', () => {
         expect(mockRedis.setex).toHaveBeenCalledWith(
           'mfa:setup:user-123',
           600,
-          JSON.stringify({ secret: 'MFASECRET123' }),
+          JSON.stringify({ secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1 }),
         );
         expect(verifyPassword).not.toHaveBeenCalled();
         expect(validateStepUpGrant).toHaveBeenCalledWith(
@@ -3586,7 +3586,7 @@ describe('auth routes', () => {
         const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
         const mockRedis = {
           get: vi.fn().mockResolvedValue(JSON.stringify({
-            secret: 'MFASECRET123',
+            secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
             recoveryCodes: setupRecoveryCodes
           })),
           setex: vi.fn(),
@@ -3637,7 +3637,7 @@ describe('auth routes', () => {
       it('POST /auth/mfa/enable returns the opaque 400 for a passwordless account with an invalid/expired grant (no factor written)', async () => {
         const mockRedis = {
           get: vi.fn().mockResolvedValue(JSON.stringify({
-            secret: 'MFASECRET123',
+            secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
             recoveryCodes: ['CODE-0001', 'CODE-0002']
           })),
           setex: vi.fn(),
@@ -4415,7 +4415,7 @@ describe('auth routes', () => {
   describe('#4470: a rejected MFA proof answers 400 + a stable code, never 401', () => {
     function pendingSetupUser(overrides: Record<string, unknown> = {}) {
       const mockRedis = {
-        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'MFASECRET123' })),
+        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1 })),
         setex: vi.fn(),
         del: vi.fn().mockResolvedValue(1),
       };

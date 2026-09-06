@@ -23,20 +23,25 @@
  *     src/__tests__/integration/mfaReenrollmentAfterReset.integration.test.ts
  */
 import './setup';
-import { randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, type KeyObject } from 'node:crypto';
+import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { generate } from 'otplib';
 import { partnerUsers, userPasskeys, users } from '../../db/schema';
 import { authBindingRoutes } from '../../routes/auth/binding';
-import { userIsMfaProtected } from '../../routes/auth/helpers';
+import { encryptMfaSecret, hashRecoveryCodes, userIsMfaProtected } from '../../routes/auth/helpers';
 import { mfaRoutes } from '../../routes/auth/mfa';
 import { userRoutes } from '../../routes/users';
 import { authMiddleware } from '../../middleware/auth';
 import { createAccessToken } from '../../services/jwt';
 import { assignUserToPartner, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
-import { getTestDb } from './setup';
+import { getTestDb, getTestRedis } from './setup';
+import { resetAllFactorsAndInvalidate } from '../../services/mfaFactorReset';
+import { passkeyRoutes } from '../../routes/auth/passkeys';
+import { resolveWebAuthnConfig } from '../../services/passkeys';
+import { loginRoutes } from '../../routes/auth/login';
 
 const PASSWORD = 'TestPass123!';
 
@@ -63,7 +68,159 @@ async function browserBindingCookie(): Promise<string> {
   return `breeze_auth_binding=${binding}`;
 }
 
+// Software authenticator producing a real ES256 COSE key and none attestation.
+// The production WebAuthn verifier validates RP hash, origin, challenge and UV.
+function registrationCredential(challenge: string, credentialId: Buffer, publicKey: KeyObject) {
+  const jwk = publicKey.export({ format: 'jwk' });
+  const cose = isoCBOR.encode(new Map<number, number | Uint8Array>([
+    [1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x!, 'base64url')], [-3, Buffer.from(jwk.y!, 'base64url')],
+  ]));
+  const config = resolveWebAuthnConfig();
+  const length = Buffer.alloc(2);
+  length.writeUInt16BE(credentialId.length);
+  const authData = Buffer.concat([
+    createHash('sha256').update(config.rpID).digest(), Buffer.from([0x45]),
+    Buffer.alloc(4), Buffer.alloc(16), length, credentialId, Buffer.from(cose),
+  ]);
+  const attestation = isoCBOR.encode(new Map<string, string | Uint8Array | Map<string, never>>([
+    ['fmt', 'none'], ['attStmt', new Map<string, never>()], ['authData', authData],
+  ]));
+  return {
+    id: credentialId.toString('base64url'), rawId: credentialId.toString('base64url'), type: 'public-key',
+    response: {
+      clientDataJSON: Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge, origin: config.origin })).toString('base64url'),
+      attestationObject: Buffer.from(attestation).toString('base64url'), transports: ['internal'],
+    },
+    clientExtensionResults: {},
+  };
+}
+
 describe('admin reset → password-only TOTP re-enrollment (RMM-QA-166 I-3)', () => {
+  it('rejects old access, refresh, TOTP, recovery and passkey login authority after reset', async () => {
+    const partner = await createPartner();
+    const target = await createUser({ partnerId: partner.id, password: PASSWORD, withMembership: true, status: 'active' });
+    const login = () => loginRoutes.request('/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: target.email, password: PASSWORD }),
+    });
+    const initial = await login();
+    expect(initial.status).toBe(200);
+    const session = await initial.json() as { tokens: { accessToken: string } };
+    const cookies = initial.headers.get('set-cookie')!;
+    const refresh = /breeze_refresh_token=([^;]+)/.exec(cookies)![1];
+    const csrf = /breeze_csrf_token=([^;]+)/.exec(cookies)![1];
+    const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+    const recovery = 'ABCD-EFGH';
+    await getTestDb().update(users).set({
+      mfaEnabled: true, mfaMethod: 'totp', mfaSecret: encryptMfaSecret(secret), mfaRecoveryCodes: hashRecoveryCodes([recovery]),
+    }).where(eq(users.id, target.id));
+    const credentialId = randomBytes(32).toString('base64url');
+    await getTestDb().insert(userPasskeys).values({ userId: target.id, credentialId, publicKey: 'AQID', counter: 0, deviceType: 'singleDevice', backedUp: false });
+    const pendingLogin = await login();
+    expect(pendingLogin.status).toBe(200);
+    const pending = await pendingLogin.json() as { mfaRequired: boolean; tempToken: string };
+    expect(pending.mfaRequired).toBe(true);
+    const key = `mfa:pending:${pending.tempToken}`;
+    const pendingRecord = await getTestRedis().get(key);
+    expect(pendingRecord).not.toBeNull();
+    await resetAllFactorsAndInvalidate(target.id, 'admin-mfa-reset');
+    const oldAccess = await mfaRoutes.request('/mfa/setup', {
+      method: 'POST', headers: { Authorization: `Bearer ${session.tokens.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: PASSWORD }),
+    });
+    expect(oldAccess.status).toBe(401);
+    const oldRefresh = await loginRoutes.request('/refresh', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-breeze-csrf': decodeURIComponent(csrf!), Cookie: `breeze_refresh_token=${refresh}; breeze_csrf_token=${csrf}` },
+      body: '{}',
+    });
+    expect(oldRefresh.status).toBe(401);
+    for (const proof of [{ method: 'totp', code: await generate({ secret }) }, { method: 'recovery', code: recovery }]) {
+      await getTestRedis().set(key, pendingRecord!, 'EX', 300);
+      const rejected = await mfaRoutes.request('/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: pending.tempToken, ...proof }),
+      });
+      expect(rejected.status).toBe(401);
+      expect(rejected.headers.get('set-cookie')).toBeNull();
+    }
+    await getTestRedis().set(key, pendingRecord!, 'EX', 300);
+    const oldPasskey = await passkeyRoutes.request('/mfa/passkey/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: pending.tempToken, credential: { id: credentialId } }),
+    });
+    expect(oldPasskey.status).toBe(401);
+    expect(oldPasskey.headers.get('set-cookie')).toBeNull();
+    const freshLogin = await login();
+    expect(freshLogin.status).toBe(200);
+    expect(await freshLogin.json()).toMatchObject({ mfaRequired: false });
+  });
+
+  it('rejects a pre-reset WebAuthn registration challenge and accepts fresh registration of the same authenticator', async () => {
+    const partner = await createPartner();
+    const target = await createUser({ partnerId: partner.id, password: PASSWORD, withMembership: true, status: 'active' });
+    const [membership] = await getTestDb().select().from(partnerUsers).where(eq(partnerUsers.userId, target.id));
+    const oldToken = await mintToken(target.id, target.email, partner.id, membership!.roleId, false);
+    const options = async (token: string) => {
+      const response = await passkeyRoutes.request('/passkeys/register/options', {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: PASSWORD }),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { options: { challenge: string } }).options;
+    };
+    const oldOptions = await options(oldToken);
+    const redis = getTestRedis();
+    const key = `passkey:challenge:registration:${target.id}`;
+    const stale = await redis.get(key);
+    expect(stale).not.toBeNull();
+    await resetAllFactorsAndInvalidate(target.id, 'admin-mfa-reset');
+    await redis.set(key, stale!, 'EX', 300);
+    const freshToken = await mintToken(target.id, target.email, partner.id, membership!.roleId, false);
+    const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const credentialId = randomBytes(32);
+    const verify = async (challenge: string) => passkeyRoutes.request('/passkeys/register/verify', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${freshToken}`, 'Content-Type': 'application/json', cookie: await browserBindingCookie() },
+      body: JSON.stringify({ credential: registrationCredential(challenge, credentialId, publicKey) }),
+    });
+    expect((await verify(oldOptions.challenge)).status).toBe(400);
+    expect((await readUser(target.id)).mfaEnabled).toBe(false);
+    expect(await getTestDb().select().from(userPasskeys).where(eq(userPasskeys.userId, target.id))).toHaveLength(0);
+    const freshOptions = await options(freshToken);
+    expect((await verify(freshOptions.challenge)).status).toBe(200);
+    const [enrolled] = await getTestDb().select().from(userPasskeys).where(eq(userPasskeys.userId, target.id));
+    expect(enrolled?.credentialId).toBe(credentialId.toString('base64url'));
+  });
+
+  it.each(['/mfa/verify', '/mfa/enable'])('rejects pre-reset pending setup surviving Redis cleanup at %s', async (endpoint) => {
+    const partner = await createPartner();
+    const target = await createUser({ partnerId: partner.id, password: PASSWORD, withMembership: true, status: 'active' });
+    const [membership] = await getTestDb().select().from(partnerUsers).where(eq(partnerUsers.userId, target.id));
+    const oldToken = await mintToken(target.id, target.email, partner.id, membership!.roleId, false);
+    const setup = await mfaRoutes.request('/mfa/setup', {
+      method: 'POST', headers: { Authorization: `Bearer ${oldToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: PASSWORD }),
+    });
+    expect(setup.status).toBe(200);
+    const { secret } = await setup.json() as { secret: string };
+    const redis = getTestRedis();
+    const key = `mfa:setup:${target.id}`;
+    const staleSetup = await redis.get(key);
+    expect(staleSetup).not.toBeNull();
+    await resetAllFactorsAndInvalidate(target.id, 'admin-mfa-reset');
+    // Model failed DEL or a delayed pre-reset setup writer arriving after it.
+    await redis.set(key, staleSetup!, 'EX', 600);
+    const freshToken = await mintToken(target.id, target.email, partner.id, membership!.roleId, false);
+    const response = await mfaRoutes.request(endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${freshToken}`, 'Content-Type': 'application/json', cookie: await browserBindingCookie() },
+      body: JSON.stringify({ code: await generate({ secret }), currentPassword: PASSWORD }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'MFA setup expired. Please start setup again.' });
+    expect((await readUser(target.id)).mfaEnabled).toBe(false);
+  });
+
   it('a reset user re-enrolls with password only and can re-register the same authenticator', async () => {
     const partner = await createPartner();
     const adminRole = await createRole({ scope: 'partner', partnerId: partner.id });

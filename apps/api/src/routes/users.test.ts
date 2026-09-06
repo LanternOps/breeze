@@ -603,7 +603,7 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(201);
-      expect(resetAllFactorsAndInvalidateMock).toHaveBeenCalledWith(TOMBSTONE, 'invite-resurrect');
+      expect(resetAllFactorsAndInvalidateMock).toHaveBeenCalledWith(TOMBSTONE, 'invite-resurrect', { onlyIfTombstone: true });
       expect(resetAllFactorsAndInvalidateMock.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
       // Phone parity in the in-tx tombstone branch.
       expect(capturedTxSets.some((v) => v.status === 'invited' && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
@@ -2388,7 +2388,7 @@ describe('user routes', () => {
       const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
 
       expect(res.status).toBe(200);
-      expect(redis.del).toHaveBeenCalledWith(`mfa:setup:${TARGET}`, `passkey:challenge:registration:${TARGET}`, `passkey:challenge:authentication:${TARGET}`);
+      expect(redis.del).toHaveBeenCalledWith(`mfa:setup:${TARGET}`, `sms:phone-setup:${TARGET}`, `passkey:challenge:registration:${TARGET}`, `passkey:challenge:authentication:${TARGET}`);
       expect(redis.del.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
     });
 

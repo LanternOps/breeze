@@ -243,7 +243,9 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
   await redis.setex(
     `mfa:setup:${auth.user.id}`,
     600, // 10 min expiry
-    JSON.stringify({ secret })
+    // Bind the password proof to its authenticated epochs. Cleanup is best-effort;
+    // a delayed writer or failed DEL must not revive setup after an admin reset.
+    JSON.stringify({ secret, authEpoch: auth.token?.aep, mfaEpoch: auth.token?.mep })
   );
 
   return c.json({
@@ -659,6 +661,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     const parsed = JSON.parse(setupData);
     secret = parsed.secret;
     if (typeof secret !== 'string') throw new Error('Invalid setup data');
+    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
+      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
+      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
+    }
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
@@ -1071,11 +1077,15 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 
   let secret: string;
   try {
-    const parsed = JSON.parse(setupData) as { secret?: unknown };
+    const parsed = JSON.parse(setupData) as { secret?: unknown; authEpoch?: number; mfaEpoch?: number };
     if (typeof parsed.secret !== 'string') {
       throw new Error('Invalid setup data');
     }
     secret = parsed.secret;
+    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
+      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
+      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
+    }
   } catch {
     const message = 'Invalid MFA setup data';
     return c.json({ error: message, message }, 500);

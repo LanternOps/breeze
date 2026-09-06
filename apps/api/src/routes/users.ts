@@ -42,7 +42,7 @@ import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUse
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
-import { resetAllFactorsAndInvalidate } from '../services/mfaFactorReset';
+import { resetAllFactorsAndInvalidate, sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
@@ -1216,16 +1216,15 @@ userRoutes.post(
     // service refuses to run). So sweep every factor through the system-context
     // composite BEFORE opening the invite transaction. Same visibility as the
     // in-tx lookup: both read `users` by email under the caller's context. A
-    // tombstone cannot acquire factors between here and the resurrect (no
-    // password, disabled, epochs bumped — no token can be minted), and a
-    // failure here fails the invite before any write.
+    // concurrent invite can resurrect the account after this read, so the
+    // composite rechecks the tombstone predicate under its user-row lock.
     const [tombstone] = await db
       .select({ id: users.id, status: users.status, passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.email, normalizedEmail))
       .limit(1);
     if (tombstone && tombstone.status === 'disabled' && tombstone.passwordHash === null) {
-      await resetAllFactorsAndInvalidate(tombstone.id, 'invite-resurrect');
+      await resetAllFactorsAndInvalidate(tombstone.id, 'invite-resurrect', { onlyIfTombstone: true });
     }
 
     const result = await db.transaction(async (tx) => {
@@ -1697,6 +1696,7 @@ userRoutes.delete(
       // the hot-path cleanup (Redis token cutoff, permission-cache clear,
       // OAuth-artifact revocation) after that commit.
       await runPostCommitCleanup(userId);
+      await sweepPendingFactorArtifacts(userId);
 
       return c.json({ success: true });
     }
@@ -1714,6 +1714,7 @@ userRoutes.delete(
     });
     // Task 9: see comment above — same rationale for org-scope users.
     await runPostCommitCleanup(userId);
+    await sweepPendingFactorArtifacts(userId);
 
     return c.json({ success: true });
   }

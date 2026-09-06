@@ -146,9 +146,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // ability to reset their own org user's MFA or to remove that user. Same
   // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
   'services/mfaFactorReset.ts':
-    "clears ONE target user's own factor columns (TOTP secret/method/recovery codes, phone) and their user_passkeys rows; every caller-facing entry point is in routes/users.ts (POST /:id/mfa/reset, POST /invite tombstone pre-flight) behind USERS_WRITE + requireMfa() + tenant-scoped getScopedUser. Never writes partner-wide config, and canManagePartnerWidePolicies is false for org scope, so gating here would block org admins from resetting their own users",
+    "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
   'services/userNeutralization.ts':
-    "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_WRITE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
+    "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_DELETE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
 
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',

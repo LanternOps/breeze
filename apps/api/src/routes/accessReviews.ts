@@ -20,6 +20,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
+import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 
 export const accessReviewRoutes = new Hono();
 
@@ -539,6 +540,7 @@ accessReviewRoutes.post(
     // honoured until natural expiry; logged, not surfaced, so the review
     // still completes successfully.
     await Promise.all(uniqueRevokedUserIds.map((userId) => runPostCommitCleanup(userId)));
+    await Promise.all(uniqueRevokedUserIds.map((userId) => sweepPendingFactorArtifacts(userId)));
 
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
