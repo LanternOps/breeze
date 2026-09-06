@@ -1002,6 +1002,41 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     expect(screen.getByText(/2 of 2 devices/)).toBeInTheDocument();
   });
 
+  // #5023 paper cut: "show" now ADDS the removed rows to the current view
+  // instead of swapping to a removed-only filter, so the line flips to a
+  // "N removed shown — hide" affordance that puts the default view back.
+  it('renders "N removed shown — hide" once the rows are visible and calls onHideDecommissioned', () => {
+    const onHide = vi.fn();
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={onHide}
+      />
+    );
+
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    const hint = screen.getByTestId('decommissioned-shown-hint');
+    expect(hint).toHaveTextContent('1 removed shown');
+    // Both rows render — the active one was not filtered out by "show".
+    expect(screen.getByText(/2 of 2 devices/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-hide'));
+    expect(onHide).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no "shown" line when the rows are visible via an explicit status filter (no onHideDecommissioned)', () => {
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-shown-hint')).toBeNull();
+  });
+
   it('renders no hint when there are no decommissioned devices', () => {
     render(<DeviceList devices={[baseDevice]} onShowDecommissioned={vi.fn()} />);
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
@@ -1583,12 +1618,33 @@ describe('DeviceList — Compare bulk action gating', () => {
     expect(screen.queryByTestId('bulk-compare')).toBeNull();
   });
 
-  it('hides Compare above the 4-device limit (DeviceCompare cap)', () => {
-    render(<DeviceList devices={fleet(5)} onBulkAction={vi.fn()} />);
+  // #5023 paper cut: Compare used to vanish silently at 5+ selected. It now
+  // stays in the menu, disabled, with the cap spelled out so the tech knows
+  // to trim the selection rather than wondering where the item went.
+  it('keeps Compare in the menu but disabled above the 4-device limit (DeviceCompare cap)', () => {
+    const onBulkAction = vi.fn();
+    render(<DeviceList devices={fleet(5)} onBulkAction={onBulkAction} />);
     selectAllAndOpenMenu();
-    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+    const compare = screen.getByTestId('bulk-compare');
+    expect(compare).toBeDisabled();
+    expect(compare).toHaveAttribute('title', 'Compare supports up to 4 devices');
+    expect(compare).toHaveTextContent('Compare supports up to 4 devices');
+    fireEvent.click(compare);
+    expect(onBulkAction).not.toHaveBeenCalled();
     // The uncapped 2+ actions are still offered on the same selection.
     expect(screen.getByTestId('bulk-link-multiboot')).toBeInTheDocument();
+  });
+
+  it('keeps Compare disabled above the cap for an all-removed selection too', () => {
+    const onBulkAction = vi.fn();
+    const removed = fleet(5).map(d => ({ ...d, status: 'decommissioned' as const }));
+    render(<DeviceList devices={removed} includeDecommissioned onBulkAction={onBulkAction} />);
+    selectAllAndOpenMenu();
+    const compare = screen.getByTestId('bulk-compare');
+    expect(compare).toBeDisabled();
+    fireEvent.click(compare);
+    expect(onBulkAction).not.toHaveBeenCalled();
+    expect(screen.getByTestId('bulk-restore')).toBeInTheDocument();
   });
 });
 

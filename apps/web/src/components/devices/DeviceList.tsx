@@ -91,6 +91,10 @@ import {
 import { groupLinkedDevices } from "./linkedDevices";
 import { useOrgStore } from "@/stores/orgStore";
 import DecommissionedHiddenHint from "./DecommissionedHiddenHint";
+
+// DeviceCompare's selection limit (see DeviceCompare.tsx). Kept here so the
+// bulk menu can explain the cap instead of silently dropping the item.
+const COMPARE_MAX_DEVICES = 4;
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
@@ -352,6 +356,12 @@ type DeviceListProps = {
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  /**
+   * Offered only while the rows are visible via the page-level showRemoved
+   * flag (not via an explicit Decommissioned status filter, where hiding
+   * would be a no-op) — renders the "N removed shown — hide" line (#5023).
+   */
+  onHideDecommissioned?: () => void;
   // Applies the Decommissioned status filter upstream (#2251) — the existing
   // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
   // tests) the "N decommissioned hidden — show" hint is not rendered.
@@ -592,6 +602,7 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onHideDecommissioned,
   onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
@@ -823,13 +834,11 @@ export default function DeviceList({
   // How many decommissioned devices the default view is hiding (#2251). Zero
   // when they're already visible (includeDecommissioned) so the hint and the
   // count math below stay consistent with what the table actually shows.
-  const hiddenDecommissionedCount = useMemo(
-    () =>
-      includeDecommissioned
-        ? 0
-        : devices.filter(d => d.status === 'decommissioned').length,
-    [devices, includeDecommissioned]
+  const decommissionedCount = useMemo(
+    () => devices.filter(d => d.status === 'decommissioned').length,
+    [devices]
   );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
 
   // Providers present across the loaded set — drives the VPN facet options so
   // techs only see providers that actually exist in their fleet.
@@ -1918,6 +1927,27 @@ export default function DeviceList({
     },
   };
 
+  // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
+  // so above that the item renders disabled with the cap as its label + title
+  // instead of disappearing (#5023 paper cut). Shared by the active and the
+  // all-removed branches of the menu.
+  const renderCompareItem = () => {
+    const overCap = selectedIds.size > COMPARE_MAX_DEVICES;
+    const capLabel = t("deviceList.compareMaxDevices", { count: COMPARE_MAX_DEVICES });
+    return (
+      <button
+        type="button"
+        data-testid="bulk-compare"
+        disabled={overCap}
+        title={overCap ? capLabel : undefined}
+        onClick={() => handleBulkAction("compare")}
+        className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        {overCap ? capLabel : t("deviceList.compareSelected")}
+      </button>
+    );
+  };
+
   return (
     <div>
       <div className="flex flex-col gap-3">
@@ -1951,6 +1981,15 @@ export default function DeviceList({
                 <DecommissionedHiddenHint
                   count={hiddenDecommissionedCount}
                   onShow={onShowDecommissioned}
+                />
+              </span>
+            )}
+            {onHideDecommissioned && includeDecommissioned && decommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  mode="shown"
+                  count={decommissionedCount}
+                  onHide={onHideDecommissioned}
                 />
               </span>
             )}
@@ -2193,18 +2232,10 @@ export default function DeviceList({
                 >
                   {t("deviceList.wakeSelected")}{" "}
                 </button>
-                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
-                    so the item only shows for a 2-4 selection. */}
-                {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                  <button
-                    type="button"
-                    data-testid="bulk-compare"
-                    onClick={() => handleBulkAction("compare")}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                  >
-                    {t("deviceList.compareSelected")}{" "}
-                  </button>
-                )}
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit).
+                    Above the cap the item stays put but disabled with the cap
+                    spelled out — it used to vanish silently (#5023). */}
+                {selectedIds.size >= 2 && renderCompareItem()}
                 {selectedIds.size >= 2 && (
                   <button
                     type="button"
@@ -2249,16 +2280,7 @@ export default function DeviceList({
                     {/* Same 2-4 cap as the active branch — DeviceCompare's own
                         selection limit. A removed device is a legitimate (if
                         approximate) comparison subject. */}
-                    {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                      <button
-                        type="button"
-                        data-testid="bulk-compare"
-                        onClick={() => handleBulkAction("compare")}
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                      >
-                        {t("deviceList.compareSelected")}
-                      </button>
-                    )}
+                    {selectedIds.size >= 2 && renderCompareItem()}
                     <hr className="my-1" />
                     <button
                       type="button"

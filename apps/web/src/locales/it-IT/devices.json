@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} rimossi nascosti",
-    "show": "mostra"
+    "show": "mostra",
+    "shownLabel": "{{count}} rimossi mostrati",
+    "hide": "nascondi"
   },
   "deviceActions": {
     "unavailable": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Disabilita manutenzione",
     "wakeSelected": "Riattiva selezionati",
     "compareSelected": "Confronta selezionati",
+    "compareMaxDevices": "Il confronto supporta fino a {{count}} dispositivi",
     "linkAsMultiBoot": "Collega come multi-boot",
     "decommissionSelected": "Rimuovi selezionati",
     "restoreSelected": "Ripristina selezionati",
