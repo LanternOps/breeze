@@ -12,6 +12,7 @@ import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS,
   DEFAULT_IMPACT_WEIGHTS,
+  type AgentToolCatalogDto,
   type AiAgentImpactDto,
 } from '@breeze/shared';
 // Real (unmocked) — pure UTC day math, no DB call. Task 8 tests compute the
@@ -49,6 +50,8 @@ const {
   loadGraduationRowsMock,
   loadActOpReliabilityMock,
   loadPartnerBaselineKindsMock,
+  loadPartnerBaselineCeilingMock,
+  buildAgentToolCatalogMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -96,6 +99,17 @@ const {
   // effectivePolicy.test.ts's `loadPartnerBaselineKinds` describe block;
   // these route tests exercise only how GET / consumes the result.
   loadPartnerBaselineKindsMock: vi.fn(),
+  // Task 4 (#5049) — GET /ceiling's partner-baseline projection. Own unit
+  // coverage is effectivePolicy.test.ts's `loadPartnerBaselineCeiling`
+  // describe block; these route tests exercise only routing/auth/scope-gating.
+  loadPartnerBaselineCeilingMock: vi.fn(),
+  // Task 4 (#5049) — GET /tool-catalog. `buildAgentToolCatalog` derives the
+  // catalog from the REAL tool registry (~45 domain modules) and has its own
+  // full completeness/reachability/preset contract in
+  // agentToolCatalog.contract.test.ts; mocked here (like every other
+  // service-layer dependency in this file) so these route tests exercise only
+  // routing/auth/the cache header, never the real registry closure.
+  buildAgentToolCatalogMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -123,7 +137,7 @@ vi.mock('../middleware/auth', async (importOriginal) => {
   };
 });
 
-const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoisted(() => ({
+const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError } = vi.hoisted(() => ({
   ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
     readonly code = 'act_prerequisites_not_met';
     constructor(public missing: string[]) {
@@ -134,6 +148,12 @@ const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoi
     readonly code = 'invalid_supervised_action_keys';
     constructor(public rejected: Array<{ key: string; reason: string }>) {
       super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
+    }
+  },
+  SupervisedKeysGrantOnlyError: class SupervisedKeysGrantOnlyError extends Error {
+    readonly code = 'supervised_keys_grant_only';
+    constructor(public rejected: Array<{ key: string; reason: 'grant_only' }>) {
+      super(`supervised_keys_grant_only: ${rejected.map((r) => r.key).join(', ')}`);
     }
   },
 }));
@@ -153,6 +173,7 @@ vi.mock('../services/aiAgents/agentService', () => ({
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
+  SupervisedKeysGrantOnlyError,
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   disableAgent: vi.fn(),
@@ -286,6 +307,11 @@ vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
   resolveEffectiveAgentSystem: resolveEffectiveAgentSystemMock,
   loadPartnerBaselineKinds: loadPartnerBaselineKindsMock,
+  loadPartnerBaselineCeiling: loadPartnerBaselineCeilingMock,
+}));
+
+vi.mock('../services/aiAgents/agentToolCatalog', () => ({
+  buildAgentToolCatalog: buildAgentToolCatalogMock,
 }));
 
 vi.mock('../services/aiAgents/graduationService', () => ({
@@ -354,6 +380,35 @@ function minimalImpactDto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImp
   };
 }
 
+/**
+ * Task 4 (#5049): a structurally-valid AgentToolCatalogDto for route tests —
+ * the catalog's own completeness/reachability/preset correctness is Task 3's
+ * contract test (agentToolCatalog.contract.test.ts), not this file's. Only
+ * `manage_services` is represented since these route tests exercise
+ * routing/auth/the cache header, not the real ~45-domain-module registry.
+ */
+function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): AgentToolCatalogDto {
+  return {
+    capabilities: Array.from({ length: 12 }, (_, i) => ({ id: `capability_${i}`, tone: 'standard' as const })),
+    tools: [
+      {
+        name: 'manage_services',
+        capability: 'services_startup',
+        tier: 3,
+        readOnly: false,
+        operations: [
+          {
+            key: 'manage_services:restart', action: 'restart', tier: 3, readOnly: false,
+            policyDecidable: true, actEligible: true,
+          },
+        ],
+      },
+    ],
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    ...overrides,
+  };
+}
+
 function buildApp(withGlobalErrorHandler = false, authOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
@@ -400,6 +455,7 @@ beforeEach(() => {
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
   loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
+  buildAgentToolCatalogMock.mockReturnValue(minimalToolCatalogDto());
   verifyDeviceAccessMock.mockResolvedValue({
     device: { id: DEVICE_ID, orgId: ORG_ID, siteId: null },
   });
@@ -3544,5 +3600,89 @@ describe('POST /ai-agents/:id/enable', () => {
     const body = await res.json();
     expect(body.data.lastRunAt).toBeNull();
     expect(body.data.lastRunStatus).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 (#5049) — the capability picker's catalog + ceiling projection
+// ---------------------------------------------------------------------------
+
+// `buildAgentToolCatalog` is mocked (see `vi.mock('../services/aiAgents/agentToolCatalog', ...)`
+// above): it derives from the real ~45-domain-module tool registry, which
+// this file's OTHER narrow module mocks (auditEvents, config/env, aiTools's
+// verifyDeviceAccess-only replacement, etc.) are not shaped to survive
+// transitively loading — the registry's own completeness/reachability/preset
+// contract is Task 3's dedicated agentToolCatalog.contract.test.ts. These
+// tests exercise only routing/auth/the cache header.
+describe('GET /ai-agents/tool-catalog', () => {
+  it('returns capabilities, reachable tools with operations, and kind presets', async () => {
+    const res = await buildApp().request('/ai-agents/tool-catalog');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, max-age=300');
+    const body = (await res.json()) as {
+      data: { capabilities: unknown[]; tools: Array<{ name: string; operations: unknown[] }>; presets: Record<string, string[]> };
+    };
+    expect(body.data.capabilities.length).toBeGreaterThan(10);
+    expect(body.data.tools.some((t) => t.name === 'manage_services')).toBe(true);
+    expect(body.data.tools.some((t) => t.name === 'manage_ai_agents')).toBe(false);
+    expect(body.data.presets.triage).toContain('manage_services:restart');
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request('/ai-agents/tool-catalog');
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /ai-agents/ceiling', () => {
+  it('projects the partner baseline allowlist for an org session', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
+
+    const res = await buildApp(false, { partnerId: PARTNER_ID }).request('/ai-agents/ceiling?kind=triage');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [] } });
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+  });
+
+  it('returns null for a partner-scope session (the partner row IS the ceiling)', async () => {
+    const res = await buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null })
+      .request('/ai-agents/ceiling?kind=triage');
+
+    expect(await res.json()).toEqual({ data: null });
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown kind', async () => {
+    const res = await buildApp().request('/ai-agents/ceiling?kind=nope');
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 route half (#5049) — org rows cannot add supervisedActionKeys
+// outside the four-eyes grant executor. Mirrors the
+// InvalidSupervisedActionKeysError 422 mapping test above; the guard's own
+// unit coverage (assertOrgRowSupervisedKeysGrantOnly) lives in
+// agentService.test.ts.
+// ---------------------------------------------------------------------------
+
+describe('mapError — org-row supervised keys are grant-only (spec §4.4, #5049)', () => {
+  it('maps SupervisedKeysGrantOnlyError to a 422 naming exactly which keys were rejected and why', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    const rejected = [{ key: 'manage_services:restart', reason: 'grant_only' as const }];
+
+    mapError(ctx, new SupervisedKeysGrantOnlyError(rejected));
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'supervised_keys_grant_only',
+        rejected,
+      }),
+      422,
+    );
   });
 });

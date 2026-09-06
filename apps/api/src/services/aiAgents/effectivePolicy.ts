@@ -10,6 +10,7 @@ import {
   aiAgentRecipientsSchema,
   aiAgentTriggersSchema,
   minAgentMode,
+  type AgentCeilingDto,
   type AiAgentKind,
   type AiAgentLimits,
   type AiAgentPolicy,
@@ -353,6 +354,40 @@ export async function loadPartnerBaselineKinds(
       .limit(AI_AGENT_KINDS.length));
 
   return new Set(rows.map((row) => row.kind));
+}
+
+/**
+ * The partner-wide baseline's tool ceiling for ONE kind, projected for an
+ * org-scoped caller that cannot read the partner row itself. Same
+ * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two
+ * allowlists leaves this function.
+ */
+export async function loadPartnerBaselineCeiling(
+  partnerId: string | null,
+  kind: AiAgentKind,
+): Promise<AgentCeilingDto | null> {
+  if (!partnerId) return null;
+
+  const rows = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ toolAllowlist: aiAgents.toolAllowlist, actAssets: aiAgents.actAssets })
+      .from(aiAgents)
+      .where(and(
+        eq(aiAgents.partnerId, partnerId),
+        isNull(aiAgents.orgId),
+        eq(aiAgents.kind, kind),
+        isNull(aiAgents.disabledAt),
+      ))
+      .limit(1));
+
+  const row = rows[0];
+  if (!row) return null;
+
+  const actAssets = aiAgentActAssetsSchema.parse(row.actAssets ?? {});
+  return {
+    toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
+    supervisedActionKeys: actAssets.supervisedActionKeys ?? [],
+  };
 }
 
 export type ResolvedAgent = AiAgentPolicySnapshot;
