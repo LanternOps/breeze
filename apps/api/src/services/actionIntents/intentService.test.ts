@@ -307,8 +307,10 @@ import {
   ActionIntentTierError,
   ActionIntentNotFoundError,
   ActionIntentAuthorizationError,
+  buildImpactSummary,
   type CreateActionIntentInput,
 } from './intentService';
+import type { GuardrailCheck } from '../aiGuardrails';
 import { db, withDbAccessContext } from '../../db';
 import { computeEffectDigestOutcome } from './effectDigest';
 
@@ -2302,5 +2304,131 @@ describe('waitForIntentDecision', () => {
     dbState.selectActionIntentsResults.push([]);
     const result = await waitForIntentDecision('missing-intent', 5000);
     expect(result).toBe('pending_approval');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5106 — buildImpactSummary: a call-specific sentence when the arguments
+// allow one, the catalog description otherwise. Pure function; aiTools is
+// mocked to an empty Map above, so `definitionDescription` is always
+// undefined here and every "falls back" case exercises guardrail.description
+// (or the `Execute <tool>` last resort).
+// ---------------------------------------------------------------------------
+describe('buildImpactSummary (#5106)', () => {
+  const catalogGuardrail = (description?: string): GuardrailCheck =>
+    ({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: 'four_eyes',
+      description,
+    }) as GuardrailCheck;
+
+  const CASES: Array<{
+    name: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    guardrailDescription?: string;
+    expected: string;
+  }> = [
+    {
+      name: 'manage_services restart names the service and its blast radius',
+      toolName: 'manage_services',
+      input: { action: 'restart', deviceId: 'd1', serviceName: 'Spooler' },
+      expected: 'Restarting "Spooler" will briefly interrupt it and anything that depends on it.',
+    },
+    {
+      name: 'manage_services stop names the service and its blast radius',
+      toolName: 'manage_services',
+      input: { action: 'stop', deviceId: 'd1', serviceName: 'Spooler' },
+      expected: 'Stopping "Spooler" will make it — and anything that depends on it — unavailable until it is started again.',
+    },
+    {
+      name: 'manage_services start names the service',
+      toolName: 'manage_services',
+      input: { action: 'start', deviceId: 'd1', serviceName: 'Spooler' },
+      expected: 'Starting "Spooler".',
+    },
+    {
+      name: 'manage_services list (no mutation) falls back to the catalog text',
+      toolName: 'manage_services',
+      input: { action: 'list', deviceId: 'd1' },
+      guardrailDescription: 'List, start, stop, or restart system services on a device.',
+      expected: 'List, start, stop, or restart system services on a device.',
+    },
+    {
+      name: 'manage_services restart with no serviceName falls back (nothing specific to say)',
+      toolName: 'manage_services',
+      input: { action: 'restart', deviceId: 'd1' },
+      guardrailDescription: 'List, start, stop, or restart system services on a device.',
+      expected: 'List, start, stop, or restart system services on a device.',
+    },
+    {
+      name: 'run_script names the device count',
+      toolName: 'run_script',
+      input: { scriptId: 's1', deviceIds: ['d1', 'd2', 'd3'] },
+      expected: 'Running a script on 3 devices.',
+    },
+    {
+      name: 'run_script singular device count',
+      toolName: 'run_script',
+      input: { scriptId: 's1', deviceIds: ['d1'] },
+      expected: 'Running a script on 1 device.',
+    },
+    {
+      name: 'run_script with no deviceIds falls back to the catalog text',
+      toolName: 'run_script',
+      input: { scriptId: 's1' },
+      guardrailDescription: 'Execute a script on one or more devices.',
+      expected: 'Execute a script on one or more devices.',
+    },
+    {
+      name: 'manage_processes kill names the process and PID',
+      toolName: 'manage_processes',
+      input: { action: 'kill', deviceId: 'd1', processId: '4242', processName: 'notepad.exe' },
+      expected: 'Terminating process "notepad.exe" (PID 4242).',
+    },
+    {
+      name: 'manage_processes kill with only a PID',
+      toolName: 'manage_processes',
+      input: { action: 'kill', deviceId: 'd1', processId: '4242' },
+      expected: 'Terminating process PID 4242.',
+    },
+    {
+      name: 'manage_processes list (read) falls back to the catalog text',
+      toolName: 'manage_processes',
+      input: { action: 'list', deviceId: 'd1' },
+      guardrailDescription: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+      expected: 'List running processes on a device with CPU and memory usage, or terminate a process.',
+    },
+    {
+      name: 'reboot has a fixed call-specific sentence',
+      toolName: 'reboot',
+      input: { deviceId: 'd1' },
+      expected: 'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
+    },
+    {
+      name: 'shutdown has a fixed call-specific sentence',
+      toolName: 'shutdown',
+      input: { deviceId: 'd1' },
+      expected: 'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+    },
+    {
+      name: 'an unrecognized tool falls back to the guardrail description',
+      toolName: 'query_devices',
+      input: { filter: 'online' },
+      guardrailDescription: 'Query devices matching a filter.',
+      expected: 'Query devices matching a filter.',
+    },
+    {
+      name: 'an unrecognized tool with no guardrail description falls back to a generic execute sentence',
+      toolName: 'query_devices',
+      input: {},
+      expected: 'Execute query_devices',
+    },
+  ];
+
+  it.each(CASES)('$name', ({ toolName, input, guardrailDescription, expected }) => {
+    expect(buildImpactSummary(toolName, input, catalogGuardrail(guardrailDescription))).toBe(expected);
   });
 });

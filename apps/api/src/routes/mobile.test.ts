@@ -2256,6 +2256,57 @@ describe('mobile routes', () => {
         expect(selectMock).toHaveBeenCalledTimes(2);
       });
     });
+
+    describe('decommissioned devices (#5106)', () => {
+      it('builds a total that excludes decommissioned devices and surfaces a decommissioned count', async () => {
+        const selectMock = vi.mocked(db.select);
+        selectMock
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 34, online: 34, offline: 0, maintenance: 0, decommissioned: 20 }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
+            ]) as any
+          );
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Passed through from the (mocked) aggregate row — proves the route
+        // surfaces the new decommissioned bucket instead of dropping it.
+        expect(body.devices).toEqual({
+          total: 34,
+          online: 34,
+          offline: 0,
+          maintenance: 0,
+          decommissioned: 20
+        });
+
+        // Structural check on the real (unmocked) SQL fragment the route
+        // builds for `total`: it must reference devices.status and exclude
+        // 'decommissioned', not `count(*)` — otherwise decommissioned rows
+        // silently inflate the total past what online+offline+maintenance
+        // show (the original bug: hero read 77, legend summed to 57).
+        const deviceSelectArgs = selectMock.mock.calls[0]![0] as Record<string, any>;
+        const totalChunks = deviceSelectArgs.total.queryChunks;
+        expect(totalChunks).toContainEqual(devices.status);
+        const totalSqlText = totalChunks
+          .filter((chunk: any) => typeof chunk?.value?.[0] === 'string')
+          .map((chunk: any) => chunk.value[0])
+          .join('');
+        expect(totalSqlText).not.toMatch(/^count\(\*\)$/);
+        expect(totalSqlText).toContain('decommissioned');
+        expect(totalSqlText).toMatch(/!=|<>/);
+
+        // decommissioned field itself must be a dedicated aggregate, not a
+        // pass-through of total.
+        const decommissionedChunks = deviceSelectArgs.decommissioned.queryChunks;
+        expect(decommissionedChunks).toContainEqual(devices.status);
+      });
+    });
   });
 
   describe('GET /mobile/search', () => {
