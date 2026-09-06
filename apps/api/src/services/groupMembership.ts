@@ -564,6 +564,14 @@ export async function updateDeviceMembership(
     resolvedOrgId = device.orgId;
   }
 
+  // ORDER BY id is a LOCK-ORDER contract, not cosmetics. Both
+  // `ensureFilterFieldsUsed` (below) and `evaluateDeviceMembershipForGroup`
+  // UPDATE `device_groups`, so two concurrent re-evaluations for two devices in
+  // the same org that walk the org's groups in different orders can take the
+  // group row locks in opposite orders and deadlock (40P01 — the #3911 shape).
+  // An unordered SELECT gives no ordering guarantee whatsoever; sorting by the
+  // primary key makes every evaluator lock the same groups in the same
+  // sequence, which is the standard deadlock-free discipline.
   const groups = await db
     .select({
       id: deviceGroups.id,
@@ -575,7 +583,8 @@ export async function updateDeviceMembership(
       sql`${deviceGroups.orgId} = ${resolvedOrgId}
         AND ${deviceGroups.type} = 'dynamic'
         AND ${deviceGroups.filterConditions} IS NOT NULL`
-    );
+    )
+    .orderBy(deviceGroups.id);
 
   let summary: MembershipUpdateSummary = { evaluatedGroups: 0, added: 0, removed: 0 };
 
