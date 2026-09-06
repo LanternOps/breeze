@@ -2616,6 +2616,7 @@
       },
       "alwaysOn": "Her zaman açık: salt okunur araçlar",
       "alwaysOnCount": "{{count}} salt okunur araç",
+      "highImpact": "Yüksek etki",
       "recommendedTitle": "{{kind}} için önerilen",
       "recommendedDescription": "{{kind}} aracılarının genellikle ihtiyaç duyduğu işlemler.",
       "recommendedApply": "Öneriyi uygula",

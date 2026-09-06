@@ -2616,6 +2616,7 @@
       },
       "alwaysOn": "Sempre ativo: ferramentas somente leitura",
       "alwaysOnCount": "{{count}} ferramentas somente leitura",
+      "highImpact": "Alto impacto",
       "recommendedTitle": "Recomendado para {{kind}}",
       "recommendedDescription": "Operações que os agentes de {{kind}} geralmente precisam.",
       "recommendedApply": "Usar recomendado",

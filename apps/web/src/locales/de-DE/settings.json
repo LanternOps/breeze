@@ -2616,6 +2616,7 @@
       },
       "alwaysOn": "Immer aktiv: schreibgeschützte Tools",
       "alwaysOnCount": "{{count}} schreibgeschützte Tools",
+      "highImpact": "Hohe Auswirkung",
       "recommendedTitle": "Empfohlen für {{kind}}",
       "recommendedDescription": "Vorgänge, die {{kind}}-Agenten typischerweise benötigen.",
       "recommendedApply": "Empfehlung übernehmen",
