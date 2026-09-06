@@ -24,7 +24,6 @@ import {
   Archive
 } from 'lucide-react';
 import ContactsCard from './ContactsCard';
-import ContractsList from '../contracts/ContractsList';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
@@ -299,6 +298,16 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
+
+  // Contracts moved into the organization record's Contracts & Billing tab
+  // (#5075 W03) — this settings tab now exists only to send an old `#contracts`
+  // link (bookmark or nav click) to its new home instead of showing stale UI.
+  // `replace: true` so the redirect doesn't leave the settings page's dead tab
+  // in back-history.
+  useEffect(() => {
+    if (activeTab !== 'contracts' || !effectiveOrgId) return;
+    void navigateTo(`/organizations/${effectiveOrgId}#billing`, { replace: true });
+  }, [activeTab, effectiveOrgId]);
 
   const fetchOrgDetails = useCallback(async () => {
     if (!effectiveOrgId) {
@@ -630,11 +639,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           </div>
         ) : null;
       case 'contracts':
-        return effectiveOrgId ? (
-          <div data-testid="org-tab-contracts">
-            <ContractsList lockedOrgId={effectiveOrgId} />
-          </div>
-        ) : null;
+        // Redirected to the organization record's Contracts & Billing tab by
+        // the effect above; render nothing while that navigation happens.
+        return null;
       case 'billing':
         return effectiveOrgId ? (
           <div data-testid="org-tab-billing">

@@ -874,7 +874,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       data-testid="contract-form-org-readonly"
                       className="inline-flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm text-foreground"
                     >
-                      {orgName}
+                      <a href={`/organizations/${orgId}`} data-testid="org-record-link" className="hover:underline">
+                        {orgName}
+                      </a>
                     </span>
                   </div>
                 )}

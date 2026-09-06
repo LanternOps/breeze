@@ -996,7 +996,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <span>{ticket.orgName}</span>
+          <a href={`/organizations/${ticket.orgId}`} data-testid="org-record-link" className="hover:text-foreground hover:underline">
+            {ticket.orgName}
+          </a>
           {ticket.deviceHostname && (
             <>
               <span>·</span>
