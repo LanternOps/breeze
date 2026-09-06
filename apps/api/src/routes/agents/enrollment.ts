@@ -40,6 +40,7 @@ import {
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability, trustDenyBody, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import { enqueueIpClassify } from '../../services/ipClassify';
+import { emitDeviceChange, createDeviceChangeEvent } from '../../events/deviceEvents';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -1050,6 +1051,14 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       }
       throw err;
     }
+
+    // #4630 — a freshly enrolled device must be evaluated against every
+    // dynamic group in its org immediately, not just on its next filterable
+    // heartbeat change (hostname/OS are already correct at insert, so no
+    // later heartbeat diff would ever fire for a device that matched from
+    // day one). Runs inside this handler's existing withSystemDbAccessContext
+    // wrapper (see the top of this handler), self-tenanted by key.orgId.
+    await emitDeviceChange(createDeviceChangeEvent('device.created', device.id, key.orgId, []));
 
     const mtlsCert = await issueMtlsCertForDevice(device.id, key.orgId);
 

@@ -83,6 +83,13 @@ vi.mock('../../services/provisionCredentialHandle', () => ({
   provisionHandleExpiresAt: vi.fn(() => new Date('2030-01-01T00:00:00.000Z')),
 }));
 
+// #4630 — dynamic device group re-evaluation emit on provisioning.
+const emitDeviceChangeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../../events/deviceEvents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/deviceEvents')>();
+  return { ...actual, emitDeviceChange: emitDeviceChangeMock };
+});
+
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { provisionRoutes } from './provision';
@@ -397,6 +404,16 @@ describe('POST /devices/provision', () => {
         expect.objectContaining({
           action: 'device.provision',
           resourceId: 'device-prov-id',
+          orgId: ORG_ID,
+        }),
+      );
+
+      // #4630 — the new device is evaluated against every dynamic group in
+      // its org immediately, not just on its next heartbeat.
+      expect(emitDeviceChangeMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'device.created',
+          deviceId: 'device-prov-id',
           orgId: ORG_ID,
         }),
       );
