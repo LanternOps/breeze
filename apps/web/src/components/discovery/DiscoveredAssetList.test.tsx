@@ -121,7 +121,9 @@ describe('DiscoveredAssetList — "Same device as" badge (#3261)', () => {
     // the same row (one hidden via CSS, not the DOM) — assert on the first.
     const badges = await screen.findAllByTestId('discovered-asset-same-device-badge');
     expect(badges.length).toBeGreaterThan(0);
-    expect(badges[0]).toHaveTextContent('Same device as WS-FRONTDESK');
+    expect(badges[0]).toHaveTextContent('Agent installed');
+    expect(badges[0]).not.toHaveTextContent('Same device as');
+    expect(badges[0]!.getAttribute('title')).toBe('WS-FRONTDESK');
     expect(badges[0]!.getAttribute('href')).toBe('/devices/dev-1');
   });
 

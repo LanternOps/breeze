@@ -143,7 +143,7 @@
     "monitored": "Monitorato",
     "title": "Asset rilevati",
     "tryAgain": "Riprova",
-    "sameDeviceAs": "Stesso dispositivo di {{name}}"
+    "agentInstalled": "Agente installato"
   },
   "discoveryJobList": {
     "actions": {

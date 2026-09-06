@@ -143,7 +143,7 @@
     "monitored": "İzlendi",
     "title": "Keşfedilen Varlıklar",
     "tryAgain": "Tekrar deneyin",
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
+    "agentInstalled": "Ajan yüklü"
   },
   "discoveryJobList": {
     "actions": {

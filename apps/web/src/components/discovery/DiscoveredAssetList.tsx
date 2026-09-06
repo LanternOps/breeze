@@ -491,12 +491,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               href={`/devices/${asset.linkedDeviceId}`}
               onClick={event => event.stopPropagation()}
               data-testid="discovered-asset-same-device-badge"
+              title={asset.linkedDeviceName || undefined}
               className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary hover:underline"
             >
               <CheckCircle2 className="h-3 w-3" />
-              {t('discoveredAssetList.sameDeviceAs', {
-                name: asset.linkedDeviceName || t('common:states.unknown')
-              })}
+              {t('discoveredAssetList.agentInstalled')}
             </a>
           )}
         </div>
