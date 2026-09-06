@@ -1,3 +1,4 @@
+import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -882,6 +883,9 @@ orgRoutes.patch(
     return c.json({ error: pinError }, 400);
   }
 
+  // This endpoint always writes the merged settings, even on name-only edits.
+  await lockMfaPolicySettings({ kind: 'partner', id: auth.partnerId! });
+
   // Get current partner to merge settings
   const [current] = await db
     .select()
@@ -978,6 +982,11 @@ orgRoutes.patch(
       },
       400,
     );
+  }
+
+  if (body.settings !== undefined) {
+    const count = await countMfaPolicyLockouts({ kind: 'partner', id: auth.partnerId! }, newSettings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
   }
 
   // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
@@ -1117,6 +1126,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   if (updates.settings !== undefined) {
+    await lockMfaPolicySettings({ kind: 'partner', id });
     // Fold the legacy `security.allowedMfaMethods` alias into the canonical
     // `security.allowedMethods` before anything else touches settings. This
     // is a wholesale-replace path (updatePartnerSchema uses `settings: z.any()`),
@@ -1170,6 +1180,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         updates.timezone = canonicalTz;
       }
     }
+    const count = await countMfaPolicyLockouts({ kind: 'partner', id }, updates.settings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+
     // Encrypt secret-bearing fields in partners.settings before writing.
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
@@ -1593,6 +1606,7 @@ orgRoutes.patch(
     );
     const validOrgIds = partnerOrgs.map((o) => o.id);
     const sanitized = sanitizeOrganizationOrder(orderedIds, validOrgIds);
+    await lockMfaPolicySettings({ kind: 'partner', id: partnerId });
 
     const [current] = await db
       .select({ settings: partners.settings })
@@ -2039,6 +2053,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     }
   }
 
+  if (data.settings !== undefined) {
+    await lockMfaPolicySettings({ kind: 'organization', id });
+  }
+
   // Wave 4 introduces the frozen statuses, so it owns the guard on the way OUT.
   // Deliberately AFTER the partner-scope 404 above: a partner caller can only
   // reach here for an org it may already see, so refusing with a 409 that names
@@ -2161,6 +2179,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
   if (data.settings !== undefined) {
+    const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+
     // This write replaces `settings` WHOLESALE, so a client payload naming a
     // lifecycle-internal key would become that key's stored value. Strip them
     // first: a preseeded `purgingRecoveryAttempts` would neuter the purge-retry
