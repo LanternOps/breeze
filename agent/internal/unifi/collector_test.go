@@ -16,9 +16,9 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 		case "/proxy/network/integration/v1/sites":
 			w.Write([]byte(`{"data":[{"id":"s1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/devices":
-			w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/clients":
-			w.Write([]byte(`{"data":[{"id":"c1","macAddress":"aa:bb:cc:dd:ee:02","type":"WIRED"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"c1","macAddress":"aa:bb:cc:dd:ee:02","type":"WIRED"}]}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -82,7 +82,7 @@ func TestUploadOmitsUncollectedDeviceMetrics(t *testing.T) {
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/proxy/network/integration/v1/sites":
-			w.Write([]byte(`{"data":[{"id":"s1"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"s1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/devices":
 			w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
 		default:

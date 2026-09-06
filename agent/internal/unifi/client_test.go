@@ -70,11 +70,11 @@ func realControllerServer(t *testing.T, devicesJSON, clientsJSON string) *httpte
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/proxy/network/integration/v1/sites":
-			io.WriteString(w, `{"data":[{"id":"s1","name":"Default"}]}`)
+			_, _ = io.WriteString(w, `{"data":[{"id":"s1","name":"Default"}]}`)
 		case "/proxy/network/integration/v1/sites/s1/devices":
-			io.WriteString(w, devicesJSON)
+			_, _ = io.WriteString(w, devicesJSON)
 		case "/proxy/network/integration/v1/sites/s1/clients":
-			io.WriteString(w, clientsJSON)
+			_, _ = io.WriteString(w, clientsJSON)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
