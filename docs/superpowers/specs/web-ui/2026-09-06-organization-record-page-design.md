@@ -1,10 +1,11 @@
-# Organization record page and PSA module navigation
+# Organization record page and Service Management navigation
 
-Status: draft for Todd's review (2026-09-06). Advisor quorum complete: Fable,
-codex gpt-5.6-sol xhigh and codex gpt-6-astra xhigh agree on D1, D2, D3 and D5;
-D4 (column vs table) split 2:1 for the column, GPT-6 casting the tie-break. See
-"Quorum record".
-Tracking: to be registered via feature-lifecycle after approval (multi-wave).
+Status: **approved by Todd 2026-09-06** (open questions resolved, see below).
+Advisor quorum complete: Fable, codex gpt-5.6-sol xhigh and codex gpt-6-astra
+xhigh agree on D1, D2, D3 and D5; D4 (column vs table) split 2:1 for the
+column, GPT-6 casting the tie-break. See "Quorum record".
+Tracking: registered via feature-lifecycle once the implementation plan exists
+(multi-wave).
 
 ## Problem
 
@@ -26,7 +27,7 @@ Two further observations drive this design:
   applied by a full page reload. Opening a customer must not require switching
   the technician's working scope.
 
-Todd's second question, answered in Part 2: should PSA features be hideable for
+Todd's second question, answered in Part 2: should the service desk and billing module be hideable for
 RMM-only partners, and should the sidebar be regrouped into workflow trees.
 
 ## Goals
@@ -35,15 +36,22 @@ RMM-only partners, and should the sidebar be regrouped into workflow trees.
    overview and tabs, pinned to that org regardless of global scope.
 2. An always-visible way to open it from the organizations list, plus
    exception-only status badges in the list.
-3. A partner-level switch that hides the PSA module for RMM-only partners, and a
-   sidebar grouped by workflow (RMM, PSA, AI) without a two-level tree rewrite.
+3. A partner-level Service Management mode (`native` / `off` / `external`) that
+   hides the service desk and billing module for RMM-only partners and is
+   already shaped for an external PSA as system of record, plus a sidebar
+   grouped by workflow without a two-level tree rewrite.
 
 ## Non-goals
 
 - Replacing `/settings/organizations` (add, bulk import, reorder, archive,
   merge, sites CRUD stay there).
 - Moving billing configuration, Pax8 or any settings editor onto the record.
-- New tenant tables. Part 1 needs none; Part 2 needs one boolean column.
+- New tenant tables. Part 1 needs none; Part 2 needs two scalar columns on
+  `partners`.
+- The external service desk itself (adapter wiring for `createTicket`, shadow
+  ticket rows, inbound status sync, org → PSA company picker). Part 2 only
+  reserves the `external` mode for it; it gets its own spec and feature after
+  this one (see D6 and Follow-ups).
 - Custom fields on organizations (#3843), org document templates (#3844),
   cross-org reporting (#3858). The record links out where those land later.
 - An onboarding "RMM only" preset. Follow-up once the toggle exists.
@@ -76,9 +84,11 @@ RMM-only partners, and should the sidebar be regrouped into workflow trees.
 |---|---|---|
 | D1 | New record page at `/organizations/[id]`; settings page stays and becomes the record's Settings tab target | Growing the settings page with operational tabs (mixes dirty-state forms with live lists); "open = switch scope + dashboard" (reload, no record) |
 | D2 | Record is URL-pinned. Opening it never changes the global OrgSwitcher scope. A secondary "Work in this org" button does | Auto-switching scope on open |
-| D3 | Both: regroup the sidebar by workflow *and* add a partner-level PSA toggle | Toggle only (nav still cluttered for PSA users); regroup only (RMM-only shops still see PSA) |
-| D4 | Toggle storage: dedicated boolean column on `partners` (see Part 2 and quorum record for the table alternative) | `partner_modules` table (a new partner-axis RLS table with allowlist + `*PartnerRls` suite for one presentation preference; no org cascade/export burden since it has no `org_id`, but still a tenant table to own) |
+| D3 | Both: regroup the sidebar by workflow *and* add a partner-level Service Management mode | Mode only (nav still cluttered for service-desk users); regroup only (RMM-only shops still see the module) |
+| D4 | Mode storage: two typed columns on `partners` (`service_management_mode`, `service_management_psa_connection_id`) | `partner_modules` table (a new partner-axis RLS table with allowlist + `*PartnerRls` suite for one preference; no org cascade/export burden since it has no `org_id`, but still a tenant table to own); a JSON blob in `partners.settings` |
 | D5 | Status pill in lists shown only for non-`active` statuses; record header always shows status, subdued when active | Removing status from the list entirely |
+| D6 | External PSA (ConnectWise, Autotask, …) as system of record = **direct create through `ticketService` via the existing adapters, a thin shadow `tickets` row with the external id/URL, and inbound sync limited to status/closure**. Approved by Todd 2026-09-06; specified in a follow-on feature | Two-way sync of the native ticketing module with the PSA (board/type/status mapping per vendor, comment and attachment mirroring, conflict resolution, two systems of record); "no local record at all" (breaks every surface that reads `tickets`: alert linked-tickets card, AI tool reads, portal, org record, reporting) |
+| D7 | The module is named **Service Management** in UI, i18n keys and the column name; "PSA" stays reserved for external connectors | "PSA" (collides with `components/psa/*`, `psa_connections`) |
 
 ---
 
@@ -240,92 +250,120 @@ Legacy hashes: `/settings/organizations/<id>#contacts` redirects to
 
 ---
 
-## Part 2: Workflow navigation and the PSA module toggle
+## Part 2: Workflow navigation and the Service Management mode
 
-### 2.1 Recommendation
+### 2.1 Recommendation (approved 2026-09-06)
 
 Do both (D3). The sidebar already has single-level collapsible sections that
 are, in effect, workflow groups (Fleet Management, Security, Backup, Billing,
 AI). A two-level tree (Module → Section → Item) is a nav rewrite for little
 gain, since sections already collapse. Instead:
 
-1. **Regroup and rename sections so the module is legible from the headers**:
+1. **Regroup sections so the module is legible from the headers.** The module
+   is called **Service Management** (Todd, 2026-09-06; "PSA" in this repo means
+   the external PSA *connectors*, `components/psa/*`, `psa_connections`).
 
-   | Section (new) | Items |
+   | Section | Items |
    |---|---|
-   | Dashboard, Organizations | top-level, module-neutral (Organizations moves out of Settings; partner scope only, `organizations:read`) |
-   | RMM · Fleet | Devices, Discovery, Patches, Software, Scripts, Automations, Monitors, Remote, Peripherals, SNMP, Fleet Posture |
-   | RMM · Security | current Security section unchanged |
-   | RMM · Backup | current Backup section unchanged |
-   | PSA · Service Desk | Tickets, Timesheet (Approvals stays module-neutral: it is AI/PAM approvals) |
-   | PSA · Billing | Contracts, Quotes, Invoices, Product Catalog |
-   | AI | current AI section unchanged (AI Agents, AI Impact, AI Usage, AI for Office, Workspace) |
+   | Dashboard, Organizations | top-level, module-neutral. Organizations moves out of Settings and points at the existing `/settings/organizations` page for now (operational list is a follow-up); partner scope only, `organizations:read` |
+   | Fleet Management, Security, Backup | unchanged (RMM; the product name, so no prefix) |
+   | Service Desk | Tickets, Timesheet (Approvals stays module-neutral: it is AI/PAM approvals) |
+   | Billing | Contracts, Quotes, Invoices, Product Catalog |
+   | AI | unchanged (AI Agents, AI Impact, AI Usage, AI for Office, Workspace) |
    | Reporting | unchanged, cross-module |
    | Settings, Administration, Extensions | unchanged |
 
-   Naming: Todd's term is PSA. Codex suggested "Service Management" because the
-   repo uses "PSA" for external PSA *connectors* (`components/psa/*`,
-   `psa_connections`). Decision for Todd; the module key in code is `psa`
-   either way.
+   Service Desk and Billing sit adjacent and are the two sections the mode
+   below hides. Section i18n keys: `nav.sectionServiceDesk`, `nav.sectionBilling`.
 
-2. **Partner-level module toggle** hides the two PSA sections and the record's
-   Tickets and Contracts & Billing tabs and Overview tiles, plus their creation
-   affordances. It does **not** hide external PSA connectors on the Integrations
-   page (ConnectWise/Autotask/Halo sync): an RMM-only shop is exactly the shop
-   that pushes tickets to someone else's PSA.
+2. **Partner-level Service Management mode** (replaces the earlier on/off
+   boolean; shaped now so the external-PSA follow-on does not retrofit it).
 
-### 2.2 Toggle semantics
+### 2.2 Mode semantics
 
-- It is a **presentation preference, never authorization**. The API keeps
-  enforcing RBAC only; every PSA route keeps working when the module is off, and
-  deep links still open. No 403s are introduced by the toggle.
+`service_management_mode` is one of:
+
+| Mode | Meaning | Nav | Org record | Ticket creation surfaces |
+|---|---|---|---|---|
+| `native` (default, hosted and self-hosted alike) | Breeze is the service desk and billing system | Service Desk + Billing shown | Tickets and Contracts & Billing tabs + tiles shown | Unchanged |
+| `off` | RMM-only partner | Both sections hidden | Both tabs and their tiles hidden | Hidden in the web (alert dialog, "New ticket"); `manage_tickets` create actions and the add-in `ticket-create` capability return a clear "service management is off" error; portal ticket submission forced off |
+| `external` | The partner's system of record is an external PSA bound to `service_management_psa_connection_id` | Both sections hidden; a read-only Tickets list of shadow rows with external links replaces the workbench | Tickets tab shows shadow rows with "Open in <PSA>" links; Contracts & Billing hidden | Route through the connection's adapter (`createTicket`), write a shadow `tickets` row (`source='psa'`, `external_ticket_id/url`), narrow inbound status sync. **Specified and built by the follow-on "External service desk" feature**; W4 ships the value in the schema and validator but the settings UI offers only `native` and `off` until that feature lands |
+
+Rules that hold in every mode:
+
+- The mode never changes API authorization. RBAC keeps enforcing every route;
+  deep links to existing tickets, invoices and contracts keep working; background
+  billing jobs are unaffected (they act only on data the partner created).
+  The single behavioural effect is that `off` refuses *new* ticket creation at
+  the service layer, so nothing can create tickets nobody will see.
 - Partner-wide, no org override. An MSP either runs a service desk or it does
   not.
-- Default **on** for existing and new partners. The setting lives on the Partner
-  settings page under a new **Modules** card in the `company` section: one
-  switch, "Service desk & billing (PSA)", with the list of what it hides.
-- Sidebar gate `requiresModule: 'psa'` evaluated in `isNavItemVisible`. Source:
-  `psaEnabled` on `GET /orgs/partners/me`, persisted in the zustand store so the
-  first paint uses the last known value (no flash, no over-hide during the
-  cold-load window that already bites `requiredPermission`). Fails open when the
-  fetch errors.
-- Org-scoped users are **not** affected by the toggle. `GET /orgs/partners/me`
-  is `requireScope('partner')`, so an org token cannot read the flag, and org
+- External PSA connectors on the Integrations page stay visible in every mode:
+  an RMM-only shop is exactly the shop that pushes tickets to someone else's
+  PSA.
+- Sidebar gate `requiresModule: 'service_management'` evaluated in
+  `isNavItemVisible`. Source: `serviceManagementMode` on
+  `GET /orgs/partners/me`, persisted in the zustand store so the first paint uses
+  the last known value (no flash, no over-hide during the cold-load window that
+  already bites `requiredPermission`). Fails open (`native`) when the fetch
+  errors.
+- Org-scoped users are **not** affected by the mode. `GET /orgs/partners/me`
+  is `requireScope('partner')`, so an org token cannot read it, and org
   navigation is already narrowed by `partnerScopeOnly` (Quotes, Invoices,
-  Contracts, Catalog are partner-only) plus RBAC. The only PSA items an org
-  user can see are Tickets and Timesheet, which their role grants or not.
-  Alternative if this proves wrong in practice: expose `psaEnabled` on the
+  Contracts, Catalog are partner-only) plus RBAC. The only Service Management
+  items an org user can see are Tickets and Timesheet, which their role grants
+  or not. Alternative if this proves wrong in practice: expose the mode on the
   org-readable branding/config endpoint. Not in W4.
+- The setting lives on the Partner settings page under a new **Modules** card
+  in the `company` section: a radio group (Breeze / Off; External appears when
+  the follow-on ships) with the list of what each choice hides.
 
 ### 2.3 Storage (D4)
 
-`partners.psa_enabled boolean NOT NULL DEFAULT true`, migration named to sort
-after the newest committed migration at implementation time (as of 2026-09-06
-that is `2026-10-12-000100-device-manual-maintenance-lease.sql`, so e.g.
-`2026-10-12-000200-partners-psa-enabled.sql`; re-check before committing, the
-ceiling runs ahead of real time). `ADD COLUMN IF NOT EXISTS`. Exposed on `GET /orgs/partners/me` next to
-`aiForOfficeEnabled`; writable on `PATCH /orgs/partners/me` by partner admins
-(unlike `aiForOfficeEnabled`, which is platform-only). `partners` is not an
-org-cascade table, so no cascade-list change; the column is a plain boolean, so
-no export-policy bucket change beyond what the partner table already has (verify
-with `tenant-export-policy.integration.test.ts`).
+Two columns on `partners`, one migration named to sort after the newest
+committed migration at implementation time (as of 2026-09-06 that is
+`2026-10-12-000100-device-manual-maintenance-lease.sql`, so e.g.
+`2026-10-12-000200-partners-service-management-mode.sql`; re-check before
+committing, the ceiling runs ahead of real time):
 
-Why a column and not a `partner_modules` table: one toggle today, and the table
+```sql
+ALTER TABLE partners
+  ADD COLUMN IF NOT EXISTS service_management_mode text NOT NULL DEFAULT 'native',
+  ADD COLUMN IF NOT EXISTS service_management_psa_connection_id uuid
+    REFERENCES psa_connections(id) ON DELETE RESTRICT;
+-- CHECK service_management_mode IN ('native','external','off')
+-- CHECK (service_management_mode <> 'external' OR service_management_psa_connection_id IS NOT NULL)
+-- CHECK (service_management_mode = 'external' OR service_management_psa_connection_id IS NULL)
+```
+
+`ON DELETE RESTRICT` so a bound connection cannot be deleted without first
+leaving external mode. The PATCH handler validates that the referenced
+connection is partner-owned by the caller's partner (`psa_connections` is org
+XOR partner owned; only partner-owned rows qualify). Exposed on
+`GET /orgs/partners/me` next to `aiForOfficeEnabled`; writable on
+`PATCH /orgs/partners/me` by partner admins (unlike `aiForOfficeEnabled`, which
+is platform-only). `partners` is a partner-axis table with no `org_id`, so no
+org cascade or export-policy registration applies; both columns are scalar.
+
+Why columns and not a `partner_modules` table: one mode today, and the table
 would be a new partner-axis RLS tenant table (policy, `PARTNER_TENANT_TABLES`
-allowlist entry, its own `*PartnerRls.integration.test.ts`; no org cascade or
-export-policy entries since it has no `org_id`). The typed column matches how
-every other partner preference is stored. Revisit a table when modules need
-metadata or an independent lifecycle; a third toggle is a prompt to review, not
-an automatic migration. The read path (`partners/me`) keeps its shape either way.
+allowlist entry, its own `*PartnerRls.integration.test.ts`). The typed column
+matches how every other partner preference is stored. Revisit a table when
+modules need metadata or an independent lifecycle.
 
 ### 2.4 Testing
 
-- `Sidebar.module.test.tsx`: PSA sections hidden when `psaEnabled=false`,
-  visible when true or when the fetch fails, Organizations visible in both.
-- `routes/orgs.test.ts`: `psaEnabled` round-trips on `/partners/me` GET and
-  PATCH; org-scope PATCH is rejected.
-- Record page: PSA tabs and tiles hidden when the flag is off.
-- Migration idempotency via `autoMigrate.test.ts`; naming guard.
+- `Sidebar.module.test.tsx`: Service Desk and Billing hidden for `off` and
+  `external`, visible for `native` and when the fetch fails; Organizations
+  visible in every mode.
+- `routes/orgs.test.ts`: mode round-trips on `/partners/me` GET and PATCH;
+  `external` without a connection is 400; a connection owned by another partner
+  or by an org is 400; org-scope PATCH is rejected.
+- `ticketService` / `aiToolsTicketing` / `officeAddin/tickets`: creation
+  refused with the mode error when `off`; unchanged when `native`.
+- Record page: Service Management tabs and tiles hidden when `off`.
+- Migration idempotency via `autoMigrate.test.ts`; naming guard; CHECK
+  constraints exercised in an integration test (23514 on an inconsistent pair).
 - Locale parity: new `nav.*`, `orgRecord.*`, `partnerSettingsPage.modules.*`
   keys in all 8 locales (`keyUsage.test.ts`).
 
@@ -338,22 +376,22 @@ an automatic migration. The read path (`partners/me`) keeps its shape either way
 | W1 | `orgIdOverride`, route-scope kind, summary endpoint, record page shell with header + Overview, list affordances + status-pill rule, orgStore status fix, device breadcrumb retarget | — |
 | W2 | Contacts, Sites (shared `useSiteCrud`), Devices, Activity tabs; settings `#contacts` redirect | W1 |
 | W3 | Tickets and Contracts & Billing tabs (`lockedOrgId` on invoices/quotes pages), `#contracts` redirect, org links from ticket/invoice/quote/contract details | W1 |
-| W4 | Sidebar regroup + Organizations top-level; `psa_enabled` column, `/partners/me` exposure, Modules card, `requiresModule` gate, record tab gating | W1 (for the record gating), otherwise independent |
+| W4 | Sidebar regroup (Service Desk + Billing sections) + Organizations top-level → `/settings/organizations`; `service_management_mode` + connection columns and CHECKs, `/partners/me` exposure + PATCH validation, Modules card (Breeze / Off), `requiresModule` gate, `off` refusal in `ticketService` + AI tool + add-in + portal, record tab gating | W1 (for the record gating), otherwise independent |
 
 W2 and W3 are file-disjoint and can run in parallel. W4 can start after W1 in
 parallel with W2/W3.
 
-## Open questions for Todd
+## Open questions (resolved by Todd 2026-09-06)
 
-1. Section naming: **PSA** (your term) or **Service Management** (codex's
-   suggestion, avoids collision with PSA connectors)?
-2. Should the top-level **Organizations** item point at a new operational list
-   (`/organizations`, table with online/total devices, open tickets, alerts) or
-   at the existing settings master-detail for now? Recommendation: existing
-   page in W4, new list as a follow-up once the record has shipped and we know
+1. Module naming → **Service Management** (D7).
+2. Top-level **Organizations** item → the existing `/settings/organizations`
+   page in W4; an operational list (`/organizations` with online/total devices,
+   open tickets, alerts) is a follow-up once the record has shipped and we know
    which columns techs actually use.
-3. Default for the PSA toggle on **self-hosted** installs: same default-on, or
-   off? Recommendation: same default-on; the switch is one click.
+3. Default mode on **self-hosted** installs → `native`, same as hosted.
+4. (Raised during review) External PSA ticketing → D6: direct create + shadow
+   row + narrow status sync, not two-way sync; amend this spec to the three-mode
+   model now, build the external service desk as its own follow-on feature.
 
 ## Quorum record
 
@@ -378,15 +416,44 @@ parallel with W2/W3.
   when the module is off; keep Organizations and Reporting outside the module
   groups. Suggested exposing the flag to org users via bootstrap (deferred, see
   2.2) and an onboarding "RMM only" choice (follow-up).
+- **External PSA ticketing (D6), 2026-09-06**: Fable position, approved by Todd
+  without a codex round (the follow-on spec gets its own quorum). Inventory
+  that grounded it: real adapters for ConnectWise, Autotask, Jira, ServiceNow,
+  Freshservice, Zendesk in `apps/api/src/services/psa/*` with
+  `createTicket`/`updateTicket`/`getTicket`/`syncTickets` never called by any
+  route or job; `POST /psa/connections/:id/sync` returns 501; `psa_ticket_mappings`
+  has no writer; `tickets.external_ticket_id/url` dormant; `ticketSourceEnum`
+  lacks `psa`; company import maps PSA company → org in
+  `organization_external_links`; every native ticket-creating surface (alert
+  dialog, `manage_tickets` AI tool, portal, Outlook add-in, email-to-ticket)
+  already funnels through `ticketService`, which emits `ticket.created/updated`
+  on the event bus; no device "create ticket" button and no automation
+  `create_ticket` action exist today.
+- **Todd's decisions, 2026-09-06**: Service Management naming; Organizations
+  top-level → existing settings list first; `native` default on self-hosted;
+  amend to the three-mode model now.
 
 ## Follow-ups (not in these waves)
 
-- Onboarding "RMM only" preset that sets `psa_enabled=false` at partner signup.
+- **External service desk** (own spec + feature, after this one): wire the
+  existing `services/psa/*` adapters' `createTicket`/`updateTicket`/`getTicket`
+  into `ticketService` behind `service_management_mode = 'external'`; shadow
+  `tickets` rows (`source='psa'` enum value, activate the dormant
+  `external_ticket_id`/`external_ticket_url` columns, fold or retire the
+  never-written `psa_ticket_mappings`); outbound note append for alert updates
+  and AI findings; inbound status/closure via PSA webhook where supported, else
+  poll on the adapters' `syncTickets`; optional alert auto-resolve on close;
+  org → PSA company picker on org settings General (company import already
+  populates `organization_external_links`); per-connection board/type/priority
+  defaults in the existing `syncSettings` JSON; unlock the External option in
+  the Modules card. Inventory of what exists is in this spec's quorum record.
+- Onboarding "RMM only" preset that sets `service_management_mode='off'` at
+  partner signup.
 - Partner access to `suspended`/`churned` organizations' records (today the
   partner token's org set excludes them, so their data is unreachable in both
   the record and the settings page).
-- `psaEnabled` on an org-readable bootstrap endpoint if org users need the
-  module preference.
+- `serviceManagementMode` on an org-readable bootstrap endpoint if org users
+  need the module preference.
 - Operational `/organizations` list with online/total, open tickets, open
   alerts columns (see open question 2).
 - Redis-cached summary if the counts prove slow at fleet scale.
