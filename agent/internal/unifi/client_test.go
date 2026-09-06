@@ -151,7 +151,10 @@ func TestPollClientWiredFlagFollowsTypeDiscriminator(t *testing.T) {
 	clients := `{"data":[` +
 		`{"id":"c-wired","name":"printer","type":"WIRED","macAddress":"f4:a9:97:00:00:01","ipAddress":"172.16.10.51"},` +
 		`{"id":"c-wifi","name":"phone","type":"WIRELESS","macAddress":"f4:a9:97:00:00:02","ipAddress":"172.16.10.52"},` +
-		`{"id":"c-vpn","name":"laptop-vpn","type":"VPN","macAddress":"f4:a9:97:00:00:03"}]}`
+		`{"id":"c-vpn","name":"laptop-vpn","type":"VPN","macAddress":"f4:a9:97:00:00:03"},` +
+		`{"id":"c-tele","name":"teleport","type":"TELEPORT","macAddress":"f4:a9:97:00:00:04"},` +
+		`{"id":"c-new","name":"future-enum","type":"SOMETHING_NEW","macAddress":"f4:a9:97:00:00:05"},` +
+		`{"id":"c-none","name":"no-type","macAddress":"f4:a9:97:00:00:06"}]}`
 	srv := realControllerServer(t, `{"data":[]}`, clients)
 	defer srv.Close()
 
@@ -159,10 +162,19 @@ func TestPollClientWiredFlagFollowsTypeDiscriminator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Poll error: %v", err)
 	}
-	if len(snap.Clients) != 3 {
-		t.Fatalf("expected 3 clients, got %d", len(snap.Clients))
+	if len(snap.Clients) != 6 {
+		t.Fatalf("expected 6 clients, got %d", len(snap.Clients))
 	}
-	want := map[string]bool{"f4:a9:97:00:00:01": true, "f4:a9:97:00:00:02": false, "f4:a9:97:00:00:03": false}
+	// Only WIRED is wired. An unknown or absent type degrades to not-wired rather
+	// than guessing — the raw element is still uploaded, so the truth is recoverable.
+	want := map[string]bool{
+		"f4:a9:97:00:00:01": true,  // WIRED
+		"f4:a9:97:00:00:02": false, // WIRELESS
+		"f4:a9:97:00:00:03": false, // VPN
+		"f4:a9:97:00:00:04": false, // TELEPORT
+		"f4:a9:97:00:00:05": false, // unknown future enum
+		"f4:a9:97:00:00:06": false, // type absent entirely
+	}
 	for _, cl := range snap.Clients {
 		expected, ok := want[cl.Mac]
 		if !ok {
@@ -207,5 +219,33 @@ func TestPollFirmwareTooOld(t *testing.T) {
 	}
 	if snap.FirmwareOK {
 		t.Fatalf("expected FirmwareOK false when integration endpoint is 404")
+	}
+}
+
+// The bug in #5087 survived because the fixture was written to mirror the STRUCT
+// instead of the controller, so it agreed with whatever tags the structs happened
+// to declare. This guard fails loudly if the fixtures are ever "simplified" back
+// toward Breeze-side field names, instead of letting the assertions above fail in
+// a way that reads like a mapping bug.
+func TestFixturesSpeakTheControllerVocabulary(t *testing.T) {
+	for _, fixture := range []struct{ name, body string }{
+		{"devices", realDeviceListJSON},
+		{"clients", realClientListJSON},
+	} {
+		for _, required := range []string{`"macAddress"`} {
+			if !strings.Contains(fixture.body, required) {
+				t.Errorf("%s fixture lost %s — it must stay the real controller shape", fixture.name, required)
+			}
+		}
+		// Breeze-side / invented spellings that the controller never sends.
+		for _, forbidden := range []string{`"mac"`, `"hostname"`, `"is_wired"`, `"connected_device_id"`, `"uptime_seconds"`, `"num_clients"`} {
+			if strings.Contains(fixture.body, forbidden) {
+				t.Errorf("%s fixture contains %s, which the Integration API never sends — "+
+					"the fixture must not be rewritten to match our structs (that is what hid #5087)", fixture.name, forbidden)
+			}
+		}
+	}
+	if !strings.Contains(realClientListJSON, `"ipAddress"`) || !strings.Contains(realClientListJSON, `"uplinkDeviceId"`) {
+		t.Error("client fixture must keep ipAddress/uplinkDeviceId — the fields #5087 was about")
 	}
 }

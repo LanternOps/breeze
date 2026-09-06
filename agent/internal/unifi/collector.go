@@ -70,16 +70,26 @@ func (d CollectorDeps) logf(format string, args ...any) {
 // and Breeze needs unifiDeviceId, which the controller calls id). Keep them
 // separate — do not collapse one into the other.
 type uploadDevice struct {
-	UnifiDeviceID string          `json:"unifiDeviceId"`
-	UnifiSiteID   string          `json:"unifiSiteId,omitempty"`
-	Mac           string          `json:"mac,omitempty"`
-	Name          string          `json:"name,omitempty"`
-	UptimeSeconds int64           `json:"uptimeSeconds"`
-	CPUPct        float64         `json:"cpuPct"`
-	MemPct        float64         `json:"memPct"`
-	TxBytes       int64           `json:"txBytes"`
-	RxBytes       int64           `json:"rxBytes"`
-	NumClients    int             `json:"numClients"`
+	UnifiDeviceID string `json:"unifiDeviceId"`
+	UnifiSiteID   string `json:"unifiSiteId,omitempty"`
+	Mac           string `json:"mac,omitempty"`
+	Name          string `json:"name,omitempty"`
+	// omitempty on the metric fields is load-bearing, not cosmetic. None of these
+	// are readable from the device LIST endpoint (see Device in client.go), so
+	// they are always zero today. The ingest column and the web UI both treat
+	// null/absent as "not collected" (`d.numClients ?? "—"`), so sending a
+	// literal 0 renders as a real measurement — the same "silent zero looks like
+	// data" failure #5087 was about, one hop downstream.
+	//
+	// WHEN the statistics/latest fetch is implemented: omitempty can no longer
+	// carry this meaning, because a genuine zero would be dropped too. Switch
+	// these to pointers (nil = not collected, &0 = measured zero) at that point.
+	UptimeSeconds int64           `json:"uptimeSeconds,omitempty"`
+	CPUPct        float64         `json:"cpuPct,omitempty"`
+	MemPct        float64         `json:"memPct,omitempty"`
+	TxBytes       int64           `json:"txBytes,omitempty"`
+	RxBytes       int64           `json:"rxBytes,omitempty"`
+	NumClients    int             `json:"numClients,omitempty"`
 	PoePorts      []PoePort       `json:"poePorts,omitempty"`
 	Raw           json.RawMessage `json:"raw,omitempty"`
 }

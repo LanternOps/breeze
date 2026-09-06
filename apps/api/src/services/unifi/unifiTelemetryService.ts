@@ -170,16 +170,25 @@ export async function reconcileTelemetry(
     const { orgId, siteId } = resolveSite(d.unifiSiteId);
     const mac = canonicalMac(d.mac);
     const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d, mac);
+    // A metric the agent could not collect is omitted from the body, and must
+    // persist as SQL NULL so the UI can render "—" instead of a fabricated 0.
+    // Explicit `?? null` matters most on the UPDATE path: drizzle drops
+    // `undefined` keys from SET, which would silently preserve a stale value
+    // written by an older agent that still sent zeros.
+    const metrics = {
+      uptimeSeconds: d.uptimeSeconds ?? null, cpuPct: d.cpuPct ?? null, memPct: d.memPct ?? null,
+      txBytes: d.txBytes ?? null, rxBytes: d.rxBytes ?? null, numClients: d.numClients ?? null,
+    };
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac, name: d.name,
-      uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
+      ...metrics,
+      discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
-        orgId, siteId, mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        orgId, siteId, mac, name: d.name, ...metrics,
+        discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });

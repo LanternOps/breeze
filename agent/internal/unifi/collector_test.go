@@ -16,9 +16,9 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 		case "/proxy/network/integration/v1/sites":
 			w.Write([]byte(`{"data":[{"id":"s1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/devices":
-			w.Write([]byte(`{"data":[{"id":"d1","mac":"aa:bb"}]}`))
+			w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/clients":
-			w.Write([]byte(`{"data":[{"mac":"cc:dd"}]}`))
+			w.Write([]byte(`{"data":[{"id":"c1","macAddress":"aa:bb:cc:dd:ee:02","type":"WIRED"}]}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -63,8 +63,64 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	if !ok || len(devs) != 1 {
 		t.Fatalf("expected 1 device in payload, got %+v", got["devices"])
 	}
-	if d0, _ := devs[0].(map[string]any); d0["unifiDeviceId"] != "d1" {
+	d0, _ := devs[0].(map[string]any)
+	if d0["unifiDeviceId"] != "d1" {
 		t.Fatalf("device missing camelCase unifiDeviceId: %+v", devs[0])
+	}
+	// The controller's macAddress must survive the decode → upload hop (#5087).
+	if d0["mac"] != "aa:bb:cc:dd:ee:01" {
+		t.Fatalf("device mac did not reach the upload payload: %+v", devs[0])
+	}
+}
+
+// Metrics the collector cannot read from the device LIST endpoint must be ABSENT
+// from the upload body, not sent as literal 0. The API column and the web UI both
+// treat null as "not collected" (`d.numClients ?? "—"`), so a zero here renders as
+// a real measurement — the same "silent zero looks like data" failure #5087 was
+// about, one hop downstream.
+func TestUploadOmitsUncollectedDeviceMetrics(t *testing.T) {
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/proxy/network/integration/v1/sites":
+			w.Write([]byte(`{"data":[{"id":"s1"}]}`))
+		case "/proxy/network/integration/v1/sites/s1/devices":
+			w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
+		default:
+			w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	defer controller.Close()
+
+	var mu sync.Mutex
+	var got map[string]any
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(202)
+	}))
+	defer api.Close()
+
+	cfg := CollectorConfig{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k"}
+	if err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	devs, _ := got["devices"].([]any)
+	if len(devs) != 1 {
+		t.Fatalf("expected 1 device, got %+v", got["devices"])
+	}
+	d0, _ := devs[0].(map[string]any)
+	for _, key := range []string{"uptimeSeconds", "cpuPct", "memPct", "txBytes", "rxBytes", "numClients"} {
+		if v, present := d0[key]; present {
+			t.Errorf("%s must be omitted while uncollected, got %v — a zero here is indistinguishable from a real measurement", key, v)
+		}
+	}
+	// Fields that ARE collected must still be present.
+	if d0["mac"] != "aa:bb:cc:dd:ee:01" || d0["unifiDeviceId"] != "d1" {
+		t.Errorf("omitempty must not drop collected fields: %+v", d0)
 	}
 }
 
