@@ -41,7 +41,7 @@ vi.mock('./remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: terminateUserRemoteSessionsMock,
 }));
 
-import { completeInitialMfaEnrollment, replaceSessionOnMfaFactorWrite } from './mfaEnrollmentSession';
+import { completeInitialMfaEnrollment, completeMfaFactorRemoval, replaceSessionOnMfaFactorWrite } from './mfaEnrollmentSession';
 import type { AuthIssuanceCapability } from './authBrowserTransition';
 import { EpochAdvancePreconditionError } from './authLifecycle';
 import type { AuthorizedUserSession, UserSessionIdentity } from './userSession';
@@ -169,7 +169,7 @@ describe('completeInitialMfaEnrollment', () => {
       recoveryCodes: ['code-1', 'code-2'],
       recoveryCodeHashes: ['hash-1'],
       persistFactor: vi.fn(),
-    })).rejects.toThrow(/count/i);
+    } as never)).rejects.toThrow(/count/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });
@@ -451,13 +451,12 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       return undefined;
     });
 
-    const result = await replaceSessionOnMfaFactorWrite({
+    const result = await completeMfaFactorRemoval({
       userId: identity.userId,
       identity,
       capability,
       expectedAuthEpoch: 3,
       expectedMfaEpoch: 7,
-      expectedMfaEnabled: true,
       revokeReason: 'mfa-disable',
       persistFactor,
     });
@@ -478,11 +477,35 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       expectedEpochs: { authEpoch: 3, mfaEpoch: 8 },
     });
     expect(result.recoveryCodes).toEqual([]);
+    // The wrapper, not the caller, fixes the precondition: the factor must still
+    // exist when the bump lands.
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(
+      tx, 'user-123', { mfa: true }, expect.objectContaining({ mfaEnabled: true }),
+    );
+
     expect(result.issued).toBe(issued);
     // The replacement token must survive its own post-commit revocation cutoff.
     expect(runPostCommitCleanupMock).toHaveBeenCalledTimes(1);
     expect(runPostCommitCleanupMock.mock.calls[0]?.[1]?.preserveTokensIssuedAtOrAfter)
       .toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+
+  it('rejects a ROTATION that omits its code pair — omission is the removal shape only', async () => {
+    // #5008 review: making the pair optional on the shared primitive let a
+    // rotation caller forget it and silently persist [] — wiping the user's
+    // only lockout escape hatch. Removal must be an explicit call
+    // (completeMfaFactorRemoval), never an omitted argument.
+    await expect(replaceSessionOnMfaFactorWrite({
+      userId: 'user-123',
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      expectedMfaEnabled: true,
+      revokeReason: 'mfa_recovery_codes_rotated',
+      persistFactor: async () => undefined,
+    } as never)).rejects.toThrow(/recovery-code/i);
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });
 
   it('still rejects a supplied-but-empty code set', async () => {
@@ -497,7 +520,7 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       recoveryCodes: [],
       recoveryCodeHashes: [],
       persistFactor: vi.fn(),
-    })).rejects.toThrow(/count/i);
+    } as never)).rejects.toThrow(/count/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });
@@ -513,7 +536,7 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       revokeReason: 'mfa-recovery-rotate',
       recoveryCodes: ['code-1'],
       persistFactor: vi.fn(),
-    })).rejects.toThrow(/count/i);
+    } as never)).rejects.toThrow(/count/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });
@@ -527,7 +550,7 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       expectedMfaEpoch: 7,
       revokeReason: 'initial-mfa-enrollment',
       persistFactor: vi.fn(),
-    })).rejects.toThrow(/recovery-code/i);
+    } as never)).rejects.toThrow(/recovery-code/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });

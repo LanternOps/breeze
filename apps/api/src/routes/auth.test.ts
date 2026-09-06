@@ -158,6 +158,34 @@ vi.mock('../services', () => {
       cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
     };
   }),
+  completeMfaFactorRemoval: vi.fn(async (input: any) => {
+    // Minimal drizzle-shaped tx so the caller's persistFactor runs for real.
+    const tx = {
+      update: () => ({
+        set: () => ({
+          where: () => ({ returning: async () => [{ id: input.userId }] }),
+        }),
+      }),
+    };
+    // A factor REMOVAL (#4934 /mfa/disable) omits the code pair entirely — the
+    // real service defaults both to [], so the mock must too.
+    await input.persistFactor(tx, input.recoveryCodeHashes ?? []);
+    return {
+      value: undefined,
+      recoveryCodes: [...(input.recoveryCodes ?? [])],
+      issued: {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        refreshJti: 'replacement-jti',
+        expiresInSeconds: 900,
+        familyId: 'replacement-family',
+        transitionId: 'transition-1',
+        generation: 1,
+      },
+      mfaEpoch: 2,
+      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+    };
+  }),
   issueUserSessionLegacyDuringTransition: issueLegacy,
   bindIssuedUserSession: vi.fn(async () => undefined),
   authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
@@ -387,6 +415,7 @@ import {
   AuthIssuanceCapabilityError,
   AuthIssuanceConflictError,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
   bindIssuedUserSession,
 } from '../services';
@@ -3974,15 +4003,15 @@ describe('auth routes', () => {
         // ...and the rotated refresh cookie is what survives the family revoke.
         expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
 
-        expect(replaceSessionOnMfaFactorWrite).toHaveBeenCalledTimes(1);
-        const input = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+        expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
         expect(input).toMatchObject({
           userId: 'user-123',
-          // Every OTHER session still dies, and the removal is predicated on the
-          // factor still existing when the bump lands — a concurrent second
-          // disable loses with a 409 rather than bumping the epoch twice and
-          // evicting the session the first one just issued.
-          expectedMfaEnabled: true,
+          // Every OTHER session still dies. The "factor must still exist when
+          // the bump lands" precondition (a concurrent second disable loses
+          // with a 409) is now fixed inside completeMfaFactorRemoval itself —
+          // asserted in mfaEnrollmentSession.test.ts — so it no longer appears
+          // on the call-site input.
           revokeReason: 'mfa-disable',
         });
         // A removal installs NO code set — the account must be left holding none.
@@ -4014,7 +4043,7 @@ describe('auth routes', () => {
         mockSuccessfulDisable();
         const policySpy = allowSelfDisable();
         const capturedSets: Array<Record<string, unknown>> = [];
-        vi.mocked(replaceSessionOnMfaFactorWrite).mockImplementationOnce(async (input: any) => {
+        vi.mocked(completeMfaFactorRemoval).mockImplementationOnce(async (input: any) => {
           const tx = {
             update: () => ({
               set: (values: Record<string, unknown>) => {
@@ -4080,7 +4109,7 @@ describe('auth routes', () => {
         policySpy.mockRestore();
 
         expect(res.status).toBe(200);
-        const input = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
         expect(input.expectedAuthEpoch).toBe(4);
         expect(input.expectedMfaEpoch).toBe(9);
         expect(input.identity).toMatchObject({
@@ -4117,7 +4146,7 @@ describe('auth routes', () => {
         policySpy.mockRestore();
 
         expect(res.status).toBe(200);
-        const input = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
         expect(input.identity.mfa).toBe(false);
       });
 
@@ -4144,7 +4173,7 @@ describe('auth routes', () => {
       it('surfaces a lost issuance race as 409 and cancels the issuance', async () => {
         mockSuccessfulDisable();
         const policySpy = allowSelfDisable();
-        vi.mocked(replaceSessionOnMfaFactorWrite).mockRejectedValueOnce(new AuthIssuanceConflictError());
+        vi.mocked(completeMfaFactorRemoval).mockRejectedValueOnce(new AuthIssuanceConflictError());
 
         const res = await postDisable(proof);
         policySpy.mockRestore();
