@@ -781,17 +781,15 @@ export default function DeviceList({
     setCurrentPage(1);
   }, [query, classFilter, vpnFilter, serverFilterIds]);
 
-  const filteredDevices = useMemo(() => {
+  // Every filter EXCEPT the hidden-by-default decommissioned rule. Split out
+  // so the removed-hint counts (#2251/#5023) can be taken from the rows the
+  // tech's filters would actually let through — a decommissioned device the
+  // server filter or search already excludes is not "hidden by default" and
+  // must not be counted as showable.
+  const matchingDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter((device) => {
-      // Hide decommissioned by default — preserves the old list's hygiene
-      // (status='all' implicitly excluded them). Filtering FOR decommissioned
-      // via a status chip flips includeDecommissioned true upstream.
-      if (!includeDecommissioned && device.status === "decommissioned") {
-        return false;
-      }
-
       // Apply server-side advanced filter (status/os/role/org/site/group/… all
       // resolve through this id set now — they are no longer client-side).
       if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
@@ -822,23 +820,37 @@ export default function DeviceList({
 
       return matchesClass && matchesVpn && matchesQuery;
     });
-  }, [
-    devices,
-    query,
-    classFilter,
-    vpnFilter,
-    serverFilterIds,
-    includeDecommissioned,
-  ]);
+  }, [devices, query, classFilter, vpnFilter, serverFilterIds]);
 
-  // How many decommissioned devices the default view is hiding (#2251). Zero
-  // when they're already visible (includeDecommissioned) so the hint and the
-  // count math below stay consistent with what the table actually shows.
+  // Hide decommissioned by default — preserves the old list's hygiene
+  // (status='all' implicitly excluded them). Filtering FOR decommissioned via
+  // a status chip, or "show" on the hint, flips includeDecommissioned upstream.
+  const filteredDevices = useMemo(
+    () =>
+      includeDecommissioned
+        ? matchingDevices
+        : matchingDevices.filter((d) => d.status !== "decommissioned"),
+    [matchingDevices, includeDecommissioned]
+  );
+
+  // Removed devices the current filters would let through (#2251/#5023) —
+  // the ones "show" can actually reveal / "hide" actually removes. Zero on
+  // the hidden side once they're visible (and vice versa) so the hint and
+  // the count line stay consistent with what the table actually shows.
   const decommissionedCount = useMemo(
-    () => devices.filter(d => d.status === 'decommissioned').length,
-    [devices]
+    () => matchingDevices.filter((d) => d.status === "decommissioned").length,
+    [matchingDevices]
   );
   const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  // Count-line denominator: the fleet minus every decommissioned row while
+  // they're hidden (regardless of whether the filters would admit them).
+  const countLineTotal = useMemo(
+    () =>
+      includeDecommissioned
+        ? devices.length
+        : devices.filter((d) => d.status !== "decommissioned").length,
+    [devices, includeDecommissioned]
+  );
 
   // Providers present across the loaded set — drives the VPN facet options so
   // techs only see providers that actually exist in their fleet.
@@ -1954,7 +1966,7 @@ export default function DeviceList({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             {filteredDevices.length} {t("deviceList.of")}{" "}
-            {devices.length - hiddenDecommissionedCount}{" "}
+            {countLineTotal}{" "}
             {t("deviceList.devices")}{" "}
             {serverFilterError ? (
               <span

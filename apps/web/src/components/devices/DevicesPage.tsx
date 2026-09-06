@@ -368,22 +368,30 @@ export default function DevicesPage() {
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
-  const gridDevices = useMemo(
-    () => {
-      const base = includeDecommissioned
+  // Rows the advanced filter admits, before the hidden-by-default
+  // decommissioned rule — the removed-hint counts come from this set so they
+  // only promise rows "show" can actually reveal (#2251/#5023).
+  const gridMatchingDevices = useMemo(
+    () =>
+      advancedFilterIds === null
         ? classFilteredDevices
-        : classFilteredDevices.filter(d => d.status !== 'decommissioned');
-      return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
-    },
-    [classFilteredDevices, advancedFilterIds, includeDecommissioned]
+        : classFilteredDevices.filter(d => advancedFilterIds.has(d.id)),
+    [classFilteredDevices, advancedFilterIds]
   );
-  // How many decommissioned devices the default view is hiding (#2251) — drives
-  // the grid view's hint line (the list view computes its own from the same
-  // classFilteredDevices set, so the two stay in lockstep). The page fetches
-  // with includeDecommissioned: true, so this is a cheap client-side count.
+  const gridDevices = useMemo(
+    () =>
+      includeDecommissioned
+        ? gridMatchingDevices
+        : gridMatchingDevices.filter(d => d.status !== 'decommissioned'),
+    [gridMatchingDevices, includeDecommissioned]
+  );
+  // How many decommissioned devices the grid is hiding / showing (#2251) —
+  // drives the grid view's hint line (the list view computes its own from the
+  // same inputs, so the two stay in lockstep). The page fetches with
+  // includeDecommissioned: true, so this is a cheap client-side count.
   const decommissionedCount = useMemo(
-    () => classFilteredDevices.filter(d => d.status === 'decommissioned').length,
-    [classFilteredDevices]
+    () => gridMatchingDevices.filter(d => d.status === 'decommissioned').length,
+    [gridMatchingDevices]
   );
   const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
   const shownDecommissionedCount = includeDecommissioned ? decommissionedCount : 0;

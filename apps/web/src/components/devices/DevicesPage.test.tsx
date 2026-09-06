@@ -1004,6 +1004,42 @@ describe('DevicesPage — hidden-decommissioned hint (#2251, #5023)', () => {
     expect(screen.getByTestId('decommissioned-hidden-hint')).toHaveTextContent('2 removed hidden');
   });
 
+  it('grid view: the hint counts only removed devices the advanced filter admits', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
+      operator: 'AND',
+      conditions: [{ field: 'os', operator: 'equals', value: 'windows' }],
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+    // The os filter admits the active device and ONE of the two removed ones.
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: { totalCount: 2, deviceIds: [DEV_1, DEV_2], evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+
+    const hint = await screen.findByTestId('decommissioned-hidden-hint');
+    await waitFor(() => expect(hint).toHaveTextContent('1 removed hidden'));
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
+    expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
+    // DEV_3 is excluded by the filter, not by the hidden-by-default rule.
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+    expect(screen.getByTestId('decommissioned-shown-hint')).toHaveTextContent('1 removed shown');
+  });
+
   it('grid view renders no hint when no decommissioned devices exist', async () => {
     const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);

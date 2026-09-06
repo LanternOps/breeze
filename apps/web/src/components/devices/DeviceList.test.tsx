@@ -1037,6 +1037,43 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     expect(screen.queryByTestId('decommissioned-shown-hint')).toBeNull();
   });
 
+  // Codex review on #5066: a removed device the server-side advanced filter
+  // already excludes is not "hidden by default" — "show" could not reveal it,
+  // so the hint must not count it. Same for the "shown" line.
+  it('counts only removed devices the active server filter admits', () => {
+    const { rerender } = render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id])}
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    // Denominator still excludes the hidden removed row.
+    expect(screen.getByText(/1 of 1 devices/)).toBeInTheDocument();
+
+    rerender(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id])}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-shown-hint')).toBeNull();
+
+    rerender(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id, decomDevice.id])}
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId('decommissioned-hidden-hint')).toHaveTextContent('1 removed hidden');
+  });
+
   it('renders no hint when there are no decommissioned devices', () => {
     render(<DeviceList devices={[baseDevice]} onShowDecommissioned={vi.fn()} />);
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
