@@ -666,6 +666,15 @@
         "configCheck": "config_check",
         "none": "keine"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Entfernte Geräte endgültig löschen",
+        "offKeepRemovedDevicesUntilDeletedManually": "Aus — entfernte Geräte bleiben erhalten, bis sie manuell gelöscht werden.",
+        "permanentlyDeleteRemovedDevicesAfter": "Entfernte Geräte endgültig löschen nach",
+        "days": "Tagen",
+        "enterAWholeNumberOfDaysBetween": "Geben Sie eine ganze Anzahl von Tagen zwischen 1 und 3650 ein.",
+        "purgeIsIrreversibleAndDestroysHistory": "Das Löschen ist unwiderruflich und vernichtet den Verlauf",
+        "aDailyJobPermanentlyDeletesTheDevice": "Ein täglicher Job löscht den Gerätedatensatz und alles, was daran hängt, endgültig — Alarme, Skripte, Patches, Protokolle und Inventar. Geräte, für die noch eine Agent-Deinstallation ansteht, werden übersprungen, bis diese abgeschlossen ist. Die nächstgelegene Richtlinie gewinnt, sodass eine Organisation dies deaktivieren kann, um sich von einem organisationsweiten Zeitfenster abzumelden."
+      },
       "eventLogTab": {
         "security": "Sicherheit",
         "hardware": "Hardware",

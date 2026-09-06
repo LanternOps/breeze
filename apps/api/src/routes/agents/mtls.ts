@@ -1611,6 +1611,8 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     .update(devices)
     .set({
       status: 'decommissioned',
+      // #2787 item 4 — same removal stamp every other decommission path writes.
+      decommissionedAt: new Date(),
       updatedAt: new Date(),
     })
     .where(eq(devices.id, device.id));

@@ -7,6 +7,7 @@ import {
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
   monitoringInlineSettingsSchema,
+  deviceLifecycleInlineSettingsSchema,
 } from './index';
 
 // ============================================
@@ -660,6 +661,52 @@ describe('monitoringInlineSettingsSchema', () => {
     }));
     expect(
       monitoringInlineSettingsSchema.safeParse({ alertRules: rules }).success
+    ).toBe(false);
+  });
+});
+
+
+// ============================================
+// device_lifecycle (#2787 item 4) — purge removed devices after N days
+// ============================================
+
+describe('deviceLifecycleInlineSettingsSchema', () => {
+  it('accepts an absent value — the policy exists but never purges', () => {
+    const result = deviceLifecycleInlineSettingsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.purgeRemovedAfterDays).toBeUndefined();
+  });
+
+  it('accepts an explicit null — "off", distinct from a stale stored number', () => {
+    const result = deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: null });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.purgeRemovedAfterDays).toBeNull();
+  });
+
+  it('accepts a retention window inside the supported range', () => {
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 30 }).success).toBe(true);
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 1 }).success).toBe(true);
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 3650 }).success).toBe(true);
+  });
+
+  it('rejects 0 and negatives — this setting deletes data permanently, so "purge immediately" must not be expressible by accident', () => {
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 0 }).success).toBe(false);
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: -1 }).success).toBe(false);
+  });
+
+  it('rejects a window past the 10-year ceiling', () => {
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 3651 }).success).toBe(false);
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 4000 }).success).toBe(false);
+  });
+
+  it('rejects non-integers and non-numbers rather than truncating them', () => {
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 30.5 }).success).toBe(false);
+    expect(deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: '30' }).success).toBe(false);
+  });
+
+  it('rejects unknown keys instead of persisting-and-echoing a setting that never takes effect', () => {
+    expect(
+      deviceLifecycleInlineSettingsSchema.safeParse({ purgeRemovedAfterDays: 30, purgeEverything: true }).success,
     ).toBe(false);
   });
 });
