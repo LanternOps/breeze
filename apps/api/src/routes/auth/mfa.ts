@@ -23,6 +23,7 @@ import {
   AuthIssuanceCapabilityError,
   issueUserSession,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
   issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
@@ -922,7 +923,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   }
   let result;
   try {
-    result = await replaceSessionOnMfaFactorWrite({
+    result = await completeMfaFactorRemoval({
       userId: auth.user.id,
       identity: {
         userId: auth.user.id,
@@ -951,7 +952,6 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
       // 400); this is the real check, folded into the epoch bump's WHERE so a
       // concurrent second /mfa/disable loses with a 409 instead of bumping the
       // epoch again and evicting the session the first one just issued.
-      expectedMfaEnabled: true,
       revokeReason: 'mfa-disable',
       // A removal supplies no code pair: the account must be left holding no
       // recovery codes at all.
