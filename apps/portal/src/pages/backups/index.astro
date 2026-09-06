@@ -6,6 +6,7 @@ import { ErrorNotice } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 
 const config = buildServerApiConfig(Astro.request);
 // The dashboard rides along only for `timezone`: neither backups DTO carries
@@ -22,6 +23,15 @@ const [overview, devices, dashboard] = await Promise.all([
 
 if (overview.statusCode === 401 || devices.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
+}
+
+// enable_backups off 403s both backups calls with PORTAL_BACKUPS_DISABLED — a
+// setting, not a load failure, so the page bounces rather than telling the
+// customer their backups "couldn't be loaded" (#4932). The ride-along dashboard
+// response stays out of the check on purpose: it is only here for `timezone`, and
+// an org with Backups on but Dashboard off must keep this page.
+if (isPortalPageDisabled(overview, devices)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
 }
 
 const timezone = dashboard.data?.timezone ?? 'UTC';

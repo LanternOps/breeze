@@ -61,7 +61,7 @@ To change them:
 You need the **Organizations: write** permission and a multi-factor confirmation to change these.
 
 <Aside type="note" title="Turned off means genuinely off">
-  Visibility is enforced on the server, not just in the portal's navigation. A section that is off is hidden from the menu **and** refused by the API, so a customer who bookmarks the URL or edits it by hand gets an "unavailable" page rather than a partial one. An organization that has never had portal settings saved is treated exactly like one with every toggle off — it fails closed, never open.
+  Visibility is enforced on the server, not just in the portal's navigation. A section that is off is hidden from the menu **and** refused by the API, so a customer who bookmarks the URL or edits it by hand is taken back to their proposals instead of being shown a page that looks like it failed to load. An organization that has never had portal settings saved is treated exactly like one with every toggle off — it fails closed, never open.
 </Aside>
 
 ### Ticket Statuses
@@ -193,7 +193,7 @@ With **Reports** visibility on, the customer can generate and download reports t
 
 A finished run offers both **PDF** and **CSV** downloads. These are the same report types described in [Reports](/features/reports/); only the trigger is different.
 
-With Reports off, a customer who navigates to the reports URL is redirected back to their devices.
+With Reports off, a customer who navigates to the reports URL is redirected to their proposals — the same as every other section that is off.
 
 ---
 
