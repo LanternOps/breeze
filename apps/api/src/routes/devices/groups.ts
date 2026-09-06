@@ -9,7 +9,7 @@ import { getPagination, ensureOrgAccess } from './helpers';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { evaluateGroupMembership, pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
+import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
@@ -179,20 +179,6 @@ groupsRoutes.post(
       resourceName: group?.name
     });
 
-    // #4630 — same materialization path as POST /groups (routes/groups.ts):
-    // a dynamic group must never be created without evaluating its filter.
-    // This endpoint's schema has no filterConditions field today, so
-    // group.filterConditions is always null and this is currently a no-op —
-    // kept for structural parity so it activates automatically if/when this
-    // route gains filter support.
-    if (group?.type === 'dynamic' && group.filterConditions) {
-      try {
-        await evaluateGroupMembership(group.id);
-      } catch (err) {
-        console.error(`Failed to evaluate membership for new group ${group.id}:`, err);
-      }
-    }
-
     return c.json(group, 201);
   }
 );
@@ -313,17 +299,6 @@ groupsRoutes.patch(
       resourceName: updated?.name ?? group.name,
       details: { changedFields: Object.keys(data) }
     });
-
-    // #4630 — same materialization path as PATCH /groups/:id. See the create
-    // handler above for why this is currently a no-op on this route.
-    const effectiveType = data.type ?? group.type;
-    if (effectiveType === 'dynamic' && siteChanged && updated?.filterConditions) {
-      try {
-        await evaluateGroupMembership(updated.id);
-      } catch (err) {
-        console.error(`Failed to evaluate membership for group ${updated.id}:`, err);
-      }
-    }
 
     return c.json(updated);
   }
