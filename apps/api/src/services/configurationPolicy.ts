@@ -41,6 +41,7 @@ import {
   alertRuleInlineSettingsSchema,
   backupExcludePatternsSchema,
   configFeatureInlineSettingsSchema,
+  deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -112,6 +113,10 @@ export const pamInlineSettingsSchema = z
 // the per-device gate (resolveVulnerabilityEnabledForDevice) and the daily
 // correlation job both treat no-policy / enabled:false as disabled. .strict()
 // rejects unknown keys, matching pam/patch posture.
+// Re-exported so routes/configurationPolicies/featureLinks.ts validates against
+// the SAME schema the service backstop uses (mirrors pamInlineSettingsSchema).
+export { deviceLifecycleInlineSettingsSchema };
+
 export const vulnerabilityInlineSettingsSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -799,6 +804,7 @@ async function decomposeInlineSettings(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -907,6 +913,7 @@ async function deleteNormalizedRows(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -1150,6 +1157,7 @@ async function assembleInlineSettings(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -1219,6 +1227,10 @@ export async function addFeatureLink(
 
   if (featureType === 'vulnerability' && inlineSettings !== undefined && inlineSettings !== null) {
     vulnerabilityInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'device_lifecycle' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
   }
 
   // Service-level backstop for callers that bypass the HTTP route's validation
@@ -1315,6 +1327,10 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.

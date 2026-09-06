@@ -22,6 +22,7 @@ import {
   removeFeatureLink,
   listFeatureLinks,
   validateFeaturePolicyExists,
+  deviceLifecycleInlineSettingsSchema,
   pamInlineSettingsSchema,
   remoteAccessInlineSettingsSchema,
   canManagePartnerWidePolicies,
@@ -159,6 +160,17 @@ featureLinkRoutes.post(
       if (!parsed.success) {
         return c.json(
           zodValidationErrorBody('Invalid pam settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
+    if (data.featureType === 'device_lifecycle' && data.inlineSettings) {
+      const parsed = deviceLifecycleInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
           400
         );
       }
@@ -338,6 +350,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid pam settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'device_lifecycle') {
+        const parsed = deviceLifecycleInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
             400
           );
         }
