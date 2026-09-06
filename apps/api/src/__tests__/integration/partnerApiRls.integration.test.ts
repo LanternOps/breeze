@@ -590,12 +590,18 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(await captureSqlState(() => admin.delete(devices)
       .where(eq(devices.id, movableDevice.id))))
       .toBe('23503');
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+    // #5099 (2026-10-12-100000-config-policy-inheritance.sql) added a
+    // constraint trigger that rejects ANY non-system-scope owner change on
+    // configuration_policies before the composite-FK below gets a chance to
+    // fire. `admin` never elects system scope, so the ownership-immutable
+    // guard is now the fastest failure path for these two forges — assert
+    // the guard's outcome (23514 + its named constraint) rather than the FK.
+    expect(await captureSqlError(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
-      .toBe('23503');
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
+    expect(await captureSqlError(() => admin.update(configurationPolicies)
       .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
-      .toBe('23503');
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
 
     const [updatableAssignment] = await withDbAccessContext(contextA, () =>
       db.insert(configPolicyAssignments).values({
@@ -671,6 +677,13 @@ describe('partner reconstruction export RLS traversal', () => {
       }).returning();
       if (!movingPolicy) throw new Error('concurrent owner policy seed failed');
       const policyMover = admin.transaction(async (tx) => {
+        // #5099's ownership-immutable guard rejects a configuration_policies
+        // owner change outside system scope (23514) — org merge is the only
+        // real-world mover, and it always runs in system scope. Elect it here
+        // so this in-flight move still holds its row lock the way a merge
+        // would, letting the assignment insert below serialize against it
+        // instead of the update failing before `ownerMove` ever resolves.
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
         await tx.update(configurationPolicies).set({ orgId: target.orgs[0]!.id })
           .where(eq(configurationPolicies.id, movingPolicy.id));
         ownerMove.resolve();
@@ -772,12 +785,19 @@ describe('partner reconstruction export RLS traversal', () => {
       { partnerId: second.partner.id, name: 'Bulk partner policy B' },
     ]).returning();
     if (!policyA || !policyB) throw new Error('bulk policy seed failed');
-    await expect(admin.update(configurationPolicies).set({
-      partnerId: sql`CASE
-        WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
-        ELSE ${first.partner.id}::uuid
-      END`,
-    }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
+    // #5099's ownership-immutable guard rejects a configuration_policies
+    // owner change outside system scope (23514) — this bulk owner set is a
+    // legitimate move (org merge shape) and must elect system scope to reach
+    // the FK/RLS-plumbing this assertion actually exercises.
+    await expect(admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      return tx.update(configurationPolicies).set({
+        partnerId: sql`CASE
+          WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
+          ELSE ${first.partner.id}::uuid
+        END`,
+      }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]));
+    })).resolves.toBeDefined();
     await expect(admin.delete(configurationPolicies)
       .where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
 
@@ -1230,5 +1250,26 @@ async function captureSqlState(work: () => Promise<unknown>): Promise<string | u
   } catch (error) {
     const wrapped = error as { code?: string; cause?: { code?: string } };
     return wrapped.cause?.code ?? wrapped.code;
+  }
+}
+
+// Sibling to captureSqlState that also captures the constraint name, so a
+// SQLSTATE shared by multiple constraints (e.g. 23514) still discriminates
+// which one fired — see configPolicyInheritance.integration.test.ts's
+// expectSqlState for the same shape.
+async function captureSqlError(
+  work: () => Promise<unknown>,
+): Promise<{ code?: string; constraint?: string }> {
+  try {
+    await work();
+    return {};
+  } catch (error) {
+    const wrapped = error as {
+      code?: string;
+      constraint_name?: string;
+      cause?: { code?: string; constraint_name?: string };
+    };
+    const node = wrapped.cause?.code ? wrapped.cause : wrapped;
+    return { code: node.code, constraint: node.constraint_name };
   }
 }
