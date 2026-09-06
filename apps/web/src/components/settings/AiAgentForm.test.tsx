@@ -27,6 +27,7 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
+import { AI_AGENT_KINDS } from '@breeze/shared';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -109,6 +110,10 @@ function renderForm(props: Partial<React.ComponentProps<typeof AiAgentForm>> = {
     <AiAgentForm
       agent={null}
       agents={[]}
+      // Default to "every kind already has a baseline" — the pre-#4170
+      // neutral state — so existing tests never see the new hint unless a
+      // test opts into the empty set to exercise it directly.
+      partnerBaselineKinds={new Set(AI_AGENT_KINDS)}
       showOwnerScope={false}
       defaultOwnerScope="organization"
       onClose={vi.fn()}
@@ -277,6 +282,67 @@ describe('AiAgentForm — mode cards', () => {
       expect(card.className).toContain('flex-col');
       expect(card.className).toContain('items-start');
     }
+  });
+});
+
+// #4170 — an org-only agent overrides a partner-wide baseline of the same
+// kind; with none, the resolver treats the row as if it did not exist.
+describe('AiAgentForm — no-partner-baseline hint', () => {
+  it('warns when creating an org-only agent of a kind with no partner baseline', async () => {
+    mockEndpoints();
+    renderForm({ partnerBaselineKinds: new Set() });
+
+    expect(await screen.findByTestId('ai-agent-no-baseline-hint')).toBeInTheDocument();
+  });
+
+  it('does not warn when a partner baseline already exists for the selected kind', async () => {
+    mockEndpoints();
+    renderForm({ partnerBaselineKinds: new Set(['triage']) });
+
+    await screen.findByTestId('ai-agent-kind');
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+  });
+
+  it('does not warn when creating a partner-wide agent', async () => {
+    mockEndpoints();
+    renderForm({ defaultOwnerScope: 'partner', partnerBaselineKinds: new Set() });
+
+    await screen.findByTestId('ai-agent-kind');
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+  });
+
+  it('does not warn when editing an existing agent', async () => {
+    mockEndpoints();
+    renderForm({
+      agent: {
+        id: 'a-1',
+        kind: 'triage',
+        name: 'Triage',
+        enabled: true,
+        mode: 'shadow',
+        model: null,
+        orgId: 'org-1',
+        partnerId: null,
+        ownerScope: 'organization',
+        allOrgs: false,
+        supportedModes: ['off', 'shadow', 'act'],
+        toolAllowlist: [],
+        protectedResources: {},
+        limits: {},
+        triggers: {},
+        recipients: {},
+        actAssets: {},
+        instructions: null,
+        cooldownSeconds: 900,
+        disabledAt: null,
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:00:00.000Z',
+      } as AiAgentDto,
+      partnerBaselineKinds: new Set(),
+    });
+
+    await screen.findByTestId('ai-agent-name');
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
   });
 });
 
