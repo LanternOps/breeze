@@ -78,6 +78,12 @@ const SEARCH_DEBOUNCE_MS = 300;
 /** A one-character query matches most of a company file — not worth a round trip. */
 const MIN_SEARCH_LENGTH = 2;
 
+// This workbench is nested two levels down (Integrations → Accounting →
+// QuickBooks), and IntegrationsPage owns the single URL hash. Its tab ids are
+// therefore namespaced with the `quickbooks` accounting sub-tab id they live
+// under, which is the prefix IntegrationsPage.parseHash routes on to keep the
+// page on Accounting/QuickBooks. Renaming these away from the `quickbooks-`
+// prefix would send the page back to its fallback tab on every tab click.
 const TABS = ["quickbooks-customers", "quickbooks-items"] as const;
 type WorkbenchTab = (typeof TABS)[number];
 
