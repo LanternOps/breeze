@@ -34,7 +34,10 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import type { BulkMaintenanceResponse } from '../../services/deviceActions';
+import MaintenanceModeDialog from './MaintenanceModeDialog';
+import { isInMaintenance } from '../../lib/maintenanceResource';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -172,6 +175,10 @@ export default function DevicesPage() {
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  // Non-null = MaintenanceModeDialog is open for exactly these devices. Holding
+  // the SET (not just a flag) is what lets the completion handler name the
+  // devices the server reported back on.
+  const [maintenanceDialogDevices, setMaintenanceDialogDevices] = useState<Device[] | null>(null);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
   const [vmHostPickerDevices, setVmHostPickerDevices] = useState<Device[] | null>(null);
@@ -474,6 +481,11 @@ export default function DevicesPage() {
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
+          // RMM-QA-176: the manual maintenance lease end. This transform is an
+          // explicit whitelist, so omitting it would silently make every
+          // leased device look "not in maintenance" to isInMaintenance while
+          // every other test stayed green.
+          maintenanceUntil: typeof d.maintenanceUntil === 'string' ? d.maintenanceUntil : null,
           // Collision enrollment (#2764). A non-null uuid means this row may be
           // replacing an earlier device with the same hostname; the list shows
           // a "Possible duplicate" badge and the device page a review banner.
@@ -893,14 +905,20 @@ export default function DevicesPage() {
         }
 
         case 'maintenance':
-          const isCurrentlyMaintenance = device.status === 'maintenance';
-          await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
+          // RMM-QA-176 D10: exit is a one-click, un-gated operation; ENTRY
+          // needs a reason, a duration and possibly a step-up factor, so it
+          // opens MaintenanceModeDialog instead of firing a request here.
+          if (!isInMaintenance(device)) {
+            setMaintenanceDialogDevices([device]);
+            break;
+          }
+          await exitMaintenanceMode(device.id);
           showToast({
             type: 'success',
-            message: isCurrentlyMaintenance
-              ? t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname })
-              : t('devicesPage.toasts.maintenanceOn', { hostname: device.hostname }),
+            message: t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname }),
           });
+          // Refetch rather than assume: exit returns the device to its REAL
+          // liveness state, never a blind 'online'.
           await fetchDevices();
           break;
 
@@ -1013,6 +1031,59 @@ export default function DevicesPage() {
     } finally {
       setActionInProgress(false);
     }
+  };
+
+  /**
+   * Report the outcome of a maintenance ENTRY (RMM-QA-176 D2/D10).
+   *
+   * `POST /devices/bulk/maintenance` answers **200 even when every device
+   * failed preflight** (not found / site denied / decommissioned / state
+   * conflict) — an empty eligible set is a legitimate 200 with an all-`failed`
+   * body and the grant left unspent. So `succeeded`/`failed`, never the HTTP
+   * status, decides whether this was a success: reporting the resolved promise
+   * as success would tell the technician N devices are suppressed when none
+   * are, and they would find out from the alert storm.
+   */
+  const reportMaintenanceEntryOutcome = (targets: Device[], result: unknown) => {
+    const hostnameFor = (deviceId: string) =>
+      targets.find(d => d.id === deviceId)?.hostname || deviceId;
+    const bulk = result as Partial<BulkMaintenanceResponse> | null;
+    if (bulk && Array.isArray(bulk.succeeded) && Array.isArray(bulk.failed)) {
+      const verb = t('devicesPage.maintenanceVerb.on');
+      const failedNames = bulk.failed.map(f => hostnameFor(f.deviceId));
+      if (failedNames.length === 0) {
+        showToast({
+          type: 'success',
+          message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: bulk.succeeded.length, verb }),
+        });
+      } else if (bulk.succeeded.length === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceAllFailed', {
+            count: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', {
+            succeeded: bulk.succeeded.length,
+            verb,
+            failed: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      }
+      return;
+    }
+    // Single device: every failure arrived as a REJECTED promise inside the
+    // dialog (the single route uses status codes, not a failed[] list), so
+    // reaching here means that one device entered maintenance.
+    showToast({
+      type: 'success',
+      message: t('devicesPage.toasts.maintenanceOn', { hostname: targets[0]?.hostname ?? '' }),
+    });
   };
 
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
@@ -1199,12 +1270,20 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'maintenance-on':
+        // RMM-QA-176 D2/D10: the two halves are no longer symmetric, so they
+        // no longer share a case. ENTRY is ONE server-side call under ONE
+        // step-up grant (POST /devices/bulk/maintenance) — the old N-single-
+        // calls loop would demand N grants and 403 on every one of them, and
+        // it had no way to collect the now-required reason. EXIT is un-gated
+        // and stays a loop, because there is no bulk exit route (ending
+        // suppression needs no batching).
+        case 'maintenance-on': {
+          setMaintenanceDialogDevices(selectedDevices);
+          break;
+        }
+
         case 'maintenance-off': {
-          const enabling = action === 'maintenance-on';
-          const mLabel = enabling
-            ? t('devicesPage.progress.enablingMaintenance')
-            : t('devicesPage.progress.disablingMaintenance');
+          const mLabel = t('devicesPage.progress.disablingMaintenance');
           setBulkProgress({ current: 0, total: deviceCount, label: mLabel });
           let mDone = 0;
           const mFailed: string[] = [];
@@ -1213,7 +1292,7 @@ export default function DevicesPage() {
           // failures and report them in a single summary toast (#1322).
           for (const device of selectedDevices) {
             try {
-              await toggleMaintenanceMode(device.id, enabling);
+              await exitMaintenanceMode(device.id);
             } catch {
               mFailed.push(device.hostname || device.id);
             }
@@ -1222,7 +1301,7 @@ export default function DevicesPage() {
           }
           setBulkProgress(null);
           const mSucceeded = deviceCount - mFailed.length;
-          const mVerb = enabling ? t('devicesPage.maintenanceVerb.on') : t('devicesPage.maintenanceVerb.off');
+          const mVerb = t('devicesPage.maintenanceVerb.off');
           if (mFailed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: mSucceeded, verb: mVerb }) });
           } else if (mSucceeded === 0) {
@@ -1736,6 +1815,18 @@ export default function DevicesPage() {
           busy={actionInProgress}
           onConfirm={hostId => void handleVmHostConfirm(hostId)}
           onClose={() => setVmHostPickerDevices(null)}
+        />
+      )}
+
+      {maintenanceDialogDevices && (
+        <MaintenanceModeDialog
+          open={true}
+          devices={maintenanceDialogDevices.map(d => ({ id: d.id, hostname: d.hostname }))}
+          onClose={() => setMaintenanceDialogDevices(null)}
+          onCompleted={result => {
+            reportMaintenanceEntryOutcome(maintenanceDialogDevices, result);
+            void fetchDevices();
+          }}
         />
       )}
 

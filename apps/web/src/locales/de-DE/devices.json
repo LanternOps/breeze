@@ -181,12 +181,12 @@
       },
       "exitMaintenance": {
         "title": "Wartungsmodus beenden",
-        "message": "Soll der Wartungsmodus für {{hostname}} wirklich beendet werden? Alarmierung und Überwachung werden fortgesetzt.",
+        "message": "Soll der Wartungsmodus für {{hostname}} wirklich beendet werden?",
         "confirm": "Wartungsmodus beenden"
       },
       "enterMaintenance": {
         "title": "Wartungsmodus aktivieren",
-        "message": "Soll {{hostname}} wirklich in den Wartungsmodus versetzt werden? In diesem Modus wird die Alarmierung unterdrückt.",
+        "message": "Soll {{hostname}} wirklich in den Wartungsmodus versetzt werden?",
         "confirm": "Wartungsmodus aktivieren"
       },
       "decommission": {
@@ -2165,6 +2165,30 @@
       "unknown": "Unbekannt"
     },
     "title": "macOS-Berechtigungen"
+  },
+  "maintenanceModeDialog": {
+    "title": "Wartungsmodus aktivieren",
+    "titleMany": "Wartungsmodus für {{deviceCount}} Geräte aktivieren",
+    "description": "Erfasst ein Wartungsfenster für {{hostname}} und hält fest, wer es gestartet hat. Warnungen, Überwachung, Patches, Skripte und Neustarts laufen unverändert weiter.",
+    "descriptionMany": "Erfasst ein Wartungsfenster für die ausgewählten Geräte und hält fest, wer es gestartet hat. Warnungen, Überwachung, Patches, Skripte und Neustarts laufen unverändert weiter.",
+    "reasonLabel": "Grund",
+    "reasonPlaceholder": "Warum wird die Wartung durchgeführt?",
+    "reasonHint": "3–500 Zeichen. Wird am Gerät und im Audit-Protokoll gespeichert.",
+    "durationLabel": "Dauer",
+    "durationOptionOne": "1 Stunde ab jetzt",
+    "durationOptionOther": "{{hours}} Stunden ab jetzt",
+    "durationHint": "Das Zeitfenster beginnt immer jetzt – eine Verlängerung ersetzt das aktuelle Fenster, statt es zu addieren.",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Ihre Organisation verlangt einen zweiten Faktor, bevor der Wartungsmodus starten kann.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie Geräte in den Wartungsmodus versetzen.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "submit": "Wartung starten",
+    "submitStepUp": "Bestätigen und starten",
+    "submitting": "Wird ausgeführt…",
+    "cancel": "Abbrechen",
+    "genericError": "Wartungsmodus konnte nicht gestartet werden."
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Zurück zu den Geräten",
