@@ -666,6 +666,15 @@
         "configCheck": "config_check",
         "none": "aucun"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Supprimer définitivement les appareils retirés",
+        "offKeepRemovedDevicesUntilDeletedManually": "Désactivé — les appareils retirés sont conservés jusqu'à leur suppression manuelle.",
+        "permanentlyDeleteRemovedDevicesAfter": "Supprimer définitivement les appareils retirés après",
+        "days": "jours",
+        "enterAWholeNumberOfDaysBetween": "Saisissez un nombre entier de jours entre 1 et 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "La suppression est irréversible et détruit l'historique",
+        "aDailyJobPermanentlyDeletesTheDevice": "Une tâche quotidienne supprime définitivement la fiche de l'appareil et tout ce qui y est rattaché : alertes, scripts, correctifs, journaux et inventaire. Les appareils dont la désinstallation de l'agent est encore en attente sont ignorés jusqu'à ce qu'elle se termine. La politique la plus proche l'emporte, de sorte qu'une organisation peut désactiver ceci pour se soustraire à une fenêtre appliquée à toutes les organisations."
+      },
       "eventLogTab": {
         "security": "Sécurité",
         "hardware": "Matériel",

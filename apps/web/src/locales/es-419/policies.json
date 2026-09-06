@@ -666,6 +666,15 @@
         "configCheck": "config_check",
         "none": "ninguno"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Eliminar permanentemente los dispositivos retirados",
+        "offKeepRemovedDevicesUntilDeletedManually": "Desactivado: los dispositivos retirados se conservan hasta que alguien los elimine manualmente.",
+        "permanentlyDeleteRemovedDevicesAfter": "Eliminar permanentemente los dispositivos retirados después de",
+        "days": "días",
+        "enterAWholeNumberOfDaysBetween": "Ingrese un número entero de días entre 1 y 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "La eliminación es irreversible y destruye el historial",
+        "aDailyJobPermanentlyDeletesTheDevice": "Un trabajo diario elimina permanentemente el registro del dispositivo y todo lo asociado a él: alertas, scripts, parches, registros e inventario. Los dispositivos con una desinstalación del agente todavía en cola se omiten hasta que esta finalice. Gana la política más cercana, por lo que una organización puede desactivar esto para excluirse de una ventana aplicada a todas las organizaciones."
+      },
       "eventLogTab": {
         "security": "Seguridad",
         "hardware": "Hardware",
