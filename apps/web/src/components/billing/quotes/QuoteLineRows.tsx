@@ -382,11 +382,13 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
       )}
       {editable && (
         <fieldset className="space-y-1 rounded border border-border/60 p-2" data-testid={`quote-line-device-set-allowance-${line.id}`}>
-          <legend className="sr-only">{t('quotes.editor.deviceSet.includedLabel')}</legend>
+          {/* Group / action / field get three distinct strings — see the same
+              block in QuoteBlockCard's create form (#4937). */}
+          <legend className="sr-only">{t('quotes.editor.deviceSet.allowanceGroupLabel')}</legend>
           <label className="flex items-center gap-1"><input type="checkbox" checked={allowanceOn} onChange={(e) => {
             const next = e.target.checked; setAllowanceOn(next);
             if (!next) void onEdit?.({ includedQuantity: null, overageMode: null, overageUnitPrice: null }, 'allowance');
-          }} />{t('quotes.editor.deviceSet.includedLabel')}</label>
+          }} />{t('quotes.editor.deviceSet.allowanceToggle')}</label>
           {allowanceOn && <div className="flex flex-wrap items-end gap-2">
             <label>{t('quotes.editor.deviceSet.includedLabel')}<input type="number" min="1" step="1" value={included} onChange={(e) => setIncluded(e.target.value)} className="ml-1 h-7 w-20 rounded border bg-background px-1 text-foreground" /></label>
             <fieldset className="space-y-1">
