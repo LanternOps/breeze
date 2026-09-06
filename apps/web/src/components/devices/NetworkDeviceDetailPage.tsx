@@ -31,6 +31,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import HelpTooltip from '../shared/HelpTooltip';
 import { formatPing, pingColor } from '../discovery/pingFormat';
 import { assetTypeIcons } from '../discovery/assetTypeIcon';
+import { describePort, defaultSchemeForPort, isWebPort, sortPorts, type PortKind } from '../discovery/portCatalog';
 import {
   mapAsset,
   typeConfig,
@@ -67,25 +68,21 @@ type AssetDetailExtras = {
 
 type DeviceOption = { id: string; name: string; online: boolean };
 
-// Ports/services that plausibly serve a browsable web UI. Mirrors the design
-// spec's list (Architecture D.1): common HTTP(S) ports plus anything whose
-// discovered service name looks like http/https.
-const WEB_PORTS = new Set([80, 443, 8080, 8443, 8006, 9443]);
-
-// A wide scan can turn up dozens of open ports; cap the chip grid at this
-// many before it dominates the section, behind a "Show all" toggle.
+// A wide scan can turn up dozens of open ports; cap the row list at this many
+// before it dominates the section, behind a "Show all" toggle.
 const PORTS_VISIBLE_LIMIT = 12;
 
-function isWebPort(port: number, service?: string): boolean {
-  if (WEB_PORTS.has(port)) return true;
-  return !!service && /https?/i.test(service);
-}
-
-function defaultSchemeForPort(port: number, service?: string): 'http' | 'https' {
-  if (port === 443 || port === 8443 || port === 9443) return 'https';
-  if (service && /https/i.test(service)) return 'https';
-  return 'http';
-}
+// Kinds that get a muted label on their row instead of an action or a
+// warning badge. 'web' rows get the Open button and 'insecure'/risky rows get
+// the Unencrypted badge (both handled inline where the row is rendered), so
+// they're deliberately absent here.
+const PORT_KIND_LABEL_KEYS: Partial<Record<PortKind, string>> = {
+  mgmt: 'networkDeviceDetailPage.ports.kind.mgmt',
+  remote: 'networkDeviceDetailPage.ports.kind.remote',
+  print: 'networkDeviceDetailPage.ports.kind.print',
+  file: 'networkDeviceDetailPage.ports.kind.file',
+  other: 'networkDeviceDetailPage.ports.kind.other',
+};
 
 // Translation keys for the scalar SNMP system OIDs the discovery scan
 // collects. Values live in locale under `networkDeviceDetailPage.snmpFields`;
@@ -117,7 +114,7 @@ function Section({
   children,
   testId,
 }: {
-  title: string;
+  title: React.ReactNode;
   children: React.ReactNode;
   testId?: string;
 }) {
@@ -326,12 +323,12 @@ function ProxyConnectPopover({
         <button
           type="button"
           data-testid={`network-detail-port-proxy-${port}`}
-          aria-label={t('networkDeviceDetailPage.openWebUi')}
           title={t('networkDeviceDetailPage.openWebUi')}
           onClick={() => setOpen((o) => !o)}
-          className="inline-flex items-center text-muted-foreground hover:text-foreground"
+          className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted"
         >
           <ExternalLink className="h-3 w-3" />
+          {t('networkDeviceDetailPage.openWebUi')}
         </button>
       )}
 
@@ -974,7 +971,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   }
 
   const displayName = asset.label || asset.hostname || asset.ip;
-  const openPorts = asset.openPorts ?? [];
+  const openPorts = sortPorts(asset.openPorts ?? []);
   const visiblePorts = portsExpanded ? openPorts : openPorts.slice(0, PORTS_VISIBLE_LIMIT);
   // Page-level proxy entry point: default to the first scanned web-ish port,
   // else 443 — so the action exists even when the scan recorded no ports.
@@ -1243,32 +1240,64 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </div>
 
           <div className="space-y-5">
-            <Section title={t('networkDeviceDetailPage.sections.openPorts')} testId="network-detail-ports">
+            <Section
+              title={
+                <>
+                  {t('networkDeviceDetailPage.sections.openPorts')}{' '}
+                  <span className="font-normal text-muted-foreground">
+                    · <span data-testid="network-detail-ports-count">{openPorts.length}</span>
+                  </span>
+                </>
+              }
+              testId="network-detail-ports"
+            >
               {openPorts.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptyPorts')}</p>
               ) : (
                 <>
-                  <div className="flex flex-wrap gap-1.5">
-                    {visiblePorts.map((p, index) => (
-                      <span
-                        key={`${p.port}-${(p as { protocol?: string }).protocol ?? 'tcp'}-${index}`}
-                        className="inline-flex items-center gap-1 rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
-                      >
-                        {p.port}{p.service ? ` (${p.service})` : ''}
-                        {isWebPort(p.port, p.service) && (
-                          <ProxyConnectPopover
-                            assetId={asset.id}
-                            assetIp={asset.ip}
-                            port={p.port}
-                            service={p.service}
-                            suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
-                            devices={devices}
-                            devicesError={devicesError}
-                            onRetryDevices={fetchDevices}
-                          />
-                        )}
-                      </span>
-                    ))}
+                  <div className="divide-y divide-border">
+                    {visiblePorts.map((p, index) => {
+                      const info = describePort(p.port, p.service);
+                      const kindLabelKey = PORT_KIND_LABEL_KEYS[info.kind];
+                      const kindLabel = kindLabelKey ? t(/* i18n-dynamic */ kindLabelKey) : '';
+                      return (
+                        <div
+                          key={`${p.port}-${(p as { protocol?: string }).protocol ?? 'tcp'}-${index}`}
+                          className="flex items-center gap-3 py-1.5"
+                        >
+                          <span
+                            data-testid="network-detail-port-number"
+                            className="w-14 shrink-0 text-right font-mono tabular-nums text-sm"
+                          >
+                            {p.port}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-sm" title={info.label}>
+                            {info.label}
+                          </span>
+                          {info.kind === 'web' ? (
+                            <ProxyConnectPopover
+                              assetId={asset.id}
+                              assetIp={asset.ip}
+                              port={p.port}
+                              service={p.service}
+                              suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+                              devices={devices}
+                              devicesError={devicesError}
+                              onRetryDevices={fetchDevices}
+                            />
+                          ) : info.risky ? (
+                            <span
+                              className="shrink-0 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-xs text-warning"
+                              title={t('networkDeviceDetailPage.ports.insecureHint')}
+                            >
+                              {t('networkDeviceDetailPage.ports.insecure')}
+                            </span>
+                          ) : kindLabel ? (
+                            <span className="shrink-0 text-xs text-muted-foreground">{kindLabel}</span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                   {openPorts.length > PORTS_VISIBLE_LIMIT && (
                     <button

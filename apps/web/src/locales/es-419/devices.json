@@ -2129,6 +2129,17 @@
     "notConfigured": "No configurado",
     "notLinked": "No vinculado",
     "openWebUi": "Abrir interfaz web",
+    "ports": {
+      "insecure": "Sin cifrar",
+      "insecureHint": "Este servicio envía credenciales en texto plano. Desactívalo en el dispositivo si es posible.",
+      "kind": {
+        "mgmt": "Administración",
+        "remote": "Acceso remoto",
+        "print": "Impresión",
+        "file": "Uso compartido de archivos",
+        "other": ""
+      }
+    },
     "proxyPort": "Puerto",
     "proxyPortInvalid": "Ingresa un puerto entre 1 y 65535",
     "proxyErrors": {

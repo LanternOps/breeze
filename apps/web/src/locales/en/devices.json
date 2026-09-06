@@ -2129,6 +2129,17 @@
     "notConfigured": "Not configured",
     "notLinked": "Not linked",
     "openWebUi": "Open Web UI",
+    "ports": {
+      "insecure": "Unencrypted",
+      "insecureHint": "This service sends credentials in clear text. Disable it on the device if you can.",
+      "kind": {
+        "mgmt": "Management",
+        "remote": "Remote access",
+        "print": "Printing",
+        "file": "File sharing",
+        "other": ""
+      }
+    },
     "proxyPort": "Port",
     "proxyPortInvalid": "Enter a port between 1 and 65535",
     "proxyErrors": {

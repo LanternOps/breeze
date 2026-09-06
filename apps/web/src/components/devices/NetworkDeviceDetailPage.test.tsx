@@ -104,8 +104,12 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.getByTestId('network-detail-ping').textContent).toContain('2.4 ms');
 
     const ports = screen.getByTestId('network-detail-ports');
-    expect(ports.textContent).toContain('22 (ssh)');
-    expect(ports.textContent).toContain('443 (https)');
+    expect(ports.textContent).toContain('22');
+    expect(ports.textContent).toContain('SSH');
+    expect(ports.textContent).toContain('443');
+    expect(ports.textContent).toContain('HTTPS');
+    expect(ports.querySelector('h3')?.textContent).toContain('Open ports');
+    expect(screen.getByTestId('network-detail-ports-count').textContent).toBe('2');
 
     const snmp = screen.getByTestId('network-detail-snmp');
     expect(snmp.textContent).toContain('System name');
@@ -583,7 +587,7 @@ describe('NetworkDeviceDetailPage', () => {
   });
 
   describe('proxy connect popover', () => {
-    it('renders the "Open Web UI" trigger only for web-ish ports', async () => {
+    it('renders a labeled "Open Web UI" button only for web-ish ports, and it opens that port\'s popover', async () => {
       fetchWithAuthMock
         .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
         .mockResolvedValueOnce(devicesResponse([]));
@@ -592,8 +596,13 @@ describe('NetworkDeviceDetailPage', () => {
       await screen.findByTestId('network-device-detail');
 
       // baseAsset.openPorts = [{port: 22, service: 'ssh'}, {port: 443, service: 'https'}]
-      expect(screen.getByTestId('network-detail-port-proxy-443')).toBeTruthy();
+      const trigger = screen.getByTestId('network-detail-port-proxy-443');
+      expect(trigger).toBeTruthy();
+      expect(trigger.textContent).toContain('Open Web UI');
       expect(screen.queryByTestId('network-detail-port-proxy-22')).toBeNull();
+
+      fireEvent.click(trigger);
+      expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
     });
 
     it('gives the protocol select an accessible label', async () => {
@@ -1046,6 +1055,75 @@ describe('NetworkDeviceDetailPage', () => {
       fireEvent.click(toggle);
       expect(screen.getByTestId('network-detail-ports').textContent).toContain('20014');
       expect(screen.getByTestId('network-detail-ports-toggle').textContent).toBe('Show fewer');
+    });
+
+    it('shows an "Unencrypted" warning badge on a risky plaintext port instead of an Open button', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({
+            data: { ...baseAsset, openPorts: [{ port: 21, service: 'ftp' }, { port: 443, service: 'https' }] },
+          }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const ports = screen.getByTestId('network-detail-ports');
+      expect(ports.textContent).toContain('FTP');
+      expect(ports.textContent).toContain('Unencrypted');
+      expect(screen.queryByTestId('network-detail-port-proxy-21')).toBeNull();
+    });
+
+    it('shows a muted kind label for a non-web, non-risky port', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, openPorts: [{ port: 3389, service: 'rdp' }] } }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const ports = screen.getByTestId('network-detail-ports');
+      expect(ports.textContent).toContain('RDP');
+      expect(ports.textContent).toContain('Remote access');
+    });
+
+    it('shows the open port count in the section title', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(screen.getByTestId('network-detail-ports-count').textContent).toBe('2');
+    });
+
+    it('sorts open ports ascending by port number regardless of scan order', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({
+            data: {
+              ...baseAsset,
+              openPorts: [
+                { port: 443, service: 'https' },
+                { port: 22, service: 'ssh' },
+                { port: 8080, service: 'http-alt' },
+              ],
+            },
+          }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const portNumbers = Array.from(
+        screen.getByTestId('network-detail-ports').querySelectorAll('[data-testid="network-detail-port-number"]'),
+      ).map((el) => el.textContent);
+      expect(portNumbers).toEqual(['22', '443', '8080']);
     });
 
     it('renders duplicate-port entries with stable unique keys and no React key warning', async () => {

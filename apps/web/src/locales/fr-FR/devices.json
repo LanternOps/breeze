@@ -2129,6 +2129,17 @@
     "notConfigured": "Non configuré",
     "notLinked": "Non lié",
     "openWebUi": "Ouvrir l'interface Web",
+    "ports": {
+      "insecure": "Non chiffré",
+      "insecureHint": "Ce service envoie les identifiants en clair. Désactivez-le sur l'appareil si possible.",
+      "kind": {
+        "mgmt": "Administration",
+        "remote": "Accès à distance",
+        "print": "Impression",
+        "file": "Partage de fichiers",
+        "other": ""
+      }
+    },
     "proxyPort": "Port",
     "proxyPortInvalid": "Saisissez un port entre 1 et 65535",
     "proxyErrors": {

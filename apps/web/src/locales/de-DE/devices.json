@@ -2129,6 +2129,17 @@
     "notConfigured": "Nicht konfiguriert",
     "notLinked": "Nicht verlinkt",
     "openWebUi": "Web-UI öffnen",
+    "ports": {
+      "insecure": "Unverschlüsselt",
+      "insecureHint": "Dieser Dienst überträgt Anmeldedaten im Klartext. Deaktivieren Sie ihn nach Möglichkeit auf dem Gerät.",
+      "kind": {
+        "mgmt": "Verwaltung",
+        "remote": "Fernzugriff",
+        "print": "Drucken",
+        "file": "Dateifreigabe",
+        "other": ""
+      }
+    },
     "proxyPort": "Port",
     "proxyPortInvalid": "Geben Sie einen Port zwischen 1 und 65535 ein",
     "proxyErrors": {

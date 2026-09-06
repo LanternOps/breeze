@@ -2129,6 +2129,17 @@
     "notConfigured": "Yapılandırılmadı",
     "notLinked": "Bağlantılı değil",
     "openWebUi": "Web kullanıcı arayüzünü aç",
+    "ports": {
+      "insecure": "Şifrelenmemiş",
+      "insecureHint": "Bu hizmet kimlik bilgilerini düz metin olarak gönderir. Mümkünse cihazda devre dışı bırakın.",
+      "kind": {
+        "mgmt": "Yönetim",
+        "remote": "Uzaktan erişim",
+        "print": "Yazdırma",
+        "file": "Dosya paylaşımı",
+        "other": ""
+      }
+    },
     "proxyPort": "Bağlantı noktası",
     "proxyPortInvalid": "1 ile 65535 arasında bir bağlantı noktası girin",
     "proxyErrors": {
