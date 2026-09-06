@@ -688,7 +688,9 @@
     "title": "Proxy para {{target}}",
     "throughAgent": "Por meio do agente",
     "connect": "Conectar",
-    "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)"
+    "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)",
+    "discoveredThisAsset": "descobriu este ativo",
+    "pickAgentHint": "Escolha um agente na mesma rede que {{ip}}."
   },
   "assetTypes": {
     "workstation": "Estação de trabalho",

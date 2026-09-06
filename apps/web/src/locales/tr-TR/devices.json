@@ -2134,7 +2134,8 @@
     "proxyErrors": {
       "disabled": "Bu hedef proxy erişimi için devre dışı bırakıldı. Bağlanabilmeniz için yöneticinin bunu Ayarlar'da yeniden etkinleştirmesi gerekir.",
       "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir; bunu profilinizde etkinleştirin.",
-      "noOnlineAgent": "Bu bağlantıyı köprüleyecek çevrimiçi bir temsilci mevcut değil. Bir temsilcinin {{ip}} proxy'sini kullanabilmesi için çevrimiçi olması gerekir."
+      "noOnlineAgent": "Bu bağlantıyı köprüleyecek çevrimiçi bir temsilci mevcut değil. Bir temsilcinin {{ip}} proxy'sini kullanabilmesi için çevrimiçi olması gerekir.",
+      "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
     "sections": {
@@ -2179,7 +2180,11 @@
       "auto": "— otomatik olarak algılandı",
       "manual": "— manuel olarak ayarlayın"
     },
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
+    "sameDeviceAs": "{{name}} ile aynı cihaz",
+    "showMore": "Daha fazla göster",
+    "showLess": "Daha az göster",
+    "showAllPorts": "Tümünü göster ({{count}})",
+    "showFewerPorts": "Daha az göster"
   },
   "osIcons": {
     "linux": "Linux",

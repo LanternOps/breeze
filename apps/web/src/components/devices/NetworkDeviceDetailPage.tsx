@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import {
   ArrowLeft,
@@ -71,6 +71,10 @@ type DeviceOption = { id: string; name: string; online: boolean };
 // discovered service name looks like http/https.
 const WEB_PORTS = new Set([80, 443, 8080, 8443, 8006, 9443]);
 
+// A wide scan can turn up dozens of open ports; cap the chip grid at this
+// many before it dominates the section, behind a "Show all" toggle.
+const PORTS_VISIBLE_LIMIT = 12;
+
 function isWebPort(port: number, service?: string): boolean {
   if (WEB_PORTS.has(port)) return true;
   return !!service && /https?/i.test(service);
@@ -121,11 +125,41 @@ function Section({
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
+  // A whitespace-only string is functionally empty but is not `null`/`undefined`,
+  // so the `??` fallback below never catches it — it used to render as a blank cell.
+  const isBlank = typeof value === 'string' && value.trim() === '';
   return (
     <div>
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="font-medium break-words">{value ?? '—'}</dd>
+      <dd className="font-medium break-words">{isBlank ? '—' : (value ?? '—')}</dd>
     </div>
+  );
+}
+
+// Values longer than this are clamped behind a "Show more" toggle so one
+// oversized SNMP field (a chatty sysDescr) can't push every other field off
+// screen or blow out the row's layout.
+const SNMP_VALUE_CLAMP_LENGTH = 200;
+
+function SnmpValue({ fieldKey, value }: { fieldKey: string; value: string }) {
+  const { t } = useTranslation('devices');
+  const [expanded, setExpanded] = useState(false);
+  const isLong = value.length > SNMP_VALUE_CLAMP_LENGTH;
+  const displayValue = isLong && !expanded ? `${value.slice(0, SNMP_VALUE_CLAMP_LENGTH)}…` : value;
+  return (
+    <dd className="font-medium break-words">
+      {displayValue || '—'}
+      {isLong && (
+        <button
+          type="button"
+          data-testid={`snmp-value-toggle-${fieldKey}`}
+          onClick={() => setExpanded((e) => !e)}
+          className="ml-1.5 text-xs text-primary hover:underline"
+        >
+          {expanded ? t('networkDeviceDetailPage.showLess') : t('networkDeviceDetailPage.showMore')}
+        </button>
+      )}
+    </dd>
   );
 }
 
@@ -140,6 +174,8 @@ function ProxyConnectPopover({
   service,
   suggestedBridgeDeviceId,
   devices,
+  devicesError,
+  onRetryDevices,
   variant = 'pill',
 }: {
   assetId: string;
@@ -148,6 +184,11 @@ function ProxyConnectPopover({
   service?: string;
   suggestedBridgeDeviceId: string | null;
   devices: DeviceOption[];
+  // True when the most recent bridge-device fetch failed — distinct from a
+  // successful fetch that just found zero online agents, so the popover can
+  // tell an operator to retry instead of implying no agent will ever work.
+  devicesError: boolean;
+  onRetryDevices: () => void;
   // 'pill' — icon-only trigger on an open-port chip, port fixed.
   // 'header' — labeled page-level action, port editable. This is the entry
   // point that survives when the scan recorded no (web) ports at all.
@@ -182,6 +223,35 @@ function ProxyConnectPopover({
   useEffect(() => {
     setDeviceId(defaultDeviceId);
   }, [defaultDeviceId]);
+
+  // A suggested bridge that isn't in the online list (still loading, or
+  // truly offline) leaves the select on an arbitrary first entry — never
+  // silent about it when there's more than one candidate to guess wrong
+  // between (a single candidate has no real ambiguity to flag).
+  const suggestedFound =
+    !!suggestedBridgeDeviceId && onlineDevices.some((d) => d.id === suggestedBridgeDeviceId);
+  const showBridgeHint = !suggestedFound && onlineDevices.length > 1;
+  // A plain <select> gets unwieldy past a handful of agents; swap in a
+  // searchable input+datalist combobox once there are enough candidates
+  // that scanning the list stops being the fast path.
+  const useBridgeCombobox = onlineDevices.length > 8;
+
+  const labelFor = useCallback(
+    (d: DeviceOption) =>
+      d.id === suggestedBridgeDeviceId
+        ? `${d.name} (${t('discovery:proxyConnect.discoveredThisAsset')})`
+        : d.name,
+    [suggestedBridgeDeviceId, t],
+  );
+
+  // The combobox's <input> shows a label, but the value we act on is the id
+  // — keep them in sync whenever the selected device changes (including the
+  // default arriving async, same as the plain-select `deviceId` sync above).
+  const [bridgeSearchText, setBridgeSearchText] = useState('');
+  useEffect(() => {
+    const selected = onlineDevices.find((d) => d.id === deviceId);
+    setBridgeSearchText(selected ? labelFor(selected) : '');
+  }, [deviceId, onlineDevices, labelFor]);
 
   const [scheme, setScheme] = useState<'http' | 'https'>(() => defaultSchemeForPort(port, service));
   useEffect(() => {
@@ -301,7 +371,21 @@ function ProxyConnectPopover({
             </div>
           )}
 
-          {onlineDevices.length === 0 ? (
+          {devicesError ? (
+            <div className="space-y-1.5">
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {t('networkDeviceDetailPage.proxyErrors.agentListFailed')}
+              </p>
+              <button
+                type="button"
+                data-testid="proxy-popover-retry-agents"
+                onClick={() => onRetryDevices()}
+                className="text-xs text-primary hover:underline"
+              >
+                {t('common:actions.retry')}
+              </button>
+            </div>
+          ) : onlineDevices.length === 0 ? (
             <p className="text-xs text-amber-600 dark:text-amber-400">
               {t('networkDeviceDetailPage.proxyErrors.noOnlineAgent', { ip: assetIp })}
             </p>
@@ -311,18 +395,45 @@ function ProxyConnectPopover({
                 <label className="text-xs font-medium text-muted-foreground">
                   {t('discovery:proxyConnect.throughAgent')}
                 </label>
-                <select
-                  data-testid="proxy-popover-bridge-select"
-                  value={deviceId}
-                  onChange={(e) => setDeviceId(e.target.value)}
-                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  {onlineDevices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                {useBridgeCombobox ? (
+                  <>
+                    <input
+                      list={`proxy-bridge-devices-${assetId}-${variant}-${initialPort}`}
+                      data-testid="proxy-popover-bridge-select"
+                      value={bridgeSearchText}
+                      onChange={(e) => {
+                        const text = e.target.value;
+                        setBridgeSearchText(text);
+                        const match = onlineDevices.find((d) => labelFor(d) === text);
+                        if (match) setDeviceId(match.id);
+                      }}
+                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    />
+                    <datalist id={`proxy-bridge-devices-${assetId}-${variant}-${initialPort}`}>
+                      {onlineDevices.map((d) => (
+                        <option key={d.id} value={labelFor(d)} />
+                      ))}
+                    </datalist>
+                  </>
+                ) : (
+                  <select
+                    data-testid="proxy-popover-bridge-select"
+                    value={deviceId}
+                    onChange={(e) => setDeviceId(e.target.value)}
+                    className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  >
+                    {onlineDevices.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {labelFor(d)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {showBridgeHint && (
+                  <p className="mt-1 text-xs text-muted-foreground" data-testid="proxy-popover-bridge-hint">
+                    {t('discovery:proxyConnect.pickAgentHint', { ip: assetIp })}
+                  </p>
+                )}
               </div>
 
               <select
@@ -534,10 +645,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     setActiveTab(tab);
   };
 
-  const fetchAsset = useCallback(async () => {
+  // `background: true` is used for the return-to-tab refresh below: it must
+  // not flash the loading skeleton over content the operator is already
+  // looking at, and a transient failure shouldn't blow away a working page —
+  // so it skips both the loading flag and the error state entirely.
+  const fetchAsset = useCallback(async (opts?: { background?: boolean }) => {
+    const background = opts?.background ?? false;
     try {
-      setLoading(true);
-      setError(undefined);
+      if (!background) {
+        setLoading(true);
+        setError(undefined);
+      }
 
       const response = await fetchWithAuth(`/discovery/assets/${assetId}`);
       if (!response.ok) {
@@ -568,9 +686,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         autoLinkSuppressedAt: (raw as AssetDetailExtras).autoLinkSuppressedAt ?? null,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
+      if (!background) {
+        setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [assetId, t]);
 
@@ -578,27 +698,97 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     void fetchAsset();
   }, [fetchAsset]);
 
-  // Device list for the proxy "through agent" picker. Same call shape as
-  // DiscoveredAssetList's equivalent fetch for AssetDetailModal's (now
-  // removed) bridge picker: unscoped `/devices`, online filtered client-side.
+  // Return-to-tab refresh: a technician who tabs away for a while and comes
+  // back is looking at status that may be well out of date. Only refetch
+  // after a real away-period (60s+), not a quick alt-tab, and never while
+  // still on the initial load (no `asset` yet to refresh in place).
+  useEffect(() => {
+    let hiddenAt: number | null = null;
+    const MIN_HIDDEN_MS = 60_000;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (document.visibilityState === 'visible' && hiddenAt !== null) {
+        const hiddenDuration = Date.now() - hiddenAt;
+        hiddenAt = null;
+        if (hiddenDuration >= MIN_HIDDEN_MS) {
+          void fetchAsset({ background: true });
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fetchAsset]);
+
+  // Device list for the proxy "through agent" picker. Site-scoped to the
+  // asset's site when known — same call shape LinkManuallyControl already
+  // uses above — so an operator only sees agents that can plausibly bridge
+  // to this network, instead of an unscoped list across every site. Falls
+  // back to the unscoped list when the asset has no site on record.
   const [devices, setDevices] = useState<DeviceOption[]>([]);
+  const [devicesError, setDevicesError] = useState(false);
+  const assetLoaded = asset != null;
   const fetchDevices = useCallback(async () => {
+    // The site scope isn't known until the asset has loaded; firing early
+    // would always (and silently) fall through to the unscoped branch.
+    if (!assetLoaded) return;
+    setDevicesError(false);
     try {
-      const response = await fetchWithAuth('/devices');
-      if (!response.ok) return;
+      const url = extras.siteId
+        ? `/devices?siteId=${encodeURIComponent(extras.siteId)}`
+        : '/devices';
+      const response = await fetchWithAuth(url);
+      if (!response.ok) {
+        setDevicesError(true);
+        return;
+      }
       const data = await response.json();
       const raw: any[] = asList(data, 'devices');
-      setDevices(
-        raw.map((d: any) => ({
-          id: d.id,
-          name: d.displayName || d.hostname || d.id,
-          online: d.status === 'online',
-        })),
-      );
+      let list: DeviceOption[] = raw.map((d: any) => ({
+        id: d.id,
+        name: d.displayName || d.hostname || d.id,
+        online: d.status === 'online',
+      }));
+
+      // The suggested bridge (the agent that ran the discovery scan) can
+      // live outside the asset's site-scoped page of results — never
+      // silently drop it, or the default bridge target from #proxy-entry
+      // quietly regresses to an arbitrary agent.
+      const suggestedId = extras.suggestedBridgeDeviceId;
+      if (suggestedId && !list.some((d) => d.id === suggestedId)) {
+        try {
+          const suggestedResponse = await fetchWithAuth(`/devices/${suggestedId}`);
+          if (suggestedResponse.ok) {
+            const suggestedRaw = await suggestedResponse.json();
+            if (suggestedRaw && typeof suggestedRaw.id === 'string') {
+              list = [
+                {
+                  id: suggestedRaw.id,
+                  name: suggestedRaw.displayName || suggestedRaw.hostname || suggestedRaw.id,
+                  online: suggestedRaw.status === 'online',
+                },
+                ...list,
+              ];
+            }
+          }
+        } catch {
+          // Best-effort — the suggested device just won't appear as an option.
+        }
+      }
+
+      list.sort((a, b) => {
+        if (a.id === suggestedId) return -1;
+        if (b.id === suggestedId) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      setDevices(list);
     } catch {
-      // Best-effort — the popover's bridge picker just shows no online agent.
+      setDevicesError(true);
     }
-  }, []);
+  }, [assetLoaded, extras.siteId, extras.suggestedBridgeDeviceId]);
 
   useEffect(() => {
     void fetchDevices();
@@ -611,6 +801,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const [unlinking, setUnlinking] = useState(false);
   const [typeSaving, setTypeSaving] = useState(false);
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
+  const [portsExpanded, setPortsExpanded] = useState(false);
 
   // Unlink now works for both auto and manual links (#3261 Task 2 reverses the
   // old manual-only rule — the server sets auto_link_suppressed_at so a
@@ -672,11 +863,56 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   );
 
   if (loading) {
+    // Mirrors the real layout below (header card, stat strip, tab bar, two
+    // section cards) so the page doesn't jump once data arrives — a centered
+    // spinner over an otherwise-empty page reads as broken on a slow load.
     return (
-      <div className="flex items-center justify-center py-12" data-testid="network-device-detail-loading">
-        <div className="text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('networkDeviceDetailPage.loading')}</p>
+      <div
+        className="max-w-6xl space-y-6 animate-pulse motion-reduce:animate-none"
+        data-testid="network-device-detail-loading"
+      >
+        <span className="sr-only">{t('networkDeviceDetailPage.loading')}</span>
+
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <div className="flex items-start gap-4">
+            <div className="h-14 w-14 shrink-0 rounded-lg bg-muted" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="h-5 w-48 rounded bg-muted" />
+                <div className="h-5 w-16 rounded-full bg-muted" />
+                <div className="h-5 w-16 rounded-full bg-muted" />
+              </div>
+              <div className="h-4 w-64 rounded bg-muted" />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="flex-1 space-y-2">
+              <div className="h-3 w-16 rounded bg-muted" />
+              <div className="h-5 w-20 rounded bg-muted" />
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-2 border-b pb-2">
+          <div className="h-8 w-24 rounded bg-muted" />
+          <div className="h-8 w-24 rounded bg-muted" />
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          {[0, 1].map((card) => (
+            <div key={card} className="space-y-3 rounded-md border bg-card p-4">
+              <div className="h-4 w-24 rounded bg-muted" />
+              {[0, 1, 2].map((row) => (
+                <div key={row} className="flex items-center justify-between gap-4">
+                  <div className="h-3 w-20 rounded bg-muted" />
+                  <div className="h-3 w-24 rounded bg-muted" />
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -709,6 +945,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
   const displayName = asset.label || asset.hostname || asset.ip;
   const openPorts = asset.openPorts ?? [];
+  const visiblePorts = portsExpanded ? openPorts : openPorts.slice(0, PORTS_VISIBLE_LIMIT);
   // Page-level proxy entry point: default to the first scanned web-ish port,
   // else 443 — so the action exists even when the scan recorded no ports.
   const defaultWebPort = openPorts.find((p) => isWebPort(p.port, p.service));
@@ -778,7 +1015,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 <span className="font-mono">{asset.ip}</span>
                 {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
-                {asset.manufacturer !== '—' && <span>{asset.manufacturer}</span>}
+                {asset.manufacturer !== '—' && (
+                  <span className="min-w-0 max-w-[16rem] truncate" title={asset.manufacturer}>
+                    {asset.manufacturer}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -794,6 +1035,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               service={defaultWebPort?.service}
               suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
               devices={devices}
+              devicesError={devicesError}
+              onRetryDevices={fetchDevices}
             />
             <a
               href={`/discovery?asset=${asset.id}#assets`}
@@ -952,17 +1195,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
             </Section>
 
             <Section title={t('networkDeviceDetailPage.sections.snmpData')} testId="network-detail-snmp">
-              <dl className="space-y-2 text-sm">
+              <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
                 {Object.keys(snmpData).length === 0 ? (
-                  <div className="text-xs text-muted-foreground">
+                  <div className="col-span-2 text-xs text-muted-foreground">
                     {t('networkDeviceDetailPage.emptySnmp')}
                   </div>
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
-                    <div key={key} className="flex items-center justify-between gap-4">
+                    <Fragment key={key}>
                       <dt className="text-muted-foreground">{snmpFieldLabel(key)}</dt>
-                      <dd className="font-medium text-right break-all">{value}</dd>
-                    </div>
+                      <SnmpValue fieldKey={key} value={String(value ?? '')} />
+                    </Fragment>
                   ))
                 )}
               </dl>
@@ -974,26 +1217,42 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               {openPorts.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptyPorts')}</p>
               ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {openPorts.map((p) => (
-                    <span
-                      key={p.port}
-                      className="inline-flex items-center gap-1 rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
+                <>
+                  <div className="flex flex-wrap gap-1.5">
+                    {visiblePorts.map((p, index) => (
+                      <span
+                        key={`${p.port}-${(p as { protocol?: string }).protocol ?? 'tcp'}-${index}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
+                      >
+                        {p.port}{p.service ? ` (${p.service})` : ''}
+                        {isWebPort(p.port, p.service) && (
+                          <ProxyConnectPopover
+                            assetId={asset.id}
+                            assetIp={asset.ip}
+                            port={p.port}
+                            service={p.service}
+                            suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+                            devices={devices}
+                            devicesError={devicesError}
+                            onRetryDevices={fetchDevices}
+                          />
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                  {openPorts.length > PORTS_VISIBLE_LIMIT && (
+                    <button
+                      type="button"
+                      data-testid="network-detail-ports-toggle"
+                      onClick={() => setPortsExpanded((expanded) => !expanded)}
+                      className="mt-2 text-xs text-primary hover:underline"
                     >
-                      {p.port}{p.service ? ` (${p.service})` : ''}
-                      {isWebPort(p.port, p.service) && (
-                        <ProxyConnectPopover
-                          assetId={asset.id}
-                          assetIp={asset.ip}
-                          port={p.port}
-                          service={p.service}
-                          suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
-                          devices={devices}
-                        />
-                      )}
-                    </span>
-                  ))}
-                </div>
+                      {portsExpanded
+                        ? t('networkDeviceDetailPage.showFewerPorts')
+                        : t('networkDeviceDetailPage.showAllPorts', { count: openPorts.length })}
+                    </button>
+                  )}
+                </>
               )}
             </Section>
           </div>

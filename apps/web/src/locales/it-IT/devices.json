@@ -2134,7 +2134,8 @@
     "proxyErrors": {
       "disabled": "Questa destinazione è stata disabilitata per l'accesso proxy. Un amministratore deve riabilitarla nelle Impostazioni prima di potersi connettere.",
       "mfaRequired": "L'accesso remoto richiede l'autenticazione a due fattori: abilitala nel tuo profilo.",
-      "noOnlineAgent": "Nessun agente online disponibile per fare da ponte a questa connessione. Un agente deve essere online per il proxy verso {{ip}}."
+      "noOnlineAgent": "Nessun agente online disponibile per fare da ponte a questa connessione. Un agente deve essere online per il proxy verso {{ip}}.",
+      "agentListFailed": "Impossibile caricare l'elenco degli agenti. Riprova."
     },
     "resetToAutoDetected": "Ripristina rilevamento automatico",
     "sections": {
@@ -2179,7 +2180,11 @@
       "auto": "— rilevato automaticamente",
       "manual": "— impostato manualmente"
     },
-    "sameDeviceAs": "Stesso dispositivo di {{name}}"
+    "sameDeviceAs": "Stesso dispositivo di {{name}}",
+    "showMore": "Mostra di più",
+    "showLess": "Mostra meno",
+    "showAllPorts": "Mostra tutte ({{count}})",
+    "showFewerPorts": "Mostra meno"
   },
   "osIcons": {
     "linux": "Linux",

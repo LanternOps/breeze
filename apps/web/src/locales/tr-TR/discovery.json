@@ -688,7 +688,9 @@
     "title": "{{target}} için vekil",
     "throughAgent": "Temsilci aracılığıyla",
     "connect": "Bağlan",
-    "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)"
+    "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)",
+    "discoveredThisAsset": "bu varlığı keşfetti",
+    "pickAgentHint": "{{ip}} ile aynı ağda bir temsilci seçin."
   },
   "assetTypes": {
     "workstation": "İş İstasyonu",

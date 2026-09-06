@@ -688,7 +688,9 @@
     "title": "Proxy verso {{target}}",
     "throughAgent": "Tramite agente",
     "connect": "Connetti",
-    "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)"
+    "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)",
+    "discoveredThisAsset": "ha rilevato questa risorsa",
+    "pickAgentHint": "Scegli un agente sulla stessa rete di {{ip}}."
   },
   "assetTypes": {
     "workstation": "Workstation",

@@ -688,7 +688,9 @@
     "title": "Proxy to {{target}}",
     "throughAgent": "Through agent",
     "connect": "Connect",
-    "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)"
+    "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)",
+    "discoveredThisAsset": "discovered this asset",
+    "pickAgentHint": "Pick an agent on the same network as {{ip}}."
   },
   "assetTypes": {
     "workstation": "Workstation",

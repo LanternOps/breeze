@@ -688,7 +688,9 @@
     "title": "Proxy zu {{target}}",
     "throughAgent": "Über Agent",
     "connect": "Verbinden",
-    "allowSelfSigned": "Selbstsigniertes Zertifikat zulassen (üblich für Drucker, iLO/IPMI, Switches)"
+    "allowSelfSigned": "Selbstsigniertes Zertifikat zulassen (üblich für Drucker, iLO/IPMI, Switches)",
+    "discoveredThisAsset": "hat dieses Gerät entdeckt",
+    "pickAgentHint": "Wählen Sie einen Agenten im selben Netzwerk wie {{ip}}."
   },
   "assetTypes": {
     "workstation": "Arbeitsplatz",

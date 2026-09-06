@@ -2134,7 +2134,8 @@
     "proxyErrors": {
       "disabled": "Dieses Ziel wurde für den Proxy-Zugriff deaktiviert. Ein Administrator muss es in den Einstellungen wieder aktivieren, bevor Sie sich verbinden können.",
       "mfaRequired": "Für den Fernzugriff ist eine Zwei-Faktor-Authentifizierung erforderlich – aktivieren Sie sie in Ihrem Profil.",
-      "noOnlineAgent": "Kein Online-Agent verfügbar, um diese Verbindung zu vermitteln. Ein Agent muss online sein, um zu {{ip}} zu proxen."
+      "noOnlineAgent": "Kein Online-Agent verfügbar, um diese Verbindung zu vermitteln. Ein Agent muss online sein, um zu {{ip}} zu proxen.",
+      "agentListFailed": "Die Liste der Agenten konnte nicht geladen werden. Erneut versuchen."
     },
     "resetToAutoDetected": "Auf „Automatisch erkannt“ zurücksetzen",
     "sections": {
@@ -2179,7 +2180,11 @@
       "auto": "— automatisch erkannt",
       "manual": "— manuell festgelegt"
     },
-    "sameDeviceAs": "Dasselbe Gerät wie {{name}}"
+    "sameDeviceAs": "Dasselbe Gerät wie {{name}}",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen",
+    "showAllPorts": "Alle anzeigen ({{count}})",
+    "showFewerPorts": "Weniger anzeigen"
   },
   "osIcons": {
     "linux": "Linux",

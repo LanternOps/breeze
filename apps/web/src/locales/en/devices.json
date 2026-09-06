@@ -2134,7 +2134,8 @@
     "proxyErrors": {
       "disabled": "This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.",
       "mfaRequired": "Remote access requires two-factor authentication — enable it in your profile.",
-      "noOnlineAgent": "No online agent is available to bridge this connection. An agent must be online to proxy to {{ip}}."
+      "noOnlineAgent": "No online agent is available to bridge this connection. An agent must be online to proxy to {{ip}}.",
+      "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
     "sections": {
@@ -2179,7 +2180,11 @@
       "auto": "— auto-detected",
       "manual": "— set manually"
     },
-    "sameDeviceAs": "Same device as {{name}}"
+    "sameDeviceAs": "Same device as {{name}}",
+    "showMore": "Show more",
+    "showLess": "Show less",
+    "showAllPorts": "Show all ({{count}})",
+    "showFewerPorts": "Show fewer"
   },
   "osIcons": {
     "linux": "Linux",

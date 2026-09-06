@@ -571,6 +571,104 @@ describe('NetworkDeviceDetailPage', () => {
       expect(screen.queryByTestId('network-detail-port-proxy-22')).toBeNull();
     });
 
+    it("fetches the bridge device list scoped to the asset's site, or unscoped when the asset has no site", async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, siteId: 'site-1' } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      await waitFor(() =>
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices?siteId=site-1'),
+      );
+
+      unmount();
+      vi.clearAllMocks();
+
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, siteId: null } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices'));
+    });
+
+    it('prepends the suggested bridge device with a fetch-by-id when the site-scoped list omits it', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, siteId: 'site-1', suggestedBridgeDeviceId: 'dev-99' } }),
+        )
+        .mockResolvedValueOnce(
+          devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]),
+        )
+        .mockResolvedValueOnce(
+          makeJsonResponse({ id: 'dev-99', displayName: 'Bridge99', status: 'online' }),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-99'));
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-99'));
+      expect(select.textContent).toContain('Bridge99');
+    });
+
+    it('shows a pick-agent hint only with several online candidates and no suggested device', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: null } }))
+        .mockResolvedValueOnce(
+          devicesResponse([
+            { id: 'dev-a', displayName: 'Alpha', status: 'online' },
+            { id: 'dev-b', displayName: 'Beta', status: 'online' },
+          ]),
+        );
+
+      const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      await screen.findByTestId('proxy-popover-bridge-select');
+      expect(screen.getByTestId('proxy-popover-bridge-hint')).toBeTruthy();
+
+      unmount();
+      vi.clearAllMocks();
+
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: null } }))
+        .mockResolvedValueOnce(
+          devicesResponse([{ id: 'dev-a', displayName: 'Alpha', status: 'online' }]),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      await screen.findByTestId('proxy-popover-bridge-select');
+      expect(screen.queryByTestId('proxy-popover-bridge-hint')).toBeNull();
+    });
+
+    it('shows a retry-able failure message when the bridge device list fails to load', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(makeJsonResponse({}, false, 500))
+        .mockResolvedValueOnce(
+          devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      expect(await screen.findByText("Couldn't load the agent list. Retry.")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('proxy-popover-retry-agents'));
+
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-1'));
+    });
+
     it('defaults the bridge device to suggestedBridgeDeviceId — never linkedDeviceId — when both are online', async () => {
       fetchWithAuthMock
         .mockResolvedValueOnce(
@@ -831,6 +929,152 @@ describe('NetworkDeviceDetailPage', () => {
 
       const stats = screen.getByTestId('network-detail-stats');
       expect(stats.textContent).not.toMatch(/as of/i);
+    });
+  });
+
+  describe('hardening: loading, SNMP, ports, and background refresh', () => {
+    it('shows a layout-matching loading skeleton (not a blank shell) before the asset loads', async () => {
+      let resolveFetch!: (value: Response) => void;
+      fetchWithAuthMock.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveFetch = resolve; }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      expect(screen.getByTestId('network-device-detail-loading')).toBeTruthy();
+      expect(screen.queryByTestId('network-device-detail')).toBeNull();
+
+      resolveFetch(makeJsonResponse({ data: baseAsset }));
+      await screen.findByTestId('network-device-detail');
+      expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
+    });
+
+    it('clamps a long SNMP value behind a Show more / Show less toggle', async () => {
+      const longDescr = 'x'.repeat(250);
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, snmpData: { sysDescr: longDescr } } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const toggle = screen.getByTestId('snmp-value-toggle-sysDescr');
+      expect(toggle.textContent).toBe('Show more');
+      expect(screen.getByTestId('network-detail-snmp').textContent).not.toContain(longDescr);
+
+      fireEvent.click(toggle);
+      expect(screen.getByTestId('network-detail-snmp').textContent).toContain(longDescr);
+      expect(screen.getByTestId('snmp-value-toggle-sysDescr').textContent).toBe('Show less');
+    });
+
+    it('caps open-port chips at 12 with a Show all / Show fewer toggle', async () => {
+      const manyPorts = Array.from({ length: 15 }, (_, i) => ({ port: 20000 + i, service: 'custom' }));
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, openPorts: manyPorts } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const ports = screen.getByTestId('network-detail-ports');
+      expect(ports.textContent).toContain('20000');
+      expect(ports.textContent).not.toContain('20014');
+
+      const toggle = screen.getByTestId('network-detail-ports-toggle');
+      expect(toggle.textContent).toContain('Show all (15)');
+
+      fireEvent.click(toggle);
+      expect(screen.getByTestId('network-detail-ports').textContent).toContain('20014');
+      expect(screen.getByTestId('network-detail-ports-toggle').textContent).toBe('Show fewer');
+    });
+
+    it('renders duplicate-port entries with stable unique keys and no React key warning', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const dupPorts = [
+        { port: 443, service: 'https' },
+        { port: 443, service: 'https-alt' },
+      ];
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, openPorts: dupPorts } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const keyWarning = errorSpy.mock.calls.some(([msg]) => typeof msg === 'string' && /key/i.test(msg));
+      expect(keyWarning).toBe(false);
+      errorSpy.mockRestore();
+    });
+
+    it('treats a whitespace-only field value as empty', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, osFingerprint: '   ' } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const label = screen.getByText('Os Fingerprint');
+      const dd = label.parentElement?.querySelector('dd');
+      expect(dd?.textContent).toBe('—');
+    });
+
+    it('re-fetches the asset in place (no skeleton) after the tab is hidden 60+ seconds and becomes visible again', async () => {
+      // Only `Date` is faked — `setTimeout` stays real so `waitFor`/`findBy*`
+      // (which poll on real timers) keep working without extra `act()`
+      // plumbing; only the elapsed-hidden-time math needs a virtual clock.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        fetchWithAuthMock
+          .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+          .mockResolvedValueOnce(devicesResponse([]))
+          .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, label: 'Refreshed Switch' } }));
+
+        render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+        await screen.findByTestId('network-device-detail');
+
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        vi.setSystemTime(Date.now() + 65_000);
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+        expect(fetchWithAuthMock.mock.calls[2][0]).toBe(`/discovery/assets/${ASSET_ID}`);
+        // Background refresh must not show the skeleton or drop existing content.
+        expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
+        expect(screen.getByTestId('network-device-detail')).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not re-fetch when hidden for less than 60 seconds', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        fetchWithAuthMock
+          .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+          .mockResolvedValueOnce(devicesResponse([]));
+
+        render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+        await screen.findByTestId('network-device-detail');
+
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        vi.setSystemTime(Date.now() + 5_000);
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        // Give any (incorrect) async refetch a real tick to fire before
+        // asserting its absence — `setTimeout` is real in this test.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
