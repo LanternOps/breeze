@@ -1969,6 +1969,12 @@ coreRoutes.delete(
     // (lone multiboot survivor unlinked, or a vm_host group left headless and
     // its guests unlinked). Recorded in the audit details: an unexplained
     // "why did this whole VM group un-group?" must be traceable to this event.
+    //
+    // Both facts come off the LOCKED row (`PurgeResult`), never the pre-flight
+    // `device.linkGroupId`: that copy predates the lock, and when the two
+    // disagree the audit either names the wrong group or — as it did before
+    // #2787 review — omits the whole spread while the dissolve ran anyway.
+    let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
@@ -1994,6 +2000,7 @@ coreRoutes.delete(
     //     left to report.
     try {
       const purge = await db.transaction((tx) => purgeRemovedDevice(tx, deviceId));
+      linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
     } catch (err: unknown) {
       if (err instanceof DeviceLifecycleError) {
@@ -2063,9 +2070,7 @@ coreRoutes.delete(
         // (and unlink every remaining member). Without this flag the audit
         // trail would show only "device deleted" while sibling devices
         // silently lost their grouping.
-        ...(device.linkGroupId
-          ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
-          : {}),
+        ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
       }
     });
 

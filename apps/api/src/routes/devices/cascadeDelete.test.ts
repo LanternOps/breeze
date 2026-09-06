@@ -711,6 +711,38 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
   });
 
+  /**
+   * #2787 review — the audit spread was keyed on the PRE-LOCK
+   * `device.linkGroupId` from `getDeviceWithOrgAndSiteCheck`, while
+   * `linkGroupDissolved` came from the locked row. When those disagree (a
+   * device linked between the pre-flight read and the lock) the dissolve runs
+   * and the audit records NOTHING about it — and dissolving a group unlinks
+   * SIBLING devices that were never in this request, so "why did this whole VM
+   * group un-group?" becomes unanswerable.
+   *
+   * Both facts must come off the same read: the locked one.
+   */
+  it('audits the link group read UNDER THE LOCK, not the stale pre-flight copy (#2787)', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
+    // Pre-flight sees an UNLINKED device...
+    rigDeviceLookup({ ...DEVICE, linkGroupId: null });
+    // ...but under the lock it is in a group, and the dissolve fires.
+    rigDeleteTransaction({ linkGroupId: 'grp-late-link' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
+    expect(await auditDetails()).toMatchObject({
+      linkGroupId: 'grp-late-link',
+      linkGroupDissolved: true,
+    });
+  });
+
   it('does not touch link groups when the deleted device was unlinked', async () => {
     const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
     rigDeviceLookup(DEVICE);

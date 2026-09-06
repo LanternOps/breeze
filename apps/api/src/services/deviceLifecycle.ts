@@ -63,6 +63,15 @@ export interface RestoreResult {
 }
 
 export interface PurgeResult {
+  /**
+   * The device's `link_group_id` AS READ UNDER THE LOCK — deliberately not the
+   * caller's pre-flight copy, which predates the lock and can disagree with it.
+   * Callers must key their audit entry on THIS value, so the group id and the
+   * `linkGroupDissolved` flag beside it come off the same read. Dissolving a
+   * group unlinks sibling devices that were never in the request, so a
+   * mismatched pair leaves that unexplainable.
+   */
+  linkGroupId: string | null;
   linkGroupDissolved: boolean;
 }
 
@@ -190,5 +199,5 @@ export async function purgeRemovedDevice(tx: Tx, deviceId: string): Promise<Purg
     linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, row.link_group_id);
   }
 
-  return { linkGroupDissolved };
+  return { linkGroupId: row.link_group_id, linkGroupDissolved };
 }
