@@ -14,7 +14,7 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/proxy/network/integration/v1/sites":
-			w.Write([]byte(`{"data":[{"id":"s1"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"s1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/devices":
 			_, _ = w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/clients":
@@ -84,9 +84,9 @@ func TestUploadOmitsUncollectedDeviceMetrics(t *testing.T) {
 		case "/proxy/network/integration/v1/sites":
 			_, _ = w.Write([]byte(`{"data":[{"id":"s1"}]}`))
 		case "/proxy/network/integration/v1/sites/s1/devices":
-			w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"d1","macAddress":"aa:bb:cc:dd:ee:01","name":"sw1"}]}`))
 		default:
-			w.Write([]byte(`{"data":[]}`))
+			_, _ = w.Write([]byte(`{"data":[]}`))
 		}
 	}))
 	defer controller.Close()
@@ -128,9 +128,9 @@ func TestRunOnceUploadsSites(t *testing.T) {
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/proxy/network/integration/v1/sites":
-			w.Write([]byte(`{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`))
 		default:
-			w.Write([]byte(`{"data":[]}`))
+			_, _ = w.Write([]byte(`{"data":[]}`))
 		}
 	}))
 	defer controller.Close()
@@ -174,7 +174,7 @@ func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if r.URL.Path == "/api/v1/agents/agent-1/unifi-collectors" {
-			w.Write([]byte(`{"collectors":[{"collectorId":"c1","controllerUrl":"https://10.0.0.1","apiKey":"k","pollIntervalSeconds":60}]}`))
+			_, _ = w.Write([]byte(`{"collectors":[{"collectorId":"c1","controllerUrl":"https://10.0.0.1","apiKey":"k","pollIntervalSeconds":60}]}`))
 			return
 		}
 		w.WriteHeader(404)

@@ -21,7 +21,7 @@ func TestDefaultHTTPClientRefusesRedirectsAndDoesNotLeakKey(t *testing.T) {
 		if r.Header.Get("X-API-KEY") != "" {
 			t.Errorf("X-API-KEY leaked to redirect target")
 		}
-		w.Write([]byte(`{"data":[]}`))
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	defer evil.Close()
 
@@ -191,9 +191,9 @@ func TestPoll_ReportsSitesWithNames(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/sites"):
-			io.WriteString(w, `{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`)
+			_, _ = io.WriteString(w, `{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`)
 		default:
-			io.WriteString(w, `{"data":[]}`)
+			_, _ = io.WriteString(w, `{"data":[]}`)
 		}
 	}))
 	defer srv.Close()
