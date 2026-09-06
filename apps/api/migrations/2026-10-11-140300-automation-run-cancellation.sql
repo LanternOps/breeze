@@ -1,9 +1,10 @@
 -- #3525 W05 (#4766) — automation run cancellation.
 --
--- Slot note: the plan named this 2026-10-07-100200. That name now sorts BEFORE
--- migrations already shipped on main (newest committed: 2026-10-10-100400) and
--- before two same-day files in flight, so it would replay ahead of them on a
--- fresh database. Renamed to sort last; see apps/api/migrations/README.md.
+-- Slot note: the plan named this 2026-10-07-100200. That name sorts BEFORE
+-- migrations already shipped on main, so it would replay ahead of them on a
+-- fresh database. Renamed twice to sort last (origin/main gained
+-- 2026-10-11-000300 while this branch was open, which the pre-push guard
+-- caught); see apps/api/migrations/README.md.
 --
 -- This file writes no rows: it adds two enum values and one integer column with
 -- a DEFAULT, so there is no UPDATE/DELETE/INSERT and no detection read against
