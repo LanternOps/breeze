@@ -37,13 +37,13 @@ vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 
 const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
-// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the agent
-// could not be reached for remote uninstall — decommission force-closes the WS
-// handshake, so this is the common case, not a rare race (see the issue). The
-// detail-page toast must branch on it instead of always showing a green
-// success, or the operator believes the endpoint is clean when the agent is
-// still installed and running.
-describe('DeviceDetailPage permanent delete surfaces the API warning (#4368)', () => {
+// #4368 was "surface the API's `warning` when the agent could not be reached".
+// #2787 deleted that warning along with the best-effort WS uninstall it
+// described — permanent delete now REFUSES while a durable agent uninstall is
+// still collectable instead of deleting and hoping. The detail-page toast is
+// therefore unconditionally the success one, and what is pinned here is that
+// the branch is genuinely gone.
+describe('DeviceDetailPage permanent delete toasts success, with no warning branch (#2787, was #4368)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
@@ -75,33 +75,31 @@ describe('DeviceDetailPage permanent delete surfaces the API warning (#4368)', (
     }
   }
 
-  it('shows a warning toast (not success) when the agent could not be reached', async () => {
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
-      success: true,
-      agentUninstallSent: false,
-      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-    } as never);
-
-    await runPermanentDelete();
-
-    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
-    expect(calls).toContainEqual(
-      expect.objectContaining({
-        type: 'warning',
-        message: expect.stringContaining('alpha-01'),
-      }),
-    );
-    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
-    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
-  });
-
-  it('still shows a success toast when there is no warning', async () => {
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+  it('shows a success toast for the plain { success: true } body the API now returns', async () => {
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
+  });
+
+  /**
+   * The DISCRIMINATING half — a body still carrying the retired `warning`
+   * field must NOT produce the old toast. Without this, a dead `if` left
+   * behind would keep claiming an uninstall attempt that no longer happens.
+   */
+  it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      warning: 'The agent could not be reached for remote uninstall.',
+    } as never);
+
+    await runPermanentDelete();
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
   });
 });

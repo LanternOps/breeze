@@ -33,6 +33,7 @@ import { postureRoutes } from './posture';
 import { optionsRoutes } from './options';
 import { healthRoutes } from './health';
 import { removalConfigRoutes } from './removalConfig';
+import { bulkLifecycleRoutes } from './bulkLifecycle';
 import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
@@ -92,6 +93,13 @@ deviceRoutes.route('/', agentRollbackRoutes);
 // Mount the Remove-dialog config BEFORE core — `/removal-config` is a static
 // path that must not be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', removalConfigRoutes);
+
+// Mount the bulk lifecycle routes (#2787) BEFORE core — every one of their
+// paths starts with the static segment `bulk`, which core's `/:id` matcher
+// would otherwise eat (`POST /devices/bulk/restore` would reach core's
+// `POST /:id/restore` with the literal id "bulk" and 404). Pinned by
+// bulkLifecycle.mountorder.test.ts.
+deviceRoutes.route('/', bulkLifecycleRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

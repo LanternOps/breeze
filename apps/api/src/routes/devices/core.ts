@@ -49,8 +49,11 @@ import {
   type DevicesSortKey,
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
-import { deleteDeviceCascade } from '../../services/deviceDeletion';
+import {
+  purgeRemovedDevice,
+  restoreRemovedDevice,
+  DeviceLifecycleError,
+} from '../../services/deviceLifecycle';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -63,11 +66,10 @@ import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProv
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
+import { disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
+import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
-import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
 import {
@@ -1890,80 +1892,53 @@ coreRoutes.post(
       return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
     }
 
-    // Release-THEN-flip, atomically, inside ONE `db.transaction` (#3986
-    // task 8 fix round 1; mirrors `queueDeviceUninstall`'s composition in
-    // DELETE /devices/:id). THE SAFETY PROPERTY IS THE TRANSACTION, not the
-    // statement order: under READ COMMITTED (the default here, and what
-    // `db.transaction` gives you — a real BEGIN/COMMIT on one connection),
-    // no other session can observe either write until both commit together.
-    // So no concurrent heartbeat can ever see "status flipped, uninstall
-    // still pending" — that combined state never exists as a committed fact
-    // regardless of which statement runs first inside the transaction.
+    // Delegated to `restoreRemovedDevice` (services/deviceLifecycle.ts) since
+    // #2787 so this route and POST /devices/bulk/restore cannot drift. The
+    // service locks the devices row FIRST (fixing the lock-order inversion
+    // this route used to have — it released the uninstall reason, which locks
+    // device_commands rows, before touching devices, opposite to the cascade's
+    // devices-first order: a textbook AB-BA 40P01) and re-checks the status
+    // under that lock, so a Remove/Restore/purge racing this one loses cleanly
+    // with a 409 instead of acting on a stale read.
     //
-    // The race this guards against: `isDeviceUninstallDraining` requires
-    // `devices.status = 'decommissioned'`; once status is anything else the
-    // device is an ordinary agent again, and a heartbeat landing in that
-    // window would claim a still-`pending` self_uninstall as an ordinary
-    // command — no type allowlist gates that path — and uninstall the
-    // machine the user just restored. The transaction is what prevents any
-    // session from ever observing that window.
+    // The 400 pre-check above stays: it is the friendly answer for the common
+    // "this device isn't removed" case. The service's NOT_REMOVED is the RACE,
+    // which is a different thing and deserves a different status.
     //
-    // Release-before-flip is kept anyway as DELIBERATE SECONDARY DEFENSE:
-    // if a future refactor splits these two writes back into separate
-    // transactions (exactly how this bug was introduced), this order still
-    // leaves the safe failure mode — a failure after the release leaves the
-    // device `decommissioned` with the uninstall already cancelled, so a
-    // retry is harmless — instead of the device-wiping one that flip-first
-    // would leave behind.
-    //
-    // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
-    // a row a tenant-offboarding drain also owns stays alive for that owner
-    // — and cancels the underlying command only while it is still `pending`.
-    //
-    // A row already `sent` CANNOT be recalled here regardless of ordering:
-    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits `pending
-    // → sent` before the HTTP response reaches the agent, and the agent's
-    // self-uninstall handler hands teardown to a detached helper and acks
-    // immediately (handlers_uninstall.go). Once a row is `sent` there is no
-    // safe claimed-state transition today — the real fix is an agent-side
-    // pre-teardown fence (a `begin` endpoint that CASes `sent → executing`,
-    // serialized against restore), which needs a Go agent change out of
-    // scope for this plan. Tracked as a follow-up:
+    // A row already `sent` CANNOT be recalled regardless of ordering:
+    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits
+    // `pending -> sent` before the HTTP response reaches the agent, and the
+    // agent's self-uninstall handler hands teardown to a detached helper and
+    // acks immediately (handlers_uninstall.go). The real fix is an agent-side
+    // pre-teardown fence, tracked as
     // https://github.com/LanternOps/breeze/issues/3995. Restore deliberately
     // still SUCCEEDS in that case — it is a user-facing recovery action and
     // must not be wedged by a race that lasts seconds — but reports
     // `uninstallAlreadyDispatched: true` so the caller can tell the user
     // plainly the machine may already be gone and will need a reinstall.
-    let updated: typeof devices.$inferSelect | undefined;
-    let uninstallAlreadyDispatched = false;
-    await db.transaction(async (tx) => {
-      const releaseResult = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
-      uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
-
-      const [row] = await tx
-        .update(devices)
-        .set({
-          status: 'offline',
-          updatedAt: new Date()
-        })
-        .where(eq(devices.id, deviceId))
-        .returning();
-      updated = row;
-    });
+    let result: Awaited<ReturnType<typeof restoreRemovedDevice>>;
+    try {
+      result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
+    } catch (err) {
+      if (err instanceof DeviceLifecycleError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.restore',
       resourceType: 'device',
-      resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
-      details: { uninstallAlreadyDispatched },
+      resourceId: result.device?.id ?? deviceId,
+      resourceName: result.device?.hostname ?? device.hostname,
+      details: { uninstallAlreadyDispatched: result.uninstallAlreadyDispatched },
     });
 
     return c.json({
       success: true,
-      device: updated ? stripSensitiveDeviceFields(updated) : updated,
-      uninstallAlreadyDispatched,
+      device: result.device ? stripSensitiveDeviceFields(result.device) : result.device,
+      uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }
 );
@@ -1990,38 +1965,47 @@ coreRoutes.delete(
       return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
     }
 
-    // #3817 — SELF_UNINSTALL is dispatched AFTER the cascade commits, further
-    // down. It used to fire here, before the transaction opened, so every
-    // rollback path below left the agent removing itself while its device row
-    // survived: an endpoint that is gone from the operator's fleet in practice
-    // but still present, still billed, and no longer reachable to fix. Declared
-    // here only because the catch branches and the audit entry all report it.
-    let uninstallSent = false;
-
     // #2138/#2308 — whether deleting this device dissolved its link group
     // (lone multiboot survivor unlinked, or a vm_host group left headless and
     // its guests unlinked). Recorded in the audit details: an unexplained
     // "why did this whole VM group un-group?" must be traceable to this event.
+    //
+    // Both facts come off the LOCKED row (`PurgeResult`), never the pre-flight
+    // `device.linkGroupId`: that copy predates the lock, and when the two
+    // disagree the audit either names the wrong group or — as it did before
+    // #2787 review — omits the whole spread while the dissolve ran anyway.
+    let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
 
-    // Cascade: remove all FK-referencing records in a transaction.
-    // Uses raw SQL to cover all child tables without importing each schema.
-    // When adding new tables with device_id FK, add them here too.
+    // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
+    // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
+    // and the bulk-purge worker. Two things changed here and both are load-bearing:
+    //
+    //  1. TOCTOU closed. The `status !== 'decommissioned'` check above runs
+    //     OUTSIDE this transaction and used never to be re-checked, so a
+    //     Restore committing in between was silently purged. The service takes
+    //     `devices FOR UPDATE` first and re-reads status under it; the loser
+    //     of that race now gets 409 NOT_REMOVED.
+    //  2. The best-effort WS `self_uninstall` this route used to fire after the
+    //     commit is GONE, and the route now REFUSES (409 UNINSTALL_PENDING)
+    //     while a `device_remove` uninstall is still collectable. The old
+    //     dispatch only ever reached a CONNECTED agent — and decommissioning,
+    //     a precondition of getting here, force-closes that socket — while the
+    //     cascade it followed had just deleted the device's own
+    //     `device_commands` rows, i.e. the durable uninstall (#3986) that
+    //     would have cleaned the endpoint on the agent's next check-in.
+    //     Destroying that and firing a command nobody can receive is strictly
+    //     worse than telling the operator to wait. The response therefore
+    //     drops `agentUninstallSent`/`warning`: there is nothing best-effort
+    //     left to report.
     try {
-      await db.transaction(async (tx) => {
-        // Shared with the Quick Support reaper's ephemeral-device purge — see
-        // services/deviceDeletion.ts for why this lives in one place.
-        await deleteDeviceCascade(tx, deviceId);
-
-        // #2138 — the deleted device's link_group_id went with its row. If it
-        // was a boot profile and the group now has a single lone survivor —
-        // or it was a vm_host group's HOST (#2308), leaving the group
-        // headless — dissolve the group.
-        if (device.linkGroupId) {
-          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
-        }
-      });
+      const purge = await db.transaction((tx) => purgeRemovedDevice(tx, deviceId));
+      linkGroupId = purge.linkGroupId;
+      linkGroupDissolved = purge.linkGroupDissolved;
     } catch (err: unknown) {
+      if (err instanceof DeviceLifecycleError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
       // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
       // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
       // `.cause`. Verified against live Postgres with real two-connection lock
@@ -2040,41 +2024,26 @@ coreRoutes.delete(
         const node = pgErrorNode(err);
         const detail = typeof node?.detail === 'string' ? node.detail : '';
         const constraintTable = typeof node?.table_name === 'string' ? node.table_name : undefined;
-        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail} (uninstallSent=${uninstallSent})`, err);
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
         // This catch also covers dissolveLinkGroupIfBelowMinimum, so the
         // violation is not necessarily a missing cascade-list table — say
         // "may" rather than asserting a cause we have not established.
-        //
-        // uninstallSent is necessarily false here (#3817): the dispatch sits
-        // below this try/catch, so reaching it at all means the cascade
-        // committed. Kept in the body for response-shape stability — no
-        // current consumer reads it (the web caller surfaces only
-        // `err.message`), so this is about not silently dropping a documented
-        // field, not about a distinction someone is making today.
         return c.json({
           error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. A related table may be missing from the cascade delete list.`,
-          uninstallSent,
         }, 409);
       }
-      // 55P03 lock_not_available — the cascade bounds its wait for the devices
-      // row (services/deviceDeletion.ts) so a delete racing a long-running site
-      // move or moveOrg fails fast instead of pinning a pooled connection.
-      // Without this branch that bound would surface as a generic 500, which
-      // reads as a bug rather than the transient, retryable conflict it is.
-      //
-      // This was one of the three rollback paths (with 23503 above and the
-      // generic rethrow below) that could leave an agent uninstalling itself
-      // while its device row survived, because the dispatch ran before the
-      // transaction. Since #3817 none of them can. What is specific to THIS
-      // branch: the lock is the cascade's first statement, so a bounded lock
-      // failure rolls back having mutated nothing at all. A retry is therefore
-      // an ordinary retry, and saying more would describe damage that did not
-      // occur.
+      // 55P03 lock_not_available — the lifecycle service bounds its wait for
+      // the devices row (deviceLifecycle.ts, same 3s bound deviceDeletion.ts
+      // uses) so a delete racing a long-running site move or moveOrg fails
+      // fast instead of pinning a pooled connection. Without this branch that
+      // bound would surface as a generic 500, which reads as a bug rather than
+      // the transient, retryable conflict it is. The lock is the FIRST
+      // statement of the purge, so a bounded lock failure rolls back having
+      // mutated nothing at all and a retry is an ordinary retry.
       if (pgCode === '55P03') {
-        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it (uninstallSent=${uninstallSent})`, err);
+        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it`, err);
         return c.json({
           error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
-          uninstallSent,
         }, 409);
       }
       // Anything else is a server-side cascade defect, and it STAYS a 500 —
@@ -2083,55 +2052,11 @@ coreRoutes.delete(
       // identically forever. But the status code is not the reason to lose the
       // context: the global onError logs a bare `Error:` with no deviceId and,
       // in production, returns a sanitized body, so without this line there is
-      // no server-side record of WHICH device failed to delete. `uninstallSent`
-      // stays in the message even though #3817 pins it to false on this path —
-      // it is the standing assertion that the irreversible command did not
-      // escape a failed delete, and an assertion is worth something only if it
-      // is actually recorded. Rethrow unchanged so the response contract and
-      // Sentry reporting stay owned by onError.
-      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId} (uninstallSent=${uninstallSent})`, err);
+      // no server-side record of WHICH device failed to delete. Rethrow
+      // unchanged so the response contract and Sentry reporting stay owned by
+      // onError.
+      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
       throw err;
-    }
-
-    // Best-effort: send self_uninstall command if the agent is online.
-    // We don't block on this succeeding — fire and forget.
-    //
-    // #3817 — deliberately AFTER the cascade commits. SELF_UNINSTALL is
-    // irreversible, so dispatching it speculatively (as this route used to)
-    // meant any rollback above stranded a self-removing agent against a
-    // surviving device row. The cost of this ordering is the inverse race —
-    // the agent disconnecting between the commit and this send — which leaves
-    // `uninstallSent` false and puts the `warning` below in the 200 body, i.e.
-    // a manual uninstall. That is recoverable; the other direction is not.
-    // (The web caller currently discards that warning — #4368.)
-    //
-    // The delete is ALREADY COMMITTED here, so nothing in this block may throw
-    // out of the handler: a 500 now would lose the audit entry and the
-    // device-count invalidation below while the row is permanently gone, and
-    // would tell the caller nothing happened when everything did. The guard is
-    // therefore INSIDE the try — `isAgentConnected` is not a bare Map read, it
-    // asserts the process role first (agentWs.ts) and throws in the worker
-    // role. Same reasoning as the getRedis() call further down.
-    try {
-      if (device.agentId && isAgentConnected(device.agentId)) {
-        uninstallSent = sendCommandToAgent(device.agentId, {
-          id: `uninstall-${deviceId}`,
-          type: CommandTypes.SELF_UNINSTALL,
-          payload: { removeConfig: true },
-        });
-      }
-    } catch (err) {
-      // Durable, not just console: this is a post-commit failure on an
-      // irreversible operation, and a console line on a droplet is not a record
-      // anyone will find later.
-      //
-      // `err` goes in RAW. captureException takes `unknown` deliberately — it
-      // runs connectTimeoutClassifier and pgErrorCode over the value to derive
-      // its tags, so pre-wrapping a non-Error in `new Error(String(err))` would
-      // throw those away (and String() on a hostile object can itself throw,
-      // out of the very catch that exists to keep this block from escaping).
-      console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
-      captureException(err, c);
     }
 
     writeRouteAudit(c, {
@@ -2141,14 +2066,11 @@ coreRoutes.delete(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.displayName ?? deviceId,
       details: {
-        uninstallCommandSent: uninstallSent,
         // #2138/#2308 — deleting a linked device can dissolve its link group
         // (and unlink every remaining member). Without this flag the audit
         // trail would show only "device deleted" while sibling devices
         // silently lost their grouping.
-        ...(device.linkGroupId
-          ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
-          : {}),
+        ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
       }
     });
 
@@ -2164,12 +2086,6 @@ coreRoutes.delete(
       console.error('[devices] device-count cache invalidation failed after delete', err);
     }
 
-    return c.json({
-      success: true,
-      agentUninstallSent: uninstallSent,
-      ...(!uninstallSent && device.agentId && {
-        warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-      }),
-    });
+    return c.json({ success: true });
   }
 );
