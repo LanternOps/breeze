@@ -1,5 +1,5 @@
 -- @no-transaction
--- Three recurring-job predicates with no covering index, found by the
+-- Four recurring-job predicates with no covering index, found by the
 -- 2026-09-06 DB deep-dive (issue #5020) after device_process_samples
 -- (#5009) showed the pattern: a hot job filters on columns that no index
 -- leads with, so every call scans the table. All three scale with the fleet.
@@ -23,7 +23,18 @@
 --    (US prod: 32k calls / 402 ms mean over 6 days). device_network had the
 --    identical gap fixed on 2026-08-07; this is the sibling that was missed.
 --
--- CREATE INDEX CONCURRENTLY: all three tables take agent writes continuously.
+-- 4. device_vulnerabilities (device_id)
+--    replaceSoftwareInventoryProjection (every software-inventory sync) locks
+--    the device's findings with SELECT ... FOR UPDATE WHERE device_id = $1.
+--    The only candidate index is (org_id, device_id), which a device_id-only
+--    predicate cannot use, so each sync scanned the table under the row lock
+--    (US prod: 32,657 calls, 789 ms mean, 738 s max). The device_id FK was
+--    uncovered, so device cascade deletes paid the same scan. A device-led
+--    index is preferred over adding an org_id predicate to the query: the
+--    ingest runs in a system-scoped context, and a stale org_id during an org
+--    move would have silently skipped findings.
+--
+-- CREATE INDEX CONCURRENTLY: all four tables take agent writes continuously.
 -- IF NOT EXISTS keeps re-application a no-op. An interrupted CONCURRENTLY
 -- build leaves an INVALID index that IF NOT EXISTS would silently accept, so
 -- the DO block fails loudly. Recovery: DROP INDEX CONCURRENTLY <name>, then
@@ -38,16 +49,26 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS device_group_memberships_group_device_id
 CREATE INDEX CONCURRENTLY IF NOT EXISTS device_disks_device_id_idx
   ON public.device_disks (device_id);
 
+CREATE INDEX CONCURRENTLY IF NOT EXISTS device_vulnerabilities_device_id_idx
+  ON public.device_vulnerabilities (device_id);
+
 DO $$
 DECLARE
   bad text;
 BEGIN
+  -- Pair each index with its table so an unrelated same-named INVALID index
+  -- elsewhere cannot abort this migration.
   SELECT string_agg(c.relname, ', ')
     INTO bad
-    FROM pg_index i
-    JOIN pg_class c ON c.oid = i.indexrelid
-   WHERE c.relname IN ('snmp_metrics_org_ts_idx', 'device_group_memberships_group_device_idx', 'device_disks_device_id_idx')
-     AND NOT i.indisvalid;
+    FROM (VALUES
+      ('public.snmp_metrics'::regclass,             'snmp_metrics_org_ts_idx'),
+      ('public.device_group_memberships'::regclass, 'device_group_memberships_group_device_idx'),
+      ('public.device_disks'::regclass,             'device_disks_device_id_idx'),
+      ('public.device_vulnerabilities'::regclass,   'device_vulnerabilities_device_id_idx')
+    ) AS expected(tbl, idx)
+    JOIN pg_class c ON c.relname = expected.idx AND c.relnamespace = 'public'::regnamespace
+    JOIN pg_index i ON i.indexrelid = c.oid AND i.indrelid = expected.tbl
+   WHERE NOT i.indisvalid;
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'recurring-job index build left INVALID index(es): % — DROP INDEX CONCURRENTLY each and re-apply this migration', bad;
   END IF;
