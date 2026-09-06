@@ -203,7 +203,9 @@ export default function ScriptAuthorizationPicker({
               // outright (nothing new ticks) while the draft or the baseline
               // bars run_script, or the baseline is unknown.
               const locked = !runScriptAllowed || !runScriptInCeiling || ceilingUnavailable || ceilingPending;
-              const disabled = locked ? !checked : !inCeiling && !checked;
+              // A checked box is never disabled (it must stay removable);
+              // an unchecked one is disabled once locked OR outside the ceiling.
+              const disabled = !checked && (locked || !inCeiling);
               return (
                 <li key={script.id}>
                   <label className="flex flex-wrap items-center gap-2 text-sm">

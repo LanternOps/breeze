@@ -101,15 +101,15 @@ export async function assertScriptIdsAuthorizable(
     .select({ id: scripts.id, orgId: scripts.orgId, partnerId: scripts.partnerId, isSystem: scripts.isSystem })
     .from(scripts)
     .where(and(inArray(scripts.id, added), isNull(scripts.deletedAt)));
+  // `partnerId` already equals `owner.partnerId` whenever `owner.orgId` is
+  // null (only the org branch above reassigns it), so the partner-wide-script
+  // check below is the same comparison for both an org row and a partner row.
   const visible = new Set(
     rows
       .filter((row) => {
         if (row.isSystem) return true;
-        if (owner.orgId !== null) {
-          if (row.orgId === owner.orgId) return true;
-          return row.orgId === null && row.partnerId !== null && row.partnerId === partnerId;
-        }
-        return row.orgId === null && row.partnerId !== null && row.partnerId === owner.partnerId;
+        if (owner.orgId !== null && row.orgId === owner.orgId) return true;
+        return row.orgId === null && row.partnerId !== null && row.partnerId === partnerId;
       })
       .map((row) => row.id),
   );

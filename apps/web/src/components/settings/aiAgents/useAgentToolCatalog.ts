@@ -41,19 +41,6 @@ export interface UseAgentToolCatalogResult {
 }
 
 /**
- * Loads the agent-reachable tool catalog once per mount, and — only for an
- * organization-owned draft, where a partner-wide baseline can narrow what the
- * picker may offer — the live ceiling for the current `kind`. Re-fetches the
- * ceiling whenever `kind` changes; the catalog is static per process
- * (`buildAgentToolCatalog` is memoised server-side) so it is fetched exactly
- * once.
- *
- * Mirrors the cancelled-flag fetch pattern of `useAgentFormLists.ts`: a
- * failed or malformed response degrades to `error: true` (and, for the
- * ceiling, `ceilingFailed`) with a `null` value for that piece — this hook
- * never throws, so the form is never obligated to catch it.
- */
-/**
  * `null` for an explicit "no baseline" body, the projection for a
  * well-formed one, `undefined` for anything else — an unrecognised body is
  * a FAILED fetch, never a ceiling (#5089 review: reading `.toolAllowlist`
@@ -72,6 +59,19 @@ function parseCeilingBody(data: unknown): AgentCeilingDto | null | undefined {
   };
 }
 
+/**
+ * Loads the agent-reachable tool catalog once per mount, and — only for an
+ * organization-owned draft, where a partner-wide baseline can narrow what the
+ * picker may offer — the live ceiling for the current `kind`. Re-fetches the
+ * ceiling whenever `kind` changes; the catalog is static per process
+ * (`buildAgentToolCatalog` is memoised server-side) so it is fetched exactly
+ * once.
+ *
+ * Mirrors the cancelled-flag fetch pattern of `useAgentFormLists.ts`: a
+ * failed or malformed response degrades to `error: true` (and, for the
+ * ceiling, `ceilingFailed`) with a `null` value for that piece — this hook
+ * never throws, so the form is never obligated to catch it.
+ */
 export function useAgentToolCatalog({ kind, ownerScope, orgId = null }: UseAgentToolCatalogOptions): UseAgentToolCatalogResult {
   const [catalog, setCatalog] = useState<AgentToolCatalogDto | null>(null);
   const [catalogError, setCatalogError] = useState(false);
@@ -138,9 +138,11 @@ export function useAgentToolCatalog({ kind, ownerScope, orgId = null }: UseAgent
     };
   }, [kind, ownerScope, orgId]);
 
-  const ceilingState: AgentCeilingState = ownerScope !== 'organization'
-    ? 'not_applicable'
-    : !ceilingSettled ? 'loading' : ceilingError ? 'failed' : 'resolved';
+  let ceilingState: AgentCeilingState;
+  if (ownerScope !== 'organization') ceilingState = 'not_applicable';
+  else if (!ceilingSettled) ceilingState = 'loading';
+  else if (ceilingError) ceilingState = 'failed';
+  else ceilingState = 'resolved';
 
   return {
     catalog,

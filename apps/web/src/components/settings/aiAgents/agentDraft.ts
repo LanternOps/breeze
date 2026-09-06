@@ -258,9 +258,12 @@ export function buildAgentSaveBody(
     // (updatePolicyColumns merges { ...stored.actAssets, ...input.actAssets }),
     // and the server defaults a create's omitted key to `[]`. Partner rows are
     // the ceiling and are still edited directly here.
-    actAssets: draft.ownerScope === 'organization'
-      ? { scriptIds: draft.scriptIds }
-      : { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [], scriptIds: draft.scriptIds },
+    actAssets: {
+      ...(draft.ownerScope === 'organization'
+        ? {}
+        : { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [] }),
+      scriptIds: draft.scriptIds,
+    },
   };
 
   if (!opts.isCreate) return policy;
