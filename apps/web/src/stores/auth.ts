@@ -1266,16 +1266,71 @@ export interface FetchWithAuthOptions extends RequestInit {
    * org. Callers that set this own their org scoping entirely.
    */
   skipOrgIdInjection?: boolean;
+  /**
+   * Pin this request to an explicit org, ignoring the ambient switcher scope.
+   * For URL-pinned surfaces — the organization RECORD page (#5075) renders one
+   * org chosen by the path while the switcher may sit on a different org (or
+   * on All organizations), so ambient injection would fetch the wrong tenant's
+   * rows into a page that names another customer.
+   *
+   * `undefined` = inject the ambient scope (the default, unchanged);
+   * `string` = force this org; `null` = inject nothing (same as
+   * `skipOrgIdInjection`, which is kept as the readable alias for the
+   * deliberately cross-org reads).
+   */
+  orgIdOverride?: string | null;
+}
+
+/**
+ * The `?orgId=` rewrite, split out from `fetchWithAuth` so the precedence rules
+ * are testable without the token/refresh machinery around them.
+ *
+ * Relative URLs only — `buildApiUrl` prepends the API origin afterwards. The
+ * fragment is sliced off first: it never reaches the server, and a path like
+ * `/tickets/new#orgId=x` (a UI deep link) must not read as "the URL already
+ * names an org".
+ *
+ * A URL that explicitly names a DIFFERENT org than the caller's override
+ * throws. Silently preferring either one would send a request whose org is not
+ * what one of the two call sites believes it is — a wrong-tenant read, which
+ * is worth a loud failure in dev rather than a plausible-looking page.
+ */
+export function applyOrgId(
+  rawUrl: string,
+  o: { skipOrgIdInjection?: boolean; orgIdOverride?: string | null; ambient: string | null },
+): string {
+  const hashIdx = rawUrl.indexOf('#');
+  const hash = hashIdx >= 0 ? rawUrl.slice(hashIdx) : '';
+  const base = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
+  const qIdx = base.indexOf('?');
+  const path = qIdx >= 0 ? base.slice(0, qIdx) : base;
+  const params = new URLSearchParams(qIdx >= 0 ? base.slice(qIdx + 1) : '');
+  const existing = params.get('orgId');
+
+  if (o.orgIdOverride === null || o.skipOrgIdInjection) {
+    // The caller owns its scoping entirely.
+  } else if (typeof o.orgIdOverride === 'string') {
+    if (existing && existing !== o.orgIdOverride) {
+      throw new Error(`fetchWithAuth: URL orgId=${existing} conflicts with orgIdOverride=${o.orgIdOverride}`);
+    }
+    params.set('orgId', o.orgIdOverride);
+  } else if (!existing && o.ambient) {
+    params.set('orgId', o.ambient);
+  }
+
+  const qs = params.toString();
+  return `${path}${qs ? `?${qs}` : ''}${hash}`;
 }
 
 export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOptions = {}): Promise<Response> {
+  // Custom options are destructured OUT here: everything left in `init` is a
+  // real RequestInit and is what every `fetch` below spreads. An unknown key in
+  // a RequestInit is silently ignored by the platform, so leaking these would
+  // fail invisibly rather than loudly.
+  const { skipOrgIdInjection, skipUnauthorizedRetry, orgIdOverride, ...init } = options;
+
   // Auto-inject orgId from the org store so partner/system users always scope API calls
-  let url = rawUrl;
-  const orgId = _getOrgId?.();
-  if (orgId && !options.skipOrgIdInjection && !url.includes('orgId=')) {
-    const separator = url.includes('?') ? '&' : '?';
-    url = `${url}${separator}orgId=${orgId}`;
-  }
+  const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient: _getOrgId?.() ?? null });
 
   const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
@@ -1331,7 +1386,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
     }
   }
 
-  const headers = new Headers(options.headers);
+  const headers = new Headers(init.headers);
 
   if (tokens?.accessToken) {
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
@@ -1342,7 +1397,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // here strips the boundary and the server can't parse the body (avatar upload).
   // Also don't clobber a caller-provided Content-Type (e.g. `application/octet-stream`
   // for raw chunk PUTs) — only default to JSON when the caller set none.
-  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -1351,8 +1406,8 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // cap aborts an in-flight upload the server then completes anyway, surfacing the
   // confusing "signal is aborted without reason" DOMException even though the file
   // landed (issue #1601). Give uploads a much longer ceiling while keeping it bounded.
-  const externalSignal = options.signal;
-  const timeoutMs = options.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const externalSignal = init.signal;
+  const timeoutMs = init.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
   const controller = !externalSignal ? new AbortController() : null;
   const timeout = controller
     ? setTimeout(
@@ -1367,7 +1422,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
 
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+    response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
   } catch (err) {
     if (timeout) clearTimeout(timeout);
     throw err;
@@ -1376,20 +1431,20 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
 
   // If unauthorized, attempt cookie-backed refresh once (unless the caller's
   // body is single-use and must never be replayed — see skipUnauthorizedRetry).
-  if (response.status === 401 && !options.skipUnauthorizedRetry) {
+  if (response.status === 401 && !skipUnauthorizedRetry) {
     const outcome = await requestTokenRefreshShared();
     if (outcome.kind === 'restored') {
       setTokens(outcome.tokens);
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${outcome.tokens.accessToken}`);
-      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+      response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
       const latestToken = useAuthStore.getState().tokens?.accessToken;
       if (latestToken && latestToken !== previousAccessToken) {
         headers.set('Authorization', `Bearer ${latestToken}`);
-        response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
       } else {
         // Refresh failed and no newer token exists; the session is
         // unrecoverable. Still return the 401 below — callers may inspect it,
