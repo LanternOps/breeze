@@ -574,8 +574,19 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // (dual-owned, explicitly documented above as NOT XOR). `access_reviews` IS
 // included below even though it has no DB-level CHECK: its own migration
 // (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
-// "mutually exclusive, so no composite FK applies" — same app-enforced-only
-// shape as custom_field_definitions and client_ai_prompt_templates.
+// "mutually exclusive, so no composite FK applies", and it is app-enforced
+// only. As of #3257 W02 it is the LAST such example — the two tables this
+// comment used to group it with are both DB-enforced and were verified
+// against pg_constraint on a live database:
+//   - client_ai_prompt_templates_scope_check CHECK (num_nonnulls(org_id,
+//     partner_id) = 1), shipped 2026-06-12-b, never dropped. (This half of
+//     the comment was wrong before this wave touched it.)
+//   - custom_field_definitions_one_owner_chk, added by
+//     2026-10-10-100300 (#3257 W02).
+// Membership in this set has never depended on having a CHECK — it only
+// drives the partner-wide SELECT-branch assertions below — so nothing else
+// changes. If access_reviews ever gains a CHECK, this note has no examples
+// left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
