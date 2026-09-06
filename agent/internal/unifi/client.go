@@ -14,6 +14,13 @@ import (
 
 const apiBase = "/proxy/network/integration/v1"
 
+// PoePort is an OUTBOUND-only shape: it is part of the telemetry upload body the
+// Breeze API accepts (see uploadDevice in collector.go), so these tags are the
+// Breeze ingest contract, NOT controller field names. The Integration API's
+// device LIST response carries no per-port PoE data, so nothing decodes into it
+// today; per-port PoE lives on the device DETAIL endpoint
+// (/sites/{siteId}/devices/{deviceId} → interfaces.ports[].poe), which the
+// collector does not fetch yet. Do not "align" these with the controller.
 type PoePort struct {
 	PortIdx       int     `json:"port_idx"`
 	Name          string  `json:"name"`
@@ -23,37 +30,81 @@ type PoePort struct {
 	Up            bool    `json:"up"`
 }
 
+// Device decodes ONE element of GET /v1/sites/{siteId}/devices.
+//
+// The tags are the UniFi Network Integration API's camelCase — `macAddress`, not
+// `mac`. They previously read as snake_case, so only `id` and `name` ever landed:
+// every device reached unifi_device_telemetry with an empty mac, which also
+// defeated the MAC-based discovered_assets enrichment (#5087).
+//
+// Fields tagged `json:"-"` are NOT on the device list response. They are left
+// explicitly un-decoded rather than given a guessed tag, and stay zero until the
+// collector fetches the endpoints that actually carry them:
+//   - UptimeSeconds, CPUPct, MemPct, TxBytes, RxBytes →
+//     /sites/{siteId}/devices/{deviceId}/statistics/latest, as uptimeSec,
+//     cpuUtilizationPct, memoryUtilizationPct and uplink.txRateBps/rxRateBps.
+//     Note txRate/rxRate are RATES, not the cumulative counters TxBytes/RxBytes
+//     model — that needs a unit decision, not just a tag.
+//   - PoePorts → the device DETAIL endpoint (interfaces.ports[].poe).
+//   - NumClients → not exposed by the Integration API at all. It could be
+//     derived by counting clients whose uplinkDeviceId is this device, but the
+//     client list is paginated and this client reads only the first page (see
+//     envelope below), so such a count can be silently short. An honest zero
+//     beats a confidently wrong number.
 type Device struct {
-	ID            string          `json:"id"`
-	Mac           string          `json:"mac"`
-	Name          string          `json:"name"`
-	UptimeSeconds int64           `json:"uptime_seconds"`
-	CPUPct        float64         `json:"cpu_pct"`
-	MemPct        float64         `json:"mem_pct"`
-	TxBytes       int64           `json:"tx_bytes"`
-	RxBytes       int64           `json:"rx_bytes"`
-	NumClients    int             `json:"num_clients"`
-	PoePorts      []PoePort       `json:"poe_ports"`
-	SiteID        string          `json:"site_id"`
-	Raw           json.RawMessage `json:"raw"`
+	ID   string `json:"id"`
+	Mac  string `json:"macAddress"`
+	Name string `json:"name"`
+
+	UptimeSeconds int64     `json:"-"`
+	CPUPct        float64   `json:"-"`
+	MemPct        float64   `json:"-"`
+	TxBytes       int64     `json:"-"`
+	RxBytes       int64     `json:"-"`
+	NumClients    int       `json:"-"`
+	PoePorts      []PoePort `json:"-"`
+
+	// Assigned by Poll after decoding, never read off the element itself.
+	SiteID string          `json:"-"`
+	Raw    json.RawMessage `json:"-"`
 }
 
+// Client decodes ONE element of GET /v1/sites/{siteId}/clients.
+//
+// Same camelCase contract as Device: `macAddress`/`ipAddress`/`uplinkDeviceId`,
+// and the client's display name arrives as `name` (there is no `hostname`).
+//
+// Fields tagged `json:"-"` are not present on the client list response. The
+// Integration API exposes no SSID, VLAN, signal strength, per-client throughput
+// or per-client uptime on this endpoint, so they stay zero rather than carry an
+// invented tag.
 type Client struct {
-	Mac               string          `json:"mac"`
-	Hostname          string          `json:"hostname"`
-	IP                string          `json:"ip"`
-	ConnectedDeviceID string          `json:"connected_device_id"`
-	SSID              string          `json:"ssid"`
-	SiteID            string          `json:"site_id"`
-	UplinkPortIdx     int             `json:"uplink_port_idx"`
-	Vlan              int             `json:"vlan"`
-	SignalDbm         int             `json:"signal_dbm"`
-	IsWired           bool            `json:"is_wired"`
-	TxBytes           int64           `json:"tx_bytes"`
-	RxBytes           int64           `json:"rx_bytes"`
-	UptimeSeconds     int64           `json:"uptime_seconds"`
-	Raw               json.RawMessage `json:"raw"`
+	Mac      string `json:"macAddress"`
+	Hostname string `json:"name"`
+	IP       string `json:"ipAddress"`
+	// Type is the controller's connection discriminator: WIRED, WIRELESS, VPN or
+	// TELEPORT. It is the only wired-ness signal the API sends — there is no
+	// is_wired boolean — so IsWired derives from it (see below).
+	Type              string `json:"type"`
+	ConnectedDeviceID string `json:"uplinkDeviceId"`
+
+	SSID          string `json:"-"`
+	Vlan          int    `json:"-"`
+	SignalDbm     int    `json:"-"`
+	UplinkPortIdx int    `json:"-"`
+	TxBytes       int64  `json:"-"`
+	RxBytes       int64  `json:"-"`
+	UptimeSeconds int64  `json:"-"`
+
+	// Assigned by Poll after decoding, never read off the element itself.
+	SiteID string          `json:"-"`
+	Raw    json.RawMessage `json:"-"`
 }
+
+// IsWired reports whether the controller classified this client as a wired
+// attachment. It is a method rather than a stored field so it cannot desync from
+// Type: WIRELESS, VPN and TELEPORT clients are all correctly not-wired.
+func (c Client) IsWired() bool { return strings.EqualFold(c.Type, "WIRED") }
 
 type SiteRef struct {
 	ID   string `json:"id"`
@@ -106,6 +157,13 @@ func DefaultHTTPClient() *http.Client {
 	}
 }
 
+// envelope is the Integration API's list wrapper. The controller also returns
+// `offset`, `limit`, `count` and `totalCount` alongside `data`: these endpoints
+// are PAGINATED and this client reads only the first page. Any site with more
+// devices or clients than the controller's page size is therefore silently
+// truncated. That is a pre-existing defect, orthogonal to the field-name fix in
+// this file, and is left for a follow-up rather than folded in here — fixing it
+// means a bounded offset loop on every list call, with its own tests.
 type envelope struct {
 	Data json.RawMessage `json:"data"`
 }

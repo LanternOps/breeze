@@ -64,8 +64,11 @@ func (d CollectorDeps) logf(format string, args ...any) {
 
 // The upload DTOs match the API's camelCase ingest contract (telemetrySchema in
 // routes/agents/unifiTelemetry.ts). They are deliberately separate from Device/
-// Client, whose snake_case tags decode the UniFi controller response — reusing
-// those for upload posts a snake_case body the API rejects (no unifiDeviceId).
+// Client: those decode the CONTROLLER's response, and the two vocabularies do
+// not line up even where both are camelCase (the controller says macAddress /
+// ipAddress / uplinkDeviceId, Breeze ingest says mac / ip / connectedDeviceId,
+// and Breeze needs unifiDeviceId, which the controller calls id). Keep them
+// separate — do not collapse one into the other.
 type uploadDevice struct {
 	UnifiDeviceID string          `json:"unifiDeviceId"`
 	UnifiSiteID   string          `json:"unifiSiteId,omitempty"`
@@ -131,7 +134,7 @@ func toUploadClients(in []Client) []uploadClient {
 	for i, cl := range in {
 		out[i] = uploadClient{
 			Mac: cl.Mac, UnifiSiteID: cl.SiteID, Hostname: cl.Hostname, IP: cl.IP,
-			ConnectedDeviceID: cl.ConnectedDeviceID, UplinkPortIdx: cl.UplinkPortIdx, IsWired: cl.IsWired,
+			ConnectedDeviceID: cl.ConnectedDeviceID, UplinkPortIdx: cl.UplinkPortIdx, IsWired: cl.IsWired(),
 			SSID: cl.SSID, Vlan: cl.Vlan, SignalDbm: cl.SignalDbm,
 			TxBytes: cl.TxBytes, RxBytes: cl.RxBytes, UptimeSeconds: cl.UptimeSeconds, Raw: cl.Raw,
 		}

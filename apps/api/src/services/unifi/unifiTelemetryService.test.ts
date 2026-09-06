@@ -232,6 +232,40 @@ describe('reconcileTelemetry', () => {
     expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-9');
   });
 
+  // #5087: until the agent's camelCase decode fix, devices always arrived with an
+  // EMPTY mac, so this branch never ran in production and its missing normalization
+  // was invisible. The client path normalizes both sides; the device path compared
+  // raw strings, so a controller reporting uppercase/hyphenated MACs would silently
+  // fail to link (and would write a non-canonical mac into discovered_assets).
+  it('normalizes device MAC (uppercase/hyphen) for asset linking and storage', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA-BB-CC-DD-EE-FF', name: 'sw1', raw: { ipAddress: '10.0.0.5' } }],
+      clients: [],
+    });
+
+    // Linked to the EXISTING asset rather than creating a duplicate one.
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+
+    // Stored canonical (lowercase, colon-separated), matching the client path.
+    expect(deviceInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
+    expect(deviceInserts[0]!.conflict.set.mac).toBe('aa:bb:cc:dd:ee:ff');
+
+    // The enrich write must not poison discovered_assets.mac_address with the
+    // non-canonical source form.
+    const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
+    expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
+  });
+
   it('reconciles device ip+mac into discovered_assets and stamps discoveredAssetId on the telemetry row', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
