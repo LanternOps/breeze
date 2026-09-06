@@ -130,6 +130,115 @@ describe('RemoteToolsPage tab hash persistence (#4512)', () => {
   });
 });
 
+// #4935: on an offline device the API answers 503 for the process list, and
+// fetchProcesses swallowed that into `processes = []` — so the tab rendered
+// "Processes 0 / No Data", indistinguishable from a genuinely idle box. The
+// empty state must stay reserved for a real 200 with zero rows.
+describe('RemoteToolsPage Processes tab surfaces an unavailable device (#4935)', () => {
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+
+  const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
+    ({
+      ok,
+      status,
+      json: vi.fn().mockResolvedValue(payload),
+    } as unknown as Response);
+
+  // Only the process-list route is under test; every other call (device info)
+  // resolves not-ok so those effects bail out quietly.
+  const mockProcessListResponse = (response: Response) => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/system-tools/devices/device-1/processes')
+        ? response
+        : makeResponse(),
+    );
+  };
+
+  it('renders the offline reason instead of "No Data" when the API answers 503', async () => {
+    mockProcessListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+
+    expect(await screen.findByText('The device is offline.')).toBeInTheDocument();
+    expect(screen.queryByText('No Data')).not.toBeInTheDocument();
+    // The tiles must not report counts that were never fetched, and the footer
+    // must not restate them — "Processes 0" was half of the reported symptom.
+    expect(screen.getAllByText('-')).toHaveLength(3);
+    expect(screen.queryByText(/Showing \d+ of \d+ processes/)).not.toBeInTheDocument();
+  });
+
+  it('offers a retry that re-requests the process list', async () => {
+    const user = userEvent.setup();
+    mockProcessListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+    await screen.findByText('The device is offline.');
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/system-tools/devices/device-1/processes'),
+      );
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('keeps the "No Data" empty state for a genuine 200 with zero rows', async () => {
+    mockProcessListResponse(makeStatusResponse({ data: [] }, true, 200));
+
+    renderPage();
+
+    expect(await screen.findByText('No Data')).toBeInTheDocument();
+    expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+    // A real zero is a real count: the tiles and footer stay as they were.
+    expect(screen.getByText('Showing 0 of 0 processes')).toBeInTheDocument();
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument();
+  });
+
+  it('renders rows and no error for a 200 with processes', async () => {
+    mockProcessListResponse(
+      makeStatusResponse(
+        {
+          data: [
+            { pid: 4242, name: 'svchost.exe', user: 'SYSTEM', cpuPercent: 1.5, memoryMB: 32 },
+          ],
+        },
+        true,
+        200,
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('svchost.exe')).toBeInTheDocument();
+    expect(screen.queryByText('No Data')).not.toBeInTheDocument();
+    expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+  });
+
+  it('clears the error once a retry succeeds', async () => {
+    const user = userEvent.setup();
+    mockProcessListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+    await screen.findByText('The device is offline.');
+
+    mockProcessListResponse(
+      makeStatusResponse(
+        { data: [{ pid: 7, name: 'explorer.exe', user: 'alice', cpuPercent: 0, memoryMB: 8 }] },
+        true,
+        200,
+      ),
+    );
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('explorer.exe')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+    });
+  });
+});
+
 // The terminal's only channel for reporting a failed initialisation is the
 // onError prop. RemoteToolsPage never passed one, so a terminal that died on
 // mount was completely silent — the defect behind #4152 was invisible to the
