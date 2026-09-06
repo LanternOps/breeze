@@ -506,9 +506,14 @@ describe('OrganizationsPage — org mid-archive-drain (#4166)', () => {
     await flush();
 
     expect(fetchMock).toHaveBeenCalledWith(`/orgs/organizations/${DRAINING_ORG.id}/restore`, { method: 'POST' });
-    // Back in the active list, and the detail pane is mutable again.
+    // Back in the active list, and the detail pane is mutable again. The status
+    // pill is exception-only for `active` rows (#5076), so the ABSENCE of any
+    // pill is now what says "active" — asserting on pill text would be
+    // asserting on copy that is deliberately not rendered.
     const row = screen.getByTestId(`org-row-${DRAINING_ORG.id}`);
-    expect(within(row).getByText('Active')).toBeInTheDocument();
+    expect(within(row).queryByText('Offboarding')).not.toBeInTheDocument();
+    expect(within(row).queryByText('Archived')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-archived-row')).not.toBeInTheDocument();
     const panel = screen.getByTestId('org-detail-panel');
     expect(within(panel).queryByTestId('org-restore')).not.toBeInTheDocument();
     expect(within(panel).getByTestId('org-archive-open')).toBeInTheDocument();

@@ -636,7 +636,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           // dropdown + search. Omitted when the device has no orgId (defensive
           // — the detail fetch always sets one for a real device).
           ...(device.orgId
-            ? [{ label: device.orgName, href: `/settings/organizations/${device.orgId}` }]
+            ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
           { label: t("deviceDetailPage.devices"), href: "/devices" },
           { label: device.hostname || "Device" },
