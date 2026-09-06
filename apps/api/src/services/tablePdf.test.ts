@@ -594,10 +594,13 @@ describe('renderTableIntoPdf multi-run cells in non-left-aligned columns (#4438)
   interface ColumnBox { inner: { left: number; right: number }; outer: { left: number; right: number } }
   interface Rendered { buf: Buffer; columns: ColumnBox[]; rowTop: number }
 
-  async function renderAlignedTable(aligns: ['center' | 'right' | 'left', 'center' | 'right' | 'left']): Promise<Rendered> {
+  async function renderAlignedTable(
+    aligns: ['center' | 'right' | 'left', 'center' | 'right' | 'left'],
+    cells: [string, string] = [CENTER_HTML, RIGHT_HTML],
+  ): Promise<Rendered> {
     const content = {
       columns: [{ label: 'Item', align: aligns[0], weight: 3 }, { label: 'Amount', align: aligns[1], weight: 2 }],
-      rows: [{ cells: [CENTER_HTML, RIGHT_HTML] }],
+      rows: [{ cells }],
     } as unknown as QuoteTableContent;
     const captured: Rendered = { buf: Buffer.alloc(0), columns: [], rowTop: 0 };
     captured.buf = await renderToBuffer((doc) => {
@@ -680,6 +683,33 @@ describe('renderTableIntoPdf multi-run cells in non-left-aligned columns (#4438)
         expect(line[i]!.x, `run ${i} overlaps "${prev.text}"`).toBeGreaterThanOrEqual(prev.x + prev.width - 0.6);
       }
     }
+  });
+
+  it('positions a plain single-run center/right cell where pdfkit\'s native box alignment would (control, #5013 review)', async () => {
+    // The aligned path now handles EVERY non-left cell, not only multi-run
+    // ones — including the far more common plain numeric/text cell that used
+    // to go through pdfkit's own `align`. Pin that the hand-rolled placement
+    // agrees with the native box math for a single run: right edge on the
+    // inner right padding, centre on the inner centre.
+    const rendered = await renderAlignedTable(['center', 'right'], ['Total', '$1,200.00']);
+    const centerSpan = rendered.columns[0]!.inner;
+    const rightSpan = rendered.columns[1]!.inner;
+
+    const centerLines = await cellLines(rendered, 0);
+    const rightLines = await cellLines(rendered, 1);
+    expect(centerLines).toHaveLength(1);
+    expect(rightLines).toHaveLength(1);
+    expect(centerLines[0]).toHaveLength(1); // one run, one fragment — nothing split or duplicated
+    expect(rightLines[0]).toHaveLength(1);
+
+    const c = centerLines[0]![0]!;
+    expect(c.text).toBe('Total');
+    expect(c.x + c.width / 2).toBeCloseTo((centerSpan.left + centerSpan.right) / 2, 0);
+
+    const r = rightLines[0]![0]!;
+    expect(r.text).toBe('$1,200.00');
+    expect(r.x + r.width).toBeCloseTo(rightSpan.right, 0);
+    expect(r.x).toBeGreaterThan(rightSpan.left);
   });
 
   it('keeps a left-aligned multi-run cell run after run (control for the two above)', async () => {
