@@ -6,6 +6,8 @@ import { COLUMN_IDS } from './columnVisibility';
 import {
   DECOMMISSION_BLOCKED_BULK_ACTIONS,
   INTENTIONALLY_UNGATED_BULK_ACTIONS,
+  REMOVED_ONLY_BULK_ACTIONS,
+  classifyBulkSelection,
 } from './bulkActionGating';
 
 vi.mock('../../stores/auth', () => ({
@@ -1407,6 +1409,61 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
       INTENTIONALLY_UNGATED_BULK_ACTIONS.has(a),
     );
     expect(both).toEqual([]);
+  });
+
+  // #2787 added a THIRD set. Two sets could be checked pairwise; three cannot
+  // be checked by inspection, and an action landing in two of them means the
+  // gate that runs first silently wins.
+  it('the three policy sets are pairwise disjoint', () => {
+    const sets: Array<[string, ReadonlySet<string>]> = [
+      ['DECOMMISSION_BLOCKED_BULK_ACTIONS', DECOMMISSION_BLOCKED_BULK_ACTIONS],
+      ['INTENTIONALLY_UNGATED_BULK_ACTIONS', INTENTIONALLY_UNGATED_BULK_ACTIONS],
+      ['REMOVED_ONLY_BULK_ACTIONS', REMOVED_ONLY_BULK_ACTIONS],
+    ];
+    const overlaps: string[] = [];
+    for (let i = 0; i < sets.length; i++) {
+      for (let j = i + 1; j < sets.length; j++) {
+        for (const action of sets[i]![1]) {
+          if (sets[j]![1].has(action)) {
+            overlaps.push(`${action} is in both ${sets[i]![0]} and ${sets[j]![0]}`);
+          }
+        }
+      }
+    }
+    expect(overlaps).toEqual([]);
+  });
+
+  it('REMOVED_ONLY_BULK_ACTIONS names the two actions only a removed device accepts', () => {
+    // Both call APIs that REQUIRE status='decommissioned'; offering them for an
+    // active selection is a guaranteed 400/409 per device.
+    expect([...REMOVED_ONLY_BULK_ACTIONS].sort()).toEqual(['permanent-delete', 'restore']);
+  });
+});
+
+describe('classifyBulkSelection (#2787)', () => {
+  it('reports removed only when EVERY selected device is removed', () => {
+    expect(classifyBulkSelection(['decommissioned'])).toBe('removed');
+    expect(classifyBulkSelection(['decommissioned', 'decommissioned'])).toBe('removed');
+  });
+
+  it('reports active when NO selected device is removed', () => {
+    expect(classifyBulkSelection(['online', 'offline'])).toBe('active');
+    expect(classifyBulkSelection(['maintenance'])).toBe('active');
+  });
+
+  it('reports mixed for any blend', () => {
+    expect(classifyBulkSelection(['online', 'decommissioned'])).toBe('mixed');
+    expect(classifyBulkSelection(['decommissioned', 'offline'])).toBe('mixed');
+  });
+
+  /**
+   * The empty case decides what the bar renders in the instant between the last
+   * device being deselected and the bar unmounting. 'active' keeps the ordinary
+   * menu — offering "Delete permanently" to an empty selection would be the
+   * worse default.
+   */
+  it('treats an empty selection as active, not removed', () => {
+    expect(classifyBulkSelection([])).toBe('active');
   });
 });
 
