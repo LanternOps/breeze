@@ -94,8 +94,9 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   of `paid` (a voided payment, a QuickBooks reversal, a refund) and on void.
   Existing rows are NOT retro-corrected; the next recompute of an affected
   invoice fixes it.
-- **Rollout note:** the sandbox walkthrough for this feature has NOT been run.
-  `docs/integrations/quickbooks-sandbox-verification.md` carries a
-  `### Phase D2 checklist (payment push)` section, items 27-42, all PENDING;
-  item 27 (re-register the Intuit Development webhook, #4545) gates the rest.
-  Treat the first production realm to record a payment as the live walk.
+- **Rollout note:** the sandbox walkthrough for this feature WAS run on
+  2026-09-06 (`docs/integrations/quickbooks-sandbox-verification.md`, Phase D2
+  checklist items 27-42): 28, 29, 31-42 PASS, 27 not run (the Intuit
+  Development webhook URL was not re-registered, #4545; echoes were driven by
+  "Sync now"), 30 blocked (no Stripe on the stack). Four defects were found and
+  fixed on the branch during the walk (the bullets above).
