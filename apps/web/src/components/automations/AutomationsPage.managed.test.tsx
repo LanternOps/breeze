@@ -2,7 +2,15 @@ import '@/lib/i18n';
 import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../stores/auth')>();
+  // #4767 — AutomationsPage now also reads useAuthStore (via usePermissions()
+  // and its own canManagePartnerWide selector) to gate the Cancel run
+  // affordance; a bare `{ fetchWithAuth }` replacement drops that export and
+  // usePermissions() throws. Keep the real store (defaults to no user, so
+  // Cancel run stays correctly hidden — this file isn't testing that).
+  return { ...actual, fetchWithAuth: vi.fn() };
+});
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import AutomationsPage from './AutomationsPage';

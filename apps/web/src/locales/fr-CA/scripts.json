@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} réussis",
       "failed": "{{count}} en échec",
-      "skipped": "{{count}} ignorés"
+      "skipped": "{{count}} ignorés",
+      "cancelled": "{{count}} annulés"
     },
     "duration": "Durée : {{duration}}",
     "progress": {
@@ -265,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Masquer les journaux",
-      "viewLogs": "Voir les journaux"
+      "viewLogs": "Voir les journaux",
+      "cancelRun": "Annuler l'exécution",
+      "partnerScopeTooltip": "Cette exécution s'applique à toutes les organisations de votre compte partenaire. Demandez à un administrateur partenaire complet de l'annuler, ou arrêtez plutôt des exécutions individuelles sur vos propres appareils.",
+      "confirmCancelRunTitle": "Annuler cette exécution ?",
+      "confirmCancelRunMessage": "Breeze arrêtera chaque exécution de script que cette exécution attend encore. Les actions déjà en cours peuvent se terminer avant de pouvoir être arrêtées.",
+      "uncancellableActions_one": "{{count}} action n'a pas pu être arrêtée et pourrait continuer à s'exécuter seule.",
+      "uncancellableActions_other": "{{count}} actions n'ont pas pu être arrêtées et pourraient continuer à s'exécuter seules.",
+      "cancelRunSuccess_one": "Annulé — {{count}} exécution arrêtée.",
+      "cancelRunSuccess_other": "Annulé — {{count}} exécutions arrêtées."
     },
     "timestamps": {
       "started": "Démarré le {{date}}",
@@ -304,6 +313,9 @@
       "untitled": "Script",
       "awaiting": "En attente de la réponse de l'agent…",
       "truncated": "Sortie tronquée — voir l'historique des scripts de l'appareil pour le texte complet."
+    },
+    "errors": {
+      "cancelRun": "Impossible d'annuler l'exécution."
     }
   },
   "automationsPage": {
@@ -717,11 +729,19 @@
     },
     "empty": "Aucune exécution trouvée. Essayez d’ajuster vos filtres.",
     "actions": {
-      "viewDetails": "Voir les détails"
+      "viewDetails": "Voir les détails",
+      "stop": "Arrêter",
+      "forceStop": "Arrêter immédiatement",
+      "confirmStopTitle": "Arrêter cette exécution ?",
+      "confirmStopMessage": "Breeze demandera à l'appareil d'arrêter {{script}}. Cela peut prendre quelques secondes — « Arrêter immédiatement » ignore le délai de grâce et met fin au processus sur-le-champ."
     },
     "pagination": {
       "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
       "page": "Page {{page}} sur {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Cette exécution est déjà terminée et ne peut plus être arrêtée.",
+      "cancelFailed": "Impossible d'arrêter l'exécution."
     }
   },
   "scriptAiInput": {

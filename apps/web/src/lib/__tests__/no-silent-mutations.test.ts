@@ -248,6 +248,17 @@ const TARGET_GLOBS = [
   // assign/unassign mutations here were bare fetchWithAuth calls with no
   // toast — a failed assign or unassign looked identical to a successful one.
   'src/components/configurationPolicies/AssignmentsTab.tsx',
+  // #4767 — Stop / Force-stop wires the long-dormant cancel endpoint to the UI
+  // for the first time. A bare fetchWithAuth here would silently no-op a
+  // Force-stop click, which is exactly the "did it work?" ambiguity runAction
+  // exists to remove.
+  'src/components/scripts/ExecutionHistory.tsx',
+  'src/components/scripts/ExecutionDetails.tsx',
+  'src/components/scripts/ScriptExecutionsPage.tsx',
+  // #4767 review — Cancel run's own POST /automations/runs/:runId/cancel
+  // lives inside this component (it has no owning page-level fetch layer),
+  // so it needs the same guard as the scripts-side files above.
+  'src/components/automations/AutomationRunHistory.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -560,10 +571,13 @@ describe('no silent mutations in targeted set', () => {
     // #4549 W07 — the admin trust queue page's approve/suspend actions).
     // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
     // main added 3 in parallel, so the true merged count was 113. A prior
-    // commit added 1 more (TrustQueue.tsx) to reach 114. This commit adds 1
-    // more (AssignmentsTab.tsx), so the count is now 115 — bump it
+    // commit added 1 more (TrustQueue.tsx) to reach 114. A prior commit added 1
+    // more (AssignmentsTab.tsx) to reach 115. A prior commit added 3 more
+    // (#4767 — ExecutionHistory.tsx, ExecutionDetails.tsx,
+    // ScriptExecutionsPage.tsx) to reach 118. This commit adds 1 more
+    // (AutomationRunHistory.tsx), so the count is now 119 — bump it
     // deliberately on every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(115);
+    expect(absoluteFiles.length).toBe(119);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
