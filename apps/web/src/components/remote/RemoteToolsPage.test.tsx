@@ -268,18 +268,17 @@ describe('RemoteToolsPage surfaces terminal errors (#4152)', () => {
 // never re-fetched, so it just sat there looking unchanged. A failed
 // start/stop/restart command must now toast and re-sync from the server.
 describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => {
-  const SERVICES_LIST_BODY = {
+  const makeServiceListBody = (status: 'running' | 'stopped') => ({
     data: [
       {
         name: 'Mesh Agent',
         displayName: 'Mesh Agent (Remote Support)',
-        status: 'running',
+        status,
         startType: 'auto',
         account: 'LocalSystem',
       },
     ],
-  };
-  const RESTART_FAILURE_BODY = { error: 'Failed to restart service', code: 'agent_execution_failed' };
+  });
 
   const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
     ({
@@ -290,47 +289,91 @@ describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => 
 
   // Only the services routes are under test; every other call (device info)
   // resolves not-ok so those effects bail out quietly.
-  const mockServicesRoutes = (restartResponse: Response) => {
+  const mockServicesRoutes = (
+    listBody: ReturnType<typeof makeServiceListBody>,
+    actionSuffix: 'start' | 'stop' | 'restart',
+    actionResponse: Response,
+  ) => {
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
-      if (url.includes('/services/') && url.endsWith('/restart') && options?.method === 'POST') {
-        return restartResponse;
+      if (url.includes('/services/') && url.endsWith(`/${actionSuffix}`) && options?.method === 'POST') {
+        return actionResponse;
       }
       if (url.includes('/services?')) {
-        return makeStatusResponse(SERVICES_LIST_BODY, true, 200);
+        return makeStatusResponse(listBody, true, 200);
       }
       return makeResponse();
     });
   };
 
-  it('shows an error toast and re-syncs the row when a restart command fails', async () => {
-    const user = userEvent.setup();
-    mockServicesRoutes(makeStatusResponse(RESTART_FAILURE_BODY, false, 500));
+  // One case per action. Each mocked failure message is deliberately
+  // DIFFERENT from that action's runAction `errorFallback` copy (e.g.
+  // "Failed to restart service" in src/locales/en/remote.json) — using the
+  // fallback text verbatim would make the toast assertion pass identically
+  // whether the server's real message was plumbed through or the code
+  // silently fell back to the generic string after a body-parsing failure.
+  const cases: Array<{
+    action: 'start' | 'stop' | 'restart';
+    buttonTitle: string;
+    initialStatus: 'running' | 'stopped';
+    serverMessage: string;
+  }> = [
+    {
+      action: 'start',
+      buttonTitle: 'Start Service',
+      initialStatus: 'stopped',
+      serverMessage: 'Access is denied by local security policy.',
+    },
+    {
+      action: 'stop',
+      buttonTitle: 'Stop Service',
+      initialStatus: 'running',
+      serverMessage: 'The service could not be stopped: dependent services are running.',
+    },
+    {
+      action: 'restart',
+      buttonTitle: 'Restart Service',
+      initialStatus: 'running',
+      serverMessage: 'The service did not respond to the restart request in time.',
+    },
+  ];
 
-    window.location.hash = '#services';
-    renderPage();
-
-    expect(await screen.findByText('Mesh Agent')).toBeInTheDocument();
-
-    // Icon-only row button: its accessible name comes from `title`.
-    await user.click(screen.getByTitle('Restart Service'));
-    // Confirm dialog button: has visible text, so getByText finds only it —
-    // the row's icon button has no text node, only the same `title`.
-    await user.click(screen.getByText('Restart Service'));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'error', message: 'Failed to restart service' }),
+  it.each(cases)(
+    'shows an error toast and re-syncs the row when a $action command fails',
+    async ({ action, buttonTitle, initialStatus, serverMessage }) => {
+      const user = userEvent.setup();
+      mockServicesRoutes(
+        makeServiceListBody(initialStatus),
+        action,
+        makeStatusResponse({ error: serverMessage, code: 'agent_execution_failed' }, false, 500),
       );
-    });
 
-    // The row must reflect a fresh read of ground truth after a failed
-    // command, not the pre-action snapshot silently left in place — the GET
-    // services list must be re-requested even though the mutation failed.
-    await waitFor(() => {
-      const listCalls = fetchMock.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/services?'),
-      );
-      expect(listCalls.length).toBeGreaterThanOrEqual(2);
-    });
-  });
+      window.location.hash = '#services';
+      renderPage();
+
+      expect(await screen.findByText('Mesh Agent')).toBeInTheDocument();
+
+      // Icon-only row button: its accessible name comes from `title`.
+      await user.click(screen.getByTitle(buttonTitle));
+      // Confirm dialog button: has visible text, so getByText finds only it —
+      // the row's icon button has no text node, only the same `title`.
+      await user.click(screen.getByText(buttonTitle));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: serverMessage }),
+        );
+      });
+
+      // The row must reflect a fresh read of ground truth after a failed
+      // command, not the pre-action snapshot silently left in place — the
+      // GET services list must be re-requested even though the mutation
+      // failed.
+      await waitFor(() => {
+        const listCalls = fetchMock.mock.calls.filter(
+          ([url]) => typeof url === 'string' && url.includes('/services?'),
+        );
+        expect(listCalls.length).toBeGreaterThanOrEqual(2);
+      });
+    },
+  );
 });
