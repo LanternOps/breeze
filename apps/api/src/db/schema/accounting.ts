@@ -97,6 +97,16 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // The operation this row still owes QuickBooks. NULL = nothing owed. Written
   // in the SAME transaction as the invoice_payments insert/delete, which is what
   // makes the mapping row the outbox rather than the BullMQ job.
+  //
+  // A `'delete'` row SURVIVES org erasure and the org-merge orphan sweep
+  // (`services/tenantCascade.ts`, `services/orgMerge.ts`). It means Breeze
+  // created a Payment in someone's QuickBooks and still owes its removal;
+  // dropping the row discards that debt silently and strands real money in
+  // their books. The row carries no org-scoped personal data — a remote id, a
+  // SyncToken and a status — and `deletePaymentInAccounting` removes it itself
+  // once QuickBooks confirms (or gives up loudly after
+  // PAYMENT_DELETE_UNRESOLVED_GRACE_MS), so retaining it is safe for erasure
+  // and bounded in time. Both sweeps log the count they left behind.
   pendingOp: text('pending_op').$type<'push' | 'delete'>(),
   // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
   // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
