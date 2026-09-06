@@ -31,6 +31,7 @@ import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
 import { aiBudgets } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
+import { intersectToolRefs } from './toolAllowlist';
 
 type PolicyRowFields = Pick<
   AiAgentRow,
@@ -227,7 +228,7 @@ export function mergeAgentPolicies(
     ),
     mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
     model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
-    toolAllowlist: pick('toolAllowlist', intersect(partner.toolAllowlist, org.toolAllowlist), 'merged'),
+    toolAllowlist: pick('toolAllowlist', intersectToolRefs(partner.toolAllowlist, org.toolAllowlist), 'merged'),
     protectedResources: pick('protectedResources', {
       services: union(partner.protectedResources.services, org.protectedResources.services),
       paths: union(partner.protectedResources.paths, org.protectedResources.paths),
@@ -292,7 +293,7 @@ export function mergeAgentPolicies(
     // tests here do), so the merge itself must not assume the key is present.
     actAssets: pick('actAssets', {
       scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
-      supervisedActionKeys: intersect(
+      supervisedActionKeys: intersectToolRefs(
         partner.actAssets.supervisedActionKeys ?? [],
         org.actAssets.supervisedActionKeys ?? [],
       ),

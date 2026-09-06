@@ -399,6 +399,20 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(mergeAgentPolicies(legacyPartner, orgWithKeys, { allowedModels: null }).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
   });
+
+  it('toolAllowlist: an org row that scopes what the partner left bare keeps the scoped entries (not ∅)', () => {
+    const partner = policy({ toolAllowlist: ['manage_services', 'run_script'] });
+    const org = policy({ toolAllowlist: ['manage_services:restart', 'run_script'] });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.toolAllowlist)
+      .toEqual(['run_script', 'manage_services:restart']);
+  });
+
+  it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {
+    const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services'] } });
+    const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets.supervisedActionKeys)
+      .toEqual([KEY_A]);
+  });
 });
 
 // Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for anomaly
