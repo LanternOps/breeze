@@ -798,15 +798,20 @@ accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, req
   if (!connection) return c.json({ error: 'Accounting connection not found' }, 404);
 
   // Issue #4543: refuse rather than answer `{ enqueued: true }` honestly-but-
-  // uselessly. Before this check, a connection with pull_payments off still
-  // got a 200/queued response — the reconcile worker then silently no-oped
-  // (accountingReconcileWorker.ts's `pull_disabled` short-circuit) and the
+  // uselessly. Before this check, a switched-off connection still got a
+  // 200/queued response — the reconcile worker then silently no-oped
+  // (accountingReconcileWorker.ts's `both_switches_off` short-circuit) and the
   // operator had no way to tell "switch is off" apart from "it's syncing".
   // 409 + a stable `code`, matching the `{ error, code }` shape
   // AccountingConnectionError/AccountingMappingError already use elsewhere in
   // this file, rather than adding a new response shape.
-  if (!connection.pullPayments) {
-    return c.json({ error: 'Payment pull is disabled for this connection', code: 'pull_disabled' }, 409);
+  //
+  // Phase D2 (spec decision 6): the gate is pull OR push, mirroring the
+  // worker. With pull off and push on the CDC pass still has work — it adopts
+  // Breeze-created Payments whose phase 2 never landed and notices
+  // Breeze-origin Payments deleted in QuickBooks — so "Sync now" must run.
+  if (!connection.pullPayments && !connection.pushPayments) {
+    return c.json({ error: 'Payment sync is disabled for this connection', code: 'payment_sync_disabled' }, 409);
   }
 
   const enqueued = await enqueueAccountingReconcile(connection.id, partner.partnerId, 'manual');

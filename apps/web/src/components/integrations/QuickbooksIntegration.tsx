@@ -342,8 +342,9 @@ export default function QuickbooksIntegration() {
   // "queued" on `enqueued: false` would leave the operator waiting on a sync
   // that will never run.
   //
-  // Issue #4543 — a connection with pull_payments off gets a distinct 409
-  // `{ code: 'pull_disabled' }` (not a `{ enqueued: false }` 200), so runAction
+  // Issue #4543 — a connection with BOTH payment switches off gets a distinct
+  // 409 `{ code: 'payment_sync_disabled' }` (Phase D2: pull off alone still
+  // runs, the gate is pull OR push) rather than a `{ enqueued: false }` 200, so runAction
   // treats it as a failure and `friendly` swaps in the translated copy instead
   // of the route's raw English message.
   const handleReconcileNow = useCallback(async () => {
@@ -356,7 +357,7 @@ export default function QuickbooksIntegration() {
           }),
         errorFallback: t("quickbooksIntegration.failedToSyncNow"),
         friendly: (code) =>
-          code === "pull_disabled"
+          code === "payment_sync_disabled"
             ? t("quickbooksIntegration.syncNowPullDisabled")
             : undefined,
         onUnauthorized,

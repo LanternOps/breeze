@@ -438,7 +438,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     );
   });
 
-  it("issue #4543 — shows the pull-disabled reason (not a generic failure) on a 409 pull_disabled reconcile response", async () => {
+  it("issue #4543 — shows the switched-off reason (not a generic failure) on a 409 payment_sync_disabled reconcile response", async () => {
     fetchWithAuth.mockImplementation(
       async (url: string, init?: RequestInit) => {
         if (
@@ -446,7 +446,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
           init?.method === "POST"
         ) {
           return jsonResponse(
-            { error: "Payment pull is disabled for this connection", code: "pull_disabled" },
+            { error: "Payment sync is disabled for this connection", code: "payment_sync_disabled" },
             409,
           );
         }
