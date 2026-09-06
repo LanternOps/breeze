@@ -79,8 +79,28 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   v0.110.0**, where the bug is live.
 - The reconcile sweep's gate widened from `pull_payments` to
   `pull_payments OR push_payments`, so a realm with pull off and push on now
-  runs the CDC pass (it suppresses new QuickBooks-origin imports, logging
-  `skipped_pull_disabled` once per run).
+  runs the CDC pass. With pull off that pass touches Breeze's OWN payments only
+  — adopting a create whose response was lost, flagging a divergence, noticing a
+  Breeze-created Payment deleted in QuickBooks. Every QuickBooks-origin line is
+  suppressed and counted as `skipped_pull_disabled` on the run line: a new
+  import, an edit of one already imported (which would otherwise have rewritten
+  a Breeze payment amount) and a deletion (which would otherwise have deleted
+  the Breeze payment row).
+- A QuickBooks **reauth outage no longer retires pending payment pushes.** A
+  payment job skipped because the realm is not connected records the reason on
+  the mapping but no longer counts as an attempt, so an outage longer than about
+  a day can no longer exhaust the 100-attempt budget and clear the outbox before
+  the operator reconnects. A pending DELETE whose QuickBooks id was never
+  recorded also now reaches its 24-hour give-up window while the realm is
+  disconnected, instead of waiting for a reconnect that may never come.
+- **Org erasure and org merge no longer discard a QuickBooks payment deletion
+  Breeze still owes.** A payment mapping with `pending_op = 'delete'` means
+  Breeze created a Payment in the partner's QuickBooks and has not yet removed
+  it; both sweeps deleted those rows unconditionally, which silently dropped the
+  removal and left the payment standing in the customer's books (the merge sweep
+  hit every in-flight owed delete for the whole partner, not just the merged
+  org). Both now keep those rows and log the count retained; the delete worker
+  removes them once QuickBooks confirms, or gives up loudly after 24 hours.
 - Re-pushing an invoice after payment activity no longer fails with a stale
   SyncToken. QuickBooks bumps an Invoice's `SyncToken` every time a payment is
   applied to it or removed, so the token Breeze stored at push time went stale
