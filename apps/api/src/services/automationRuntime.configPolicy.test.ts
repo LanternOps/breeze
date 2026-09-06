@@ -50,7 +50,7 @@ vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
   automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
-  configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
+  configPolicyEffectiveFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
   configurationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
   organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
   automationResourceBindings: { automationId: 'automationId' },
@@ -201,7 +201,7 @@ function mockSelectChain(result: unknown[]) {
 
 // createConfigPolicyAutomationRun resolves the owning configurationPolicies.id
 // from the feature-link id via:
-//   db.select({ configPolicyId }).from(configPolicyFeatureLinks).where(...).limit(1)
+//   db.select({ configPolicyId }).from(configPolicyEffectiveFeatureLinks).where(...).limit(1)
 // Mock that lookup so the inserted configPolicyId is the resolved policy id, not
 // the feature-link id (issue #1855).
 function mockResolveConfigPolicyId(configPolicyId: string | null) {
@@ -255,6 +255,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1', 'dev-2'],
       triggeredBy: 'scheduler',
@@ -291,6 +292,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation,
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'manual',
@@ -323,6 +325,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation,
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'scheduler',
@@ -346,6 +349,7 @@ describe('createConfigPolicyAutomationRun', () => {
 
     await expect(
       createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
         automation: makeConfigPolicyAutomation({ featureLinkId: 'fl-orphan' }),
         targetDeviceIds: ['dev-1'],
         triggeredBy: 'scheduler',
@@ -361,6 +365,7 @@ describe('createConfigPolicyAutomationRun', () => {
 
     await expect(
       createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
         automation: makeConfigPolicyAutomation(),
         targetDeviceIds: ['dev-1'],
         triggeredBy: 'scheduler',
@@ -379,6 +384,7 @@ describe('createConfigPolicyAutomationRun', () => {
     mockInsertReturning([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1', 'dev-2', 'dev-3'],
       triggeredBy: 'scheduler',
@@ -398,6 +404,7 @@ describe('createConfigPolicyAutomationRun', () => {
     mockInsertReturning([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'cron-worker',
@@ -429,8 +436,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     await expect(
       executeConfigPolicyAutomationRun(
         makeConfigPolicyAutomation(),
+        'cp-1',
         ['dev-1'],
-        'scheduler'
+        'scheduler',
       )
     ).rejects.toThrow('Could not resolve orgId');
   });
@@ -479,7 +487,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(1);
@@ -546,7 +554,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('running');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
@@ -636,7 +644,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesFailed).toBe(1);
     expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -714,7 +722,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       }],
     });
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(result.status).toBe('failed');
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
@@ -786,7 +794,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       return { ok: true, commandId: 'cmd-2', executionId: null, delivered: true, executedAt: new Date() } as any;
     });
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1', 'dev-2'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1', 'dev-2'], 'scheduler');
     expect(result.status).toBe('running');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
@@ -875,6 +883,7 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     const result = await executeConfigPolicyAutomationRun(
       automation,
+      'cp-1',
       deviceRows.map((d) => d.id),
       'scheduler',
     );
@@ -945,7 +954,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
-    await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(publishEvent).not.toHaveBeenCalled();
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
@@ -1004,7 +1013,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
-    await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(publishEvent).not.toHaveBeenCalled();
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
@@ -1049,7 +1058,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, [], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', [], 'scheduler');
     expect(result.status).toBe('completed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
@@ -1103,7 +1112,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     // The FOR SHARE fence read sees the cancelled run.
     vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(result).toEqual({
       runId: 'run-cp-cancelled',
@@ -1172,7 +1181,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     reconcileRunMock.mockRejectedValueOnce(new Error('Redis down'));
 
     await expect(
-      executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler')
+      executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler')
     ).rejects.toThrow('Redis down');
   });
 });
