@@ -1,0 +1,54 @@
+---
+title: Stopping a Running Script
+description: What the Stop button does, what an unconfirmed stop means, and what Breeze cannot promise to kill.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every execution row on a script's execution history — and the execution detail panel — offers a **Stop** action while the script is `Pending`, `Queued`, or `Running`. This page explains what it does, what "Stopping…" means while you wait, and what it does not promise.
+
+## Where to find it
+
+Open a script's execution history (or click into a single execution's details) and look for the **Stop** button next to any row that is still pending, queued, or running. It only appears if your role has the `scripts:execute` permission — without it the button is hidden, not shown disabled.
+
+## What happens when you click Stop
+
+1. Breeze sends the device a request to end the process, with a short **grace period** (5 seconds by default).
+2. The row's status changes to **Stopping…** immediately. This is a request in flight, not a confirmed outcome.
+3. On most platforms the agent asks the process to exit gracefully (`SIGTERM` on macOS/Linux) and waits out the grace period before forcing it closed (`SIGKILL`).
+4. Once the device reports back, the row settles into its final state — see below.
+
+**Force stop** skips step 3 entirely and kills the process immediately, with no grace period. Use it when you don't need the script to clean up after itself, or when a normal Stop has already timed out.
+
+<Aside type="note">
+On Windows, there is no graceful phase at all — Force stop and a normal Stop behave the same way. Windows scripts run without a console window, so the agent cannot ask them to exit cleanly; it terminates the whole process tree directly.
+</Aside>
+
+## Reading the outcome
+
+A stop request is not a guarantee. Breeze only ever marks an execution **Cancelled** once the device has actually proven the process is gone — either because it caught the process before the agent even started it, or because the agent confirmed the kill. Every other outcome is reported honestly rather than assumed:
+
+| What you see | What it means |
+|---|---|
+| **Cancelled** | The stop was confirmed. The process is gone. |
+| **Completed / Failed / Timed out — your stop request arrived too late** | The script finished on its own before the stop could take effect. The row shows its real outcome, not a claimed cancellation. |
+| **Stop failed — the device could not stop the process** | The agent tried and could not kill it (for example, a permission error). The script may still be running. |
+
+An execution that never reports back — because the device went offline, or an older agent didn't understand the request — settles the same way: Breeze does not claim a stop it cannot prove.
+
+<Aside type="caution">
+Older agents (deployed before this feature shipped) don't recognize the stop command at all. Devices on an outdated agent version will answer "unknown command," which Breeze records as an unconfirmed stop rather than a failure — the script itself is unaffected either way.
+</Aside>
+
+## What Stop does not cover
+
+Stop (and Force stop) terminate the script process and its normal child processes. They do **not** reach:
+
+- Processes the script deliberately **detaches** from itself, such as one launched with `nohup`, `disown`, or `systemd-run --scope`.
+- A **scheduled task, cron job, or service** the script registers as a side effect — once created, that's an independent unit the operating system manages on its own.
+
+If a script needs guaranteed cleanup on cancellation, write that cleanup into the script itself (for example, trapping `SIGTERM`) rather than relying on Stop to reach into work it has already handed off elsewhere.
+
+## Automation runs
+
+An automation run that includes script actions can be cancelled as a whole from the run history panel — see [Automations](/features/automations/). Cancelling a run stops every script execution it is still waiting on, the same way Stop does for a single execution. Actions that don't produce a script execution (a raw device command, or a software deployment already in progress) are reported separately as **could not be stopped**, since the run has no honest way to prove they ended.

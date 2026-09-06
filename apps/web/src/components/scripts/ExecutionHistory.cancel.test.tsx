@@ -56,34 +56,34 @@ function jsonResponse(body: unknown, status = 200) {
 describe('Stop affordance', () => {
   it.each(['pending', 'queued', 'running'] as const)('is offered on %s', (status) => {
     render(<ExecutionHistory executions={[exec({ status })]} onCancel={vi.fn()} permissions={withScriptsExecute} />);
-    expect(screen.getByTestId('cancel-execution')).toBeInTheDocument();
+    expect(screen.getByTestId('cancel-execution-e1')).toBeInTheDocument();
   });
 
   it.each(['completed', 'failed', 'timeout', 'cancelled'] as const)('is absent on %s', (status) => {
     render(<ExecutionHistory executions={[exec({ status })]} onCancel={vi.fn()} permissions={withScriptsExecute} />);
-    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+    expect(screen.queryByTestId('cancel-execution-e1')).toBeNull();
   });
 
   it('shows a disabled Stopping… spinner while cancelling', () => {
     render(<ExecutionHistory executions={[exec({ status: 'cancelling' })]} onCancel={vi.fn()} permissions={withScriptsExecute} />);
-    expect(screen.getByTestId('cancel-execution')).toBeDisabled();
+    expect(screen.getByTestId('cancel-execution-e1')).toBeDisabled();
   });
 
   it('is HIDDEN, not disabled, without scripts:execute', () => {
     render(<ExecutionHistory executions={[exec({ status: 'running' })]} onCancel={vi.fn()} permissions={withoutScriptsExecute} />);
-    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+    expect(screen.queryByTestId('cancel-execution-e1')).toBeNull();
   });
 
   it('is absent entirely without an onCancel handler, regardless of permission', () => {
     render(<ExecutionHistory executions={[exec({ status: 'running' })]} permissions={withScriptsExecute} />);
-    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+    expect(screen.queryByTestId('cancel-execution-e1')).toBeNull();
   });
 
   it('Force stop sends graceSeconds 0', async () => {
     const user = userEvent.setup();
     const onCancel = vi.fn().mockResolvedValue(undefined);
     render(<ExecutionHistory executions={[exec({ status: 'running' })]} onCancel={onCancel} permissions={withScriptsExecute} />);
-    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('cancel-execution-e1'));
     await user.click(screen.getByTestId('confirm-force-stop'));
     expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }), 0);
   });
@@ -92,7 +92,7 @@ describe('Stop affordance', () => {
     const user = userEvent.setup();
     const onCancel = vi.fn().mockResolvedValue(undefined);
     render(<ExecutionHistory executions={[exec({ status: 'running' })]} onCancel={onCancel} permissions={withScriptsExecute} />);
-    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('cancel-execution-e1'));
     await user.click(screen.getByTestId('confirm-stop'));
     expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }), 5);
   });
@@ -159,7 +159,7 @@ describe('ScriptExecutionsPage cancel + polling', () => {
     render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
     await screen.findByText('alpha-01');
 
-    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId(`cancel-execution-${EXECUTION_ID}`));
     await user.click(screen.getByTestId('confirm-stop'));
 
     await waitFor(() => {

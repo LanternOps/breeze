@@ -392,10 +392,12 @@ export default function ExecutionHistory({
                     )}
                     <td className="px-4 py-3 text-sm">{execution.deviceHostname}</td>
                     <td className="px-4 py-3">
-                      <span className={cn(
-                        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
-                        statusConfig[execution.status].color
-                      )}>
+                      <span
+                        data-testid={`execution-status-${execution.id}`}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
+                          statusConfig[execution.status].color
+                        )}>
                         <StatusIcon className={cn(
                           'h-3 w-3',
                           (execution.status === 'running' || execution.status === 'cancelling') && 'animate-spin'
@@ -435,7 +437,7 @@ export default function ExecutionHistory({
                         {onCancel && canCancel && (CANCELLABLE_STATUSES.has(execution.status) || execution.status === 'cancelling') && (
                           <button
                             type="button"
-                            data-testid="cancel-execution"
+                            data-testid={`cancel-execution-${execution.id}`}
                             disabled={execution.status === 'cancelling'}
                             onClick={(e) => {
                               e.stopPropagation();
