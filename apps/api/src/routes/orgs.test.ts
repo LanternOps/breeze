@@ -244,7 +244,14 @@ vi.mock('drizzle-orm', async (importActual) => {
     // suspended-org lifecycle override re-asserts its WHERE predicates
     // (eq(organizations.status,'suspended') / eq(organizations.partnerId,...))
     // without changing any behavior for the rest of the file.
-    eq: vi.fn(actual.eq)
+    eq: vi.fn(actual.eq),
+    // #5075 W04 — same rationale as `eq` above: spy with the REAL
+    // implementation so the PATCH /partners/me external-mode test can assert
+    // that the PSA-connection probe really carries `isNull(psaConnections.orgId)`.
+    // Without it the mocked `.where()` returns its canned row whatever it is
+    // handed, so dropping the partner-wide half of the ownership filter would
+    // not fail a single test.
+    isNull: vi.fn(actual.isNull)
   };
 });
 
@@ -287,7 +294,11 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { eq, inArray, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNull, type SQL } from 'drizzle-orm';
+// Real table object (this module is NOT part of the '../db/schema' barrel mock),
+// so the ownership assertions below compare against the actual columns the
+// route uses rather than a sentinel that could drift.
+import { psaConnections } from '../db/schema/integrations';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
@@ -6329,6 +6340,18 @@ describe('org routes', () => {
       expect(setData).toBeDefined();
       expect(setData!.serviceManagementMode).toBe('external');
       expect(setData!.serviceManagementPsaConnectionId).toBe(validConnectionId);
+
+      // The mocked `.where()` answers with its canned row whatever predicate it
+      // is handed, so a 200 here proves only that SOME row came back — it does
+      // NOT prove the probe asked for the right one. Assert the three ownership
+      // conditions on the spies instead. Dropping any of them is a real
+      // cross-tenant defect: without the partner_id equality a partner could
+      // bind ANOTHER partner's PSA credentials, and without `org_id IS NULL` an
+      // org-scoped connection would be bound as if it were partner-wide and
+      // then serve every org under the partner from one org's credentials.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.id, validConnectionId);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.partnerId, 'partner-123');
+      expect(vi.mocked(isNull)).toHaveBeenCalledWith(psaConnections.orgId);
     });
 
     it('rejects a connection id with no mode alongside it', async () => {

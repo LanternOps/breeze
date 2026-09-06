@@ -315,10 +315,16 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
-            {/* #5075 W04 — Service Management 'off' withdraws ticket creation
-                for the partner. The API refuses it with a 409 regardless (the
-                backstop lives in ticketService.createTicket); this only avoids
-                offering a button that cannot succeed. */}
+            {/* #5075 W04 — Service Management gate.
+                'off': the API refuses with a 409 (the backstop lives in
+                ticketService.createTicket), so this avoids offering a button
+                that cannot succeed.
+                'external': the API WOULD accept the create (it still writes the
+                Breeze-side shadow row), but the alert flow has no PSA-linking
+                step yet, so a ticket raised here would strand outside the
+                partner's system of record. Hidden until that ships — unlike the
+                org record's Tickets tab, which stays visible under external
+                because it lists those shadow rows. */}
             {serviceManagementMode === 'native' && (
               <button
                 type="button"

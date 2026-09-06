@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Blocks } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
-import { ActionError, runAction } from '@/lib/runAction';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { useOrgStore, type ServiceManagementMode } from '@/stores/orgStore';
 import '@/lib/i18n';
 
@@ -86,11 +86,13 @@ export default function PartnerModulesCard({ serviceManagementMode }: Props) {
       setStoreMode(next);
     } catch (err) {
       setMode(previous);
-      // A non-401 ActionError has already been toasted by runAction; a 401 is
-      // handled by the auth redirect. Either way the revert above is the whole
-      // of this handler's job — but a genuinely unexpected throw must not be
-      // swallowed silently.
-      if (!(err instanceof ActionError)) throw err;
+      // `handleActionError`, NOT a rethrow: this runs under a fire-and-forget
+      // `void select(...)` in onChange, so a rethrow becomes an unhandled
+      // rejection that no one catches — the radio would snap back with no toast
+      // and no telemetry. The helper toasts the fallback for anything runAction
+      // did not already surface, and stays quiet for a 401 (the auth redirect
+      // is the feedback there).
+      handleActionError(err, t('partnerSettingsPage.modules.saveFailed'));
     } finally {
       setSaving(false);
     }

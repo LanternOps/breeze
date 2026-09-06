@@ -15,8 +15,16 @@ export interface OrgOverviewTabProps {
   summaryFailed: boolean;
   /**
    * The partner's Service Management mode (#5075 W04). Anything but `native`
-   * withdraws the three tiles the module owns — a tickets/contracts/invoices
-   * count is meaningless when Breeze is not the system of record for them.
+   * withdraws the three tiles the module owns.
+   *
+   * Deliberately COARSER than the tab gate in `orgRecordTabs.ts`, which keeps
+   * the Tickets tab under `external` because it lists the shadow rows Breeze
+   * still writes. A summary COUNT is the part that misleads under `external`:
+   * it would read as the customer's ticket position while the real numbers live
+   * in the PSA. The tab, which links out to those rows, does not have that
+   * problem. `off` hides all three for the plainer reason that none of them
+   * exist.
+   *
    * Defaults to `native` so a caller that has not wired the store yet (and any
    * existing test) keeps today's behaviour.
    */

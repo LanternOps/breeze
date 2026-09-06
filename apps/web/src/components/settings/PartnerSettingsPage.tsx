@@ -71,8 +71,10 @@ type Partner = {
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature?: string | null;
   settings: PartnerSettings;
-  // #5075 W04 — which service-desk/billing module this partner runs. Absent on
-  // an older API; the card and the store both fall back to 'native'.
+  // #5075 W04 — which service-desk/billing module this partner runs.
+  // `undefined` on every render before the partner fetch resolves, and also on
+  // an API too old to send it. The card treats both the same way: display
+  // 'native', publish nothing to the store (see PartnerModulesCard's prop doc).
   serviceManagementMode?: ServiceManagementMode;
   createdAt: string;
 };

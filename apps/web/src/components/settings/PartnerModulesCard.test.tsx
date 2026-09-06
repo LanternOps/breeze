@@ -28,12 +28,12 @@ beforeEach(() => {
 });
 
 describe('PartnerModulesCard', () => {
-  // The card's checked state is authoritative from the STORE once adopted
-  // (see the component's own comment above `checkedMode`) — in real usage the
-  // Sidebar's /orgs/partners/me effect writes the store ahead of this card
-  // mounting, so these render-state tests seed the store the same way, then
-  // pass the identical value in as the prop (mirroring PartnerSettingsPage,
-  // which sources both from its own GET /orgs/partners/me).
+  // The card's checked state comes from its own `mode` state, seeded from the
+  // prop and republished to the store by its adopt effect — the card never
+  // reads the store back. These tests still seed the store to the same value so
+  // the pre/post state is unambiguous when a case asserts the store was (or was
+  // not) moved, mirroring PartnerSettingsPage, which sources the prop from its
+  // own GET /orgs/partners/me.
   it('renders with the native mode checked and off unchecked', () => {
     useOrgStore.setState({ serviceManagementMode: 'native' });
     render(<PartnerModulesCard serviceManagementMode="native" />);
