@@ -24,7 +24,10 @@ import { persistDeviceCustomFieldValues } from '../../services/customFields/quer
 /**
  * Device custom-field VALUE read/write API.
  *
- * Device custom-field values live in the `devices.custom_fields` JSONB column.
+ * Device custom-field values live in the `device_custom_field_values` table
+ * (#3257 W05). `devices.custom_fields` is a trigger-maintained PROJECTION of it,
+ * kept so the ~34 existing JS readers and both partner-export statement triggers
+ * work unchanged — it is a read surface only and is never written from here.
  * The only built-in way to write them used to be `PATCH /devices/:id`, which is
  * gated on `authMiddleware` (browser session JWT only) + `requireMfa()` — so an
  * automation calling with an `X-API-Key` header was rejected at the very first
@@ -32,8 +35,10 @@ import { persistDeviceCustomFieldValues } from '../../services/customFields/quer
  * was no API-key-authenticated path to stash a value (e.g. a script writing a
  * BitLocker recovery key into a custom field).
  *
- * NOT A SECRETS STORE: `custom_fields` is general automation/inventory data
- * stored in plaintext JSONB with no field-level encryption. It is the right
+ * NOT A SECRETS STORE: a custom-field value is general automation/inventory data
+ * stored in plaintext with no field-level encryption — and since W05 it is also
+ * `included` in the GDPR tenant export (`tenantExportPolicyRegistry.ts`), where
+ * the jsonb column it replaced was `excludedOpen`. It is the right
  * place for asset tags, notes, external IDs, etc. — it is NOT a vault. Real
  * secrets (BitLocker/FileVault recovery keys and similar) belong in the
  * dedicated, encrypted recovery-key feature tracked in #2021; exposing a value

@@ -319,6 +319,28 @@ describe('device_custom_field_values — coherence and tenancy guards', () => {
     })).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === 'P0001');
   });
 
+  runDb('the merge fence does not excuse an INSERT under a merging org\'s definition', async () => {
+    // The fence exists so the org merge's own org_id repoint survives the
+    // coherence check. It must NOT become a way to attach another org's
+    // definition to a device: it is gated on TG_OP = 'UPDATE' and on the row
+    // moving OUT of the definition's own org. The loser org keeps
+    // status='merging' as a TERMINAL shell after a merge, so without those two
+    // conditions this insert would be permanently legal.
+    const f = await seedFixture();
+    const otherOrgDef = await createDefinition({ orgId: f.orgA2, fieldKey: 'asset_tag' });
+    await sys(() => db.execute(sql`
+      UPDATE public.organizations SET status = 'merging' WHERE id = ${f.orgA2}::uuid`));
+    try {
+      await expect(insertValue({
+        deviceId: f.deviceId, orgId: f.orgA, definitionId: otherOrgDef,
+        fieldKey: 'asset_tag', valueText: 'x',
+      })).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === 'P0001');
+    } finally {
+      await sys(() => db.execute(sql`
+        UPDATE public.organizations SET status = 'active' WHERE id = ${f.orgA2}::uuid`));
+    }
+  });
+
   runDb('refuses a field_key that disagrees with its definition', async () => {
     const f = await seedFixture();
     await expect(insertValue({

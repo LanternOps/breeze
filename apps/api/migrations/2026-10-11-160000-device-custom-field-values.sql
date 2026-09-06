@@ -182,11 +182,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON device_custom_field_values TO breeze_app
 -- value's definition is still owned by the LOSER org, because
 -- custom_field_definitions' own executor runs LATER in the walk. Without the
 -- fence every merge of two orgs that both hold custom-field values aborts with
--- P0001. The fence is narrow: the definition's owning org must be actively
--- `status='merging'` AND under the SAME partner as the row's new org (an org
--- merge is same-partner by construction — orgMerge.ts validates it and
--- re-validates in-transaction), so it can never widen into cross-partner
--- leakage. Convergence is guaranteed within the same transaction: the
+-- P0001. The fence is narrow on four axes at once — UPDATE only, the row must be
+-- moving OUT of the definition's own org, that org must be actively
+-- `status='merging'`, and it must be under the SAME partner as the destination
+-- (an org merge is same-partner by construction: orgMerge.ts validates it and
+-- re-validates in-transaction). An INSERT can therefore never reach the fence,
+-- and it can never widen into cross-partner leakage. Convergence is guaranteed
+-- within the same transaction: the
 -- definitions executor either re-homes the value onto the survivor's
 -- identically-keyed definition or repoints the loser's definition to the
 -- survivor. Pinned by the org-merge test in the suite above.
@@ -232,14 +234,28 @@ BEGIN
 
   IF def_org IS NOT NULL THEN
     IF def_org <> NEW.org_id THEN
-      -- Merge fence — see the header block above.
-      SELECT EXISTS (
-        SELECT 1 FROM public.organizations lo
-         WHERE lo.id = def_org
-           AND lo.status::text = 'merging'
-           AND row_partner IS NOT NULL
-           AND lo.partner_id = row_partner
-      ) INTO merging_ok;
+      -- Merge fence — see the header block above. Deliberately narrow on FOUR
+      -- axes at once, so it excuses the merge's own repoint and nothing else:
+      --   * UPDATE only — an INSERT can never reach it, so no caller can create
+      --     a value under another org's definition;
+      --   * the row must be moving OUT of the definition's own org
+      --     (OLD.org_id = def_org), which is exactly the merge repoint's shape;
+      --   * that org must be actively status='merging'; and
+      --   * it must be under the SAME partner as the destination org, so the
+      --     fence can never widen into cross-partner leakage.
+      -- The loser org keeps status='merging' as a terminal shell after the
+      -- merge, which is why the first two conditions carry the weight rather
+      -- than the status alone.
+      SELECT TG_OP = 'UPDATE'
+         AND OLD.org_id = def_org
+         AND EXISTS (
+           SELECT 1 FROM public.organizations lo
+            WHERE lo.id = def_org
+              AND lo.status::text = 'merging'
+              AND row_partner IS NOT NULL
+              AND lo.partner_id = row_partner
+         )
+        INTO merging_ok;
       IF NOT merging_ok THEN
         RAISE EXCEPTION 'custom field definition % belongs to a different organization', NEW.definition_id
           USING ERRCODE = 'P0001',
@@ -304,9 +320,15 @@ DECLARE
   _prev_scope text := current_setting('breeze.scope', true);
   device_ids uuid[];
 BEGIN
-  -- Same reasoning as the coherence trigger: this reads custom_field_definitions
-  -- across the org/partner axis to decide which stored keys are "unmanaged", and
-  -- an org-scoped context cannot see partner-wide rows (#4944).
+  -- Elevated for a NARROWER reason than the coherence trigger's: this function
+  -- reads no definitions at all (the projection rule above is the key pattern,
+  -- not definition visibility). It rebuilds and UPDATEs `devices` during the org
+  -- merge and the cross-org device move, when the device's org_id is mid-flight
+  -- and the CALLER's context may cover only one side of the pair; an unelevated
+  -- UPDATE would then match zero rows silently and leave the projection stale.
+  -- Not a widening: the device set comes from this statement's own transition
+  -- tables — rows the caller was already allowed to write under this table's RLS
+  -- policy — and the only column written is rebuilt from those same rows.
   PERFORM set_config('breeze.scope', 'system', true);
 
   IF TG_OP = 'DELETE' THEN
@@ -456,7 +478,6 @@ BEGIN
   WITH candidate AS (
     SELECT v.id AS value_id, tgt.id AS target_definition_id
       FROM public.device_custom_field_values v
-      JOIN public.custom_field_definitions cur ON cur.id = v.definition_id
       CROSS JOIN LATERAL (
         SELECT f.id
           FROM public.custom_field_definitions f
