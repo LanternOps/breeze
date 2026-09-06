@@ -67,9 +67,11 @@ export class AiAgentsPage extends BasePage {
     await waitForAppReady(this.page, 'ai-agents-page');
   }
 
-  /** Opens the guided create flow from the header "New agent" button. */
+  /** Opens the guided create flow. A tenant with no agents yet (a fresh CI
+   *  stack) renders the empty-state CTA instead of the header button — both
+   *  open the same flow, so click whichever is present. */
   async openCreateFlow() {
-    await this.createButton().click();
+    await this.createButton().or(this.emptyCreateButton()).first().click();
     await this.flowRoot().waitFor();
   }
 

@@ -37,6 +37,19 @@ async function readAccessToken(page: Page): Promise<string> {
   page.on('request', onRequest);
   try {
     await page.goto('/');
+    // The stored refresh cookie rotates on first use; a retried run (a new
+    // worker, a new context replaying the same storage state) can land on
+    // /login. Sign in again rather than fail — the credentials the global
+    // setup used are in the environment on every stack.
+    if (/\/login/.test(page.url())) {
+      const email = process.env.E2E_ADMIN_EMAIL;
+      const password = process.env.E2E_ADMIN_PASSWORD;
+      if (!email || !password) throw new Error('bounced to /login and E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD are not set');
+      await page.getByTestId('login-email-input').fill(email);
+      await page.getByTestId('login-password-input').fill(password);
+      await page.getByTestId('login-submit').click();
+      await page.waitForURL((url) => !/\/login/.test(url.pathname), { timeout: 30_000 });
+    }
     await expect.poll(() => token, {
       message: 'an authenticated /api/v1 request from the app',
       timeout: 30_000,
