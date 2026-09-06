@@ -1,7 +1,10 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { users, organizations, partners } from '../db/schema';
 import { isSupportedLocale, type SupportedLocale } from '@breeze/shared';
+import { resolvePartnerDocumentLocale } from './documentLocale';
+import { captureMessage } from './sentry';
 
 /**
  * Resolve the display locale for an outbound artifact (email, PDF, notification)
@@ -14,13 +17,28 @@ import { isSupportedLocale, type SupportedLocale } from '@breeze/shared';
  *   4. `partnerId`   — `partners.settings.language`
  *   5. `'en'`        — hard fallback
  *
- * The function intentionally takes plain ids and performs narrow SELECT queries.
- * **Precondition:** callers must have established a DB access context before
- * calling this function — either `withDbAccessContext` (request paths) or
- * `withSystemDbAccessContext` (background workers).  The bare `db` pool used
- * here inherits whatever RLS context the surrounding `withDbAccessContext` /
- * `withSystemDbAccessContext` call set up, so the queries run under the correct
- * tenant identity without needing an extra context wrap per call.
+ * **Precondition (enforced):** a DB access context must be established —
+ * `withDbAccessContext` on request paths or `withSystemDbAccessContext` in
+ * workers. Since `0012-tenant-rls-deny-default.sql` an unset `breeze.scope`
+ * resolves to `'none'` and every hop returns ZERO rows without raising, so a
+ * contextless call would silently render English for everyone. The function
+ * throws instead.
+ *
+ * **Why the reads run in a system context (#2822).** `partners` is gated by
+ * `breeze_has_partner_access(id)` and `users` by partner access OR a reachable
+ * non-null `org_id` OR self. Under an org-scoped context (org JWTs, agent,
+ * portal, client-AI) the partner hop returns zero rows and a partner-staff
+ * recipient (`org_id IS NULL`) is invisible — silently, as English. All three
+ * hops therefore run through `readWithPartnerAxisVisibility`, which is a no-op
+ * when the ambient scope is already system and otherwise opens ONE
+ * system-scoped read for the whole resolution (not one per hop — each escape
+ * pins a second pooled connection while the caller's transaction is held).
+ *
+ * That escape widens which COLUMNS are legible, never which row may be
+ * targeted: the ids must come from the caller's own verified auth context or
+ * from rows already resolved under its RLS context (a schedule row, a
+ * notification channel, `auth.partnerId`). Never feed client-supplied ids in.
+ * Only `preferences.locale` / `settings.language` are selected.
  *
  * Callers that already have the relevant setting blobs in memory may pass
  * `explicit` and skip DB reads entirely.
@@ -36,6 +54,38 @@ export async function resolveRecipientLocale(ref: {
   // 1. Explicit override (channel/schedule config value)
   if (isSupportedLocale(ref.explicit)) return ref.explicit;
 
+  const hasIds = Boolean(ref.userId || ref.orgId || ref.partnerId);
+  if (!hasIds) return 'en';
+
+  if (!getCurrentDbAccessContext()) {
+    throw new Error(
+      'resolveRecipientLocale: no DB access context — wrap the caller in withDbAccessContext or withSystemDbAccessContext',
+    );
+  }
+
+  const resolved = await readWithPartnerAxisVisibility(() => resolveFromDb(ref));
+  if (resolved) return resolved;
+
+  // Ids were supplied but no tier produced a locale and no partner row was
+  // found. Legitimate for a user/org-only ref with nothing configured, but a
+  // systematic pattern means misconfiguration or an unreadable row — make it
+  // visible rather than silently rendering English.
+  captureMessage('recipient locale unresolved; rendering en', {
+    eventCode: 'recipient_locale_unresolved',
+    level: 'info',
+    tags: {
+      ...(ref.orgId ? { org_id: ref.orgId } : {}),
+      ...(ref.partnerId ? { partner_id: ref.partnerId } : {}),
+    },
+  });
+  return 'en';
+}
+
+async function resolveFromDb(ref: {
+  userId?: string;
+  orgId?: string;
+  partnerId?: string;
+}): Promise<SupportedLocale | null> {
   // 2. User preference
   if (ref.userId) {
     const [row] = await db
@@ -58,16 +108,18 @@ export async function resolveRecipientLocale(ref: {
     if (isSupportedLocale(language)) return language;
   }
 
-  // 4. Partner default language
+  // 4. Partner default language — same reader the document stamp uses, so the
+  // two tiers cannot drift (services/documentLocale.ts).
   if (ref.partnerId) {
     const [row] = await db
       .select({ settings: partners.settings })
       .from(partners)
       .where(eq(partners.id, ref.partnerId))
       .limit(1);
-    const language = (row?.settings as { language?: unknown } | null | undefined)?.language;
-    if (isSupportedLocale(language)) return language;
+    // A found partner row always resolves (configured language, else 'en');
+    // only a MISSING row falls through to the telemetry below.
+    if (row) return resolvePartnerDocumentLocale(row);
   }
 
-  return 'en';
+  return null;
 }

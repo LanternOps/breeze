@@ -4,7 +4,9 @@
  * Rules (mirrored from apps/web/src/lib/i18n/localeParity.test.ts):
  * - Every key present in `en/<ns>.json` must also be present in every other
  *   locale's `<ns>.json` with the same key path.
- * - Every non-English value must be a string (same type as the English leaf).
+ * - Every value in every locale must be a string leaf — a `null` or number in
+ *   a translation renders as "null"/"42" in a customer email, so this is
+ *   enforced per locale, not only for `en`.
  * - Interpolation tokens ({{var}}) must match between English and every
  *   translation — a missing token causes silent omission in the final string.
  * - English source files must contain only string leaf values (no raw objects).
@@ -49,7 +51,7 @@ function flattenValues(
 
 function interpolationTokens(value: string): string[] {
   return [...value.matchAll(/{{\s*([^},\s]+)[^}]*}}/g)]
-    .map((match) => match[1])
+    .map((match) => match[1] ?? '')
     .sort();
 }
 
@@ -81,6 +83,12 @@ describe('API locale parity', () => {
 
         it(`${locale}/${ns}.json exists`, () => {
           expect(() => readJson(translatedPath)).not.toThrow();
+        });
+
+        it(`${locale}/${ns}.json has only string leaf values`, () => {
+          const values = flattenValues(readJson(translatedPath));
+          const nonString = [...values.entries()].filter(([, v]) => typeof v !== 'string');
+          expect(nonString, `Non-string leaves: ${nonString.map(([k]) => k).join(', ')}`).toHaveLength(0);
         });
 
         it(`${locale}/${ns}.json has all keys from en`, () => {

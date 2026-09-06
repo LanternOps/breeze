@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+vi.mock('../services/sentry', () => ({ captureMessage: vi.fn() }));
 import { tApi } from './index';
 
 describe('tApi', () => {
@@ -57,5 +58,31 @@ describe('tApi', () => {
     ]);
     expect(enResult).toBe('INVOICE');
     expect(ptBrResult).toBe('FATURA');
+  });
+});
+
+describe('tApi observability', () => {
+  it('reports a missing key once and returns the raw key', async () => {
+    const { captureMessage } = await import('../services/sentry');
+    const spy = vi.mocked(captureMessage);
+    spy.mockClear();
+    expect(tApi('en', 'emails:does.not.exist')).toBe('does.not.exist');
+    tApi('en', 'emails:does.not.exist');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]?.[1]).toMatchObject({
+      eventCode: 'i18n_missing_key',
+      tags: { i18n_key: 'emails:does.not.exist' },
+    });
+  });
+
+  it('reports a missing interpolation value and renders an empty slot', async () => {
+    const { captureMessage } = await import('../services/sentry');
+    const spy = vi.mocked(captureMessage);
+    spy.mockClear();
+    expect(tApi('en', 'emails:invoice.subject', { partnerName: 'Acme MSP' })).toBe('Invoice  from Acme MSP');
+    expect(spy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'i18n_missing_interpolation' }),
+    );
   });
 });

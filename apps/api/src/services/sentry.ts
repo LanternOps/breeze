@@ -333,6 +333,10 @@ const ALLOWED_TAG_NAMES = new Set([
   'remote_entity_id',
   'breeze_entity_type',
   'remote_sync_token',
+  // #3860: which translation key `tApi` could not resolve. Keys are hardcoded
+  // `ns:dotted.path` literals at the call site (never interpolated), so the
+  // set is closed by construction; carries no tenant, device, or host id.
+  'i18n_key',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
