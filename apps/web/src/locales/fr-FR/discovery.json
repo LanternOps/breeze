@@ -143,7 +143,7 @@
     "monitored": "Surveillé",
     "title": "Actifs découverts",
     "tryAgain": "Réessayer",
-    "agentInstalled": "Agent installé"
+    "agentInstalled": "Agent"
   },
   "discoveryJobList": {
     "actions": {

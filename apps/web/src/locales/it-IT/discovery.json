@@ -143,7 +143,7 @@
     "monitored": "Monitorato",
     "title": "Asset rilevati",
     "tryAgain": "Riprova",
-    "agentInstalled": "Agente installato"
+    "agentInstalled": "Agente"
   },
   "discoveryJobList": {
     "actions": {

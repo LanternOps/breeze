@@ -127,7 +127,13 @@ export function ProxyConnectPopover({
     if (!container) return;
     const handleFocusOut = (event: FocusEvent) => {
       const next = event.relatedTarget as Node | null;
-      if (next && container.contains(next)) return;
+      // No related target means focus fell to <body>, not to another
+      // control: Chrome fires this when the focused element is disabled
+      // (Connect, the moment it's pressed) or unmounted (Escape close).
+      // Neither is the user leaving, so ignore it — real clicks elsewhere
+      // are already handled by useClickOutside.
+      if (!next) return;
+      if (container.contains(next)) return;
       focusAlreadyMovedRef.current = true;
       setOpen(false);
     };
@@ -208,6 +214,21 @@ export function ProxyConnectPopover({
   }, [port, initialPort, service]);
   const [skipTlsVerify, setSkipTlsVerify] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  // A failed connect leaves the popover open, but Chrome has already dropped
+  // focus to <body> (a disabled button can't hold it). Once Connect re-enables,
+  // put focus back on it — unless the operator moved to another control in
+  // the panel while the request was pending.
+  const connectRef = useRef<HTMLButtonElement>(null);
+  const refocusConnectRef = useRef(false);
+  useEffect(() => {
+    if (connecting || !refocusConnectRef.current) return;
+    refocusConnectRef.current = false;
+    const active = document.activeElement;
+    const panel = panelRef.current;
+    if (!panel || !active || !panel.contains(active) || active === connectRef.current) {
+      connectRef.current?.focus();
+    }
+  }, [connecting]);
   const [retryingDevices, setRetryingDevices] = useState(false);
   const handleRetryDevices = useCallback(() => {
     // Move focus into the panel BEFORE disabling the button: a browser moves
@@ -250,6 +271,7 @@ export function ProxyConnectPopover({
       window.open(buildRemoteProxyPageUrl(data.tunnel.id, `${assetIp}:${port}`, assetId), '_blank');
       onAnnounce(t('networkDeviceDetailPage.live.webUiOpened'));
     } catch (err) {
+      refocusConnectRef.current = true;
       // runAction already toasted a generic/friendly message; surface an
       // inline message too for the two codes that need a clear, sticky
       // explanation right next to the control that caused them.
@@ -457,6 +479,7 @@ export function ProxyConnectPopover({
 
               <button
                 type="button"
+                ref={connectRef}
                 data-testid="proxy-popover-connect"
                 onClick={() => void handleConnect()}
                 disabled={connecting || !deviceId || !portValid}

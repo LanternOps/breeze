@@ -1335,6 +1335,59 @@ describe('NetworkDeviceDetailPage', () => {
       expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
     });
 
+    // Chrome fires `focusout` with a null relatedTarget when the focused
+    // control is disabled (Connect flips to disabled the moment it is
+    // pressed) or removed from the DOM. Neither is the user leaving the
+    // popover, so a focus-loss with nowhere-to-go must not close it —
+    // otherwise Connect closes its own popover mid-request and the sticky
+    // inline errors (MFA / target disabled) can never be seen.
+    it('stays open when focus is lost with no related target (disabled Connect, not a real Tab-away)', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      await screen.findByTestId('proxy-popover-bridge-select');
+      const connectButton = screen.getByTestId('proxy-popover-connect');
+      connectButton.focus();
+
+      fireEvent.focusOut(connectButton, { relatedTarget: null });
+
+      expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
+    });
+
+    // Companion to the case above: once the failed request settles and
+    // Connect re-enables, the browser has already dropped focus to <body>
+    // (disabled controls can't hold it). Put it back on Connect so a
+    // keyboard user who pressed Enter can read the toast and retry in place.
+    it('returns focus to Connect after a failed connect', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]))
+        .mockResolvedValueOnce(makeJsonResponse({ error: 'Agent is not connected' }, false, 400));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-1'));
+      const connectButton = screen.getByTestId('proxy-popover-connect');
+      connectButton.focus();
+      // jsdom never drops focus off a disabled control the way Chrome does,
+      // so assert the explicit refocus call rather than activeElement.
+      const focusSpy = vi.spyOn(connectButton, 'focus');
+      fireEvent.click(connectButton);
+      fireEvent.focusOut(connectButton, { relatedTarget: null });
+
+      await waitFor(() => expect(connectButton).not.toBeDisabled());
+      expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
+      await waitFor(() => expect(focusSpy).toHaveBeenCalled());
+    });
+
     // #reviewFix8: announce() set the same string twice in a row — React
     // bails out on the no-op state update, so the live region's DOM text
     // never actually changes and a screen reader never hears the repeat.
