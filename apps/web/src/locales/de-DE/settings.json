@@ -2198,6 +2198,459 @@
       "reliability": {
         "caption": "Vorgänge im Act-Modus, nur zur Ansicht: Sie sind keine Richtlinienschlüssel und können daher nie vorab genehmigt werden."
       }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Warnungen und Überwachung",
+          "description": "Warnungen, Warnregeln sowie Verfügbarkeits- und Dienstmonitore für die gesamte Flotte anzeigen und verwalten."
+        },
+        "services_startup": {
+          "label": "Dienste und Autostartelemente",
+          "description": "Dienste auf einem Gerät starten, stoppen oder neu starten; Autostartelemente aktivieren oder deaktivieren."
+        },
+        "files_disk": {
+          "label": "Dateien und Speicherplatz",
+          "description": "Dateien und Ordner lesen, schreiben oder löschen; Speicherplatz auf einem Gerät analysieren und bereinigen."
+        },
+        "scripts_commands": {
+          "label": "Skripte und Befehle",
+          "description": "Skripte, Playbooks und Systembefehle ausführen und die dabei betroffenen Prozesse, geplanten Aufgaben und Registrierungseinträge verwalten."
+        },
+        "tickets": {
+          "label": "Helpdesk-Tickets",
+          "description": "Helpdesk-Tickets prüfen und Antworten oder nächste Schritte vorschlagen."
+        },
+        "patching_software": {
+          "label": "Patches und Software",
+          "description": "Patches genehmigen, installieren oder zurücksetzen, Rollouts ausführen und Software- sowie Update-Ring-Richtlinien verwalten."
+        },
+        "security_response": {
+          "label": "Sicherheitsreaktion",
+          "description": "Bedrohungen untersuchen und darauf reagieren: Geräte isolieren, Sicherheitsscans ausführen und CIS-Korrekturen anwenden."
+        },
+        "backup_recovery": {
+          "label": "Backup und Wiederherstellung",
+          "description": "Backup-Jobs konfigurieren und die Wiederherstellung von Geräten und Workloads verwalten."
+        },
+        "config_policies": {
+          "label": "Konfigurationsrichtlinien",
+          "description": "Konfigurations-, DNS-, Browser- und Peripherierichtlinien erstellen, zuweisen und prüfen."
+        },
+        "network": {
+          "label": "Netzwerk",
+          "description": "Geräte im Netzwerk erkennen und netzwerkbezogene Baselines verwalten."
+        },
+        "remote_access": {
+          "label": "Fernzugriff",
+          "description": "Den Bildschirm eines Geräts anzeigen und die Fernsteuerung von Maus und Tastatur übernehmen."
+        },
+        "endpoint_agent": {
+          "label": "Endpoint-Agent",
+          "description": "Den Breeze-Agenten selbst prüfen und verwalten: Protokolle, Diagnosen und Protokollstufen."
+        },
+        "automations_reports": {
+          "label": "Automatisierungen und Berichte",
+          "description": "Automatisierungen ausführen, Berichte erstellen und Gruppen, Tags sowie gespeicherte Filter verwalten."
+        },
+        "business": {
+          "label": "Geschäftsvorgänge",
+          "description": "Angebote, Rechnungen, Verträge und den Produktkatalog verwalten."
+        },
+        "tenancy": {
+          "label": "Mandantenverwaltung",
+          "description": "Organisationen, Standorte und mandantenübergreifende Integrationen verwalten."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Startleistungsanalyse",
+        "analyze_disk_usage": "Speicherplatzanalyse",
+        "analyze_fleet_metrics": "Flottenmetriken-Analyse",
+        "analyze_metrics": "Gerätemetriken-Analyse",
+        "analyze_screen": "Bildschirmanalyse",
+        "apply_cis_remediation": "CIS-Korrektur",
+        "apply_configuration_policy": "Konfigurationsrichtlinie anwenden",
+        "cancel_script_execution": "Skriptausführung abbrechen",
+        "capture_agent_pprof": "Agent-Diagnosedaten erfassen",
+        "computer_control": "Fernsteuerung",
+        "configuration_policy_compliance": "Konformität der Konfigurationsrichtlinie",
+        "delete_tenant": "Organisation löschen",
+        "detect_log_correlations": "Protokollkorrelationen erkennen",
+        "disk_cleanup": "Datenträgerbereinigung",
+        "execute_command": "Systembefehl ausführen",
+        "execute_playbook": "Playbook ausführen",
+        "file_operations": "Dateivorgänge",
+        "generate_report": "Berichte",
+        "get_active_users": "Aktive Benutzer",
+        "get_catalog_item": "Katalogeintrag nachschlagen",
+        "get_cis_compliance": "CIS-Konformitätsbericht",
+        "get_cis_device_report": "CIS-Gerätebericht",
+        "get_configuration_policy": "Details zur Konfigurationsrichtlinie",
+        "get_contract": "Vertragsdetails",
+        "get_device_context": "Gerätekontext",
+        "get_device_details": "Gerätedetails",
+        "get_device_vulnerabilities": "Geräteschwachstellen",
+        "get_dns_security": "DNS-Sicherheitsaktivität",
+        "get_effective_configuration": "Effektive Konfiguration",
+        "get_fleet_findings": "Flottenbefunde",
+        "get_fleet_health": "Flottenzustand",
+        "get_fleet_status": "Flottenstatus",
+        "get_huntress_incidents": "Huntress-Vorfälle",
+        "get_huntress_status": "Huntress-Status",
+        "get_invoice": "Rechnungsdetails",
+        "get_log_trends": "Protokolltrends",
+        "get_playbook_history": "Playbook-Ausführungsverlauf",
+        "get_quote": "Angebotsdetails",
+        "get_s1_status": "SentinelOne-Status",
+        "get_s1_threats": "SentinelOne-Bedrohungen",
+        "get_script_details": "Skriptdetails",
+        "get_script_execution": "Details zur Skriptausführung",
+        "get_script_execution_history": "Skriptausführungsverlauf",
+        "get_security_posture": "Sicherheitslage",
+        "get_service_monitoring_status": "Dienstüberwachungsstatus",
+        "get_user_experience_metrics": "Nutzererfahrungsmetriken",
+        "get_vulnerability_report": "Schwachstellenbericht",
+        "list_configuration_policies": "Liste der Konfigurationsrichtlinien",
+        "list_contracts": "Vertragsliste",
+        "list_invoices": "Rechnungsliste",
+        "list_organizations": "Organisationsliste",
+        "list_playbooks": "Playbook-Liste",
+        "list_quotes": "Angebotsliste",
+        "list_script_templates": "Skriptvorlagenliste",
+        "list_scripts": "Skriptliste",
+        "lookup_distributor_product": "Distributorprodukt nachschlagen",
+        "m365_query_groups": "Microsoft 365-Gruppen",
+        "m365_query_intune_devices": "Microsoft Intune-Geräte",
+        "m365_query_org": "Microsoft 365-Organisation",
+        "m365_query_signins": "Microsoft 365-Anmeldungen",
+        "m365_query_sites": "Microsoft 365-Websites",
+        "m365_query_users": "Microsoft 365-Benutzer",
+        "manage_alert_rules": "Warnregeln verwalten",
+        "manage_alerts": "Warnungen verwalten",
+        "manage_automations": "Automatisierungen verwalten",
+        "manage_backup_configs": "Backup-Konfigurationen verwalten",
+        "manage_configuration_policy": "Konfigurationsrichtlinien verwalten",
+        "manage_contracts": "Verträge verwalten",
+        "manage_deployments": "Rollouts verwalten",
+        "manage_dns_policy": "DNS-Richtlinie verwalten",
+        "manage_groups": "Gerätegruppen verwalten",
+        "manage_invoices": "Rechnungen verwalten",
+        "manage_maintenance_windows": "Wartungsfenster verwalten",
+        "manage_monitors": "Verfügbarkeitsmonitore verwalten",
+        "manage_organizations": "Organisationen verwalten",
+        "manage_patches": "Patches verwalten",
+        "manage_peripheral_policies": "Peripherierichtlinien verwalten",
+        "manage_policy_feature_link": "Richtlinie mit Funktion verknüpfen",
+        "manage_service_monitors": "Dienstmonitore verwalten",
+        "manage_services": "Dienste verwalten",
+        "manage_software_policies": "Softwarerichtlinien verwalten",
+        "manage_startup_items": "Autostartelemente verwalten",
+        "manage_update_rings": "Update-Ringe verwalten",
+        "network_discovery": "Netzwerkerkennung",
+        "preview_configuration_change": "Konfigurationsänderung als Vorschau anzeigen",
+        "query_audit_log": "Audit-Protokoll abfragen",
+        "query_change_log": "Änderungsprotokoll abfragen",
+        "query_devices": "Geräte abfragen",
+        "query_monitors": "Monitore abfragen",
+        "remediate_vulnerability": "Schwachstelle beheben",
+        "remove_configuration_policy_assignment": "Zuweisung einer Konfigurationsrichtlinie entfernen",
+        "resolve_device_context": "Gerät auflösen",
+        "run_script": "Skript ausführen",
+        "s1_isolate_device": "SentinelOne: Gerät isolieren",
+        "s1_threat_action": "SentinelOne-Bedrohungsaktionen",
+        "search_agent_logs": "Agent-Protokolle durchsuchen",
+        "search_catalog": "Produktkatalog durchsuchen",
+        "search_logs": "Geräteprotokolle durchsuchen",
+        "security_scan": "Sicherheitsscan",
+        "set_agent_log_level": "Agent-Protokollstufe festlegen",
+        "set_device_context": "Gerätekontext festlegen",
+        "sync_huntress_data": "Huntress-Daten synchronisieren",
+        "take_screenshot": "Screenshot aufnehmen"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "CIS-Korrektur anwenden",
+          "rollback": "CIS-Korrektur zurücksetzen"
+        },
+        "computer_control": {
+          "double_click": "Doppelklick",
+          "key": "Eine Taste drücken",
+          "left_click": "Linksklick",
+          "middle_click": "Mittelklick",
+          "mouse_move": "Maus bewegen",
+          "right_click": "Rechtsklick",
+          "screenshot": "Screenshot aufnehmen",
+          "scroll": "Scrollen",
+          "type": "Text eingeben"
+        },
+        "configuration_policy_compliance": {
+          "status": "Konformitätsstatus",
+          "summary": "Konformitätsübersicht"
+        },
+        "disk_cleanup": {
+          "execute": "Datenträgerbereinigung ausführen",
+          "preview": "Datenträgerbereinigung als Vorschau anzeigen"
+        },
+        "execute_command": {
+          "event_logs_list": "Ereignisprotokolle auflisten",
+          "event_logs_query": "Ereignisprotokolle abfragen",
+          "file_list": "Dateien auflisten",
+          "file_read": "Eine Datei lesen",
+          "kill_process": "Einen Prozess beenden",
+          "list_processes": "Prozesse auflisten",
+          "list_services": "Dienste auflisten",
+          "restart_service": "Einen Dienst neu starten",
+          "start_service": "Einen Dienst starten",
+          "stop_service": "Einen Dienst stoppen"
+        },
+        "file_operations": {
+          "delete": "Eine Datei löschen",
+          "list": "Dateien auflisten",
+          "mkdir": "Einen Ordner erstellen",
+          "read": "Eine Datei lesen",
+          "rename": "Eine Datei umbenennen",
+          "write": "Eine Datei schreiben"
+        },
+        "generate_report": {
+          "create": "Einen Bericht erstellen",
+          "data": "Berichtsdaten",
+          "delete": "Einen Bericht löschen",
+          "download": "Einen Bericht herunterladen",
+          "generate": "Einen Bericht generieren",
+          "history": "Berichtsverlauf",
+          "list": "Berichte auflisten",
+          "update": "Einen Bericht aktualisieren"
+        },
+        "get_dns_security": {
+          "allowed": "Zugelassene DNS-Aktivität",
+          "blocked": "Blockierte DNS-Aktivität",
+          "redirected": "Umgeleitete DNS-Aktivität"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Bekannte Dienste",
+          "results": "Überwachungsergebnisse",
+          "status": "Überwachungsstatus",
+          "summary": "Überwachungsübersicht"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Warnungsübersicht",
+          "create_rule": "Eine Warnregel erstellen",
+          "delete_rule": "Eine Warnregel löschen",
+          "get_rule": "Details zur Warnregel",
+          "list_channels": "Benachrichtigungskanäle auflisten",
+          "list_rules": "Warnregeln auflisten",
+          "list_templates": "Warnregelvorlagen auflisten",
+          "test_rule": "Eine Warnregel testen",
+          "update_rule": "Eine Warnregel aktualisieren"
+        },
+        "manage_alerts": {
+          "acknowledge": "Eine Warnung bestätigen",
+          "get": "Warnungsdetails",
+          "list": "Warnungen auflisten",
+          "resolve": "Eine Warnung auflösen",
+          "suppress": "Eine Warnung unterdrücken"
+        },
+        "manage_automations": {
+          "create": "Eine Automatisierung erstellen",
+          "delete": "Eine Automatisierung löschen",
+          "disable": "Eine Automatisierung deaktivieren",
+          "enable": "Eine Automatisierung aktivieren",
+          "get": "Details zur Automatisierung",
+          "history": "Ausführungsverlauf der Automatisierung",
+          "list": "Automatisierungen auflisten",
+          "run": "Eine Automatisierung ausführen",
+          "update": "Eine Automatisierung aktualisieren"
+        },
+        "manage_backup_configs": {
+          "create": "Eine Backup-Konfiguration erstellen",
+          "get": "Details zur Backup-Konfiguration",
+          "list": "Backup-Konfigurationen auflisten",
+          "update": "Eine Backup-Konfiguration aktualisieren"
+        },
+        "manage_configuration_policy": {
+          "activate": "Eine Konfigurationsrichtlinie aktivieren",
+          "create": "Eine Konfigurationsrichtlinie erstellen",
+          "deactivate": "Eine Konfigurationsrichtlinie deaktivieren",
+          "delete": "Eine Konfigurationsrichtlinie löschen",
+          "update": "Eine Konfigurationsrichtlinie aktualisieren"
+        },
+        "manage_contracts": {
+          "activate": "Einen Vertrag aktivieren",
+          "add_line": "Eine Vertragsposition hinzufügen",
+          "cancel": "Einen Vertrag kündigen",
+          "create_draft": "Einen Vertragsentwurf erstellen",
+          "delete_draft": "Einen Vertragsentwurf löschen",
+          "pause": "Einen Vertrag pausieren",
+          "remove_line": "Eine Vertragsposition entfernen",
+          "resume": "Einen Vertrag fortsetzen",
+          "update": "Einen Vertrag aktualisieren",
+          "update_line": "Eine Vertragsposition aktualisieren"
+        },
+        "manage_deployments": {
+          "cancel": "Einen Rollout abbrechen",
+          "create": "Einen Rollout erstellen",
+          "device_status": "Rollout-Gerätestatus",
+          "get": "Rollout-Details",
+          "list": "Rollouts auflisten",
+          "pause": "Einen Rollout pausieren",
+          "resume": "Einen Rollout fortsetzen",
+          "start": "Einen Rollout starten"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Eine Domain zulassen",
+          "add_block": "Eine Domain blockieren",
+          "remove_allow": "Eine zugelassene Domain entfernen",
+          "remove_block": "Eine blockierte Domain entfernen"
+        },
+        "manage_groups": {
+          "add_devices": "Geräte zu einer Gruppe hinzufügen",
+          "create": "Eine Gerätegruppe erstellen",
+          "delete": "Eine Gerätegruppe löschen",
+          "get": "Details zur Gerätegruppe",
+          "list": "Gerätegruppen auflisten",
+          "membership_log": "Verlauf der Gruppenmitgliedschaft",
+          "preview": "Gruppenmitgliedschaft als Vorschau anzeigen",
+          "remove_devices": "Geräte aus einer Gruppe entfernen",
+          "update": "Eine Gerätegruppe aktualisieren"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Eine Bundle-Position hinzufügen",
+          "add_catalog_line": "Eine Katalogposition hinzufügen",
+          "add_contract_line": "Eine Vertragsposition hinzufügen",
+          "add_manual_line": "Eine manuelle Position hinzufügen",
+          "assemble_from_org": "Eine Rechnung aus einer Organisation zusammenstellen",
+          "assemble_from_ticket": "Eine Rechnung aus einem Ticket zusammenstellen",
+          "create_draft": "Einen Rechnungsentwurf erstellen",
+          "create_pay_link": "Einen Zahlungslink erstellen",
+          "delete_draft": "Einen Rechnungsentwurf löschen",
+          "issue": "Eine Rechnung ausstellen",
+          "record_payment": "Eine Zahlung erfassen",
+          "remove_line": "Eine Rechnungsposition entfernen",
+          "update_header": "Rechnungsdetails aktualisieren",
+          "update_line": "Eine Rechnungsposition aktualisieren",
+          "void": "Eine Rechnung stornieren",
+          "void_payment": "Eine Zahlung stornieren"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Aktive Wartungsfenster",
+          "create": "Ein Wartungsfenster erstellen",
+          "delete": "Ein Wartungsfenster löschen",
+          "get": "Details zum Wartungsfenster",
+          "list": "Wartungsfenster auflisten",
+          "update": "Ein Wartungsfenster aktualisieren"
+        },
+        "manage_monitors": {
+          "create": "Einen Monitor erstellen",
+          "delete": "Einen Monitor löschen",
+          "get": "Monitordetails",
+          "update": "Einen Monitor aktualisieren"
+        },
+        "manage_organizations": {
+          "add_contact": "Einen Organisationskontakt hinzufügen",
+          "create_org": "Eine Organisation erstellen",
+          "create_site": "Einen Standort erstellen",
+          "update_org": "Eine Organisation aktualisieren"
+        },
+        "manage_patches": {
+          "approve": "Einen Patch genehmigen",
+          "bulk_approve": "Patches im großen Umfang genehmigen",
+          "compliance": "Patch-Konformität",
+          "decline": "Einen Patch ablehnen",
+          "defer": "Einen Patch zurückstellen",
+          "install": "Einen Patch installieren",
+          "list": "Patches auflisten",
+          "rollback": "Einen Patch zurücksetzen",
+          "scan": "Nach Patches suchen",
+          "setup_auto_approval": "Automatische Patch-Genehmigung einrichten"
+        },
+        "manage_peripheral_policies": {
+          "create": "Eine Peripherierichtlinie erstellen",
+          "get": "Details zur Peripherierichtlinie",
+          "list": "Peripherierichtlinien auflisten",
+          "update": "Eine Peripherierichtlinie aktualisieren"
+        },
+        "manage_policy_feature_link": {
+          "add": "Richtlinie mit Funktion verknüpfen",
+          "list": "Richtlinienverknüpfungen auflisten",
+          "remove": "Richtlinienverknüpfung entfernen",
+          "update": "Richtlinienverknüpfung aktualisieren"
+        },
+        "manage_service_monitors": {
+          "list": "Dienstmonitore auflisten"
+        },
+        "manage_services": {
+          "list": "Dienste auflisten",
+          "restart": "Einen Dienst neu starten",
+          "start": "Einen Dienst starten",
+          "stop": "Einen Dienst stoppen"
+        },
+        "manage_software_policies": {
+          "create": "Eine Softwarerichtlinie erstellen",
+          "get": "Details zur Softwarerichtlinie",
+          "list": "Softwarerichtlinien auflisten",
+          "update": "Eine Softwarerichtlinie aktualisieren"
+        },
+        "manage_startup_items": {
+          "disable": "Ein Autostartelement deaktivieren",
+          "enable": "Ein Autostartelement aktivieren"
+        },
+        "manage_update_rings": {
+          "create": "Einen Update-Ring erstellen",
+          "get": "Details zum Update-Ring",
+          "list": "Update-Ringe auflisten",
+          "update": "Einen Update-Ring aktualisieren"
+        },
+        "s1_threat_action": {
+          "kill": "Einen Bedrohungsprozess beenden",
+          "quarantine": "Eine Bedrohung isolieren",
+          "rollback": "Eine Bedrohungsaktion zurücksetzen"
+        },
+        "security_scan": {
+          "quarantine": "Eine Bedrohung isolieren",
+          "remove": "Eine Bedrohung entfernen",
+          "restore": "Eine Bedrohung wiederherstellen",
+          "scan": "Einen Sicherheitsscan ausführen",
+          "status": "Sicherheitsscan-Status",
+          "vulnerabilities": "Nach Schwachstellen suchen"
+        }
+      },
+      "alwaysOn": "Immer aktiv: schreibgeschützte Tools",
+      "alwaysOnCount": "{{count}} schreibgeschützte Tools",
+      "recommendedTitle": "Empfohlen für {{kind}}",
+      "recommendedDescription": "Vorgänge, die {{kind}}-Agenten typischerweise benötigen.",
+      "recommendedApply": "Empfehlung übernehmen",
+      "recommendedApplied": "Übernommen",
+      "searchPlaceholder": "Fähigkeiten, Tools oder Aktionen durchsuchen…",
+      "showToolNames": "Tool-Namen anzeigen",
+      "outcome": {
+        "approval_request": "Genehmigungsanfrage",
+        "logged_proposal": "Protokollierter Vorschlag",
+        "unattended": "Läuft unbeaufsichtigt"
+      },
+      "preauthorizable": "Dieser Vorgang kann vorab autorisiert werden, sodass die Genehmigungsanfrage entfällt.",
+      "notInCeiling": "Nicht in der Partner-Baseline",
+      "ceilingNote": "Diese Organisation kann nur Vorgänge aktivieren, die bereits in der Baseline ihres Partners enthalten sind.",
+      "moreCapabilities": "Weitere Fähigkeiten ({{count}})",
+      "moreCapabilitiesHint": "Fähigkeiten, die dieser Agententyp normalerweise nicht benötigt.",
+      "unrecognisedTitle": "Unbekannte oder nicht erreichbare Einträge",
+      "unrecognised": {
+        "unknown_tool": "Dieses Tool existiert nicht mehr.",
+        "unreachable_tool": "Dieses Tool steht Agenten nicht zur Verfügung.",
+        "bare_multi_op": "Dieser Eintrag deckt jede Aktion dieses Tools ab, auch später hinzugefügte. Wählen Sie stattdessen einzelne Vorgänge aus."
+      },
+      "remove": "Entfernen",
+      "operationsCount": "{{selected}} von {{total}} Vorgängen",
+      "summary": {
+        "shadow": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilities}} Fähigkeiten vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
+        "act": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilities}} Fähigkeiten vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
+        "off": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgänge in {{capabilities}} Fähigkeiten betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge)."
+      },
+      "modeLine": {
+        "shadow": "Schattenmodus: Nichts davon läuft von selbst. Genehmigungsanfragen gehen an einen Techniker; risikoarme Änderungen werden als Vorschlag protokolliert und nie ausgeführt.",
+        "act": "Handlungsmodus: Als „Läuft unbeaufsichtigt“ markierte Vorgänge laufen ohne Genehmigung eines Technikers; alles andere sendet weiterhin eine Genehmigungsanfrage oder wird als Vorschlag protokolliert.",
+        "off": "Aus: Dieser Agent läuft nicht, daher hat nichts davon bisher eine Wirkung."
+      },
+      "catalogUnavailable": "Der Tool-Katalog konnte nicht geladen werden. Sie können die Berechtigungsliste weiterhin direkt unten bearbeiten."
     }
   },
   "apiKeyForm": {

@@ -2198,6 +2198,459 @@
       "reliability": {
         "caption": "Eylem kipi işlemleri, salt okunur: bunlar politika anahtarı değildir, bu yüzden asla önceden yetkilendirilemez."
       }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Uyarılar ve izleme",
+          "description": "Filodaki uyarıları, uyarı kurallarını ve çalışma süresi veya hizmet izleyicilerini görüntüleyin ve yönetin."
+        },
+        "services_startup": {
+          "label": "Hizmetler ve başlangıç öğeleri",
+          "description": "Bir cihazda hizmetleri başlatın, durdurun veya yeniden başlatın; başlangıç öğelerini etkinleştirin veya devre dışı bırakın."
+        },
+        "files_disk": {
+          "label": "Dosyalar ve disk",
+          "description": "Bir cihazda dosya ve klasörleri okuyun, yazın veya silin; disk alanını analiz edin ve temizleyin."
+        },
+        "scripts_commands": {
+          "label": "Betikler ve komutlar",
+          "description": "Betikleri, playbook'ları ve sistem komutlarını çalıştırın; bunların etkilediği süreçleri, zamanlanmış görevleri ve kayıt defteri girişlerini yönetin."
+        },
+        "tickets": {
+          "label": "Yardım masası talepleri",
+          "description": "Yardım masası taleplerini inceleyin ve yanıt veya sonraki adımlar önerin."
+        },
+        "patching_software": {
+          "label": "Yama ve yazılım",
+          "description": "Yamaları onaylayın, yükleyin veya geri alın; dağıtımları çalıştırın ve yazılım ile güncelleme halkası politikalarını yönetin."
+        },
+        "security_response": {
+          "label": "Güvenlik müdahalesi",
+          "description": "Tehditleri araştırın ve müdahale edin: cihazları izole edin, güvenlik taramaları çalıştırın ve CIS düzeltmeleri uygulayın."
+        },
+        "backup_recovery": {
+          "label": "Yedekleme ve kurtarma",
+          "description": "Yedekleme işlerini yapılandırın ve cihazlar ile iş yüklerinin kurtarılmasını yönetin."
+        },
+        "config_policies": {
+          "label": "Yapılandırma politikaları",
+          "description": "Yapılandırma, DNS, tarayıcı ve çevre birimi politikalarını oluşturun, atayın ve inceleyin."
+        },
+        "network": {
+          "label": "Ağ",
+          "description": "Ağdaki cihazları keşfedin ve ağ ile ilgili taban çizgilerini yönetin."
+        },
+        "remote_access": {
+          "label": "Uzaktan erişim",
+          "description": "Bir cihazın ekranını görüntüleyin ve fare ile klavyesinin uzaktan denetimini alın."
+        },
+        "endpoint_agent": {
+          "label": "Uç nokta aracısı",
+          "description": "Breeze aracısının kendisini inceleyin ve yönetin: günlükler, tanılama ve günlük düzeyleri."
+        },
+        "automations_reports": {
+          "label": "Otomasyonlar ve raporlar",
+          "description": "Otomasyonları çalıştırın, rapor oluşturun ve grupları, etiketleri ve kayıtlı filtreleri yönetin."
+        },
+        "business": {
+          "label": "İşletme",
+          "description": "Teklifleri, faturaları, sözleşmeleri ve ürün kataloğunu yönetin."
+        },
+        "tenancy": {
+          "label": "Kiracı yönetimi",
+          "description": "Organizasyonları, siteleri ve kiracılar arası entegrasyonları yönetin."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Önyükleme performansı analizi",
+        "analyze_disk_usage": "Disk kullanımı analizi",
+        "analyze_fleet_metrics": "Filo metrikleri analizi",
+        "analyze_metrics": "Cihaz metrikleri analizi",
+        "analyze_screen": "Ekran analizi",
+        "apply_cis_remediation": "CIS düzeltmesi",
+        "apply_configuration_policy": "Yapılandırma politikası uygula",
+        "cancel_script_execution": "Betik çalıştırmayı iptal et",
+        "capture_agent_pprof": "Aracı tanılama verisi yakala",
+        "computer_control": "Uzaktan denetim",
+        "configuration_policy_compliance": "Yapılandırma politikası uyumluluğu",
+        "delete_tenant": "Bir organizasyonu sil",
+        "detect_log_correlations": "Günlük korelasyonlarını tespit et",
+        "disk_cleanup": "Disk temizliği",
+        "execute_command": "Bir sistem komutu çalıştır",
+        "execute_playbook": "Bir playbook çalıştır",
+        "file_operations": "Dosya işlemleri",
+        "generate_report": "Raporlar",
+        "get_active_users": "Etkin kullanıcılar",
+        "get_catalog_item": "Katalog öğesi arama",
+        "get_cis_compliance": "CIS uyumluluk raporu",
+        "get_cis_device_report": "CIS cihaz raporu",
+        "get_configuration_policy": "Yapılandırma politikası ayrıntıları",
+        "get_contract": "Sözleşme ayrıntıları",
+        "get_device_context": "Cihaz bağlamı",
+        "get_device_details": "Cihaz ayrıntıları",
+        "get_device_vulnerabilities": "Cihaz güvenlik açıkları",
+        "get_dns_security": "DNS güvenlik etkinliği",
+        "get_effective_configuration": "Etkin yapılandırma",
+        "get_fleet_findings": "Filo bulguları",
+        "get_fleet_health": "Filo sağlığı",
+        "get_fleet_status": "Filo durumu",
+        "get_huntress_incidents": "Huntress olayları",
+        "get_huntress_status": "Huntress durumu",
+        "get_invoice": "Fatura ayrıntıları",
+        "get_log_trends": "Günlük eğilimleri",
+        "get_playbook_history": "Playbook çalıştırma geçmişi",
+        "get_quote": "Teklif ayrıntıları",
+        "get_s1_status": "SentinelOne durumu",
+        "get_s1_threats": "SentinelOne tehditleri",
+        "get_script_details": "Betik ayrıntıları",
+        "get_script_execution": "Betik çalıştırma ayrıntıları",
+        "get_script_execution_history": "Betik çalıştırma geçmişi",
+        "get_security_posture": "Güvenlik duruşu",
+        "get_service_monitoring_status": "Hizmet izleme durumu",
+        "get_user_experience_metrics": "Kullanıcı deneyimi metrikleri",
+        "get_vulnerability_report": "Güvenlik açığı raporu",
+        "list_configuration_policies": "Yapılandırma politikaları listesi",
+        "list_contracts": "Sözleşme listesi",
+        "list_invoices": "Fatura listesi",
+        "list_organizations": "Organizasyon listesi",
+        "list_playbooks": "Playbook listesi",
+        "list_quotes": "Teklif listesi",
+        "list_script_templates": "Betik şablonları listesi",
+        "list_scripts": "Betik listesi",
+        "lookup_distributor_product": "Distribütör ürünü arama",
+        "m365_query_groups": "Microsoft 365 grupları",
+        "m365_query_intune_devices": "Microsoft Intune cihazları",
+        "m365_query_org": "Microsoft 365 organizasyonu",
+        "m365_query_signins": "Microsoft 365 oturum açmaları",
+        "m365_query_sites": "Microsoft 365 siteleri",
+        "m365_query_users": "Microsoft 365 kullanıcıları",
+        "manage_alert_rules": "Uyarı kurallarını yönet",
+        "manage_alerts": "Uyarıları yönet",
+        "manage_automations": "Otomasyonları yönet",
+        "manage_backup_configs": "Yedekleme yapılandırmalarını yönet",
+        "manage_configuration_policy": "Yapılandırma politikalarını yönet",
+        "manage_contracts": "Sözleşmeleri yönet",
+        "manage_deployments": "Dağıtımları yönet",
+        "manage_dns_policy": "DNS politikasını yönet",
+        "manage_groups": "Cihaz gruplarını yönet",
+        "manage_invoices": "Faturaları yönet",
+        "manage_maintenance_windows": "Bakım pencerelerini yönet",
+        "manage_monitors": "Çalışma süresi izleyicilerini yönet",
+        "manage_organizations": "Organizasyonları yönet",
+        "manage_patches": "Yamaları yönet",
+        "manage_peripheral_policies": "Çevre birimi politikalarını yönet",
+        "manage_policy_feature_link": "Bir politikayı bir özelliğe bağla",
+        "manage_service_monitors": "Hizmet izleyicilerini yönet",
+        "manage_services": "Hizmetleri yönet",
+        "manage_software_policies": "Yazılım politikalarını yönet",
+        "manage_startup_items": "Başlangıç öğelerini yönet",
+        "manage_update_rings": "Güncelleme halkalarını yönet",
+        "network_discovery": "Ağ keşfi",
+        "preview_configuration_change": "Bir yapılandırma değişikliğini önizle",
+        "query_audit_log": "Denetim günlüğünü sorgula",
+        "query_change_log": "Değişiklik günlüğünü sorgula",
+        "query_devices": "Cihazları sorgula",
+        "query_monitors": "İzleyicileri sorgula",
+        "remediate_vulnerability": "Bir güvenlik açığını düzelt",
+        "remove_configuration_policy_assignment": "Bir yapılandırma politikası atamasını kaldır",
+        "resolve_device_context": "Bir cihazı çözümle",
+        "run_script": "Bir betik çalıştır",
+        "s1_isolate_device": "SentinelOne: cihazı izole et",
+        "s1_threat_action": "SentinelOne tehdit eylemleri",
+        "search_agent_logs": "Aracı günlüklerinde ara",
+        "search_catalog": "Ürün kataloğunda ara",
+        "search_logs": "Cihaz günlüklerinde ara",
+        "security_scan": "Güvenlik taraması",
+        "set_agent_log_level": "Aracı günlük düzeyini ayarla",
+        "set_device_context": "Cihaz bağlamını ayarla",
+        "sync_huntress_data": "Huntress verilerini eşitle",
+        "take_screenshot": "Ekran görüntüsü al"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "CIS düzeltmesini uygula",
+          "rollback": "CIS düzeltmesini geri al"
+        },
+        "computer_control": {
+          "double_click": "Çift tıkla",
+          "key": "Bir tuşa bas",
+          "left_click": "Sol tıkla",
+          "middle_click": "Orta tıkla",
+          "mouse_move": "Fareyi hareket ettir",
+          "right_click": "Sağ tıkla",
+          "screenshot": "Ekran görüntüsü al",
+          "scroll": "Kaydır",
+          "type": "Metin yaz"
+        },
+        "configuration_policy_compliance": {
+          "status": "Uyumluluk durumu",
+          "summary": "Uyumluluk özeti"
+        },
+        "disk_cleanup": {
+          "execute": "Disk temizliğini çalıştır",
+          "preview": "Disk temizliğini önizle"
+        },
+        "execute_command": {
+          "event_logs_list": "Olay günlüklerini listele",
+          "event_logs_query": "Olay günlüklerini sorgula",
+          "file_list": "Dosyaları listele",
+          "file_read": "Bir dosyayı oku",
+          "kill_process": "Bir süreci sonlandır",
+          "list_processes": "Süreçleri listele",
+          "list_services": "Hizmetleri listele",
+          "restart_service": "Hizmeti yeniden başlat",
+          "start_service": "Hizmeti başlat",
+          "stop_service": "Hizmeti durdur"
+        },
+        "file_operations": {
+          "delete": "Bir dosyayı sil",
+          "list": "Dosyaları listele",
+          "mkdir": "Bir klasör oluştur",
+          "read": "Bir dosyayı oku",
+          "rename": "Bir dosyayı yeniden adlandır",
+          "write": "Bir dosyaya yaz"
+        },
+        "generate_report": {
+          "create": "Bir rapor oluştur",
+          "data": "Rapor verileri",
+          "delete": "Bir raporu sil",
+          "download": "Bir raporu indir",
+          "generate": "Bir rapor üret",
+          "history": "Rapor geçmişi",
+          "list": "Raporları listele",
+          "update": "Bir raporu güncelle"
+        },
+        "get_dns_security": {
+          "allowed": "İzin verilen DNS etkinliği",
+          "blocked": "Engellenen DNS etkinliği",
+          "redirected": "Yönlendirilen DNS etkinliği"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Bilinen hizmetler",
+          "results": "İzleme sonuçları",
+          "status": "İzleme durumu",
+          "summary": "İzleme özeti"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Uyarı özeti",
+          "create_rule": "Bir uyarı kuralı oluştur",
+          "delete_rule": "Bir uyarı kuralını sil",
+          "get_rule": "Uyarı kuralı ayrıntıları",
+          "list_channels": "Bildirim kanallarını listele",
+          "list_rules": "Uyarı kurallarını listele",
+          "list_templates": "Uyarı kuralı şablonlarını listele",
+          "test_rule": "Bir uyarı kuralını test et",
+          "update_rule": "Bir uyarı kuralını güncelle"
+        },
+        "manage_alerts": {
+          "acknowledge": "Bir uyarıyı onayla",
+          "get": "Uyarı ayrıntıları",
+          "list": "Uyarıları listele",
+          "resolve": "Bir uyarıyı çözümle",
+          "suppress": "Bir uyarıyı bastır"
+        },
+        "manage_automations": {
+          "create": "Bir otomasyon oluştur",
+          "delete": "Bir otomasyonu sil",
+          "disable": "Bir otomasyonu devre dışı bırak",
+          "enable": "Bir otomasyonu etkinleştir",
+          "get": "Otomasyon ayrıntıları",
+          "history": "Otomasyon çalıştırma geçmişi",
+          "list": "Otomasyonları listele",
+          "run": "Bir otomasyonu çalıştır",
+          "update": "Bir otomasyonu güncelle"
+        },
+        "manage_backup_configs": {
+          "create": "Bir yedekleme yapılandırması oluştur",
+          "get": "Yedekleme yapılandırması ayrıntıları",
+          "list": "Yedekleme yapılandırmalarını listele",
+          "update": "Bir yedekleme yapılandırmasını güncelle"
+        },
+        "manage_configuration_policy": {
+          "activate": "Bir yapılandırma politikasını etkinleştir",
+          "create": "Bir yapılandırma politikası oluştur",
+          "deactivate": "Bir yapılandırma politikasını devre dışı bırak",
+          "delete": "Bir yapılandırma politikasını sil",
+          "update": "Bir yapılandırma politikasını güncelle"
+        },
+        "manage_contracts": {
+          "activate": "Bir sözleşmeyi etkinleştir",
+          "add_line": "Bir sözleşme kalemi ekle",
+          "cancel": "Bir sözleşmeyi iptal et",
+          "create_draft": "Bir sözleşme taslağı oluştur",
+          "delete_draft": "Bir sözleşme taslağını sil",
+          "pause": "Bir sözleşmeyi duraklat",
+          "remove_line": "Bir sözleşme kalemini kaldır",
+          "resume": "Bir sözleşmeyi sürdür",
+          "update": "Bir sözleşmeyi güncelle",
+          "update_line": "Bir sözleşme kalemini güncelle"
+        },
+        "manage_deployments": {
+          "cancel": "Bir dağıtımı iptal et",
+          "create": "Bir dağıtım oluştur",
+          "device_status": "Dağıtım cihaz durumu",
+          "get": "Dağıtım ayrıntıları",
+          "list": "Dağıtımları listele",
+          "pause": "Bir dağıtımı duraklat",
+          "resume": "Bir dağıtımı sürdür",
+          "start": "Bir dağıtımı başlat"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Bir alan adına izin ver",
+          "add_block": "Bir alan adını engelle",
+          "remove_allow": "İzin verilen bir alan adını kaldır",
+          "remove_block": "Engellenen bir alan adını kaldır"
+        },
+        "manage_groups": {
+          "add_devices": "Bir gruba cihaz ekle",
+          "create": "Bir cihaz grubu oluştur",
+          "delete": "Bir cihaz grubunu sil",
+          "get": "Cihaz grubu ayrıntıları",
+          "list": "Cihaz gruplarını listele",
+          "membership_log": "Grup üyeliği geçmişi",
+          "preview": "Grup üyeliğini önizle",
+          "remove_devices": "Bir gruptan cihaz kaldır",
+          "update": "Bir cihaz grubunu güncelle"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Bir paket kalemi ekle",
+          "add_catalog_line": "Bir katalog kalemi ekle",
+          "add_contract_line": "Bir sözleşme kalemi ekle",
+          "add_manual_line": "Bir manuel kalem ekle",
+          "assemble_from_org": "Bir organizasyondan fatura oluştur",
+          "assemble_from_ticket": "Bir talepten fatura oluştur",
+          "create_draft": "Bir fatura taslağı oluştur",
+          "create_pay_link": "Bir ödeme bağlantısı oluştur",
+          "delete_draft": "Bir fatura taslağını sil",
+          "issue": "Bir fatura düzenle",
+          "record_payment": "Bir ödemeyi kaydet",
+          "remove_line": "Bir fatura kalemini kaldır",
+          "update_header": "Fatura ayrıntılarını güncelle",
+          "update_line": "Bir fatura kalemini güncelle",
+          "void": "Bir faturayı iptal et",
+          "void_payment": "Bir ödemeyi iptal et"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Etkin bakım pencereleri",
+          "create": "Bir bakım penceresi oluştur",
+          "delete": "Bir bakım penceresini sil",
+          "get": "Bakım penceresi ayrıntıları",
+          "list": "Bakım pencerelerini listele",
+          "update": "Bir bakım penceresini güncelle"
+        },
+        "manage_monitors": {
+          "create": "Bir izleyici oluştur",
+          "delete": "Bir izleyiciyi sil",
+          "get": "İzleyici ayrıntıları",
+          "update": "Bir izleyiciyi güncelle"
+        },
+        "manage_organizations": {
+          "add_contact": "Bir organizasyon kişisi ekle",
+          "create_org": "Bir organizasyon oluştur",
+          "create_site": "Bir site oluştur",
+          "update_org": "Bir organizasyonu güncelle"
+        },
+        "manage_patches": {
+          "approve": "Bir yamayı onayla",
+          "bulk_approve": "Yamaları toplu onayla",
+          "compliance": "Yama uyumluluğu",
+          "decline": "Bir yamayı reddet",
+          "defer": "Bir yamayı ertele",
+          "install": "Bir yama yükle",
+          "list": "Yamaları listele",
+          "rollback": "Bir yamayı geri al",
+          "scan": "Yama tara",
+          "setup_auto_approval": "Otomatik yama onayını ayarla"
+        },
+        "manage_peripheral_policies": {
+          "create": "Bir çevre birimi politikası oluştur",
+          "get": "Çevre birimi politikası ayrıntıları",
+          "list": "Çevre birimi politikalarını listele",
+          "update": "Bir çevre birimi politikasını güncelle"
+        },
+        "manage_policy_feature_link": {
+          "add": "Bir politikayı bir özelliğe bağla",
+          "list": "Politika bağlantılarını listele",
+          "remove": "Bir politika bağlantısını kaldır",
+          "update": "Bir politika bağlantısını güncelle"
+        },
+        "manage_service_monitors": {
+          "list": "Hizmet izleyicilerini listele"
+        },
+        "manage_services": {
+          "list": "Hizmetleri listele",
+          "restart": "Hizmeti yeniden başlat",
+          "start": "Hizmeti başlat",
+          "stop": "Hizmeti durdur"
+        },
+        "manage_software_policies": {
+          "create": "Bir yazılım politikası oluştur",
+          "get": "Yazılım politikası ayrıntıları",
+          "list": "Yazılım politikalarını listele",
+          "update": "Bir yazılım politikasını güncelle"
+        },
+        "manage_startup_items": {
+          "disable": "Başlangıç öğesini devre dışı bırak",
+          "enable": "Başlangıç öğesini etkinleştir"
+        },
+        "manage_update_rings": {
+          "create": "Bir güncelleme halkası oluştur",
+          "get": "Güncelleme halkası ayrıntıları",
+          "list": "Güncelleme halkalarını listele",
+          "update": "Bir güncelleme halkasını güncelle"
+        },
+        "s1_threat_action": {
+          "kill": "Tehdit sürecini sonlandır",
+          "quarantine": "Tehdidi karantinaya al",
+          "rollback": "Bir tehdit eylemini geri al"
+        },
+        "security_scan": {
+          "quarantine": "Tehdidi karantinaya al",
+          "remove": "Tehdidi kaldır",
+          "restore": "Tehdidi geri yükle",
+          "scan": "Bir güvenlik taraması çalıştır",
+          "status": "Güvenlik taraması durumu",
+          "vulnerabilities": "Güvenlik açığı tara"
+        }
+      },
+      "alwaysOn": "Her zaman açık: salt okunur araçlar",
+      "alwaysOnCount": "{{count}} salt okunur araç",
+      "recommendedTitle": "{{kind}} için önerilen",
+      "recommendedDescription": "{{kind}} aracılarının genellikle ihtiyaç duyduğu işlemler.",
+      "recommendedApply": "Öneriyi uygula",
+      "recommendedApplied": "Uygulandı",
+      "searchPlaceholder": "Yetenekleri, araçları veya eylemleri ara…",
+      "showToolNames": "Araç adlarını göster",
+      "outcome": {
+        "approval_request": "Onay isteği",
+        "logged_proposal": "Kayıtlı öneri",
+        "unattended": "Gözetimsiz çalışır"
+      },
+      "preauthorizable": "Bu işlem, onay isteğini atlayacak şekilde önceden yetkilendirilebilir.",
+      "notInCeiling": "Partner taban çizgisinde yok",
+      "ceilingNote": "Bu organizasyon yalnızca partnerinin taban çizgisinde zaten bulunan işlemleri etkinleştirebilir.",
+      "moreCapabilities": "Diğer yetenekler ({{count}})",
+      "moreCapabilitiesHint": "Bu aracı türünün genellikle ihtiyaç duymadığı yetenekler.",
+      "unrecognisedTitle": "Tanınmayan veya erişilemeyen girişler",
+      "unrecognised": {
+        "unknown_tool": "Bu araç artık mevcut değil.",
+        "unreachable_tool": "Bu araç aracılar için kullanılamaz.",
+        "bare_multi_op": "Bu giriş, daha sonra eklenenler dahil bu aracın tüm eylemlerini kapsar. Bunun yerine tek tek işlemleri seçin."
+      },
+      "remove": "Kaldır",
+      "operationsCount": "{{total}} işlemden {{selected}} tanesi",
+      "summary": {
+        "shadow": "Cihaz, uyarı ve filo verilerini okur; {{capabilities}} yetenekte {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "act": "Cihaz, uyarı ve filo verilerini okur; {{capabilities}} yetenekte {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
+        "off": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilities}} yetenekte {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri)."
+      },
+      "modeLine": {
+        "shadow": "Gölge modu: aşağıdakilerin hiçbiri kendiliğinden çalışmaz. Onay istekleri bir teknisyene gider; düşük riskli değişiklikler öneri olarak kaydedilir ve hiçbir zaman yürütülmez.",
+        "act": "Eylem modu: “Gözetimsiz çalışır” olarak işaretlenen işlemler bir teknisyenin onayı olmadan çalışır; geri kalan her şey yine de bir onay isteği gönderir veya öneri olarak kaydedilir.",
+        "off": "Kapalı: bu aracı çalışmıyor, bu yüzden aşağıdakilerin henüz hiçbir etkisi yok."
+      },
+      "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz."
     }
   },
   "apiKeyForm": {
