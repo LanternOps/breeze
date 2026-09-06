@@ -66,9 +66,14 @@ function DeviceRow({ device, onPress }: { device: Device; onPress: () => void })
           {device.name}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
-          {[device.os ? osLabel(device.os) : null, device.siteName]
+          {/* #5104: org · site identifies which of a partner's orgs this
+             * device belongs to on a multi-org MSP tenant — OS is still one
+             * tap away on Device Details. Falls back gracefully: either
+             * field (or both) can be absent depending on what the backend
+             * resolved for this device. */}
+          {[device.organizationName, device.siteName]
             .filter(Boolean)
-            .join(' · ') || '—'}
+            .join(' · ') || (device.os ? osLabel(device.os) : '—')}
         </Text>
       </View>
       <Text style={styles.seen}>

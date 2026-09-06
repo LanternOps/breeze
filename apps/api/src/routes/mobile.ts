@@ -13,6 +13,7 @@ import {
   deviceCommands,
   devices,
   mobileDevices,
+  organizations,
   sites
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -1258,9 +1259,15 @@ mobileRoutes.get(
         displayName: devices.displayName,
         osType: devices.osType,
         status: devices.status,
-        lastSeenAt: devices.lastSeenAt
+        lastSeenAt: devices.lastSeenAt,
+        // #5104: the mobile row meta line needs the org name on a
+        // multi-org (partner-scoped) tenant — leftJoin so a device whose
+        // org lookup somehow fails (should not happen under FK integrity)
+        // degrades to a null name instead of dropping the row.
+        organizationName: organizations.name
       })
       .from(devices)
+      .leftJoin(organizations, eq(devices.orgId, organizations.id))
       .where(whereCondition)
       .orderBy(...(isCursorMode ? [asc(devices.hostname), asc(devices.id)] : [desc(devices.lastSeenAt), desc(devices.id)]))
       .limit(fetchLimit)
