@@ -6,12 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => {
   const limit = vi.fn();
   const returning = vi.fn();
+  // `from()` answers BOTH chain shapes in this module: the hot-path
+  // `selectGlobalRow` goes straight to `.where()`, while `readAiKillStateRow`
+  // joins `users` first to resolve the actor's UUID (#4931).
+  const leftJoin = vi.fn(() => ({ where: () => ({ limit }) }));
   return {
     db: {
-      select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
+      select: () => ({ from: () => ({ leftJoin, where: () => ({ limit }) }) }),
       update: () => ({ set: () => ({ where: () => ({ returning }) }) }),
       __limit: limit,
       __returning: returning,
+      __leftJoin: leftJoin,
     },
     getCurrentDbAccessContext: vi.fn(() => undefined),
     runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
@@ -37,10 +42,16 @@ async function getReturningMock() {
   return (mod.db as unknown as { __returning: ReturnType<typeof vi.fn> }).__returning;
 }
 
+async function getLeftJoinMock() {
+  const mod = await import('../db');
+  return (mod.db as unknown as { __leftJoin: ReturnType<typeof vi.fn> }).__leftJoin;
+}
+
 beforeEach(async () => {
   _resetAiKillStateCacheForTest();
   (await getLimitMock()).mockReset();
   (await getReturningMock()).mockReset();
+  (await getLeftJoinMock()).mockClear();
 });
 
 afterEach(() => {
@@ -68,6 +79,19 @@ describe('readAiKillState', () => {
 
     expect(await readAiKillState()).toEqual({ killed: true, epoch: 3 });
     expect(getCachedAiKillStateSnapshot()).toEqual({ killed: true, epoch: 3 });
+  });
+
+  it('stays join-free: the actor resolution belongs to the admin read only (#4931)', async () => {
+    // readAiKillState is the guardrail hot path (every run admission and every
+    // act-mode dispatch). Resolving a display name there would add a users join
+    // to a query whose only job is killed/epoch — and a deleted actor must
+    // never be able to affect the kill state it returns.
+    const limit = await getLimitMock();
+    const leftJoin = await getLeftJoinMock();
+    limit.mockResolvedValueOnce([{ killed: true, epoch: 3 }]);
+
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 3 });
+    expect(leftJoin).not.toHaveBeenCalled();
   });
 
   it('fails closed on a DB read error: caches { killed: true, epoch: -1 }, never throws', async () => {
@@ -151,6 +175,58 @@ describe('readAiKillStateRow', () => {
     // The admin read is a side-channel: the guardrail cache must stay at its
     // default until readAiKillState() itself runs.
     expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+  });
+
+  it('resolves the actor UUID to a name + email in the same system-scoped read (#4931)', async () => {
+    // The admin page used to render `updatedBy` raw, so the one platform-wide
+    // control whose audit trail justifies its mandatory reason field showed a
+    // UUID as its actor. The resolution rides the existing system-scoped read
+    // (one round trip, and system scope is what makes an actor from ANOTHER
+    // partner's user row visible — `breeze_has_partner_access` short-circuits).
+    const limit = await getLimitMock();
+    const leftJoin = await getLeftJoinMock();
+    limit.mockResolvedValueOnce([{
+      killed: true,
+      epoch: 7,
+      reason: 'incident 42',
+      updatedBy: 'admin-1',
+      updatedByName: 'Ada Lovelace',
+      updatedByEmail: 'ada@breeze.test',
+      updatedAt: new Date('2026-08-28T12:00:00Z'),
+    }]);
+
+    await expect(readAiKillStateRow()).resolves.toMatchObject({
+      updatedBy: 'admin-1',
+      updatedByName: 'Ada Lovelace',
+      updatedByEmail: 'ada@breeze.test',
+    });
+    expect(leftJoin).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes an unresolvable actor through as nulls — no synthesized fallback (#4931)', async () => {
+    // A deleted user, or a row flipped by ops via SQL (updated_by left NULL),
+    // must still return the kill state: the join is a LEFT one, and the service
+    // does not invent a display string. Falling back to the raw UUID is the
+    // UI's job (AiKillSwitch.tsx), which keeps "unresolved" distinguishable
+    // from "a user actually named like a UUID" for every other consumer.
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{
+      killed: false,
+      epoch: 2,
+      reason: 'sql fallback flip',
+      updatedBy: 'admin-gone',
+      updatedByName: null,
+      updatedByEmail: null,
+      updatedAt: new Date('2026-08-28T12:00:00Z'),
+    }]);
+
+    await expect(readAiKillStateRow()).resolves.toMatchObject({
+      killed: false,
+      epoch: 2,
+      updatedBy: 'admin-gone',
+      updatedByName: null,
+      updatedByEmail: null,
+    });
   });
 
   it('escapes a request-scoped ambient context via runOutsideDbContext (load-bearing)', async () => {

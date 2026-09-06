@@ -36,7 +36,9 @@ Platform admins can flip the switch from **Administration → AI Kill Switch**
 in the web console (`/admin/ai-kill-switch`), backed by the same API as Path
 1a below. The page shows the current state, epoch, and last reason/provenance,
 and requires a reason on every flip (surfaced as a friendly prompt if MFA
-step-up is needed).
+step-up is needed). "Last changed by" shows the actor's **name** (email if they
+have none) with the raw user UUID in a tooltip; a flip made through the SQL
+fallback below leaves `updated_by` NULL, so the field reads `—`.
 
 > **Production caveat (flagged 2026-08-26): production currently has ZERO
 > platform admins in both regions**, so all `/admin/*` surfaces — including

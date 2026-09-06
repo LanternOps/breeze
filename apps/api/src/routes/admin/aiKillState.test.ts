@@ -79,6 +79,8 @@ const ROW = {
   epoch: 4,
   reason: 'restored after incident 123',
   updatedBy: 'admin-0',
+  updatedByName: 'Ada Lovelace',
+  updatedByEmail: 'ada@breeze.test',
   updatedAt: new Date('2026-08-28T12:00:00Z'),
 };
 
@@ -139,10 +141,42 @@ describe('admin AI kill-state routes', () => {
           epoch: 4,
           reason: 'restored after incident 123',
           updatedBy: 'admin-0',
+          updatedByName: 'Ada Lovelace',
+          updatedByEmail: 'ada@breeze.test',
           updatedAt: '2026-08-28T12:00:00.000Z',
         },
       });
       expect(readRowMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps updatedBy alongside the resolved actor name (#4931)', async () => {
+      // The UI shows the name and puts the UUID in a tooltip, so both must
+      // survive: dropping `updatedBy` would break the existing client and
+      // leave nothing to disambiguate two admins with the same display name.
+      const res = await buildApp(platformAdmin).request('/admin/ai-kill-state');
+      const { data } = await res.json() as { data: Record<string, unknown> };
+      expect(data.updatedBy).toBe('admin-0');
+      expect(data.updatedByName).toBe('Ada Lovelace');
+      expect(data.updatedByEmail).toBe('ada@breeze.test');
+    });
+
+    it('returns null name/email when the actor no longer resolves (#4931)', async () => {
+      // A deleted user, or a row flipped by ops through the SQL fallback in
+      // docs/deploy/ai-kill-switch.md (updated_by NULL). The route must still
+      // 200 with the kill state — never 500, never a synthesized display name.
+      readRowMock.mockResolvedValue({
+        ...ROW,
+        updatedBy: 'admin-gone',
+        updatedByName: null,
+        updatedByEmail: null,
+      });
+
+      const res = await buildApp(platformAdmin).request('/admin/ai-kill-state');
+      expect(res.status).toBe(200);
+      const { data } = await res.json() as { data: Record<string, unknown> };
+      expect(data.updatedBy).toBe('admin-gone');
+      expect(data.updatedByName).toBeNull();
+      expect(data.updatedByEmail).toBeNull();
     });
   });
 
