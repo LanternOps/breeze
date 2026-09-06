@@ -176,14 +176,14 @@
         "confirm": "Éteindre"
       },
       "exitMaintenance": {
-        "title": "Mode de maintenance de sortie",
+        "title": "Quitter le mode maintenance",
         "message": "Êtes-vous sûr de vouloir sortir du mode maintenance pour {{hostname}} ? Les alertes et la surveillance reprendront.",
-        "confirm": "Entretien des sorties"
+        "confirm": "Désactiver la maintenance"
       },
       "enterMaintenance": {
         "title": "Entrer en mode maintenance",
         "message": "Voulez-vous vraiment placer {{hostname}} en mode maintenance ? Les alertes seront masquées tant que ce mode sera actif.",
-        "confirm": "Voici la maintenance"
+        "confirm": "Activer la maintenance"
       },
       "decommission": {
         "title": "Retirer l’appareil",
@@ -211,8 +211,8 @@
     "deploySoftware": "Déployer un logiciel",
     "clearSessions": "Effacer les sessions",
     "changeSite": "Changement de site",
-    "exitMaintenance": "Entretien des sorties",
-    "enterMaintenance": "Voici la maintenance",
+    "exitMaintenance": "Désactiver la maintenance",
+    "enterMaintenance": "Activer la maintenance",
     "decommission": "Retirer",
     "restore": "Restaurer",
     "permanentlyDelete": "Supprimer définitivement",
@@ -1136,6 +1136,8 @@
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "wake": "Veillée",
     "settings": "Paramètres",
+    "enterMaintenance": "Activer la maintenance",
+    "exitMaintenance": "Désactiver la maintenance",
     "restore": "Restaurer",
     "decommission": "Retirer",
     "permanentlyDelete": "Supprimer définitivement",
@@ -1814,6 +1816,8 @@
       "bulkMaintenanceAllFailed": "Impossible de mettre à jour le mode maintenance pour tous {{count}} appareil(s) : {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} ou périphérique(s) {{verb}} mode maintenance ; {{failed}} échoué : {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
+      "bulkMaintenanceSuccess_one": "{{count}} appareil {{verb}} mode maintenance",
+      "bulkMaintenanceSuccess_other": "{{count}} appareils {{verb}} mode maintenance",
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
