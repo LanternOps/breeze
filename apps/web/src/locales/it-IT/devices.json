@@ -2087,6 +2087,7 @@
     "backToDevices": "Torna ai dispositivi",
     "configurePrefix": "Configura il polling SNMP e i monitor di rete da",
     "confirmUnlink": "Scollegare questo dispositivo?",
+    "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
     "connecting": "Connessione in corso…",
     "discoveryAssetView": "Vista asset di rilevamento",
     "emptyPorts": "Nessuna porta aperta rilevata.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Raggiungibilità rete",
       "openPorts": "Porte aperte",
       "snmpData": "Dati SNMP"
+    },
+    "stats": {
+      "asOf": "aggiornato al {{time}}"
     },
     "tabs": {
       "overview": "Panoramica",

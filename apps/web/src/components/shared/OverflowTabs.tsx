@@ -13,10 +13,14 @@ export type OverflowTab = {
   title?: string;
 };
 
-export function OverflowTabs({ tabs, activeTab, onTabChange }: {
+export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   tabs: OverflowTab[];
   activeTab: string;
   onTabChange: (id: string) => void;
+  /** When set, each tab button (visible or inside "More") gets
+   *  `data-testid={testIdPrefix + tab.id}`. Omitted by default so existing
+   *  consumers are unaffected. */
+  testIdPrefix?: string;
 }) {
   const { t } = useTranslation('common');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -122,6 +126,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
             <button
               type="button"
               title={tab.title}
+              data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
               onClick={() => onTabChange(tab.id)}
               className={tabClass(activeTab === tab.id)}
             >
@@ -152,6 +157,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
                     key={tab.id}
                     type="button"
                     title={tab.title}
+                    data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
                     onClick={() => { onTabChange(tab.id); setMoreOpen(false); }}
                     className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition ${
                       activeTab === tab.id

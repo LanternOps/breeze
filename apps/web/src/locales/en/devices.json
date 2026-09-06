@@ -2087,6 +2087,7 @@
     "backToDevices": "Back to devices",
     "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
+    "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
     "connecting": "Connecting…",
     "discoveryAssetView": "Discovery asset view",
     "emptyPorts": "No open ports detected.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Network Reachability",
       "openPorts": "Open Ports",
       "snmpData": "SNMP Data"
+    },
+    "stats": {
+      "asOf": "as of {{time}}"
     },
     "tabs": {
       "overview": "Overview",

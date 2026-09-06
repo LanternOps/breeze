@@ -2087,6 +2087,7 @@
     "backToDevices": "Zurück zu den Geräten",
     "configurePrefix": "Konfigurieren Sie SNMP-Abfragen und Netzwerkmonitore über das",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
+    "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
     "connecting": "Verbindung wird hergestellt…",
     "discoveryAssetView": "Discovery-Asset-Ansicht",
     "emptyPorts": "Keine offenen Ports erkannt.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Netzwerk-Erreichbarkeit",
       "openPorts": "Offene Ports",
       "snmpData": "SNMP Daten"
+    },
+    "stats": {
+      "asOf": "Stand: {{time}}"
     },
     "tabs": {
       "overview": "Übersicht",

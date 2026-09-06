@@ -2087,6 +2087,7 @@
     "backToDevices": "Cihazlara geri dön",
     "configurePrefix": "SNMP yoklama ve ağ monitörlerini yapılandırma",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
+    "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
     "connecting": "Bağlanılıyor…",
     "discoveryAssetView": "Discovery varlık görünümü",
     "emptyPorts": "Açık bağlantı noktası algılanmadı.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Ağa Erişilebilirlik",
       "openPorts": "Açık Bağlantı Noktaları",
       "snmpData": "SNMP Veri"
+    },
+    "stats": {
+      "asOf": "{{time}} itibarıyla"
     },
     "tabs": {
       "overview": "Genel Bakış",

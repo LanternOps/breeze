@@ -71,6 +71,15 @@ const baseAsset = {
   lastSeenAt: '2026-06-26T10:00:00.000Z',
 };
 
+// OverflowTabs measures button widths via `offsetWidth`, which jsdom always
+// reports as 0 against a `clientWidth` of 0 — that collapses to "fits 1 tab"
+// (see computeVisible in OverflowTabs.tsx), so with two tabs "Overview" stays
+// visible and "Monitoring" always lands in the "More" dropdown in tests.
+function openMonitoringTab() {
+  fireEvent.click(screen.getByText('More'));
+  fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+}
+
 describe('NetworkDeviceDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -169,7 +178,7 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.getByTestId('network-detail-overview')).toBeTruthy();
     expect(screen.queryByTestId('network-detail-monitoring')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     await screen.findByTestId('network-detail-monitoring');
     expect(window.location.hash).toBe('#monitoring');
@@ -200,7 +209,7 @@ describe('NetworkDeviceDetailPage', () => {
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
     const link = await screen.findByTestId('network-detail-linked-device');
     expect(link.getAttribute('href')).toBe('/devices/dev-9');
     expect(link.textContent).toContain('agent-host');
@@ -216,7 +225,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     expect(await screen.findByTestId('network-detail-unlink')).toBeTruthy();
     expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('set manually');
@@ -234,7 +243,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     await screen.findByTestId('network-detail-linked-device');
     expect(screen.getByTestId('network-detail-unlink')).toBeTruthy();
@@ -249,7 +258,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     await screen.findByTestId('network-detail-monitoring');
     expect(screen.getByTestId('network-detail-suppressed').textContent).toContain(
@@ -264,7 +273,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     await screen.findByTestId('network-detail-monitoring');
     expect(screen.queryByTestId('network-detail-suppressed')).toBeNull();
@@ -287,7 +296,7 @@ describe('NetworkDeviceDetailPage', () => {
 
       render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
       await screen.findByTestId('network-device-detail');
-      fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+      openMonitoringTab();
 
       fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
 
@@ -325,7 +334,7 @@ describe('NetworkDeviceDetailPage', () => {
 
       render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
       await screen.findByTestId('network-device-detail');
-      fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+      openMonitoringTab();
 
       fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
       const select = (await screen.findByTestId(
@@ -347,14 +356,13 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     await screen.findByTestId('network-detail-monitoring');
     expect(screen.queryByTestId('network-detail-unlink')).toBeNull();
   });
 
-  it('calls DELETE on the link endpoint when unlink is confirmed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('opens a confirm dialog before unlinking, and calls DELETE once confirmed', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(
         makeJsonResponse({
@@ -366,9 +374,18 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+    openMonitoringTab();
 
     fireEvent.click(await screen.findByTestId('network-detail-unlink'));
+
+    // The DELETE must not fire until the dialog is confirmed.
+    const dialog = await screen.findByTestId('network-detail-unlink-confirm');
+    expect(
+      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
+    ).toBe(false);
+    expect(screen.getByText('The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.')).toBeTruthy();
+
+    fireEvent.click(dialog);
 
     await waitFor(() =>
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -376,7 +393,28 @@ describe('NetworkDeviceDetailPage', () => {
         { method: 'DELETE' },
       ),
     );
-    confirmSpy.mockRestore();
+  });
+
+  it('does not call DELETE when the unlink confirmation is cancelled', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
+      }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    openMonitoringTab();
+
+    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
+    await screen.findByTestId('network-detail-unlink-confirm');
+
+    fireEvent.click(screen.getByText('Cancel'));
+
+    await waitFor(() => expect(screen.queryByTestId('network-detail-unlink-confirm')).toBeNull());
+    expect(
+      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
+    ).toBe(false);
   });
 
   it('shows a not-found error for a 404 response', async () => {
@@ -731,6 +769,68 @@ describe('NetworkDeviceDetailPage', () => {
       expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
 
       openSpy.mockRestore();
+    });
+  });
+
+  describe('stat strip', () => {
+    it('renders status, ping, last seen and linked device stats', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({
+          data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
+        }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const stats = screen.getByTestId('network-detail-stats');
+      expect(stats.textContent).toContain('Online');
+      expect(stats.textContent).toContain('2.4 ms');
+      // baseAsset.lastSeenAt is well over a week in the past relative to any
+      // real test run, so formatLastSeen falls back to an absolute date —
+      // stable to assert on without mocking the clock.
+      expect(stats.textContent).toMatch(/as of/i);
+
+      const linked = screen.getByTestId('network-detail-stat-linked');
+      expect(linked.getAttribute('href')).toBe('/devices/dev-9');
+      expect(linked.textContent).toContain('agent-host');
+    });
+
+    it('shows a dash for the linked-device stat when the asset is unlinked', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      expect(screen.queryByTestId('network-detail-stat-linked')).toBeNull();
+      const stats = screen.getByTestId('network-detail-stats');
+      expect(stats.textContent).toContain('—');
+    });
+
+    it('colors the ping value using the same thresholds as the discovery list', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, responseTimeMs: 2.4 } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      // 2.4ms falls in the fastest tier (pingColor thresholds in pingFormat.ts).
+      expect(screen.getByTestId('network-detail-ping').className).toContain('text-green-600');
+    });
+
+    it('does not show an "as of" line when the asset has no last-seen timestamp', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, lastSeenAt: null, firstSeenAt: null } }),
+      );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const stats = screen.getByTestId('network-detail-stats');
+      expect(stats.textContent).not.toMatch(/as of/i);
     });
   });
 });

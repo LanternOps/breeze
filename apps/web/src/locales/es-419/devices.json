@@ -2087,6 +2087,7 @@
     "backToDevices": "Volver a dispositivos",
     "configurePrefix": "Configure los monitores de red y sondeo SNMP desde el",
     "confirmUnlink": "¿Desvincular este dispositivo?",
+    "confirmUnlinkMessage": "El activo detectado y el dispositivo administrado se mostrarán como elementos separados. La vinculación automática permanecerá desactivada para este activo hasta que lo vuelva a vincular.",
     "connecting": "Conectando…",
     "discoveryAssetView": "Vista de activos de descubrimiento",
     "emptyPorts": "No se detectaron puertos abiertos.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Accesibilidad de la red",
       "openPorts": "Puertos abiertos",
       "snmpData": "SNMP Datos"
+    },
+    "stats": {
+      "asOf": "a partir de {{time}}"
     },
     "tabs": {
       "overview": "Descripción general",

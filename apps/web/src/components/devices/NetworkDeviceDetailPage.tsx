@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
-import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
+import {
+  ArrowLeft,
+  Globe,
+  ExternalLink,
+  ChevronRight,
+  Wifi,
+  WifiOff,
+  Activity,
+  Gauge,
+  Clock,
+  Link2,
+  LayoutGrid,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -8,12 +20,16 @@ import { isManualLink } from '../discovery/networkTypes';
 import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatLastSeen } from '@/lib/formatTime';
 import Breadcrumbs from '../layout/Breadcrumbs';
-import { formatNumber } from '@/lib/i18n/format';
 import { asList } from '@/lib/asList';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { useEscapeClose } from '../../hooks/useEscapeClose';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
+import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { formatPing, pingColor } from '../discovery/pingFormat';
+import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import {
   mapAsset,
   typeConfig,
@@ -77,12 +93,6 @@ function snmpFieldLabel(key: string): string {
   return SNMP_FIELD_LABELS[key] ?? key;
 }
 
-function formatPing(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms < 1) return '<1 ms';
-  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
-}
-
 function formatTimestamp(value?: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -103,7 +113,7 @@ function Section({
   testId?: string;
 }) {
   return (
-    <div className="rounded-md border bg-muted/30 p-4" data-testid={testId}>
+    <div className="rounded-md border bg-card p-4" data-testid={testId}>
       <h3 className="text-sm font-semibold">{title}</h3>
       <div className="mt-3">{children}</div>
     </div>
@@ -600,14 +610,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
   const [unlinking, setUnlinking] = useState(false);
   const [typeSaving, setTypeSaving] = useState(false);
+  const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
 
   // Unlink now works for both auto and manual links (#3261 Task 2 reverses the
   // old manual-only rule — the server sets auto_link_suppressed_at so a
   // subsequent rescan doesn't just re-create the link). This handler only
   // guards that a link exists; runAction surfaces success/failure via toast.
+  // Confirmation lives in the ConfirmDialog rendered at the bottom of this
+  // component — this handler runs only after the user has confirmed.
   const handleUnlink = useCallback(async () => {
     if (!asset?.linkedDeviceId) return;
-    if (typeof window !== 'undefined' && !window.confirm(t('networkDeviceDetailPage.confirmUnlink'))) return;
     setUnlinking(true);
     try {
       await runAction({
@@ -710,96 +722,167 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const approvalMeta = approvalStatusConfig[asset.approvalStatus];
   const typeLabel = typeMeta ? t(/* i18n-dynamic */ typeMeta.labelKey) : asset.type;
   const approvalLabel = approvalMeta ? t(/* i18n-dynamic */ approvalMeta.labelKey) : asset.approvalStatus;
+  const TypeIcon = assetTypeIcons[asset.type] ?? assetTypeIcons.unknown;
+
+  const tabDefs: OverflowTab[] = [
+    { id: 'overview', label: t('networkDeviceDetailPage.tabs.overview'), icon: <LayoutGrid className="h-4 w-4" /> },
+    { id: 'monitoring', label: t('networkDeviceDetailPage.tabs.monitoring'), icon: <Activity className="h-4 w-4" /> },
+  ];
 
   return (
-    <div className="space-y-6" data-testid="network-device-detail">
+    <div className="max-w-6xl space-y-6" data-testid="network-device-detail">
       <Breadcrumbs items={[
         { label: t('devicesPage.title'), href: '/devices' },
         { label: displayName || t('networkDeviceDetailPage.networkDevice') },
       ]} />
 
       {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border bg-card p-5">
-        <div className="flex items-start gap-3">
-          <div className="rounded-md border bg-muted/40 p-2 text-muted-foreground">
-            <Globe className="h-6 w-6" />
-          </div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-lg font-semibold" data-testid="network-device-name">{displayName}</h1>
-              <span
-                data-testid="network-asset-type"
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeMeta?.color ?? typeConfig.unknown.color}`}
-              >
-                {typeLabel}
-              </span>
-              <span
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalMeta?.color ?? approvalStatusConfig.dismissed.color}`}
-              >
-                {approvalLabel}
-              </span>
-              <span
-                data-testid="network-device-status"
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${
-                  asset.isOnline
-                    ? 'bg-success/15 text-success border-success/30'
-                    : 'bg-muted text-muted-foreground border-muted'
-                }`}
-              >
-                {asset.isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
-              </span>
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-4">
+            <div className={`flex h-14 w-14 items-center justify-center rounded-lg border ${typeMeta?.color ?? typeConfig.unknown.color}`}>
+              <TypeIcon className="h-7 w-7" />
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {asset.ip}
-              {asset.mac !== '—' && <> • {asset.mac}</>}
-              {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
-              {asset.lastSeen && <> • {t('networkDeviceDetailPage.lastSeen', { time: formatTimestamp(asset.lastSeen) })}</>}
-            </p>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <h1
+                  className="truncate text-xl font-semibold tracking-tight"
+                  title={displayName}
+                  data-testid="network-device-name"
+                >
+                  {displayName}
+                </h1>
+                <span
+                  data-testid="network-asset-type"
+                  className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeMeta?.color ?? typeConfig.unknown.color}`}
+                >
+                  {typeLabel}
+                </span>
+                <span
+                  className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalMeta?.color ?? approvalStatusConfig.dismissed.color}`}
+                >
+                  {approvalLabel}
+                </span>
+                <span
+                  data-testid="network-device-status"
+                  className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${
+                    asset.isOnline
+                      ? 'bg-success/15 text-success border-success/30'
+                      : 'bg-muted text-muted-foreground border-muted'
+                  }`}
+                >
+                  {asset.isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                  {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                <span className="font-mono">{asset.ip}</span>
+                {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
+                {asset.manufacturer !== '—' && <span>{asset.manufacturer}</span>}
+              </div>
+            </div>
           </div>
-        </div>
-        {/* Approve / reclassify remain in Discovery until slice 3 of #1424
-            brings them inline; unlink for manual links is available inline on
-            the Monitoring tab. Other actions link out for now. */}
-        <div className="flex items-center gap-2">
-          <ProxyConnectPopover
-            variant="header"
-            assetId={asset.id}
-            assetIp={asset.ip}
-            port={defaultWebPort?.port ?? 443}
-            service={defaultWebPort?.service}
-            suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
-            devices={devices}
-          />
-          <a
-            href={`/discovery?asset=${asset.id}#assets`}
-            data-testid="network-detail-manage-discovery"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-          >
-            {t('networkDeviceDetailPage.manageInDiscovery')}
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
+          {/* Approve / reclassify remain in Discovery until slice 3 of #1424
+              brings them inline; unlink for manual links is available inline on
+              the Monitoring tab. Other actions link out for now. */}
+          <div className="flex items-center gap-2">
+            <ProxyConnectPopover
+              variant="header"
+              assetId={asset.id}
+              assetIp={asset.ip}
+              port={defaultWebPort?.port ?? 443}
+              service={defaultWebPort?.service}
+              suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+              devices={devices}
+            />
+            <a
+              href={`/discovery?asset=${asset.id}#assets`}
+              data-testid="network-detail-manage-discovery"
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              {t('networkDeviceDetailPage.manageInDiscovery')}
+              <ChevronRight className="h-3.5 w-3.5" />
+            </a>
+          </div>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b">
-        {VALID_TABS.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            data-testid={`network-detail-tab-${tab}`}
-            onClick={() => switchTab(tab)}
-            className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium capitalize ${
-              activeTab === tab
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
+      {/* Stat strip — answers "is it up, how fast, can I get in" at a glance.
+          Status reflects the last scan result, not a live probe, so it always
+          pairs with an "as of" timestamp rather than implying real-time health. */}
+      <div
+        className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6"
+        data-testid="network-detail-stats"
+      >
+        <div className="shrink-0">
+          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+            <Activity className="h-3.5 w-3.5" />
+            {t('networkDeviceDetailPage.fields.status')}
+          </div>
+          <p className="mt-1 flex items-center gap-1.5 text-lg font-semibold">
+            <span
+              aria-hidden="true"
+              className={`h-2.5 w-2.5 rounded-full ${asset.isOnline ? 'bg-success' : 'bg-muted-foreground'}`}
+            />
+            {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
+          </p>
+          {asset.lastSeen && (
+            <p className="text-xs text-muted-foreground">
+              {t('networkDeviceDetailPage.stats.asOf', { time: formatLastSeen(asset.lastSeen) })}
+            </p>
+          )}
+        </div>
+        <div className="hidden w-px self-stretch bg-border sm:block" aria-hidden="true" />
+        <div className="shrink-0">
+          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+            <Gauge className="h-3.5 w-3.5" />
+            {t('networkDeviceDetailPage.fields.ping')}
+          </div>
+          <p
+            className={`mt-1 text-lg font-semibold tabular-nums ${pingColor(asset.responseTimeMs)}`}
+            data-testid="network-detail-ping"
           >
-            {t(/* i18n-dynamic */ `networkDeviceDetailPage.tabs.${tab}`)}
-          </button>
-        ))}
+            {formatPing(asset.responseTimeMs)}
+          </p>
+        </div>
+        <div className="hidden w-px self-stretch bg-border sm:block" aria-hidden="true" />
+        <div className="shrink-0">
+          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+            <Clock className="h-3.5 w-3.5" />
+            {t('networkDeviceDetailPage.fields.lastSeen')}
+          </div>
+          <p className="mt-1 whitespace-nowrap text-lg font-semibold" title={formatTimestamp(asset.lastSeen)}>
+            {asset.lastSeen ? formatLastSeen(asset.lastSeen) : '—'}
+          </p>
+        </div>
+        <div className="hidden w-px self-stretch bg-border sm:block" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
+            <Link2 className="h-3.5 w-3.5" />
+            {t('networkDeviceDetailPage.fields.linkedDevice')}
+          </div>
+          <p className="mt-1 truncate text-lg font-semibold">
+            {asset.linkedDeviceId ? (
+              <a
+                href={`/devices/${asset.linkedDeviceId}`}
+                data-testid="network-detail-stat-linked"
+                className="text-primary hover:underline"
+              >
+                {asset.linkedDeviceName || t('common:states.unknown')}
+              </a>
+            ) : (
+              '—'
+            )}
+          </p>
+        </div>
       </div>
+
+      <OverflowTabs
+        tabs={tabDefs}
+        activeTab={activeTab}
+        onTabChange={(id) => switchTab(id as Tab)}
+        testIdPrefix="network-detail-tab-"
+      />
 
       {activeTab === 'overview' && (
         <div className="grid gap-5 lg:grid-cols-2" data-testid="network-detail-overview">
@@ -808,10 +891,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                 <Field label={t('networkDeviceDetailPage.fields.hostname')} value={asset.hostname || '—'} />
                 <Field label={t('networkDeviceDetailPage.fields.displayName')} value={asset.label || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.ipAddress')} value={<span className="font-mono">{asset.ip}</span>} />
-                <Field label={t('networkDeviceDetailPage.fields.macAddress')} value={<span className="font-mono">{asset.mac}</span>} />
                 <Field label={t('networkDeviceDetailPage.fields.manufacturer')} value={asset.manufacturer} />
                 <Field label={t('networkDeviceDetailPage.fields.model')} value={extras.model || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
                 <div>
                   <div className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.assetType')}</div>
                   <div className="mt-1 flex items-center gap-2">
@@ -887,19 +970,6 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </div>
 
           <div className="space-y-5">
-            <Section title={t('networkDeviceDetailPage.sections.networkReachability')}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <Field label={t('networkDeviceDetailPage.fields.status')} value={asset.isOnline ? t('common:states.online') : t('common:states.offline')} />
-                <Field
-                  label={t('networkDeviceDetailPage.fields.ping')}
-                  value={<span className="font-mono" data-testid="network-detail-ping">{formatPing(asset.responseTimeMs)}</span>}
-                />
-                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.lastSeen')} value={formatTimestamp(asset.lastSeen)} />
-                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
-              </dl>
-            </Section>
-
             <Section title={t('networkDeviceDetailPage.sections.openPorts')} testId="network-detail-ports">
               {openPorts.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptyPorts')}</p>
@@ -976,7 +1046,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       <button
                         type="button"
                         data-testid="network-detail-unlink"
-                        onClick={handleUnlink}
+                        onClick={() => setConfirmUnlinkOpen(true)}
                         disabled={unlinking}
                         className="text-xs text-destructive hover:underline disabled:opacity-50"
                       >
@@ -1009,6 +1079,21 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </Section>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmUnlinkOpen}
+        onClose={() => setConfirmUnlinkOpen(false)}
+        onConfirm={() => {
+          setConfirmUnlinkOpen(false);
+          void handleUnlink();
+        }}
+        title={t('networkDeviceDetailPage.confirmUnlink')}
+        message={t('networkDeviceDetailPage.confirmUnlinkMessage')}
+        confirmLabel={t('networkDeviceDetailPage.unlink')}
+        variant="destructive"
+        isLoading={unlinking}
+        confirmTestId="network-detail-unlink-confirm"
+      />
     </div>
   );
 }

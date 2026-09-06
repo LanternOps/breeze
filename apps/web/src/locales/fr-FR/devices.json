@@ -2087,6 +2087,7 @@
     "backToDevices": "Retour aux appareils",
     "configurePrefix": "Configurer l’interrogation SNMP et les moniteurs réseau depuis le",
     "confirmUnlink": "Déconnecter cet appareil ?",
+    "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez à nouveau.",
     "connecting": "Connexion en cours…",
     "discoveryAssetView": "Vue de l’actif de découverte",
     "emptyPorts": "Aucun port ouvert détecté.",
@@ -2143,6 +2144,9 @@
       "networkReachability": "Accessibilité du réseau",
       "openPorts": "Ports ouverts",
       "snmpData": "Données SNMP"
+    },
+    "stats": {
+      "asOf": "à la date du {{time}}"
     },
     "tabs": {
       "overview": "Aperçu",

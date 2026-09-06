@@ -5,7 +5,7 @@ import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
-import { formatNumber } from '@/lib/i18n/format';
+import { formatPing, pingColor } from './pingFormat';
 import {
   parseDiscoveredAssetLinkSource,
   parseDiscoveredAssetTypeSource,
@@ -136,20 +136,6 @@ function formatLastSeen(value?: string, timezone?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return formatDateTime(date, { timeZone: timezone });
-}
-
-function formatPing(ms?: number | null) {
-  if (ms == null) return '—';
-  if (ms < 1) return '<1 ms';
-  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
-}
-
-function pingColor(ms?: number | null) {
-  if (ms == null) return 'text-muted-foreground';
-  if (ms < 5) return 'text-green-600';
-  if (ms < 50) return 'text-emerald-600';
-  if (ms < 200) return 'text-yellow-600';
-  return 'text-red-600';
 }
 
 function normalizeOpenPorts(raw: ApiDiscoveryAsset['openPorts']): OpenPortEntry[] {
