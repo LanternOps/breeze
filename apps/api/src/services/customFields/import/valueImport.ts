@@ -517,6 +517,10 @@ async function writeRow(
     warrantyWrite[decision.warrantyWrite.field] = decision.warrantyWrite.value;
     hasWarranty = true;
   }
+  /** A warranty column WAS mapped, and the annotator declined it. */
+  const warrantyDeclined = decisions.some(
+    (d) => d.annotation.target.kind === 'warranty' && d.annotation.outcome === 'skipped-already-set',
+  );
 
   const externalId = row.externalId?.trim();
   // Only mint a link when the row was resolved some OTHER way — a link-match
@@ -560,9 +564,16 @@ async function writeRow(
       linkCreated = created.length > 0;
     }
 
+    // A warranty target the annotator already declined (today: the row is
+    // provider-owned and the operator did not opt in) is reported as the REASON
+    // it was declined, not as `none`. `none` means "this row mapped no warranty
+    // column at all", and collapsing the two would tell an operator their
+    // warranty column was never mapped when in fact it was refused.
     const warranty = hasWarranty
       ? await applyWarrantyImport(tx, warrantyWrite, { overrideProvider: ctx.overrideProviderWarranty ?? false })
-      : ('none' as const);
+      : warrantyDeclined
+        ? ('skipped-provider-owned' as const)
+        : ('none' as const);
 
     return { changedFieldKeys, linkCreated, warranty };
   });

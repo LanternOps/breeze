@@ -576,6 +576,19 @@ describe('commitDeviceCustomFieldImport', () => {
     expect(summary.rows[0]).toMatchObject({ warranty: 'applied', applied: 3 });
   });
 
+  it('reports a declined warranty column as skipped-provider-owned, never as "none"', async () => {
+    // `none` means "this row mapped no warranty column at all". Collapsing the
+    // two would tell an operator their warranty column was never mapped.
+    seed({ warranty: [{ deviceId: D1, dataSource: 'provider' }] });
+
+    const summary = await commit([{
+      deviceId: D1, values: [v('asset_tag', 'AB-1'), w('warrantyEndDate', '2027-03-04')],
+    }], ctx, actor, { mode: 'update' });
+
+    expect(applyWarrantyImportMock).not.toHaveBeenCalled();
+    expect(summary.rows[0]).toMatchObject({ warranty: 'skipped-provider-owned', applied: 1, skipped: 1 });
+  });
+
   it('rolls the whole row back when the warranty write throws', async () => {
     seed();
     applyWarrantyImportMock.mockRejectedValue(Object.assign(new Error('nope'), { code: '23503' }));
