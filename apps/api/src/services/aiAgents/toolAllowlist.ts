@@ -43,3 +43,26 @@ export function isToolAllowlisted(
   if (toolAllowlist.includes(tool)) return true;
   return action != null && toolAllowlist.includes(`${tool}:${action}`);
 }
+
+/**
+ * Intersection of two allowlists under `isToolAllowlisted` semantics. A bare
+ * `tool` entry is a wildcard over every action, so `tool` ∩ `tool:x` is
+ * `tool:x`, not ∅ (the plain string intersection the merge used before
+ * silently emptied any org row that scoped what its partner left bare). A
+ * bare entry survives only when BOTH sides carry it bare. Order: `a`'s
+ * survivors first, then `b`'s, de-duplicated.
+ */
+export function intersectToolRefs(a: readonly string[], b: readonly string[]): string[] {
+  const out = new Set<string>();
+  const keep = (from: readonly string[], other: readonly string[]) => {
+    for (const entry of from) {
+      const colon = entry.indexOf(':');
+      const tool = colon === -1 ? entry : entry.slice(0, colon);
+      const action = colon === -1 ? undefined : entry.slice(colon + 1);
+      if (isToolAllowlisted(other, tool, action)) out.add(entry);
+    }
+  };
+  keep(a, b);
+  keep(b, a);
+  return [...out];
+}
