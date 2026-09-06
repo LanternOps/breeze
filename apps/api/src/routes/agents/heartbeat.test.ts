@@ -277,6 +277,15 @@ vi.mock('../metrics', () => ({
   resolveResponseStatus: (c: any) => (c?.finalized ? (c.res?.status ?? 500) : 500),
 }));
 
+// #4630 — the heartbeat's dynamic-group re-evaluation emit site. Real
+// createDeviceChangeEvent (pure), mocked emitDeviceChange so tests can assert
+// on the event shape without pulling in groupMembership.ts's DB graph.
+const emitDeviceChangeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../../events/deviceEvents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/deviceEvents')>();
+  return { ...actual, emitDeviceChange: emitDeviceChangeMock };
+});
+
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
 import { devices } from '../../db/schema';
@@ -3727,6 +3736,86 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
     expect(resp.status).toBe(200);
     const body = await resp.json() as { watchdogUpgradeTo?: string | null };
     expect(body.watchdogUpgradeTo).toBe('0.66.0');
+  });
+});
+
+describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation emit (#4630)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'old-host',
+    osType: 'windows', osVersion: '10.0.19045', osBuild: '19045',
+    architecture: 'amd64', agentVersion: '0.66.0', deviceRole: 'workstation',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange() {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('emits device.updated with the changed filterable fields when hostname changes', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0', hostname: 'new-host' });
+
+    expect(resp.status).toBe(200);
+    expect(emitDeviceChangeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'device.updated',
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        changedFields: ['hostname'],
+      }),
+    );
+  });
+
+  it('reports every changed filterable field at once', async () => {
+    arrange();
+
+    const resp = await post({
+      agentVersion: '0.66.0',
+      hostname: 'new-host',
+      osVersion: '10.0.22631',
+      osBuild: '22631',
+      deviceRole: 'server',
+    });
+
+    expect(resp.status).toBe(200);
+    const [event] = emitDeviceChangeMock.mock.calls.find(
+      (call: unknown[]) => (call[0] as { type: string }).type === 'device.updated',
+    ) ?? [];
+    expect(event?.changedFields).toEqual(
+      expect.arrayContaining(['hostname', 'osVersion', 'osBuild', 'deviceRole']),
+    );
+  });
+
+  it('does not emit when no filterable field changes (steady-state heartbeat)', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not emit for a non-filterable-only change (agentServerUrl)', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0', serverUrl: 'https://api.example.com' });
+
+    expect(resp.status).toBe(200);
+    expect(emitDeviceChangeMock).not.toHaveBeenCalled();
   });
 });
 
