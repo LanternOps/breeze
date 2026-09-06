@@ -32,6 +32,7 @@ import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
 import { optionsRoutes } from './options';
 import { healthRoutes } from './health';
+import { removalConfigRoutes } from './removalConfig';
 import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
@@ -87,6 +88,10 @@ deviceRoutes.route('/', postureRoutes);
 
 // Mount the high-power literal sub-resource before core's /:id routes.
 deviceRoutes.route('/', agentRollbackRoutes);
+
+// Mount the Remove-dialog config BEFORE core — `/removal-config` is a static
+// path that must not be eaten by the `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', removalConfigRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);
