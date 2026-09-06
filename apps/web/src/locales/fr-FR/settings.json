@@ -2658,6 +2658,41 @@
       },
       "catalogUnavailable": "Impossible de charger le catalogue d'outils. Vous pouvez toujours modifier la liste des permissions directement ci-dessous.",
       "loading": "Chargement des capacités…"
+    },
+    "summary": {
+      "edit": "Modifier",
+      "createdDisabled": "Créé désactivé",
+      "enabled": "Activé",
+      "allOrganizations": "toutes les organisations",
+      "rowLabels": {
+        "runsWhen": "S'exécute quand",
+        "canRead": "Peut lire",
+        "mayPropose": "Peut proposer",
+        "executesUnattended": "Exécute sans surveillance",
+        "neverTouches": "Ne touche jamais",
+        "limits": "Limites",
+        "approvers": "Demande l'approbation de"
+      },
+      "runsWhen": {
+        "triage": "S'exécute lors de nouvelles alertes de gravité {{severities}} sur n'importe quel appareil.",
+        "anySeverity": "toute gravité",
+        "patch": "S'exécute selon un calendrier, ou lorsqu'il est déclenché manuellement, pour examiner les correctifs manquants.",
+        "helpdesk": "S'exécute quand un ticket est créé, reçoit sa première réponse ou est marqué comme résolu.",
+        "maintenanceWindows": "Attend la fin des fenêtres de maintenance.",
+        "ticketWrites": "Écrit des mises à jour de ticket sans attendre un technicien."
+      },
+      "canRead": "Données d'appareils, d'alertes et de parc pour {{scope}} : inventaire, métriques, journaux, correctifs, sauvegardes, tickets et historique d'audit ({{count}} outils en lecture seule, toujours actifs).",
+      "mayPropose": "{{operations}} opérations réparties sur {{capabilities}} capacités : {{approvalRequests}} déclenchent une demande d'approbation qu'un technicien tranche, et {{loggedProposals}} sont consignées comme propositions et ne sont jamais exécutées.",
+      "mayProposeNone": "Cet agent ne propose encore aucune opération.",
+      "unrecognisedLabel": "Non reconnues par le catalogue d'outils actuel :",
+      "executesUnattendedNone": "Rien. Le mode observation se contente d'observer et de proposer ; rien ne s'exécute sans l'approbation d'un technicien.",
+      "executesUnattendedNoneAct": "Rien pour l'instant — aucune opération sélectionnée n'est éligible à une exécution sans surveillance.",
+      "executesUnattendedList": "Exécute {{list}} sans attendre l'approbation d'un technicien.",
+      "preauthorizedNote": "Certaines sont des opérations préautorisées, accordées à l'avance via le processus de contrôle à quatre yeux.",
+      "neverTouchesEmpty": "Rien n'est encore protégé.",
+      "limits": "Jusqu'à {{devices}} appareils par exécution, {{runsPerHour}} exécutions par heure, {{minutes}} minutes par exécution, un budget quotidien de {{budget}}, et pas plus de {{fleetPercent}} du parc par jour.",
+      "approvers": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversNone": "Aucun rôle n'est encore configuré, donc personne ne sera notifié."
     }
   },
   "apiKeyForm": {

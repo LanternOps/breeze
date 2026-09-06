@@ -2658,6 +2658,41 @@
       },
       "catalogUnavailable": "Não foi possível carregar o catálogo de ferramentas. Você ainda pode editar a lista de permissões diretamente abaixo.",
       "loading": "Carregando capacidades…"
+    },
+    "summary": {
+      "edit": "Editar",
+      "createdDisabled": "Criado desativado",
+      "enabled": "Ativado",
+      "allOrganizations": "todas as organizações",
+      "rowLabels": {
+        "runsWhen": "É executado quando",
+        "canRead": "Pode ler",
+        "mayPropose": "Pode propor",
+        "executesUnattended": "Executa sem supervisão",
+        "neverTouches": "Nunca toca em",
+        "limits": "Limites",
+        "approvers": "Pede aprovação a"
+      },
+      "runsWhen": {
+        "triage": "É executado diante de novos alertas de gravidade {{severities}} em qualquer dispositivo.",
+        "anySeverity": "qualquer gravidade",
+        "patch": "É executado conforme uma programação, ou quando acionado manualmente, para revisar patches ausentes.",
+        "helpdesk": "É executado quando um ticket é criado, recebe sua primeira resposta ou é marcado como resolvido.",
+        "maintenanceWindows": "Aguarda o fim das janelas de manutenção.",
+        "ticketWrites": "Grava atualizações do ticket sem esperar por um técnico."
+      },
+      "canRead": "Dados de dispositivos, alertas e da frota para {{scope}}: inventário, métricas, logs, patches, backups, tickets e histórico de auditoria ({{count}} ferramentas somente leitura, sempre ativas).",
+      "mayPropose": "{{operations}} operações em {{capabilities}} capacidades: {{approvalRequests}} geram uma solicitação de aprovação que um técnico decide, e {{loggedProposals}} são registradas como propostas e nunca executadas.",
+      "mayProposeNone": "Este agente ainda não propõe nenhuma operação.",
+      "unrecognisedLabel": "Não reconhecidas pelo catálogo de ferramentas atual:",
+      "executesUnattendedNone": "Nada. O modo sombra apenas observa e propõe; nada é executado sem a aprovação de um técnico.",
+      "executesUnattendedNoneAct": "Nada ainda — nenhuma operação selecionada é elegível para execução sem supervisão.",
+      "executesUnattendedList": "Executa {{list}} sem esperar a aprovação de um técnico.",
+      "preauthorizedNote": "Algumas delas são operações pré-autorizadas, concedidas antecipadamente pelo processo de revisão de quatro olhos.",
+      "neverTouchesEmpty": "Nada está protegido ainda.",
+      "limits": "Até {{devices}} dispositivos por execução, {{runsPerHour}} execuções por hora, {{minutes}} minutos por execução, um orçamento diário de {{budget}}, e no máximo {{fleetPercent}} da frota por dia.",
+      "approvers": "{{count}} funções são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
+      "approversNone": "Ainda não há funções configuradas, então ninguém será notificado."
     }
   },
   "apiKeyForm": {

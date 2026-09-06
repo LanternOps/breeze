@@ -2658,6 +2658,41 @@
       },
       "catalogUnavailable": "Der Tool-Katalog konnte nicht geladen werden. Sie können die Berechtigungsliste weiterhin direkt unten bearbeiten.",
       "loading": "Fähigkeiten werden geladen…"
+    },
+    "summary": {
+      "edit": "Bearbeiten",
+      "createdDisabled": "Deaktiviert erstellt",
+      "enabled": "Aktiviert",
+      "allOrganizations": "alle Organisationen",
+      "rowLabels": {
+        "runsWhen": "Läuft, wenn",
+        "canRead": "Kann lesen",
+        "mayPropose": "Darf vorschlagen",
+        "executesUnattended": "Führt unbeaufsichtigt aus",
+        "neverTouches": "Fasst nie an",
+        "limits": "Grenzwerte",
+        "approvers": "Fragt um Genehmigung bei"
+      },
+      "runsWhen": {
+        "triage": "Läuft bei neuen Warnungen mit Schweregrad {{severities}} auf jedem Gerät.",
+        "anySeverity": "beliebigem Schweregrad",
+        "patch": "Läuft nach Zeitplan oder bei manueller Auslösung, um fehlende Patches zu prüfen.",
+        "helpdesk": "Läuft, wenn ein Ticket erstellt wird, die erste Antwort erhält oder als gelöst markiert wird.",
+        "maintenanceWindows": "Wartet Wartungsfenster ab.",
+        "ticketWrites": "Schreibt Ticket-Updates, ohne auf einen Techniker zu warten."
+      },
+      "canRead": "Geräte-, Warnungs- und Flottendaten für {{scope}}: Inventar, Metriken, Protokolle, Patches, Backups, Tickets und Prüfhistorie ({{count}} schreibgeschützte Tools, immer aktiv).",
+      "mayPropose": "{{operations}} Operationen in {{capabilities}} Fähigkeiten: {{approvalRequests}} lösen eine Genehmigungsanfrage aus, über die ein Techniker entscheidet, und {{loggedProposals}} werden als Vorschläge protokolliert und nie ausgeführt.",
+      "mayProposeNone": "Dieser Agent schlägt noch keine Operationen vor.",
+      "unrecognisedLabel": "Vom aktuellen Tool-Katalog nicht erkannt:",
+      "executesUnattendedNone": "Nichts. Der Schattenmodus beobachtet und schlägt nur vor; ohne Genehmigung eines Technikers läuft nichts.",
+      "executesUnattendedNoneAct": "Noch nichts — keine ausgewählte Operation ist für die unbeaufsichtigte Ausführung geeignet.",
+      "executesUnattendedList": "Führt {{list}} aus, ohne auf die Genehmigung eines Technikers zu warten.",
+      "preauthorizedNote": "Einige davon sind vorautorisierte Operationen, die im Voraus durch das Vier-Augen-Prüfverfahren gewährt wurden.",
+      "neverTouchesEmpty": "Noch nichts geschützt.",
+      "limits": "Bis zu {{devices}} Geräte pro Lauf, {{runsPerHour}} Läufe pro Stunde, {{minutes}} Minuten pro Lauf, ein Tagesbudget von {{budget}} und höchstens {{fleetPercent}} der Flotte pro Tag.",
+      "approvers": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversNone": "Es sind noch keine Rollen konfiguriert, daher wird niemand benachrichtigt."
     }
   },
   "apiKeyForm": {

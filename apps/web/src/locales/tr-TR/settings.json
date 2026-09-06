@@ -2658,6 +2658,41 @@
       },
       "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz.",
       "loading": "Yetenekler yükleniyor…"
+    },
+    "summary": {
+      "edit": "Düzenle",
+      "createdDisabled": "Devre dışı oluşturuldu",
+      "enabled": "Etkin",
+      "allOrganizations": "tüm kuruluşlar",
+      "rowLabels": {
+        "runsWhen": "Şu durumda çalışır",
+        "canRead": "Okuyabilir",
+        "mayPropose": "Önerebilir",
+        "executesUnattended": "Gözetimsiz yürütür",
+        "neverTouches": "Asla dokunmaz",
+        "limits": "Sınırlar",
+        "approvers": "Onay istediği kişiler"
+      },
+      "runsWhen": {
+        "triage": "Herhangi bir cihazda yeni {{severities}} önem düzeyindeki uyarılarda çalışır.",
+        "anySeverity": "herhangi bir önem düzeyi",
+        "patch": "Eksik yamaları incelemek için bir zamanlamaya göre veya manuel olarak tetiklendiğinde çalışır.",
+        "helpdesk": "Bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde çalışır.",
+        "maintenanceWindows": "Bakım pencerelerinin bitmesini bekler.",
+        "ticketWrites": "Bir teknisyeni beklemeden talep güncellemeleri yazar."
+      },
+      "canRead": "{{scope}} için cihaz, uyarı ve filo verileri: envanter, metrikler, günlükler, yamalar, yedekler, talepler ve denetim geçmişi ({{count}} salt okunur araç, her zaman etkin).",
+      "mayPropose": "{{capabilities}} yetenek genelinde {{operations}} işlem: {{approvalRequests}} tanesi bir teknisyenin karar vereceği bir onay isteği oluşturur, {{loggedProposals}} tanesi ise öneri olarak kaydedilir ve asla çalıştırılmaz.",
+      "mayProposeNone": "Bu aracı henüz herhangi bir işlem önermiyor.",
+      "unrecognisedLabel": "Geçerli araç kataloğu tarafından tanınmıyor:",
+      "executesUnattendedNone": "Hiçbir şey. Gölge modu yalnızca gözlemler ve önerir; bir teknisyenin onayı olmadan hiçbir şey çalışmaz.",
+      "executesUnattendedNoneAct": "Henüz hiçbir şey yok — seçilen hiçbir işlem gözetimsiz çalıştırma için uygun değil.",
+      "executesUnattendedList": "Bir teknisyenin onayını beklemeden {{list}} çalıştırır.",
+      "preauthorizedNote": "Bunlardan bazıları, dört göz inceleme süreciyle önceden verilmiş ön yetkilendirilmiş işlemlerdir.",
+      "neverTouchesEmpty": "Henüz hiçbir şey korunmuyor.",
+      "limits": "Çalıştırma başına en fazla {{devices}} cihaz, saatte {{runsPerHour}} çalıştırma, çalıştırma başına {{minutes}} dakika, günlük {{budget}} bütçe ve günde filonun en fazla {{fleetPercent}}'i.",
+      "approvers": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approversNone": "Henüz hiçbir rol yapılandırılmadı, bu yüzden kimseye bildirim gönderilmeyecek."
     }
   },
   "apiKeyForm": {

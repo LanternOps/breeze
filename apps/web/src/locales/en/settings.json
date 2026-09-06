@@ -2658,6 +2658,41 @@
       },
       "catalogUnavailable": "Could not load the tool catalog. You can still edit the permissions list directly below.",
       "loading": "Loading capabilities…"
+    },
+    "summary": {
+      "edit": "Edit",
+      "createdDisabled": "Created disabled",
+      "enabled": "Enabled",
+      "allOrganizations": "all organizations",
+      "rowLabels": {
+        "runsWhen": "Runs when",
+        "canRead": "Can read",
+        "mayPropose": "May propose",
+        "executesUnattended": "Executes unattended",
+        "neverTouches": "Never touches",
+        "limits": "Limits",
+        "approvers": "Asks for approval from"
+      },
+      "runsWhen": {
+        "triage": "Runs on new {{severities}} alerts on any device.",
+        "anySeverity": "any-severity",
+        "patch": "Runs on a schedule, or when triggered manually, to review missing patches.",
+        "helpdesk": "Runs when a ticket is created, gets its first reply, or is marked resolved.",
+        "maintenanceWindows": "Waits out maintenance windows.",
+        "ticketWrites": "Writes ticket updates without waiting for a technician."
+      },
+      "canRead": "Device, alert and fleet data for {{scope}}: inventory, metrics, logs, patches, backups, tickets and audit history ({{count}} read-only tools, always on).",
+      "mayPropose": "{{operations}} operations across {{capabilities}} capabilities: {{approvalRequests}} raise an approval request that a technician decides, and {{loggedProposals}} are logged as proposals and never executed.",
+      "mayProposeNone": "This agent does not propose any operations yet.",
+      "unrecognisedLabel": "Not recognized by the current tool catalog:",
+      "executesUnattendedNone": "Nothing. Shadow mode observes and proposes; nothing runs without a technician's approval.",
+      "executesUnattendedNoneAct": "Nothing yet — no selected operation is eligible to run unattended.",
+      "executesUnattendedList": "Executes {{list}} without a technician's approval.",
+      "preauthorizedNote": "Some of these are pre-authorized operations, granted ahead of time through the four-eyes review process.",
+      "neverTouchesEmpty": "Nothing is protected yet.",
+      "limits": "Up to {{devices}} devices per run, {{runsPerHour}} runs per hour, {{minutes}} minutes per run, a daily budget of {{budget}}, and no more than {{fleetPercent}} of the fleet touched per day.",
+      "approvers": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
+      "approversNone": "No roles are configured yet, so nothing will be notified."
     }
   },
   "apiKeyForm": {
