@@ -158,11 +158,28 @@ describe('OrganizationRecordPage — happy path', () => {
     expect(screen.queryByTestId('org-overview-tile-invoices')).toBeNull();
   });
 
-  it('opens the tab named in the URL hash', async () => {
+  it('opens the tab named in the URL hash — an unimplemented tab shows the placeholder', async () => {
+    window.location.hash = '#activity';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-tab-placeholder-activity')).toBeTruthy());
+    expect(screen.queryByTestId('org-overview-tab')).toBeNull();
+  });
+
+  it('opens the Tickets tab named in the URL hash, pinned to the record org', async () => {
     window.location.hash = '#tickets';
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
-    await waitFor(() => expect(screen.getByTestId('org-record-tab-placeholder-tickets')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('org-tickets-tab')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tab')).toBeNull();
+    expect(screen.queryByTestId('org-record-tab-placeholder-tickets')).toBeNull();
+    await waitFor(() => expect(requestedUrls.some((u) => u.includes('/tickets?') && u.includes(`orgId=${RECORD_ORG}`))).toBe(true));
+  });
+
+  it('opens the Contracts & Billing tab named in the URL hash', async () => {
+    window.location.hash = '#billing';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-tab')).toBeTruthy());
+    expect(screen.queryByTestId('org-overview-tab')).toBeNull();
+    expect(screen.queryByTestId('org-record-tab-placeholder-billing')).toBeNull();
   });
 
   it('switches the context and lands on the dashboard from Work in this org', async () => {
@@ -241,8 +258,13 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: 'Devices' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Overview' })).toBeTruthy();
+    // Pre-existing fix, unrelated to W03: OverflowTabs renders each tab with
+    // role="tab" (an ARIA tablist), not role="button" — this assertion never
+    // matched anything on origin/main either way, so it silently passed
+    // vacuously (queryByRole('button', ...) correctly returns null for a
+    // MISSING role too) until the getByRole below started throwing instead.
+    expect(screen.queryByRole('tab', { name: 'Devices' })).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
   });
 
   it('falls back to Overview when the hash names a tab this user cannot see', async () => {
