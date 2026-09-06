@@ -94,7 +94,16 @@ function quoteDepositBadge(q: Quote, t: ReturnType<typeof useTranslation<'billin
   return null;
 }
 
-export function QuotesPage() {
+interface Props {
+  /** When set (e.g. embedded in the org record's Contracts & Billing tab), the
+   *  list is locked to this org: the org column is hidden, the "New quote"
+   *  dialog pre-selects it, and hash-filter writes are skipped so the host
+   *  page's own hash-based tab routing is never fought (mirrors
+   *  `ContractsList`'s `lockedOrgId`). */
+  lockedOrgId?: string;
+}
+
+export function QuotesPage({ lockedOrgId }: Props = {}) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
@@ -109,10 +118,16 @@ export function QuotesPage() {
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
   // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
   // no-deep-link case keeps the default reference and never refetches.
-  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
+  // When locked to an org (embedded in a hash-routed host tab) the host owns
+  // the hash, so parsing always yields undefined — mirrors ContractsList.
+  const [filters, setFilters] = useHashState<Filters>(
+    EMPTY_FILTERS,
+    (h) => (lockedOrgId || !h ? undefined : readFilters(h)),
+  );
   // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
-  // so it doesn't silently widen the quote view to every org.
-  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'));
+  // so it doesn't silently widen the quote view to every org — but NOT in the
+  // locked embed, where `#orgId=` (if present at all) is the host's own pin.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'), !lockedOrgId);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadQuotes).
@@ -157,7 +172,7 @@ export function QuotesPage() {
       setLoading(true);
       setError(undefined);
       setForbidden(false);
-      const res = await listQuotes({ status: f.status || undefined });
+      const res = await listQuotes({ status: f.status || undefined, orgId: lockedOrgId });
       if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
@@ -171,7 +186,7 @@ export function QuotesPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t]);
+  }, [t, lockedOrgId]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadQuotes(filters); }, [loadQuotes, filters]);
@@ -185,16 +200,16 @@ export function QuotesPage() {
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
       const next = { ...prev, ...patch };
-      writeFilters(next);
+      if (!lockedOrgId) writeFilters(next);
       return next;
     });
-  }, []);
+  }, [lockedOrgId]);
 
   const clearFilters = useCallback(() => {
     setFilters(EMPTY_FILTERS);
-    writeFilters(EMPTY_FILTERS);
+    if (!lockedOrgId) writeFilters(EMPTY_FILTERS);
     setSearch('');
-  }, []);
+  }, [lockedOrgId]);
 
   // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
   // first-run empty state (offer "create your first quote").
@@ -213,15 +228,16 @@ export function QuotesPage() {
   }, [t]);
 
   const openCreate = useCallback(() => {
-    // Default the target org to the header's context when one is selected.
-    const contextOrgId = useOrgStore.getState().currentOrgId ?? '';
+    // Locked embeds always target their own org; otherwise default to the
+    // header's context when one is selected.
+    const contextOrgId = lockedOrgId ?? (useOrgStore.getState().currentOrgId ?? '');
     setNewOrgId(contextOrgId);
     setNewSiteId('');
     setNewSites([]);
     setNewSourceId('');
     setCreateOpen(true);
     if (contextOrgId) void loadNewSites(contextOrgId);
-  }, [loadNewSites]);
+  }, [loadNewSites, lockedOrgId]);
 
   const submitCreate = useCallback(async () => {
     if (creating || !newOrgId) return;
@@ -513,7 +529,7 @@ export function QuotesPage() {
                       />
                     </th>
                     <th className="px-3 py-3 font-medium">{t('quotes.page.table.number')}</th>
-                    <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>
+                    {!lockedOrgId && <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>}
                     <th className="px-3 py-3 font-medium">{t('common:labels.status')}</th>
                     <SortableTh label={t('quotes.page.table.total')} sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
                     <SortableTh label={t('quotes.page.table.created')} sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
@@ -557,7 +573,7 @@ export function QuotesPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-3">{orgName(qt.orgId)}</td>
+                      {!lockedOrgId && <td className="px-3 py-3">{orgName(qt.orgId)}</td>}
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <StatusPill
@@ -718,7 +734,8 @@ export function QuotesPage() {
               value={newOrgId}
               onChange={(e) => { setNewOrgId(e.target.value); void loadNewSites(e.target.value); }}
               data-testid="quotes-create-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              disabled={!!lockedOrgId}
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             >
               <option value="">{t('quotes.page.create.selectOrganization')}</option>
               {orgs.map((o) => (

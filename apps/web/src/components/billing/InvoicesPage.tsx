@@ -95,7 +95,16 @@ function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
   return cents(inv.amountPaid) < cents(inv.depositDue) ? 'unpaid' : 'paid';
 }
 
-export function InvoicesPage() {
+interface Props {
+  /** When set (e.g. embedded in the org record's Contracts & Billing tab), the
+   *  list is locked to this org: the org column is hidden, the "New invoice"
+   *  dialog pre-selects it, and hash-filter writes are skipped so the host
+   *  page's own hash-based tab routing is never fought (mirrors
+   *  `ContractsList`'s `lockedOrgId`). */
+  lockedOrgId?: string;
+}
+
+export function InvoicesPage({ lockedOrgId }: Props = {}) {
   const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
   // POST /accounting/quickbooks/invoices/push-bulk is `requireScope('partner',
@@ -117,11 +126,17 @@ export function InvoicesPage() {
   const [forbidden, setForbidden] = useState(false);
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
   // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
-  // no-deep-link case keeps the default reference and never refetches.
-  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
+  // no-deep-link case keeps the default reference and never refetches. When
+  // locked to an org (embedded in a hash-routed host tab) the host owns the
+  // hash, so parsing always yields undefined — mirrors ContractsList.
+  const [filters, setFilters] = useHashState<Filters>(
+    EMPTY_FILTERS,
+    (h) => (lockedOrgId || !h ? undefined : readFilters(h)),
+  );
   // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
-  // so it doesn't silently widen the invoice view to every org.
-  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'));
+  // so it doesn't silently widen the invoice view to every org — but NOT in the
+  // locked embed, where `#orgId=` (if present at all) is the host's own pin.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'), !lockedOrgId);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadInvoices).
@@ -178,6 +193,7 @@ export function InvoicesPage() {
       if (f.status) params.set('status', f.status);
       if (f.from) params.set('from', f.from);
       if (f.to) params.set('to', f.to);
+      if (lockedOrgId) params.set('orgId', lockedOrgId);
       const qs = params.toString();
       const res = await fetchWithAuth(`/invoices${qs ? `?${qs}` : ''}`);
       if (seq !== fetchSeq.current) return;
@@ -193,7 +209,7 @@ export function InvoicesPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [t]);
+  }, [t, lockedOrgId]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadInvoices(filters); }, [loadInvoices, filters]);
@@ -207,16 +223,16 @@ export function InvoicesPage() {
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
       const next = { ...prev, ...patch };
-      writeFilters(next);
+      if (!lockedOrgId) writeFilters(next);
       return next;
     });
-  }, []);
+  }, [lockedOrgId]);
 
   const clearFilters = useCallback(() => {
     setFilters(EMPTY_FILTERS);
-    writeFilters(EMPTY_FILTERS);
+    if (!lockedOrgId) writeFilters(EMPTY_FILTERS);
     setSearch('');
-  }, []);
+  }, [lockedOrgId]);
 
   // Load sites for the org picker in the dialog.
   const loadAssembleSites = useCallback(async (orgId: string) => {
@@ -232,8 +248,9 @@ export function InvoicesPage() {
 
   const openAssemble = useCallback(() => {
     setMode('assemble');
-    // Default the target org to the header's context when one is selected.
-    const contextOrgId = useOrgStore.getState().currentOrgId ?? '';
+    // Locked embeds always target their own org; otherwise default to the
+    // header's context when one is selected.
+    const contextOrgId = lockedOrgId ?? (useOrgStore.getState().currentOrgId ?? '');
     setAssembleOrgId(contextOrgId);
     setAssembleSiteId('');
     setAssembleSites([]);
@@ -245,7 +262,7 @@ export function InvoicesPage() {
     setBlockedGroups([]);
     setAssembleOpen(true);
     if (contextOrgId) void loadAssembleSites(contextOrgId);
-  }, [loadAssembleSites]);
+  }, [loadAssembleSites, lockedOrgId]);
 
   // `currencyOverride` lets the blocked-group shortcut re-submit in the same
   // tick it sets the select — the state write alone would not be visible to
@@ -625,7 +642,7 @@ export function InvoicesPage() {
                       />
                     </th>
                     <th className="px-3 py-3 font-medium">{t('invoicesPage.table.number')}</th>
-                    <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>
+                    {!lockedOrgId && <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>}
                     <SortableTh label={t('invoicesPage.table.issued')} sortKey="issued" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-issued" />
                     <SortableTh label={t('invoicesPage.table.due')} sortKey="due" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-due" />
                     <SortableTh label={t('invoicesPage.table.total')} sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="invoices-sort-total" />
@@ -671,7 +688,7 @@ export function InvoicesPage() {
                             </a>
                           </span>
                         </td>
-                        <td className="px-3 py-3">{orgName(inv.orgId)}</td>
+                        {!lockedOrgId && <td className="px-3 py-3">{orgName(inv.orgId)}</td>}
                         <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
                         <td className={`px-3 py-3 ${overdue ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
                           {formatDate(inv.dueDate)}
@@ -764,7 +781,7 @@ export function InvoicesPage() {
                       </div>
                     </div>
                     <div className="mt-3 space-y-1.5">
-                      <CardField label={t('common:labels.organization')}>{orgName(inv.orgId)}</CardField>
+                      {!lockedOrgId && <CardField label={t('common:labels.organization')}>{orgName(inv.orgId)}</CardField>}
                       <CardField label={t('invoicesPage.table.issued')}>{formatDate(inv.issueDate)}</CardField>
                       <CardField label={t('invoicesPage.table.due')}>
                         <span className={overdue ? 'font-medium text-destructive' : undefined}>{formatDate(inv.dueDate)}</span>
@@ -885,7 +902,8 @@ export function InvoicesPage() {
               value={assembleOrgId}
               onChange={(e) => { setAssembleOrgId(e.target.value); void loadAssembleSites(e.target.value); }}
               data-testid="invoices-assemble-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              disabled={!!lockedOrgId}
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             >
               <option value="">{t('invoicesPage.dialog.selectOrganization')}</option>
               {orgs.map((o) => (

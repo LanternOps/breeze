@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoicesPage from './InvoicesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
@@ -407,5 +408,51 @@ describe('InvoicesPage', () => {
     // The generic data-load-failure UI must NOT appear for a 403.
     expect(screen.queryByTestId('invoices-error')).not.toBeInTheDocument();
     expect(screen.queryByText('Try again')).not.toBeInTheDocument();
+  });
+
+  describe('lockedOrgId (embedded in the organization record)', () => {
+    beforeEach(() => {
+      // The store points at a DIFFERENT org than the lock, proving the embed
+      // never falls back to the ambient switcher scope.
+      useOrgStore.setState({ currentOrgId: 'org-2' });
+    });
+
+    afterEach(() => {
+      useOrgStore.setState({ currentOrgId: null });
+    });
+
+    it('fetches with the locked org, not the store-selected org', async () => {
+      wireDefault();
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      const listCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith('/invoices?') || String(url) === '/invoices');
+      expect(String(listCall?.[0])).toContain('orgId=org-1');
+    });
+
+    it('hides the organization column', async () => {
+      wireDefault();
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      expect(screen.queryByText('Organization')).not.toBeInTheDocument();
+    });
+
+    it('pre-fills the create-invoice dialog with the locked org, not the store org, and disables the picker', async () => {
+      wireDefault();
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('invoices-assemble-open'));
+      const orgSelect = screen.getByTestId('invoices-assemble-org') as HTMLSelectElement;
+      expect(orgSelect.value).toBe('org-1');
+      expect(orgSelect).toBeDisabled();
+    });
+
+    it('skips hash-filter writes so the host page keeps its own hash-based tab routing', async () => {
+      wireDefault();
+      window.location.hash = '#billing';
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('invoices-filter-status'), { target: { value: 'overdue' } });
+      expect(window.location.hash).toBe('#billing');
+    });
   });
 });
