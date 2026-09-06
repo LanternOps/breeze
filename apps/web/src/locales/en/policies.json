@@ -938,7 +938,8 @@
         "loadingPolicies": "Loading policies...",
         "noExistingPoliciesFound": "No existing policies found.",
         "selectAPolicy": "Select a policy...",
-        "clearSelection": "Clear selection"
+        "clearSelection": "Clear selection",
+        "allOrgs": "All orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

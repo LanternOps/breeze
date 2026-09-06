@@ -6,6 +6,8 @@ import { i18n } from "@/lib/i18n";
 type PolicyOption = {
   id: string;
   name: string;
+  /** Present on `/configuration-policies/eligible-parents` rows (#5080). */
+  ownerScope?: "organization" | "partner";
 };
 type PolicyLinkSelectorProps = {
   fetchUrl: string;
@@ -46,6 +48,7 @@ export default function PolicyLinkSelector({
         const mapped: PolicyOption[] = list.map((p: any) => ({
           id: p.id,
           name: p.name,
+          ownerScope: p.ownerScope === "partner" || p.ownerScope === "organization" ? p.ownerScope : undefined,
         }));
         if (!cancelled)
           setOptions(
@@ -90,6 +93,7 @@ export default function PolicyLinkSelector({
   return (
     <div className="flex items-center gap-2">
       <select
+        data-testid="policy-link-selector"
         value={selectedId ?? ""}
         onChange={(e) => onSelect(e.target.value || null)}
         className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -101,7 +105,11 @@ export default function PolicyLinkSelector({
         </option>
         {options.map((opt) => (
           <option key={opt.id} value={opt.id}>
-            {opt.name}
+            {opt.ownerScope === "partner"
+              ? `${opt.name} (${i18n.t(
+                  "policies:configurationPolicies.featureTabs.policyLinkSelector.allOrgs",
+                )})`
+              : opt.name}
           </option>
         ))}
       </select>
