@@ -4,6 +4,37 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Network device detail page + discovered asset list (branch `network-assets-list`) — 2026-09-06
+
+**Branch:** `network-assets-list`
+**Commit:** `8478c85c0` (fixes) on top of `ec3430dd7`
+**Tested by:** Claude (Playwright MCP against a `pnpm wt-stack` per-worktree stack)
+**Result:** PASS after one inline fix
+
+### What was tested
+- [x] UI: `/discovery#assets` list renders 10 seeded assets across pending/approved/dismissed, all type facets, profile and subnet facets, online/offline dots, "Agent" badge (renamed from "Agent installed") linking to the managed device.
+- [x] UI: `/devices/network/:id` for a SNMP-rich switch, a 14-port NAS, an offline no-hostname camera, a phone with auto-link suppressed, and a bogus id (404 state with breadcrumbs, Try again, Go back).
+- [x] UI: header shows site name, IP, MAC, manufacturer; stat strip Status/Ping/Open ports (jumps to section)/Linked device; Overview and Monitoring tabs with hash sync and ArrowRight roving focus.
+- [x] UI: type editor stages a value with Save/Cancel, PATCHes on Save, header badge updates, live region announces, "Reset to auto-detected" + "Manually set" provenance.
+- [x] UI: SNMP "Show more/Show less" on a long sysDescr; open ports list capped at 12 with "Show all (14)"/"Show fewer"; Telnet flagged "Unencrypted" with visible hint.
+- [x] UI: proxy popover (header and per-port variants): port input, bridge agent preselected to the discovering agent, HTTP/HTTPS, self-signed checkbox on 443, Escape closes, Connect POSTs `/tunnels/proxy-connect`, failure toasts "Agent is not connected".
+- [x] UI: Link manually… picker → Save → "Same device as … — set manually" + stat strip; Unlink → confirm dialog → "Auto-linking is off … because someone unlinked it".
+- [x] API: `GET /discovery/assets/:id` returns `siteName`, `suggestedBridgeDeviceId` resolved via `discovery_jobs.agent_id` → `devices.agent_id`; `PATCH` type save/reset; link/unlink.
+- [x] Unified device list with `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST=true`: 4 approved+unlinked assets appear as Class "Network" rows with All/Agent/Network facets (impeccable critique recorded separately).
+
+### Evidence
+- Seed: 10 `discovered_assets` + 1 `discovery_profiles` + 1 `discovery_jobs` under Default Org/Site (SQL in session scratchpad; `discovery_jobs.agent_id` must be the device's varchar `agent_id`, not its uuid, for the bridge suggestion to resolve).
+- Unit: `NetworkDeviceDetailPage.test.tsx` + `DiscoveredAssetList.test.tsx` 89/89 after fix; `translationCoverage.test.ts` 15/15.
+
+### Issues Found
+- **FIXED inline (8478c85c0):** pressing Connect closed the popover mid-request. The disabled Connect button fires `focusout` with a null `relatedTarget` in Chrome and the non-modal focus-leave handler treated that as the user leaving. Same mechanism left focus on `<body>` after Escape instead of restoring it to the trigger. Fix: ignore focus-loss with no related target; refocus Connect after a failed connect.
+- Open, minor: SNMP section mixes translated labels ("System name", "Description") with raw OIDs (`sysUpTime`, `sysContact`, `sysLocation`, `ifNumber`); discovery methods render raw enum values (`port_scan`); a port with no service name shows the number twice ("6690 / 6690"); when the asset has no hostname or label the subtitle repeats the IP shown as the h1; "Reset to auto-detected" on an asset with `detected_asset_type = NULL` keeps the manual type and only flips `type_source` to `auto`; after Unlink's confirm dialog closes, focus lands on `<body>`; "Device linked" is not announced to the live region (unlink is).
+- Product gap, not a bug: the Monitoring tab only shows enabled/not-configured for SNMP and network monitoring and links to the discovery asset view. No page in the web UI charts `snmp_metrics` or `network_monitor_results`; `/monitoring` modals show the last 20 rows as tables, and `GET /snmp/dashboard` `topInterfaces` is computed but never rendered.
+
+### Notes
+- Seeded agents flip to offline once `devices.last_seen_at` ages past the online threshold; the popover then shows "No online agent can reach …" and hides Connect (correct behavior, but bump `last_seen_at` before re-testing the proxy flow).
+- `docker-compose.override.yml.dev` now maps `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` (default false); set it in the worktree `.env` and `--force-recreate web`.
+
 ## Auth browser/native transition Phase 1 foundation (#3852) — 2026-08-23
 
 **Branch:** `feat/3852-auth-browser-transition`
