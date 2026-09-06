@@ -375,6 +375,7 @@ async function insertPendingPushMapping(
       linkStatus: 'create_new',
       syncStatus: 'pending',
       pendingOp: 'push',
+      pendingSince: new Date(),
     })
     .onConflictDoNothing({
       target: [
@@ -572,6 +573,9 @@ export async function requestPaymentDelete(
     .update(accountingEntityMappings)
     .set({
       pendingOp: 'delete',
+      // A NEW debt starts here, so the grace window restarts with it — see the
+      // `pending_since` note on the schema column.
+      pendingSince: new Date(),
       syncStatus: 'pending',
       lastError: null,
       updatedAt: new Date(),
@@ -849,7 +853,10 @@ async function clearPendingPush(mappingId: string, partnerId: string): Promise<v
 async function convertToDelete(mappingId: string, partnerId: string): Promise<void> {
   const rows = await db
     .update(accountingEntityMappings)
-    .set({ pendingOp: 'delete', syncStatus: 'pending', claimedAt: null, updatedAt: new Date() })
+    .set({
+      pendingOp: 'delete', pendingSince: new Date(),
+      syncStatus: 'pending', claimedAt: null, updatedAt: new Date(),
+    })
     .where(and(
       eq(accountingEntityMappings.id, mappingId),
       eq(accountingEntityMappings.partnerId, partnerId),
@@ -1085,6 +1092,7 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
     .update(accountingEntityMappings)
     .set({
       pendingOp: 'push',
+      pendingSince: new Date(),
       syncStatus: 'pending',
       // Matches `insertPendingPushMapping`: the row is once again a payment
       // QuickBooks has never seen, so it is a create, not a confirmed link.
@@ -1498,9 +1506,17 @@ export async function deletePaymentInAccounting(
       // only correct move: the CDC pull adopts the Payment and fills the remote
       // id in, and the sweep re-enqueues this job afterwards.
       //
-      // `created_at`, NOT `updated_at`: the lease CAS bumps `updated_at` on every
-      // attempt, so an age measured on it would never expire.
-      const unresolvedForMs = now.getTime() - claimed.createdAt.getTime();
+      // `pending_since`, NOT `updated_at` and NOT `created_at`. The lease CAS
+      // bumps `updated_at` on every attempt, so an age measured there never
+      // expires; `created_at` is the age of the MAPPING, and a row the invoice
+      // fan-out re-owned — or one simply synced for a week — is already past
+      // this window on the day its payment is voided, so anchoring there dropped
+      // an unresolved delete on its FIRST attempt (review wave 2, finding 6).
+      // `pending_since` is stamped by whichever writer started THIS debt; NULL
+      // means a row written before the column existed, and falling back to
+      // `created_at` preserves exactly the behaviour those rows had.
+      const owedSince = claimed.pendingSince ?? claimed.createdAt;
+      const unresolvedForMs = now.getTime() - owedSince.getTime();
       if (unresolvedForMs < PAYMENT_DELETE_UNRESOLVED_GRACE_MS) {
         await releaseLease(mappingId, partnerId);
         return { kind: 'outcome', outcome: 'awaiting_remote_ref' } as const;

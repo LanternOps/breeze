@@ -108,6 +108,14 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // PAYMENT_DELETE_UNRESOLVED_GRACE_MS), so retaining it is safe for erasure
   // and bounded in time. Both sweeps log the count they left behind.
   pendingOp: text('pending_op').$type<'push' | 'delete'>(),
+  // When the CURRENT `pending_op` started being owed. Written by every writer
+  // that begins a new debt, left alone by the ones that merely keep an existing
+  // one. It is what the delete worker's PAYMENT_DELETE_UNRESOLVED_GRACE_MS is
+  // measured from: `updated_at` is bumped by the lease CAS on every attempt (so
+  // an age read there never expires) and `created_at` is the age of the MAPPING,
+  // not of the debt — a re-owned or long-synced row is already past the window
+  // on the day its payment is voided. NULL falls back to `created_at`.
+  pendingSince: timestamp('pending_since', { withTimezone: true }),
   // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
   // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
   claimedAt: timestamp('claimed_at', { withTimezone: true }),

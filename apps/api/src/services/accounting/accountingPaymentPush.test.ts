@@ -155,6 +155,7 @@ interface MapRow {
   breezeOrigin: boolean; pendingOp: string | null; claimedAt: Date | null; lastSyncedAt: Date | null;
   linkStatus: string; syncStatus: string; lastError: string | null; syncAttempts: number;
   pushGeneration: number;
+  pendingSince: Date | null;
   createdAt: Date; updatedAt: Date;
 }
 
@@ -240,6 +241,7 @@ function mapRowBase(o: Partial<MapRow>): MapRow {
     breezeOrigin: false, pendingOp: null, claimedAt: null, lastSyncedAt: null,
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, syncAttempts: 0,
     pushGeneration: 0,
+    pendingSince: null,
     createdAt: ago(30 * MINUTE), updatedAt: ago(5 * MINUTE), ...o,
   };
 }
@@ -256,7 +258,8 @@ function paymentMapRow(o: Partial<MapRow> = {}): MapRow {
   return mapRowBase({
     id: MAPPING, breezeEntityType: 'payment', breezeEntityId: PAYMENT,
     remoteEntityType: 'Payment', remoteEntityId: null, remoteSyncToken: null,
-    breezeOrigin: true, pendingOp: 'push', linkStatus: 'create_new', syncStatus: 'pending', ...o,
+    breezeOrigin: true, pendingOp: 'push', pendingSince: ago(30 * MINUTE),
+    linkStatus: 'create_new', syncStatus: 'pending', ...o,
   });
 }
 
@@ -662,7 +665,7 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     await runCtx(() => requestPaymentDelete(db, PAYMENT));
 
     const patch = lastUpdate().set!;
-    expect(Object.keys(patch).sort()).toEqual(['lastError', 'pendingOp', 'syncStatus', 'updatedAt']);
+    expect(Object.keys(patch).sort()).toEqual(['lastError', 'pendingOp', 'pendingSince', 'syncStatus', 'updatedAt']);
   });
 
   it('DELETES a STRANDED Breeze-origin mapping — no remote id and nothing owed (finding C2)', async () => {
@@ -1308,7 +1311,7 @@ describe('deletePaymentInAccounting', () => {
     // The create may still be in flight, or its response was lost and the CDC
     // pull has yet to adopt the Payment. Dropping the row here would orphan it.
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
-      pendingOp: 'delete', remoteEntityId: null, createdAt: ago(60 * MINUTE),
+      pendingOp: 'delete', remoteEntityId: null, pendingSince: ago(60 * MINUTE),
     })];
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('awaiting_remote_ref');
@@ -1322,7 +1325,7 @@ describe('deletePaymentInAccounting', () => {
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
       pendingOp: 'delete',
       remoteEntityId: null,
-      createdAt: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
     })];
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
@@ -1340,14 +1343,44 @@ describe('deletePaymentInAccounting', () => {
     }));
   });
 
-  it('measures the unresolved window on created_at, which the lease CAS cannot bump', async () => {
+  it('measures the unresolved window on pending_since, which the lease CAS cannot bump', async () => {
     // updated_at is bumped by every claim, so an age measured on it would never
     // expire under a 15-minute sweep.
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
       pendingOp: 'delete',
       remoteEntityId: null,
-      createdAt: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
+      pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
       updatedAt: ago(3 * MINUTE),
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');
+  });
+
+  it('measures it on pending_since, NOT created_at — a re-owned row is days old before its delete is owed', async () => {
+    // `created_at` is the age of the MAPPING, not of the debt. A mapping the
+    // invoice fan-out re-owned (or one that has simply been synced for a week)
+    // is already older than the grace window on the day its payment is voided,
+    // so anchoring there dropped an unresolved delete on its FIRST attempt —
+    // the exact opposite of the 24 hours the window is meant to give the CDC
+    // pull to adopt the Payment.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete',
+      remoteEntityId: null,
+      createdAt: new Date(Date.now() - 9 * PAYMENT_DELETE_UNRESOLVED_GRACE_MS),
+      pendingSince: ago(2 * MINUTE), // the void that flipped it happened just now
+    })];
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('awaiting_remote_ref');
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', claimedAt: null });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to created_at when pending_since is null (a row written before the column existed)', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: 'delete',
+      remoteEntityId: null,
+      pendingSince: null,
+      createdAt: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - MINUTE),
     })];
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('unresolved_dropped');

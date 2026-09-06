@@ -99,3 +99,42 @@ BEGIN
   GET DIAGNOSTICS marked = ROW_COUNT;
   RAISE WARNING 'marked % invoice accounting mappings as Breeze-origin', marked;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Review wave 2, finding 6: WHEN the row started owing its `pending_op`.
+--
+-- The delete worker parks an unresolved delete (`pending_op = 'delete'` with no
+-- `remote_entity_id`) for PAYMENT_DELETE_UNRESOLVED_GRACE_MS before dropping it
+-- loudly, and that window has to be measured from when the DEBT began. It
+-- cannot be `updated_at`: the lease CAS bumps that on every attempt, so an age
+-- read there never expires. It cannot be `created_at` either — that is the age
+-- of the MAPPING. A mapping the invoice fan-out re-owned, or one that has
+-- simply been synced for a week, is already older than the window on the day
+-- its payment is voided, so the row was dropped on its FIRST attempt instead of
+-- getting the 24 hours the CDC pull needs to adopt the Payment.
+--
+-- Written by every writer of `pending_op` that starts a NEW debt
+-- (insertPendingPushMapping, requestPaymentDelete, convertToDelete,
+-- reownPushMapping) and left alone by the ones that merely keep an existing one
+-- (the CDC adoption of a delete-pending row). NULL is tolerated and falls back
+-- to `created_at` in the coordinator, which is exactly the pre-existing
+-- behaviour for any row written before this column existed.
+ALTER TABLE accounting_entity_mappings
+  ADD COLUMN IF NOT EXISTS pending_since timestamptz;
+
+-- Backfill only rows that currently owe something; everything else is NULL by
+-- definition. `updated_at` overstates the age of a leased row, which is the
+-- SAFE direction here (a longer park, never a premature drop).
+DO $$
+DECLARE
+  stamped integer;
+BEGIN
+  UPDATE accounting_entity_mappings
+     SET pending_since = updated_at
+   WHERE pending_op IS NOT NULL
+     AND pending_since IS NULL;
+  GET DIAGNOSTICS stamped = ROW_COUNT;
+  IF stamped > 0 THEN
+    RAISE WARNING 'stamped pending_since on % accounting mappings that already owed work', stamped;
+  END IF;
+END $$;
