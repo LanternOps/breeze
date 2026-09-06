@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -129,6 +131,17 @@ const ATTACH_ACTIONS: readonly {
   { key: 'library', label: 'Library', pick: (remaining) => pickFromLibrary(remaining) },
   { key: 'file', label: 'File', pick: () => pickDocument() },
 ];
+
+/**
+ * What a permission-denied alert should call the capability — distinct from
+ * the button `label` above ("Library" reads fine as a tap target but is vague
+ * as "Library access is off for Breeze"; #5103 also flagged the generic
+ * "that" this used to say instead of naming anything at all).
+ */
+const PERMISSION_CAPABILITY_NAME: Record<string, string> = {
+  camera: 'Camera',
+  library: 'Photo Library',
+};
 
 export function TicketDetailScreen() {
   const route = useRoute<DetailRoute>();
@@ -264,7 +277,7 @@ export function TicketDetailScreen() {
   );
 
   const handlePick = useCallback(
-    async (pick: () => Promise<PickOutcome>) => {
+    async (pick: () => Promise<PickOutcome>, capability: string) => {
       // Total by contract — `runPicker` converts a native throw into a
       // `failed` outcome, so this never rejects into the `void` at the tap site.
       const outcome = await pick();
@@ -273,10 +286,18 @@ export function TicketDetailScreen() {
         // A cancel is the user's own choice and gets no toast; the other two
         // are failures they cannot otherwise see.
         if (outcome.reason === 'permission-denied') {
-          setToast({
-            kind: 'error',
-            text: 'Breeze needs permission to use that. Enable it in Settings.',
-          });
+          // A toast auto-hides in under 2s with no way back — useless for a
+          // denial the technician can only fix in Settings. An alert names
+          // the capability (not "that", #5103) and offers a real next step
+          // instead of leaving them to find Settings on their own.
+          Alert.alert(
+            `${capability} access is off for Breeze`,
+            'Turn it on in Settings to continue.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+            ]
+          );
         } else if (outcome.reason === 'failed') {
           setToast({ kind: 'error', text: outcome.message });
         }
@@ -823,7 +844,12 @@ export function TicketDetailScreen() {
             {ATTACH_ACTIONS.map(({ key, label, pick }) => (
               <Pressable
                 key={key}
-                onPress={() => void handlePick(() => pick(remainingSlots(chips)))}
+                onPress={() =>
+                  void handlePick(
+                    () => pick(remainingSlots(chips)),
+                    PERMISSION_CAPABILITY_NAME[key] ?? label
+                  )
+                }
                 disabled={attachBlocked !== null}
                 accessibilityRole="button"
                 accessibilityLabel={label}
