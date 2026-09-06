@@ -150,6 +150,71 @@ describe('AiAgentsPage', () => {
     expect(screen.queryByTestId('ai-agent-allorgs-a2')).toBeNull();
   });
 
+  // #4170 — an org-only row overrides a partner-wide baseline of the same
+  // kind; with none, the resolver treats the row as if it did not exist even
+  // though its own `enabled`/`mode` columns look live.
+  it('badges an org-owned agent whose kind has no partner-wide baseline as inert', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) {
+        return Promise.resolve(json({
+          data: [{ ...ORG_AGENT, hasPartnerBaseline: false }],
+          partnerBaselineKinds: [],
+        }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-inert-badge-a2')).toBeInTheDocument();
+  });
+
+  it('does not badge an org-owned agent whose kind has an active partner-wide baseline', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) {
+        return Promise.resolve(json({
+          data: [{ ...ORG_AGENT, hasPartnerBaseline: true }],
+          partnerBaselineKinds: ['patch'],
+        }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-row-a2')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-inert-badge-a2')).toBeNull();
+  });
+
+  it('never badges a partner-wide agent as inert, regardless of hasPartnerBaseline', async () => {
+    mockEndpoints([{ ...PARTNER_AGENT, hasPartnerBaseline: false }]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-row-a1')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-inert-badge-a1')).toBeNull();
+  });
+
+  // The create form has no existing row for a not-yet-created kind to read
+  // `hasPartnerBaseline` off of, so the page threads the LIST response's
+  // top-level `partnerBaselineKinds` set through to it instead.
+  it('passes partnerBaselineKinds from the list response into the create form', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: 'p-1', orgId: 'org-1' });
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [], partnerBaselineKinds: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await openCreateForm();
+
+    expect(await screen.findByTestId('ai-agent-no-baseline-hint')).toBeInTheDocument();
+  });
+
   it('treats a malformed 200 body as an error, never as "no agents"', async () => {
     // A gateway error page or a shape change must not render as an empty
     // tenant — that also told the create form every kind was free.

@@ -1577,6 +1577,10 @@
       "running": "Durum",
       "lastRunStatus": "Son çalıştırma sonucu"
     },
+    "inertBadge": {
+      "label": "Pasif",
+      "hint": "Bu tür için henüz iş ortağı genelinde bir temel çizgi yok. Yalnızca kuruluşa özgü bir aracı yalnızca bir temel çizgiyi geçersiz kılar, bu nedenle biri oluşturulana kadar hiçbir etkisi olmaz."
+    },
     "lastRun": {
       "never": "Hiç çalıştırılmadı",
       "at": "Son çalıştırma {{at}}"

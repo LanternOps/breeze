@@ -107,6 +107,15 @@ interface Props {
    * uniqueness is (partner_id, kind) and (org_id, kind) independently.
    */
   agents: AiAgentDto[];
+  /**
+   * Kinds that already have an active partner-wide baseline for this org's
+   * partner (#4170). An org-only agent is override-only by design — with no
+   * baseline for its kind, the resolver treats it as if it did not exist —
+   * so this warns BEFORE creating an org row of a kind with no baseline yet.
+   * Reported by GET /ai/agents alongside `agents`, not derivable from
+   * `agents` itself: a not-yet-created kind has no row to read it off of.
+   */
+  partnerBaselineKinds: Set<string>;
   /** Show the partner-wide vs org-owned selector (create-only, partner-scope users). */
   showOwnerScope: boolean;
   defaultOwnerScope: OwnerScope;
@@ -315,6 +324,7 @@ function draftFrom(
 export default function AiAgentForm({
   agent,
   agents,
+  partnerBaselineKinds,
   showOwnerScope,
   defaultOwnerScope,
   onClose,
@@ -1157,6 +1167,20 @@ export default function AiAgentForm({
                 {t('aiAgentsPage.editor.thisOrg')}
               </label>
             </fieldset>
+          )}
+
+          {/* #4170: an org-only agent overrides a partner-wide baseline of the
+              same kind — it is never a standalone policy. Not nested inside
+              `showOwnerScope` above: an org-scoped session's default (and
+              only) create path never renders that selector at all, and is
+              exactly the common case this warns for. */}
+          {isCreate && draft.ownerScope === 'organization' && !partnerBaselineKinds.has(draft.kind) && (
+            <p
+              className="rounded-md border border-amber-300 bg-amber-100 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200 md:col-span-2"
+              data-testid="ai-agent-no-baseline-hint"
+            >
+              {t('aiAgentsPage.inertBadge.hint')}
+            </p>
           )}
 
           {isCreate && availableKinds.length === 0 && (

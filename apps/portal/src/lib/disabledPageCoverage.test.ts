@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PORTAL_GATED_PAGES } from './visibilityGate';
 
 /**
  * Contract test: a portal page whose data comes from behind a visibility gate
@@ -110,6 +111,23 @@ describe('visibility-gate handling in portal pages', () => {
       'A gate 403 means the MSP switched this page off — redirect through ' +
         'redirectToPortalHomeAfterDisabled instead of rendering a load failure:\n' +
         violations.join('\n'),
+    ).toEqual([]);
+  });
+
+  it('never redirects a disabled page onto another gated page', () => {
+    // #4932 follow-up: a gate 403 that bounces to /devices (itself gated on
+    // Self-service) becomes two hops when both are off. The "handled" check
+    // above accepts any page that names its gate code, so a stale hardcoded
+    // target passes it — assert the target directly.
+    const gated = PORTAL_GATED_PAGES.map((page) => page.replace(/^\//, ''));
+    const pattern = new RegExp(`Astro\\.redirect\\(withBase\\('/(?:${gated.join('|')})(?:/[^']*)?'\\)\\)`);
+    const stale = pages
+      .filter(({ source }) => gatedMethodsIn(source).length > 0)
+      .filter(({ source }) => pattern.test(frontmatterOf(source) ?? ''))
+      .map(({ path }) => path);
+    expect(
+      stale,
+      'these pages answer a gate 403 by redirecting onto another gated page — use redirectToPortalHomeAfterDisabled',
     ).toEqual([]);
   });
 

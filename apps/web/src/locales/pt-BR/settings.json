@@ -1577,6 +1577,10 @@
       "running": "Status",
       "lastRunStatus": "Resultado da última execução"
     },
+    "inertBadge": {
+      "label": "Inativo",
+      "hint": "Ainda não existe uma linha de base em todo o parceiro para este tipo. Um agente exclusivo da organização apenas substitui uma linha de base, portanto não tem efeito até que uma seja criada."
+    },
     "lastRun": {
       "never": "Nunca executado",
       "at": "Última execução {{at}}"

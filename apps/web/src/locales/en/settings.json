@@ -1577,6 +1577,10 @@
       "running": "Status",
       "lastRunStatus": "Last run outcome"
     },
+    "inertBadge": {
+      "label": "Inactive",
+      "hint": "No partner-wide baseline exists yet for this kind. An organization-only agent only overrides a baseline, so it has no effect until one is created."
+    },
     "lastRun": {
       "never": "Never run",
       "at": "Last run {{at}}"

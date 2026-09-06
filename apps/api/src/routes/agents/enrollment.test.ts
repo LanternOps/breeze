@@ -152,6 +152,13 @@ vi.mock('../../services/partnerTrust', () => ({
   })),
 }));
 
+// #4630 — dynamic device group re-evaluation emit on enrollment.
+const emitDeviceChangeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../../events/deviceEvents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/deviceEvents')>();
+  return { ...actual, emitDeviceChange: emitDeviceChangeMock };
+});
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -365,6 +372,46 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   it('omits/empty backupServerUrl when env unset', async () => {
     const body = await enrollOk();
     expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
+
+describe('POST /agents/enroll — dynamic device group re-evaluation emit (#4630)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('emits device.created INSIDE a system DB access context (RLS denies contextless reads)', async () => {
+    // Outside withSystemDbAccessContext the handler's dynamic-group SELECT
+    // runs with breeze.scope='none' and silently returns zero rows, so the
+    // enrollment-time evaluation would be a no-op in production.
+    let insideContext = 0;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: any) => {
+      insideContext++;
+      try { return await fn(); } finally { insideContext--; }
+    });
+    let emittedInside: number | null = null;
+    emitDeviceChangeMock.mockImplementationOnce(async () => { emittedInside = insideContext; });
+
+    await enrollOk();
+
+    expect(emitDeviceChangeMock).toHaveBeenCalledTimes(1);
+    expect(emittedInside).toBeGreaterThan(0);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: any) => fn());
+  });
+
+  it('emits device.created for the freshly enrolled device', async () => {
+    await enrollOk();
+
+    expect(emitDeviceChangeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'device.created',
+        deviceId: 'device-backup-url',
+        orgId: 'org-backup-url',
+      }),
+    );
   });
 });
 

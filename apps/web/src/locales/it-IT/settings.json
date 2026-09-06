@@ -1577,6 +1577,10 @@
       "running": "Stato",
       "lastRunStatus": "Esito dell’ultima esecuzione"
     },
+    "inertBadge": {
+      "label": "Inattivo",
+      "hint": "Per questo tipo non esiste ancora una configurazione di base a livello di partner. Un agente esclusivo dell’organizzazione si limita a sovrascrivere una configurazione di base, quindi non ha alcun effetto finché non ne viene creata una."
+    },
     "lastRun": {
       "never": "Mai eseguito",
       "at": "Ultima esecuzione {{at}}"

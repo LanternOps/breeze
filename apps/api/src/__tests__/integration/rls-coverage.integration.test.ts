@@ -643,9 +643,6 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
   ['ai_agent_schedules', 'TODO(#4943): no breeze_current_partner_id() SELECT branch yet.'],
   ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
   ['client_ai_prompt_templates', 'TODO(#4945): no breeze_current_partner_id() SELECT branch yet.'],
-  ['software_catalog', 'TODO(#4946): no breeze_current_partner_id() SELECT branch yet.'],
-  ['software_policies', 'TODO(#4947): no breeze_current_partner_id() SELECT branch yet.'],
-  ['security_policies', 'TODO(#4948): no breeze_current_partner_id() SELECT branch yet.'],
   ['alert_rules', 'TODO(#4949): no breeze_current_partner_id() SELECT branch yet.'],
   // Known gap found during W03 of #4673: automation_policies is read by
   // buildPolicyProbeConfigUpdate, which is exactly why that resolver still
@@ -653,12 +650,6 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
   ['automation_policies', 'TODO(#4950): no breeze_current_partner_id() SELECT branch yet.'],
   ['automation_resource_bindings', 'TODO(#4951): no breeze_current_partner_id() SELECT branch yet.'],
   ['automations', 'TODO(#4952): no breeze_current_partner_id() SELECT branch yet.'],
-  ['sensitive_data_policies', 'TODO(#4953): no breeze_current_partner_id() SELECT branch yet.'],
-  ['peripheral_policies', 'TODO(#4954): no breeze_current_partner_id() SELECT branch yet.'],
-  ['maintenance_windows', 'TODO(#4955): no breeze_current_partner_id() SELECT branch yet.'],
-  ['notification_channels', 'TODO(#4956): no breeze_current_partner_id() SELECT branch yet.'],
-  ['notification_routing_rules', 'TODO(#4957): no breeze_current_partner_id() SELECT branch yet.'],
-  ['escalation_policies', 'TODO(#4958): no breeze_current_partner_id() SELECT branch yet.'],
 ]);
 
 // Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
@@ -670,25 +661,16 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
 // follow-up issue, not a free ride into an already-frozen exemption. Both
 // constants are asserted by 'the partner-wide SELECT branch exemption map
 // only shrinks' below.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 17;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 8;
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
   'custom_field_definitions',
   'client_ai_prompt_templates',
-  'software_catalog',
-  'software_policies',
-  'security_policies',
   'alert_rules',
   'automation_policies',
   'automation_resource_bindings',
   'automations',
-  'sensitive_data_policies',
-  'peripheral_policies',
-  'maintenance_windows',
-  'notification_channels',
-  'notification_routing_rules',
-  'escalation_policies',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

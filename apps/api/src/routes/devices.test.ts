@@ -184,7 +184,10 @@ vi.mock('../services/deviceUninstallDrain', () => ({
   queueDeviceUninstall: vi.fn(),
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../db/schema', async (importOriginal) => ({
+  // routes/devices/actuateElevation.ts calls drizzle's alias(users, …) at
+  // import time (#4913), which needs a real table, not a plain-object stub.
+  users: (await importOriginal<typeof import('../db/schema')>()).users,
   // routes/devices/events.ts builds module-level SQL fragments from auditLogs at import time (#4835).
   auditLogs: { actorType: 'actorType', details: 'details', timestamp: 'timestamp', action: 'action' },
   devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },

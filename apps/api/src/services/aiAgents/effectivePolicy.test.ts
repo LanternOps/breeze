@@ -65,6 +65,7 @@ import {
 } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import {
+  loadPartnerBaselineKinds,
   mergeAgentPolicies,
   normalizeAgentPolicy,
   resolveEffectiveAgent,
@@ -565,6 +566,51 @@ describe('resolveEffectiveAgentSystem', () => {
 
     await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
 
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadPartnerBaselineKinds (#4170)', () => {
+  it('returns the empty set without querying when partnerId is null', async () => {
+    const result = await loadPartnerBaselineKinds(null);
+
+    expect(result).toEqual(new Set());
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('returns every kind with an active partner-wide row', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }, { kind: 'patch' }]];
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set(['triage', 'patch']));
+  });
+
+  it('returns the empty set when no partner-wide row exists for this partner', async () => {
+    dbMockState.aiAgentRows = [[]];
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set());
+  });
+
+  it('elevates the read the same way the resolver escapes for the partner-row lookup', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }]];
+
+    await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the escalation when already inside a system context', async () => {
+    dbMockState.aiAgentRows = [[{ kind: 'triage' }]];
+    dbMockState.ambientContext = { scope: 'system' };
+
+    const result = await loadPartnerBaselineKinds(PARTNER_ID);
+
+    expect(result).toEqual(new Set(['triage']));
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
