@@ -23,8 +23,7 @@ import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
 import { useAgentToolCatalog } from './aiAgents/useAgentToolCatalog';
 import ModeChoice from './aiAgents/ModeChoice';
-import type { PolicyDecidableKeyOption } from './aiAgents/PolicyKeysCheckboxes';
-import type { RoleOption } from './aiAgents/agentFields';
+import { useAgentFormLists } from './aiAgents/useAgentFormLists';
 import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './aiAgents/agentErrors';
 import WhatItDoesStep from './aiAgents/steps/WhatItDoesStep';
 import SafetyStep from './aiAgents/steps/SafetyStep';
@@ -101,10 +100,10 @@ export default function AiAgentForm({
   const [actAck, setActAck] = useState(false);
   const enteringActMode = draft.mode === 'act' && initialMode !== 'act';
 
-  const [roles, setRoles] = useState<RoleOption[]>([]);
-  const [rolesFailed, setRolesFailed] = useState(false);
-  const [policyKeys, setPolicyKeys] = useState<PolicyDecidableKeyOption[]>([]);
-  const [policyKeysFailed, setPolicyKeysFailed] = useState(false);
+  // Recipient roles + the policy-decidable registry — one hook, shared with
+  // the guided create flow (#5063 review), so the two forms cannot drift on
+  // how a failed fetch is told apart from a genuinely empty list.
+  const { roles, rolesFailed, policyKeys, policyKeysFailed } = useAgentFormLists();
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
@@ -166,75 +165,13 @@ export default function AiAgentForm({
   // ---- Mode: the privileged choice --------------------------------------
   const actSupported = agent.supportedModes.includes('act');
 
-  // Recipients are role IDs, never role names: `roles` is a tenant-scoped table
-  // with partner-defined names, so the picker has to show the real rows.
-  //
-  // A failure here must NOT render as "no roles exist". This page is gated on
-  // organizations:read but GET /roles is gated on users:read, so a technician
-  // holding the former and not the latter gets a 403 — and telling them their
-  // tenant has no roles would turn an authorization error into a configuration
-  // decision they never made, saving an agent that notifies nobody.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetchWithAuth('/roles');
-        if (!response.ok) throw new Error(`GET /roles ${response.status}`);
-        const body = (await response.json()) as { data?: RoleOption[] };
-        if (!cancelled) setRoles(Array.isArray(body.data) ? body.data : []);
-      } catch (err) {
-        console.error('[AiAgentForm] could not load roles', err);
-        if (!cancelled) setRolesFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // The POLICY_DECIDABLE_TIER3 registry (wave 5 Part B, #3827) — a static,
-  // read-only list, so no dependency on mode/agent; fetched once per mount
-  // exactly like roles above, and rendered only inside the act-mode section
-  // below. A failure must say so rather than rendering an empty registry,
-  // same "authorization/outage vs. genuinely empty" distinction the roles
-  // fetch above draws (this route needs only ai_agents:read, which this page
-  // is already gated on, so a 403 here is unexpected — but the failure state
-  // still must not lie and claim the registry is empty).
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetchWithAuth('/ai/agents/policy-decidable-keys');
-        if (!response.ok) throw new Error(`GET /ai/agents/policy-decidable-keys ${response.status}`);
-        const body = (await response.json()) as { data?: PolicyDecidableKeyOption[] };
-        // Defensive, not just a type assertion: `key`/`toolName` drive both
-        // the DOM id splice (`idSafe`) and the translated-label fallback
-        // (`sentenceCase`), and this registry is server-owned — a shape drift
-        // must degrade to "skip the row", never crash the whole form.
-        const rows = Array.isArray(body.data)
-          ? body.data.filter(
-              (row): row is PolicyDecidableKeyOption =>
-                typeof row?.key === 'string' && typeof row?.toolName === 'string',
-            )
-          : [];
-        if (!cancelled) setPolicyKeys(rows);
-      } catch (err) {
-        console.error('[AiAgentForm] could not load policy-decidable keys', err);
-        if (!cancelled) setPolicyKeysFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // Task 10 (#5050): the capability picker replaces the free-text tool
   // allowlist textarea. `catalog` is fetched once per mount; `ceiling`
   // re-fetches whenever kind or ownerScope changes (only meaningful for an
   // organization-owned draft — see the hook's own doc). Neither fetch ever
   // blocks this form: a failed/absent catalog falls back to the old
   // textarea below (see the Permissions section).
-  const { catalog: fetchedCatalog, ceiling, loading: catalogLoading } = useAgentToolCatalog({
+  const { catalog: fetchedCatalog, ceiling, ceilingResolved, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
     ownerScope: draft.ownerScope,
   });
@@ -367,19 +304,16 @@ export default function AiAgentForm({
     />
   );
 
-  /**
-   * #5063: everything from "When it runs" through recipients is rendered by
-   * the guided create flow's own step components (`WhatItDoesStep`,
-   * `SafetyStep`) so each setting has exactly one rendering and one test
-   * surface. The org-row read-only registry and the partner-ceiling collapse
-   * (#5049, P2-5) live in `SafetyStep` now. Only the edit-only pieces stay
-   * here: the fixed kind, the enabled switch, graduation, schedules and the
-   * Save/Cancel/Disable footer.
-   */
   // The row's own scriptIds, narrowed by the partner ceiling the way
   // effectivePolicy.ts computes the effective list (partner ∩ org) — a
-  // script only the org row lists is never dispatched unattended.
-  const authorizedScriptCount = (agent.actAssets?.scriptIds ?? []).filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
+  // script only the org row lists is never dispatched unattended. Until an
+  // org row's ceiling has actually resolved, nothing counts as authorized:
+  // `ceiling === null` would otherwise read as "no ceiling" while the fetch
+  // is still in flight (or failed) and badge run_script as unattended
+  // (#5063 review).
+  const authorizedScriptCount = !ceilingResolved
+    ? 0
+    : (agent.actAssets?.scriptIds ?? []).filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
@@ -490,10 +424,16 @@ export default function AiAgentForm({
             isPartnerScope={isPartnerScope}
           />
 
-          {/* #5063: the same step components the guided create flow renders —
-              "What it does" (runs-when + capability picker) and "Safety and
-              oversight" (protected resources, unattended authorization,
-              limits, recipients). See the note above `authorizedScriptCount`. */}
+          {/* #5063: everything from "When it runs" through recipients is the
+              guided create flow's own step components — "What it does"
+              (runs-when + capability picker) and "Safety and oversight"
+              (protected resources, unattended authorization, limits,
+              recipients) — so each of those settings has exactly one
+              rendering and one test surface; the org-row read-only registry
+              and the partner-ceiling collapse (#5049, P2-5) live in
+              SafetyStep. What stays the drawer's own: the mode choice, the
+              fixed kind, Name, the enabled switch, graduation, schedules,
+              Instructions and the Save/Cancel/Disable footer. */}
           <div className="md:col-span-2">
             <WhatItDoesStep
               draft={draft}
@@ -508,6 +448,7 @@ export default function AiAgentForm({
             <SafetyStep
               draft={draft}
               patch={patch}
+              editing
               roles={roles}
               rolesFailed={rolesFailed}
               policyKeys={policyKeys}

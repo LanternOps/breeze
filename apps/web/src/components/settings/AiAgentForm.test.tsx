@@ -488,15 +488,24 @@ describe('AiAgentForm — renders the create flow\'s step components (#5063)', (
 
     const does = await screen.findByTestId('agent-step-does');
     const safety = screen.getByTestId('agent-step-safety');
-    expect(does.compareDocumentPosition(safety) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Siblings in order — FOLLOWING alone is also true for a nested node, so
+    // rule containment out explicitly.
+    const position = does.compareDocumentPosition(safety);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(position & Node.DOCUMENT_POSITION_CONTAINED_BY).toBeFalsy();
 
-    // The settings live INSIDE the steps, not beside them.
+    // The settings live INSIDE the steps, not beside them — and exactly once
+    // in the drawer. The role row arrives after the /roles fetch, so it is
+    // awaited rather than assumed to have flushed.
     expect(within(does).getByTestId('ai-agent-permissions')).toBeInTheDocument();
     expect(within(does).getByTestId('ai-agent-respect-maintenance')).toBeInTheDocument();
     expect(within(safety).getByTestId('ai-agent-services')).toBeInTheDocument();
     expect(within(safety).getByTestId('ai-agent-policy-decide')).toBeInTheDocument();
     expect(within(safety).getByTestId('ai-agent-limit-devices')).toBeInTheDocument();
-    expect(within(safety).getByTestId('ai-agent-role-r-1')).toBeInTheDocument();
+    expect(await within(safety).findByTestId('ai-agent-role-r-1')).toBeInTheDocument();
+    for (const id of ['ai-agent-permissions', 'ai-agent-services', 'ai-agent-policy-decide', 'ai-agent-limit-devices', 'ai-agent-role-r-1']) {
+      expect(screen.getAllByTestId(id)).toHaveLength(1);
+    }
 
     // Edit-only pieces stay the drawer's own.
     expect(screen.getByTestId('ai-agent-kind')).toBeDisabled();

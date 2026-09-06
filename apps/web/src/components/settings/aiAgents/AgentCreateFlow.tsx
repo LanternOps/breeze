@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AI_AGENT_KINDS, SUPPORTED_AGENT_MODES, type AiAgentDto } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
@@ -9,12 +9,12 @@ import { useOrgScope } from '@/hooks/useOrgScope';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import SetupStepper from '../../setup/SetupStepper';
 import { useAgentToolCatalog } from './useAgentToolCatalog';
+import { useAgentFormLists } from './useAgentFormLists';
 import { ALERT_SEVERITY_KINDS, buildAgentSaveBody, draftFrom, firstFreeKind, freeKinds, type Draft } from './agentDraft';
 import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './agentErrors';
-import type { PolicyDecidableKeyOption } from './PolicyKeysCheckboxes';
 import PurposeStep from './steps/PurposeStep';
 import WhatItDoesStep from './steps/WhatItDoesStep';
-import SafetyStep, { type RoleOption } from './steps/SafetyStep';
+import SafetyStep from './steps/SafetyStep';
 import ReviewStep from './steps/ReviewStep';
 
 export interface AgentCreateFlowProps {
@@ -107,56 +107,10 @@ export default function AgentCreateFlow({
   });
   const catalog = fetchedCatalog && Array.isArray(fetchedCatalog.tools) && fetchedCatalog.presets ? fetchedCatalog : null;
 
-  // Same cancelled-flag fetch pattern as AiAgentForm.tsx's own roles effect —
-  // a failure must not render as "no roles configured" (see that file's doc).
-  const [roles, setRoles] = useState<RoleOption[]>([]);
-  const [rolesFailed, setRolesFailed] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetchWithAuth('/roles');
-        if (!response.ok) throw new Error(`GET /roles ${response.status}`);
-        const body = (await response.json()) as { data?: RoleOption[] };
-        if (!cancelled) setRoles(Array.isArray(body.data) ? body.data : []);
-      } catch (err) {
-        console.error('[AgentCreateFlow] could not load roles', err);
-        if (!cancelled) setRolesFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Same cancelled-flag fetch pattern as AiAgentForm.tsx's own registry
-  // effect — fetched once per mount, rendered only for a partner draft
-  // (SafetyStep.tsx).
-  const [policyKeys, setPolicyKeys] = useState<PolicyDecidableKeyOption[]>([]);
-  const [policyKeysFailed, setPolicyKeysFailed] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetchWithAuth('/ai/agents/policy-decidable-keys');
-        if (!response.ok) throw new Error(`GET /ai/agents/policy-decidable-keys ${response.status}`);
-        const body = (await response.json()) as { data?: PolicyDecidableKeyOption[] };
-        const rows = Array.isArray(body.data)
-          ? body.data.filter(
-              (row): row is PolicyDecidableKeyOption =>
-                typeof row?.key === 'string' && typeof row?.toolName === 'string',
-            )
-          : [];
-        if (!cancelled) setPolicyKeys(rows);
-      } catch (err) {
-        console.error('[AgentCreateFlow] could not load policy-decidable keys', err);
-        if (!cancelled) setPolicyKeysFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Recipient roles + the policy-decidable registry — one hook, shared with
+  // the edit drawer (#5063 review). SafetyStep renders the registry for a
+  // partner draft (as a ceiling) and, in act mode, an org draft's held keys.
+  const { roles, rolesFailed, policyKeys, policyKeysFailed } = useAgentFormLists();
 
   const stepLabel = (key: StepKey) => t(/* i18n-dynamic */ `aiAgentsPage.flow.steps.${key}.label`);
   const stepDescription = (key: StepKey) => t(/* i18n-dynamic */ `aiAgentsPage.flow.steps.${key}.description`);

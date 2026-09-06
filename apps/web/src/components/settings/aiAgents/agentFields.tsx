@@ -1,12 +1,12 @@
 import { useId } from 'react';
 
 /**
- * Task 13 (#5051 review) — field helpers shared by `AiAgentForm.tsx` (the
- * edit drawer) and the guided create flow's steps (`SafetyStep.tsx`), so the
- * two surfaces render and validate identically rather than drifting through
- * two hand-maintained copies. A pure move for `listField`/the role fieldset;
- * `numberField` also fixes a real bug in both original copies (see its own
- * doc below).
+ * Task 13 (#5051 review) — field helpers for the agent forms. Since #5063
+ * the edit drawer renders the guided create flow's own step components, so
+ * the callers are `SafetyStep.tsx` (list/number fields, the role fieldset)
+ * and `WhatItDoesStep.tsx` (the catalog-unavailable allowlist fallback).
+ * A pure move for `listField`/the role fieldset; `numberField` also fixed a
+ * real bug in both original copies (see its own doc below).
  */
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
@@ -105,9 +105,8 @@ function roleScope(role: RoleOption): 'partner' | 'organization' {
 export const ROLE_GROUPS = ['partner', 'organization'] as const;
 
 export interface RecipientRolesFieldsetProps {
-  /** The two callers render this inside a different grid (the drawer's
-   *  two-column form vs. the guided flow's single-column step), so the
-   *  outer `<fieldset>`'s className is the caller's to choose. */
+  /** The outer `<fieldset>`'s className is the caller's to choose, so the
+   *  fieldset can sit in whichever grid its host lays out. */
   className: string;
   t: TranslateFn;
   roles: RoleOption[];

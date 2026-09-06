@@ -22,6 +22,11 @@ export interface SafetyStepProps {
   rolesFailed: boolean;
   policyKeys: PolicyDecidableKeyOption[];
   policyKeysFailed: boolean;
+  /** Rendered inside the edit drawer (an existing row) rather than the
+   *  guided create flow. An org row's read-only held-keys list is only
+   *  meaningful there: a brand-new org draft holds no keys and the grant path
+   *  it points at (the Graduation panel) is mounted by the drawer alone. */
+  editing?: boolean;
 }
 
 /**
@@ -36,22 +41,36 @@ export interface SafetyStepProps {
  *   a CEILING on what its organizations may be granted (P2-5, #4192), so it
  *   is offered regardless of the row's own mode, collapsed behind a summary
  *   while the row is not acting (`collapsedForCeiling`).
- * - ORG row in act mode: a read-only list of the keys the row already holds.
- *   #5049: the API refuses any org-row write that ADDS a key — a key goes live
- *   on an org row only through the four-eyes grant executor — so a checkbox
- *   here could never be honored by Save, and the rest of the registry
- *   (never held) is noise, not information. A brand-new org draft holds none.
+ * - ORG row in act mode, EDITING an existing row (or a draft that somehow
+ *   holds keys): a read-only list of the keys the row already holds. #5049:
+ *   the API refuses any org-row write that ADDS a key — a key goes live on an
+ *   org row only through the four-eyes grant executor — so a checkbox here
+ *   could never be honored by Save, and the rest of the registry (never
+ *   held) is noise, not information.
+ * - ORG row in act mode on a brand-new create draft: nothing — it holds no
+ *   keys, and the grant path the read-only list points at (the Graduation
+ *   panel) is mounted by the drawer only (#5063 review).
  * - ORG row not in act mode: nothing — the "act acknowledgement pattern":
  *   additional unattended authority is only shown once the operator is
  *   already looking at the act-mode warning.
  */
-export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKeys, policyKeysFailed }: SafetyStepProps) {
+export default function SafetyStep({
+  draft,
+  patch,
+  roles,
+  rolesFailed,
+  policyKeys,
+  policyKeysFailed,
+  editing = false,
+}: SafetyStepProps) {
   const { t } = useTranslation('settings');
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
 
   const orgOwned = draft.ownerScope === 'organization';
-  const showPolicyDecide = draft.mode === 'act' || draft.ownerScope === 'partner';
+  const showPolicyDecide =
+    draft.ownerScope === 'partner'
+    || (draft.mode === 'act' && (editing || draft.supervisedActionKeys.length > 0));
 
   /** Registry entries keyed by their `key`, so an org row's read-only list
    *  can translate its currently-held keys without walking the full
@@ -132,7 +151,12 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
               </summary>
               <div className="mt-1 space-y-2">
                 {ceilingHint}
-                {policyKeysBody}
+                {/* Only a PARTNER row ever collapses (`collapsedForCeiling`),
+                    so this is always the interactive registry — spelled out
+                    rather than routed through `policyKeysBody`, so a later
+                    widening of the collapse rule cannot silently tuck an org
+                    row's read-only list under the partner-ceiling summary. */}
+                {policyKeysCheckboxes}
               </div>
             </details>
           ) : (

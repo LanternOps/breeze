@@ -19,7 +19,7 @@ Last release: **v0.110.0** (2026-09-05).
 - The tool allowlist textarea is replaced by a **capability picker**: 15 capabilities, per-operation outcome badges (Approval request / Logged proposal / Executes unattended), a "Recommended for <kind>" preset, search across labels and literal names, and an "Always on: read-only tools" disclosure. Organization agents see operations outside the partner baseline as **Not in partner baseline**.
 - Truthful act-mode outcomes: **Run a script** stays an approval request until a script is authorized for the agent (`actAssets.scriptIds`); the picker and the review card say so instead of promising an unattended run.
 - Recipient roles with no active members are marked in the form, and the act-mode "recipient" error now says the selected roles have no active members instead of "add a recipient".
-- The edit drawer renders the same step components as the create flow (one rendering per setting).
+- The edit drawer now lays out an agent the way the create flow does: "When it runs" and Permissions first, then a **Safety and oversight** block with protected services / paths / registry keys, unattended authorization, limits and notification roles. Protected resources moved out of the Permissions section into that block.
 
 **Self-Hosting / Upgrade Notes.**
 - No new env vars, no migrations. The whole feature is still behind `BREEZE_AI_AGENTS_ENABLED` (default `false`); `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` unchanged.
