@@ -231,6 +231,110 @@ describe('AiAgentForm — unattended policy authorization', () => {
   });
 });
 
+// #5049 — the API now rejects any org-row create/PATCH that ADDS a
+// supervisedActionKeys entry the row does not already hold (a key goes live on
+// an org row only through the four-eyes grant executor, spec §4.4). The form
+// must stop offering an org row a control that a save can never honor, and
+// must stop asking the server to leave a key list alone by SENDING the exact
+// list it already holds — omitting `actAssets` entirely is what "leave it
+// alone" means to the merge-patch semantics `save()` already relies on for
+// every other narrowing field.
+describe('AiAgentForm — org-owned supervised keys are grant-only (#5049)', () => {
+  it('renders an org-owned act-mode agent\'s supervised keys read-only, with the grant-only hint', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({
+      agent: makeAgent({ mode: 'act', actAssets: { supervisedActionKeys: ['manage_services:restart'] } }),
+    });
+
+    const held = await screen.findByTestId('ai-agent-supervised-key-manage_services:restart');
+    expect(held).toBeDisabled();
+    expect(held).toBeChecked();
+    // Every entry in the registry is disabled, not just the held one — the
+    // whole section is read-only, not merely the already-granted rows.
+    expect(screen.getByTestId('ai-agent-supervised-key-manage_startup_items:disable')).toBeDisabled();
+
+    expect(screen.getByTestId('ai-agent-supervised-keys-grant-only-hint')).toHaveTextContent(
+      'Pre-authorized keys on an organization agent are granted only through the Graduation panel by a second approver, and are revoked there too.',
+    );
+  });
+
+  it('omits actAssets entirely from an org agent\'s save payload', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({
+      agent: makeAgent({ mode: 'act', actAssets: { supervisedActionKeys: ['manage_services:restart'] } }),
+    });
+
+    await screen.findByTestId('ai-agent-policy-decide');
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+
+    expect(writeBody()).not.toHaveProperty('actAssets');
+  });
+
+  it('leaves a partner-owned agent\'s checkboxes enabled and still sends actAssets', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({
+      agent: makeAgent({
+        id: 'a9',
+        ownerScope: 'partner',
+        orgId: null,
+        partnerId: 'p-1',
+        allOrgs: true,
+        mode: 'act',
+        actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+      }),
+    });
+
+    const checkbox = await screen.findByTestId('ai-agent-supervised-key-manage_services:restart');
+    expect(checkbox).not.toBeDisabled();
+    expect(screen.queryByTestId('ai-agent-supervised-keys-grant-only-hint')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+
+    expect(writeBody()).toHaveProperty('actAssets');
+    expect((writeBody().actAssets as { supervisedActionKeys: string[] }).supervisedActionKeys).toEqual([
+      'manage_services:restart',
+    ]);
+  });
+
+  it('surfaces the supervised_keys_grant_only 422 as a per-key issue, same as invalid_supervised_action_keys', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: REGISTRY }));
+      if (url === '/ai/agents/a1' && init?.method === 'PATCH') {
+        return Promise.resolve(json(
+          {
+            error: 'supervised_keys_grant_only: manage_services:restart',
+            code: 'supervised_keys_grant_only',
+            rejected: [{ key: 'manage_services:restart', reason: 'grant_only' }],
+          },
+          false,
+          422,
+        ));
+      }
+      if (url.startsWith('/ai/agents/graduation')) {
+        return Promise.resolve(json({
+          data: { rows: [], actOpReliability: [], promoteThreshold: null, policyDecideEnabled: true },
+        }));
+      }
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    renderForm({ agent: makeAgent({ mode: 'act' }) });
+
+    await screen.findByTestId('ai-agent-policy-decide');
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    expect(await screen.findByTestId('ai-agent-issues')).toBeInTheDocument();
+    expect(screen.getByText('manage_services:restart: grant_only')).toBeInTheDocument();
+  });
+});
+
 describe('AiAgentForm — alert severities', () => {
   it('offers alert severities to an alert-triage agent', async () => {
     mockEndpoints();

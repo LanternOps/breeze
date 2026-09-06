@@ -154,6 +154,11 @@ const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) 
   // issues below via ACT_PREREQUISITE_COPY's sibling handling in save()'s
   // catch block.
   invalid_supervised_action_keys: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
+  // #5049: the server's 422 (agentService.ts's SupervisedKeysGrantOnlyError)
+  // carries the same structured `rejected[]` shape as
+  // invalid_supervised_action_keys above — mapped as the identical toast
+  // fallback and rendered by the same per-key branch in save()'s catch block.
+  supervised_keys_grant_only: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
 };
 
 /**
@@ -407,8 +412,14 @@ export default function AiAgentForm({
    * SAVE PAYLOAD while `draft.mode !== 'act'` (see `save()`'s `actAssets`).
    * This derived flag drives the announcement of that omission; it is not
    * separate state, so it can never drift from what Save will actually send.
+   *
+   * #5049: an ORG row never sends `actAssets` at all any more (see `save()`)
+   * — leaving act mode there does not clear anything server-side, it just
+   * stops offering a control the server would reject a grant through. This
+   * flag would otherwise announce a "cleared" that no longer happens.
    */
-  const actKeysWillBeOmitted = draft.mode !== 'act' && draft.supervisedActionKeys.length > 0;
+  const actKeysWillBeOmitted =
+    draft.ownerScope !== 'organization' && draft.mode !== 'act' && draft.supervisedActionKeys.length > 0;
 
   const patch = (values: Partial<Draft>) => setDraft((current) => ({ ...current, ...values }));
 
@@ -706,7 +717,21 @@ export default function AiAgentForm({
       // so leaving act genuinely revokes them server-side, not just in the
       // UI, while still letting the operator's selection reappear if they
       // return to act before saving.
-      actAssets: { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [] },
+      //
+      // #5049: an ORG row OMITS `actAssets` entirely instead — the server
+      // now 422s (`supervised_keys_grant_only`) any org-row write that ADDS
+      // a key the row does not already hold, because a key goes live on an
+      // org row only through the four-eyes grant executor (spec §4.4). This
+      // form no longer offers an org row an editable selection (see
+      // `orgOwnedKeysReadOnly`), so there is nothing of the operator's to
+      // send; omitting the property is what "leave the stored value alone"
+      // means to the same one-level PATCH merge this function already
+      // relies on for scriptIds above, and the server defaults a create's
+      // omitted key to `[]`. Partner rows are the ceiling and are still
+      // edited directly here, so they keep the live-selection behavior.
+      ...(draft.ownerScope === 'organization'
+        ? {}
+        : { actAssets: { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [] } }),
     };
 
     let saved = false;
@@ -758,7 +783,15 @@ export default function AiAgentForm({
       // carries a structured `rejected[]` naming exactly which keys failed and
       // why — same "actionable, not a bare toast" pattern as the prerequisites
       // branch above.
-      if (err instanceof ActionError && err.code === 'invalid_supervised_action_keys') {
+      // #5049: SupervisedKeysGrantOnlyError (`supervised_keys_grant_only`)
+      // carries the identical `rejected[]` shape — this form no longer sends
+      // an org row's keys at all (see `save()`'s `actAssets` above), so this
+      // branch is defense-in-depth rather than a path this form exercises
+      // itself, same reasoning as reusing the toast copy above.
+      if (
+        err instanceof ActionError
+        && (err.code === 'invalid_supervised_action_keys' || err.code === 'supervised_keys_grant_only')
+      ) {
         const body = err.body as { rejected?: unknown } | undefined;
         const rejected = Array.isArray(body?.rejected)
           ? body.rejected.filter(
@@ -1010,6 +1043,18 @@ export default function AiAgentForm({
     </div>
   );
 
+  /**
+   * #5049: the API now rejects any org-row create/PATCH that ADDS a
+   * supervisedActionKeys entry the row does not already hold — a key goes
+   * live on an org row only through the four-eyes grant executor (spec
+   * §4.4). Toggling a checkbox here for an org row can therefore never be
+   * honored by Save, so the whole registry renders disabled rather than
+   * offering a control that silently no-ops (or, before this fix, sends a
+   * payload the server now 422s on). Partner rows are the ceiling and are
+   * still edited directly here, so they stay interactive.
+   */
+  const orgOwnedKeysReadOnly = draft.ownerScope === 'organization';
+
   /** The registry checkboxes, grouped by tool with translated labels — shared
    *  between the plain (org, act-only) rendering and the partner-wide
    *  `<details>` wrapper below, so the two never drift out of sync. */
@@ -1038,6 +1083,7 @@ export default function AiAgentForm({
                     type="checkbox"
                     className="mt-0.5"
                     checked={draft.supervisedActionKeys.includes(entry.key)}
+                    disabled={orgOwnedKeysReadOnly}
                     onChange={() =>
                       patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
                     aria-describedby={noteId}
@@ -1094,6 +1140,14 @@ export default function AiAgentForm({
       {t('aiAgentsPage.graduation.ceilingHint')}
     </p>
   );
+  /** #5049: the org-row counterpart of `ceilingNote` above — an org row is
+   *  only ever shown here in act mode (see `policyDecideFieldset`'s
+   *  condition below), so this never needs its own collapsed form. */
+  const grantOnlyNote = orgOwnedKeysReadOnly && (
+    <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-grant-only-hint">
+      {t('aiAgentsPage.graduation.grantOnlyHint')}
+    </p>
+  );
   const policyDecideFieldset = (draft.mode === 'act' || draft.ownerScope === 'partner') && (
     <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
       <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
@@ -1115,6 +1169,7 @@ export default function AiAgentForm({
       ) : (
         <>
           {ceilingNote}
+          {grantOnlyNote}
           {policyKeysBody}
         </>
       )}
