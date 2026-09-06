@@ -854,6 +854,34 @@ describe('config policy inheritance — RLS-dependent reads (live DB)', () => {
 // ============================================================
 
 describe('config policy inheritance — deletion (live DB)', () => {
+  it('the guarded nullable self-FK closes an org family while preserving external policies', async () => {
+    const t = await seedTenancy();
+    const baseline = await seedPolicy({ partnerId: t.p1, name: 'partner survivor' });
+    const sibling = await seedPolicy({ orgId: t.a2, name: 'sibling survivor', parentPolicyId: baseline.id });
+    const parent = await seedPolicy({ orgId: t.a1, name: 'org parent' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'org child', parentPolicyId: parent.id });
+    const baselineChild = await seedPolicy({ orgId: t.a1, name: 'baseline child', parentPolicyId: baseline.id });
+
+    // System scope makes the constraint, rather than RLS visibility, establish
+    // the closed row set required by orgCascadeFkOnDelete's exact exception.
+    for (const owner of [{ orgId: t.a2 }, { partnerId: t.p1 }]) {
+      await expectSqlState(
+        () => seedPolicy({ ...owner, name: 'incompatible external child', parentPolicyId: parent.id }),
+        '23514', 'configuration_policies_parent_guard',
+      );
+    }
+    await expectSqlState(
+      () => withDbAccessContext(SYSTEM_CTX, () => db.update(configurationPolicies)
+        .set({ orgId: t.a2 }).where(eq(configurationPolicies.id, parent.id))),
+      '23514', 'configuration_policies_parent_guard',
+    );
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(configurationPolicies)
+      .where(eq(configurationPolicies.orgId, t.a1)));
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () => db.select({ id: configurationPolicies.id })
+      .from(configurationPolicies).where(inArray(configurationPolicies.id, [parent.id, child.id, baselineChild.id, baseline.id, sibling.id])));
+    expect(remaining.map((row) => row.id).sort()).toEqual([baseline.id, sibling.id].sort());
+  });
+
   it('deleting a parent alone is refused, and naming its children', async () => {
     const t = await seedTenancy();
     const parent = await seedPolicy({ orgId: t.a1, name: 'baseline' });
