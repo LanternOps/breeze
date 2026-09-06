@@ -438,6 +438,13 @@ Each wave: TDD, `tsc`, targeted tests, then the contract suites that a live DB n
   merge timing vs. the deferred constraint trigger, parent-read isolation, `hasSatisfiedMfa`,
   run-record and idempotency identities once the assigned policy id reaches the runtime.
 
+- 2026-09-06 W01 implementation (PR #5099, merged f6ec8a33f): the live-DB forge found the plan's
+  compatibility function returning NULL (not false) for an org child naming another partner's
+  baseline, so the trigger never fired. Shipped with `COALESCE(..., false)` and `IS NOT TRUE`
+  call sites. The same fail-open shape was then found in the maintenance-revert MFA gate
+  (unresolvable parent treated as "no parent") and fixed to deny. Deferred: the partner-export
+  parent-closure CTE is verified by rendered SQL only; no export integration harness exists.
+
 ## Release notes
 
 - New: configuration policies can inherit from a baseline policy (same org or partner-wide).
