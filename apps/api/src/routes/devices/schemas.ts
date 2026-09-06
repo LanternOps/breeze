@@ -238,3 +238,19 @@ export const updateLinkGroupSchema = z
     (d) => d.name !== undefined || d.addDeviceIds !== undefined || d.removeDeviceIds !== undefined,
     { message: 'Provide at least one of name, addDeviceIds, or removeDeviceIds' },
   );
+
+/**
+ * Hard ceiling on a bulk lifecycle call (#2787). Enforced HERE and again in
+ * the bulk-purge worker: the queue payload outlives the request, so a
+ * validator-only bound would be enforced by whichever process happened to
+ * write the job rather than by the one doing the deleting.
+ *
+ * 500 is the same order as the existing bulk-command surface; it bounds a
+ * synchronous restore loop to a few seconds and a purge job to a few minutes.
+ */
+export const BULK_LIFECYCLE_MAX_DEVICES = 500;
+
+/** `{ deviceIds: [...] }` body shared by bulk restore and bulk permanent delete. */
+export const bulkDeviceIdsSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(BULK_LIFECYCLE_MAX_DEVICES),
+});
