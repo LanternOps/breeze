@@ -6,7 +6,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 /**
  * Schema contract for `partners.service_management_mode` (#5075 W04).
  *
- * Migration: `2026-10-12-000200-partners-service-management-mode.sql`.
+ * Migration: `2026-10-12-100100-partners-service-management-mode.sql`.
  *
  * These assertions are the reason the pairing is a CHECK and not app-layer
  * validation: `PATCH /partners/me` forces the connection id to null for
