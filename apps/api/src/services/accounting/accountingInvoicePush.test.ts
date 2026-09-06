@@ -981,6 +981,34 @@ describe('pushInvoiceToAccounting', () => {
     expect(payload.mapping).toEqual({ remoteEntityId: 'qb-inv-1', remoteSyncToken: '3' });
   });
 
+  // Phase C bug (#4624 follow-up): QuickBooks bumps an Invoice's SyncToken on
+  // every payment applied to or removed from it, so the token Breeze stored at
+  // push time is routinely behind. The provider re-reads the live revision and
+  // retries; the coordinator's half of that contract is that the token it
+  // persists comes from the RESPONSE, never from what it happened to send.
+  it('persists the SyncToken the provider returned, not the stale one it held, on a re-push', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '0',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    pushInvoiceMock.mockResolvedValue({
+      id: 'qb-inv-1', syncToken: '5', docNumber: 'INV-2026-0001',
+      remoteTaxTotal: '7.00', remoteTotal: '107.00',
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    const mappingUpdate = updatedPatches.find((u) => 'remoteSyncToken' in u.patch && u.patch.remoteEntityId === 'qb-inv-1');
+    expect(mappingUpdate?.patch.remoteSyncToken).toBe('5');
+    expect(mappingUpdate?.patch.syncStatus).toBe('synced');
+  });
+
   it('maps a concurrent-insert race (unique violation on first push) to quickbooks_error instead of a raw 500', async () => {
     setup({ mappings: [orgMappingRow()] });
     stubInsertWithViolation();

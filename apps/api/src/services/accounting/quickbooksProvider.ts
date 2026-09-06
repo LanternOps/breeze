@@ -682,11 +682,11 @@ export class QuickbooksProvider implements AccountingProvider {
       };
     });
 
-    const buildBody = (includeDocNumber: boolean) => ({
+    const buildBody = (includeDocNumber: boolean, syncToken: string | null) => ({
       ...(mapping ? {
         sparse: true,
         Id: mapping.remoteEntityId,
-        SyncToken: mapping.remoteSyncToken,
+        SyncToken: syncToken,
       } : {}),
       ...(includeDocNumber && invoice.docNumber ? { DocNumber: invoice.docNumber } : {}),
       TxnDate: invoice.txnDate,
@@ -723,30 +723,52 @@ export class QuickbooksProvider implements AccountingProvider {
       return includeRequestId ? `${base}&requestid=${encodeURIComponent(createRequestId)}` : base;
     };
 
-    let parsed: { Invoice?: QboRawInvoice };
-    try {
-      parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
-        conn,
-        invoicePath(!mapping),
-        'QuickBooks invoice push',
-        { method: 'POST', body: JSON.stringify(buildBody(true)) },
-      );
-    } catch (err) {
-      const e = err as Error & { status?: number; body?: string };
-      // A single retry WITHOUT DocNumber on a 400 Duplicate Document Number
-      // fault: QBO already holds a document under that number (e.g. a prior
-      // attempt that actually succeeded but whose response was lost), so
-      // retrying with the same number would loop forever — let QBO assign one.
-      if (e.status === 400 && invoice.docNumber && typeof e.body === 'string' && /Duplicate Document Number/i.test(e.body)) {
-        parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
+    // One full push attempt at a given SyncToken, including the
+    // DocNumber-duplicate fallback (which is about the document number, not the
+    // revision, so it lives inside the attempt rather than around it).
+    const attempt = async (syncToken: string | null): Promise<{ Invoice?: QboRawInvoice }> => {
+      try {
+        return await this.qboRequest<{ Invoice?: QboRawInvoice }>(
           conn,
           invoicePath(!mapping),
           'QuickBooks invoice push',
-          { method: 'POST', body: JSON.stringify(buildBody(false)) },
+          { method: 'POST', body: JSON.stringify(buildBody(true, syncToken)) },
         );
-      } else {
+      } catch (err) {
+        const e = err as Error & { status?: number; body?: string };
+        // A single retry WITHOUT DocNumber on a 400 Duplicate Document Number
+        // fault: QBO already holds a document under that number (e.g. a prior
+        // attempt that actually succeeded but whose response was lost), so
+        // retrying with the same number would loop forever — let QBO assign one.
+        if (e.status === 400 && invoice.docNumber && typeof e.body === 'string' && /Duplicate Document Number/i.test(e.body)) {
+          return await this.qboRequest<{ Invoice?: QboRawInvoice }>(
+            conn,
+            invoicePath(!mapping),
+            'QuickBooks invoice push',
+            { method: 'POST', body: JSON.stringify(buildBody(false, syncToken)) },
+          );
+        }
         throw err;
       }
+    };
+
+    let parsed: { Invoice?: QboRawInvoice };
+    try {
+      parsed = await attempt(mapping ? mapping.remoteSyncToken : null);
+    } catch (err) {
+      // Stale SyncToken on a sparse UPDATE. Breeze's stored token is NOT
+      // authoritative: QuickBooks bumps an Invoice's SyncToken every time a
+      // Payment is applied to it or removed, so any invoice that has seen
+      // payment activity would otherwise be permanently un-re-pushable (its
+      // mapping stuck at sync_status='error', which also blocks the payment
+      // fan-out with invoice_not_synced). Re-read the live revision and retry
+      // exactly once — same discipline as deletePayment: an invoice somebody is
+      // editing in a loop must not spin here, so a second stale fault escapes
+      // as the retryable error it is. The CREATE path is untouched (a 5010
+      // there is not about our revision, and a retry could duplicate).
+      if (!mapping || !isQboStaleObject(err)) throw err;
+      const freshSyncToken = await this.readInvoiceSyncToken(conn, mapping.remoteEntityId);
+      parsed = await attempt(freshSyncToken);
     }
 
     if (!parsed.Invoice?.Id) throw new Error('QuickBooks invoice response was missing an Id');
@@ -757,6 +779,23 @@ export class QuickbooksProvider implements AccountingProvider {
       remoteTaxTotal: parsed.Invoice.TxnTaxDetail?.TotalTax != null ? String(parsed.Invoice.TxnTaxDetail.TotalTax) : null,
       remoteTotal: parsed.Invoice.TotalAmt != null ? String(parsed.Invoice.TotalAmt) : null,
     };
+  }
+
+  /**
+   * The current SyncToken of a QuickBooks Invoice. Only ever called right after
+   * a 5010 stale-object fault, which has just PROVED the Invoice exists — so a
+   * 2xx body without `Invoice.SyncToken` is a malformed response and throws,
+   * rather than being folded into a silent "no token" that would send an
+   * update QuickBooks is guaranteed to reject again.
+   */
+  private async readInvoiceSyncToken(conn: AccountingConnection, remoteInvoiceId: string): Promise<string> {
+    const parsed = await this.qboRequest<{ Invoice?: { SyncToken?: string } }>(
+      conn,
+      `invoice/${encodeURIComponent(remoteInvoiceId)}?minorversion=${QBO_API_MINOR_VERSION}`,
+      'QuickBooks invoice read',
+    );
+    if (!parsed.Invoice?.SyncToken) throw new Error('QuickBooks invoice read returned no SyncToken');
+    return parsed.Invoice.SyncToken;
   }
 
   async voidInvoice(

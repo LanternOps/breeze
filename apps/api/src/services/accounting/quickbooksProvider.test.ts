@@ -334,6 +334,63 @@ describe('pushInvoice', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Phase C bug (#4624 follow-up): QuickBooks bumps an Invoice's SyncToken every
+  // time a Payment is applied to or removed from it, so the token Breeze stored
+  // at push time goes stale without Breeze ever writing the invoice again.
+  it('re-reads the live SyncToken and retries the sparse update once on a 5010 Stale Object fault', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '4' } }))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '5', TotalAmt: 107.0 } }));
+
+    const result = await quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+      mapping: { remoteEntityId: '310', remoteSyncToken: '0' },
+    }), [{ invoiceLineId: 'l1', remoteItemRef: { id: '77' } }]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // First attempt used the stored (stale) token.
+    expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)).SyncToken).toBe('0');
+    // Then a read of the live Invoice.
+    const readUrl = String(fetchMock.mock.calls[1]![0]);
+    expect(readUrl).toContain('/invoice/310');
+    expect((fetchMock.mock.calls[1]![1] as RequestInit).method ?? 'GET').toBe('GET');
+    // Retry carries the LIVE token, still sparse against the same Id.
+    expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)))
+      .toMatchObject({ sparse: true, Id: '310', SyncToken: '4' });
+    // And the caller gets the token QuickBooks returned, to persist.
+    expect(result.syncToken).toBe('5');
+  });
+
+  it('does not loop on a stale fault: a second 5010 after the re-read propagates', async () => {
+    const stale = () => new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(stale())
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '310', SyncToken: '4' } }))
+      .mockResolvedValueOnce(stale());
+
+    await expect(quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+      mapping: { remoteEntityId: '310', remoteSyncToken: '0' },
+    }), [])).rejects.toThrow(/failed with 400/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('never re-reads a SyncToken on the CREATE path — a 5010 there propagates untouched', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+      { status: 400 },
+    ));
+
+    await expect(quickbooksProvider.pushInvoice(taxConn, invoicePayload({ mapping: null }), []))
+      .rejects.toThrow(/failed with 400/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('omits TxnTaxDetail entirely when the connection has no defaultTaxCodeRef', async () => {
     const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '0' } });
 

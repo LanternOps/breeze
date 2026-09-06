@@ -62,6 +62,15 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   `pull_payments OR push_payments`, so a realm with pull off and push on now
   runs the CDC pass (it suppresses new QuickBooks-origin imports, logging
   `skipped_pull_disabled` once per run).
+- Re-pushing an invoice after payment activity no longer fails with a stale
+  SyncToken. QuickBooks bumps an Invoice's `SyncToken` every time a payment is
+  applied to it or removed, so the token Breeze stored at push time went stale
+  without Breeze ever writing the invoice again — "Push to QuickBooks" then
+  failed with `QuickBooks rejected the invoice sync (HTTP 400)` and parked the
+  mapping in `error`, which in turn blocked the payment fan-out with
+  `invoice_not_synced`. Breeze now re-reads the live revision on a QuickBooks
+  `Stale Object` fault and retries the update once. Pre-existing since Phase C,
+  so this also fixes it on v0.110.0.
 - Fixes #4542: `invoices.paid_at` is now cleared whenever an invoice falls out
   of `paid` (a voided payment, a QuickBooks reversal, a refund) and on void.
   Existing rows are NOT retro-corrected; the next recompute of an affected
