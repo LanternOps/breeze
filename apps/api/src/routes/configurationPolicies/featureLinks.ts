@@ -491,10 +491,19 @@ featureLinkRoutes.delete(
     // ONLY while it genuinely ends suppression — with a parent that has its own
     // maintenance link, this delete REVERTS to the parent's window and restores
     // it, so that one transition is gated too (MFA follows effectiveness).
+    //
+    // FAIL CLOSED when the parent cannot be resolved. `parentPolicyId` is set but
+    // `parentPolicy` came back null means the parent row was invisible to this
+    // read — an anomaly, not a legitimate state, because the write-time trigger
+    // only ever accepts a parent the child's own tenant can see. Treating
+    // "can't tell" as "no parent" would silently drop the MFA requirement, which
+    // is exactly the fail-open shape this feature already hit once in SQL.
+    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
     const parentHasSameType = !!policy.parentPolicy?.featureLinks?.some(
       (l: { featureType: string }) => l.featureType === existingLink.featureType,
     );
-    const revertRestoresParentWindow = existingLink.featureType === 'maintenance' && parentHasSameType;
+    const revertRestoresParentWindow = existingLink.featureType === 'maintenance'
+      && (parentUnresolved || parentHasSameType);
     if ((existingLink.featureType === 'patch' || revertRestoresParentWindow) && !hasSatisfiedMfa(auth)) {
       return c.json({ error: 'MFA required' }, 403);
     }

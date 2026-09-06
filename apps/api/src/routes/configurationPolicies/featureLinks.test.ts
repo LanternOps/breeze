@@ -1046,6 +1046,43 @@ describe('featureLinks routes', () => {
       expect(removeFeatureLinkMock).toHaveBeenCalled();
     });
 
+    // FAIL-CLOSED regression. parentPolicyId set + parentPolicy null means the
+    // parent row was invisible to the read — an anomaly, since the write-time
+    // trigger only ever accepted a parent this tenant could see. Treating it as
+    // "no parent" would silently drop the MFA requirement.
+    it('gates removal when the parent CANNOT be resolved (fails closed)', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    // Control: a ROOT policy (no parentPolicyId at all) must stay ungated — the
+    // fail-closed branch keys on an UNRESOLVED parent, not on a missing one.
+    it('still allows removal on a root policy, where parentPolicy is legitimately absent', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: null,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
     it('keeps patch DELETE unconditionally gated even with an inheriting parent', async () => {
       mfaState.satisfied = false;
       getConfigPolicyMock.mockResolvedValue({

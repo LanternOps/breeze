@@ -42,6 +42,7 @@ import {
   PolicyHasChildrenError,
 } from './configPolicyOwnership';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { captureException } from './sentry';
 import { z } from 'zod';
 import {
   alertRuleInlineSettingsSchema,
@@ -396,7 +397,19 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
       .from(configurationPolicies)
       .where(eq(configurationPolicies.id, policy.parentPolicyId))
       .limit(1);
-    if (parent) parentPolicy = { ...parent, featureLinks: await listFeatureLinks(parent.id) };
+    if (parent) {
+      parentPolicy = { ...parent, featureLinks: await listFeatureLinks(parent.id) };
+    } else {
+      // Not a legitimate state: the constraint trigger only ever accepted a
+      // parent this policy's own tenant could see, so an unresolvable parent
+      // means RLS visibility regressed (a dropped *_partner_wide_select branch,
+      // an unpopulated breeze.current_partner_id, ...). Callers fail closed on
+      // it, but it must not rot silently — that class of bug reaches production
+      // as "config quietly stopped inheriting", with nothing in the logs.
+      const message = `[configurationPolicy] policy ${id} has parent_policy_id ${policy.parentPolicyId} but the parent row is not visible to this context`;
+      console.error(message);
+      captureException(new Error(message));
+    }
   }
 
   // Blast radius of editing or deleting this policy. Also what the delete route

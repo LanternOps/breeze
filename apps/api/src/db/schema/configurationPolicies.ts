@@ -137,13 +137,18 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
 // `id` is the UNDERLYING link id: an inherited row keeps the PARENT link's id so
 // joins on config_policy_*_settings.feature_link_id keep working unchanged. The
 // consequence — one link id maps to the parent AND each of its children — is why
-// callers must carry the ASSIGNED policy id alongside the link id rather than
-// reverse-mapping a link to "the" policy (spec: execution identity, W02).
-// `sourcePolicyId` names which policy actually authored the link.
+// callers will have to carry the ASSIGNED policy id alongside the link id rather
+// than reverse-mapping a link to "the" policy; W02 owns that change (spec:
+// execution identity). `sourcePolicyId` names which policy authored the link.
 //
-// Resolvers, agent config delivery, and workers read THIS view; feature-link CRUD
-// and standalone-entity delete guards keep reading `configPolicyFeatureLinks`
-// (contract test: services/featureLinkReaders.contract.test.ts, W02).
+// NOT YET WIRED IN. As of W01 nothing outside tests reads this view: every
+// resolver, worker, and agent-config-delivery path still joins
+// `configPolicyFeatureLinks` directly, so a parent's patch/maintenance/event-log
+// settings do NOT reach devices under a child policy yet. W02 switches those
+// readers over and adds the enforcing contract test
+// (services/featureLinkReaders.contract.test.ts, which does not exist yet),
+// after which feature-link CRUD and standalone-entity delete guards are the only
+// readers that legitimately stay on the base table.
 export const configPolicyEffectiveFeatureLinks = pgView('config_policy_effective_feature_links', {
   id: uuid('id').notNull(),
   configPolicyId: uuid('config_policy_id').notNull(),

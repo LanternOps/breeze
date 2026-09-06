@@ -630,9 +630,19 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           // into "Operation failed. Check server logs for details.", leaving the
           // model with no way to know WHY or what to do next (#5080).
           if (err instanceof PolicyHasChildrenError) {
+            // The children list is EMPTY for the lost-race variant (a child was
+            // created between the pre-check and the DELETE, caught by the FK).
+            // Rendering the generic message there would read "0 policy/policies
+            // inherit from it" while still refusing — self-contradicting, and it
+            // hides the one fact that matters: a retry may now behave differently.
+            if (err.children.length === 0) {
+              return JSON.stringify({
+                error: 'Cannot delete this configuration policy: another policy started inheriting from it just now. Re-check its child policies and retry.',
+              });
+            }
             const names = err.children.map((c) => `"${c.name}" (${c.id})`).join(', ');
             return JSON.stringify({
-              error: `Cannot delete this configuration policy: ${err.children.length} policy/policies inherit from it${names ? ` — ${names}` : ''}. Delete or re-create those first.`,
+              error: `Cannot delete this configuration policy: ${err.children.length} policy/policies inherit from it — ${names}. Delete or re-create those first.`,
             });
           }
           throw err;
