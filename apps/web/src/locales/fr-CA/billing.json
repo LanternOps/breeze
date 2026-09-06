@@ -599,6 +599,7 @@
         "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.", "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
         "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre", "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
         "typeLocked": "Un ensemble d'appareils ne peut pas être modifié après la création de la ligne — retirez la ligne et ajoutez-la de nouveau.",
+        "allowanceGroupLabel": "Forfait de quantité", "allowanceToggle": "Inclure une quantité fixe, puis gérer les extras",
         "includedLabel": "Quantité incluse", "overageModeLabel": "Au-delà du forfait", "overageBill": "Facturer chaque unité supplémentaire", "overageFlag": "Signaler pour révision", "overagePriceLabel": "Prix des unités supplémentaires",
         "driftToast": "{{count}} ligne(s) ne correspondent plus au nombre d'appareils actuel : {{lines}}",
         "retargetToast": "{{count}} ligne(s) nécessitent de resélectionner un groupe d'appareils ou un site pour cette organisation"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Les lignes sont supprimées. Obligatoire dès qu’une ligne est manuelle ou un lot.",
         "modeReprice": "Retarifer les lignes du catalogue",
         "modeRepriceHint": "Chaque ligne du catalogue est résolue depuis la grille tarifaire de la nouvelle devise. Possible uniquement si toutes les lignes proviennent du catalogue.",
+        "modeRepriceUnavailable": "Non disponible — au moins une ligne est manuelle ou un lot, la grille tarifaire ne peut donc pas la retarifer. Supprimez plutôt toutes les lignes.",
         "confirm": "Je comprends que cette opération change la devise du devis.",
         "submit": "Changer de devise"
       },

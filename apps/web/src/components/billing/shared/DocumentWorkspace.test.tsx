@@ -119,4 +119,34 @@ describe('DocumentWorkspace', () => {
     expect(h1).toHaveAttribute('data-testid', 'doc-workspace-title');
     expect(h1).not.toHaveClass('sr-only');
   });
+
+  it('gives the title cluster a width floor and lets the pill wrap instead of squeezing it (#4937)', () => {
+    // jsdom has no layout engine, so this pins the flex CONTRACT that produces
+    // the measured behaviour rather than the measurement itself. The header row
+    // is `back link · title · status pill · meta · actions`; with `min-w-0` on
+    // the title cluster, flexbox shrank it below its content first — at a
+    // 1280px viewport the quote title input measured 102px against 208px of
+    // content ("QA Swee…"). A min-width floor makes the cluster's hypothetical
+    // main size real, so `flex-wrap` moves the pill (and then the meta slot) to
+    // the next line instead of starving the title.
+    renderWs({
+      titleSlot: <input data-testid="title-input" defaultValue="THING-1" />,
+      statusPill: <span data-testid="doc-status">Draft</span>,
+      actions: <button data-testid="doc-action">Do it</button>,
+    });
+    const cluster = screen.getByTestId('title-input').parentElement!;
+    expect(cluster.className).toMatch(/\bmin-w-52\b/);
+    expect(cluster.className).not.toMatch(/\bmin-w-0\b/);
+    expect(cluster.className).toMatch(/\bflex-wrap\b/);
+    // The pill stays a sibling of the slot inside the cluster — it is what
+    // wraps, so it must not be hoisted out of the wrapping context.
+    expect(screen.getByTestId('doc-status').parentElement).toBe(cluster);
+    // The wrapping left group needs the same floor, or the outer row (which the
+    // actions cluster shares) can still squeeze the whole identity side below
+    // the title's floor and overflow it instead of dropping the actions.
+    const identitySide = cluster.parentElement!;
+    expect(identitySide.className).toMatch(/\bmin-w-52\b/);
+    expect(identitySide.className).not.toMatch(/\bmin-w-0\b/);
+    expect(identitySide.className).toMatch(/\bflex-wrap\b/);
+  });
 });
