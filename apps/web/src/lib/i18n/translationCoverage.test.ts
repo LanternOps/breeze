@@ -207,7 +207,9 @@ const namespaceDuplicateBaselines = {
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
     'common.json': 105,
-    'devices.json': 136,
+    // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
+    // and "Description" (snmpFields.sysDescr) are identical French cognates.
+    'devices.json': 137,
     'discovery.json': 15,
     'integrations.json': 38,
     'patches.json': 20,
@@ -285,7 +287,9 @@ const namespaceDuplicateBaselines = {
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
     'common.json': 107,
-    'devices.json': 136,
+    // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
+    // and "Description" (snmpFields.sysDescr) are identical French cognates.
+    'devices.json': 137,
     'discovery.json': 15,
     'integrations.json': 40,
     'patches.json': 20,

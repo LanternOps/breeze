@@ -690,7 +690,10 @@
     "connect": "Bağlan",
     "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)",
     "discoveredThisAsset": "bu varlığı keşfetti",
-    "pickAgentHint": "{{ip}} ile aynı ağda bir temsilci seçin."
+    "pickAgentHint": "{{ip}} ile aynı ağda bir temsilci seçin.",
+    "scheme": "Protokol",
+    "allowSelfSignedHint": "Sertifika doğrulamasını yalnızca bu oturum için atlar.",
+    "throughAgentHelp": "Bu cihaza giden trafik, aynı ağda olması gereken seçili Breeze temsilcisi üzerinden aktarılır."
   },
   "assetTypes": {
     "workstation": "İş İstasyonu",

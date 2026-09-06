@@ -690,7 +690,10 @@
     "connect": "Verbinden",
     "allowSelfSigned": "Selbstsigniertes Zertifikat zulassen (üblich für Drucker, iLO/IPMI, Switches)",
     "discoveredThisAsset": "hat dieses Gerät entdeckt",
-    "pickAgentHint": "Wählen Sie einen Agenten im selben Netzwerk wie {{ip}}."
+    "pickAgentHint": "Wählen Sie einen Agenten im selben Netzwerk wie {{ip}}.",
+    "scheme": "Protokoll",
+    "allowSelfSignedHint": "Überspringt die Zertifikatsprüfung nur für diese Sitzung.",
+    "throughAgentHelp": "Der Datenverkehr zu diesem Gerät wird über den ausgewählten Breeze-Agenten weitergeleitet, der sich im selben Netzwerk befinden muss."
   },
   "assetTypes": {
     "workstation": "Arbeitsplatz",

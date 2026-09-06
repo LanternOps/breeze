@@ -2088,34 +2088,34 @@
     "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
     "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
-    "connecting": "Connecting…",
-    "discoveryAssetView": "Discovery asset view",
+    "connecting": "Connecting",
+    "discoveryAssetView": "discovery asset view",
     "emptyPorts": "No open ports detected.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
-      "load": "Load",
-      "malformed": "Malformed",
+      "load": "Couldn't load this network device. Check your connection and try again.",
+      "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
       "notFound": "Network device not found"
     },
     "fields": {
-      "assetType": "Asset Type",
-      "discoveryMethods": "Discovery Methods",
-      "discoveryProfile": "Discovery Profile",
-      "displayName": "Display Name",
-      "firstSeen": "First Seen",
+      "assetType": "Type",
+      "discoveryMethods": "Discovery methods",
+      "discoveryProfile": "Discovery profile",
+      "displayName": "Display name",
+      "firstSeen": "First seen",
       "hostname": "Hostname",
-      "ipAddress": "Ip Address",
-      "lastSeen": "Last Seen",
-      "linkedDevice": "Linked Device",
-      "macAddress": "Mac Address",
+      "ipAddress": "IP address",
+      "lastSeen": "Last seen",
+      "linkedDevice": "Linked device",
+      "macAddress": "MAC address",
       "manufacturer": "Manufacturer",
       "model": "Model",
-      "netbiosName": "Netbios Name",
-      "networkMonitoring": "Network Monitoring",
+      "netbiosName": "NetBIOS name",
+      "networkMonitoring": "Network monitoring",
       "notes": "Notes",
-      "osFingerprint": "Os Fingerprint",
+      "osFingerprint": "OS fingerprint",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP Monitoring",
+      "snmpMonitoring": "SNMP monitoring",
       "status": "Status",
       "tags": "Tags"
     },
@@ -2132,19 +2132,19 @@
     "proxyPort": "Port",
     "proxyPortInvalid": "Enter a port between 1 and 65535",
     "proxyErrors": {
-      "disabled": "This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.",
-      "mfaRequired": "Remote access requires two-factor authentication — enable it in your profile.",
-      "noOnlineAgent": "No online agent is available to bridge this connection. An agent must be online to proxy to {{ip}}.",
+      "disabled": "An administrator disabled proxy access to this target. Ask them to re-enable it under Settings, Remote access.",
+      "mfaRequired": "Remote access requires two-factor authentication. Turn it on in your profile, then try again.",
+      "noOnlineAgent": "No online agent can reach {{ip}} right now. Bring an agent on this network online, then try again.",
       "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
     "sections": {
       "discovery": "Discovery",
       "identity": "Identity",
-      "monitoringStatus": "Monitoring Status",
-      "networkReachability": "Network Reachability",
-      "openPorts": "Open Ports",
-      "snmpData": "SNMP Data"
+      "monitoringStatus": "Monitoring status",
+      "networkReachability": "Network reachability",
+      "openPorts": "Open ports",
+      "snmpData": "SNMP data"
     },
     "stats": {
       "asOf": "as of {{time}}"
@@ -2154,20 +2154,20 @@
       "monitoring": "Monitoring"
     },
     "toasts": {
-      "proxyConnectFailed": "Failed to start proxy connection",
-      "typeReset": "Type Reset",
-      "typeResetFailed": "Type Reset Failed",
-      "typeUpdateFailed": "Type Update Failed",
-      "typeUpdated": "Type Updated",
-      "unlinkFailed": "Unlink Failed",
-      "unlinked": "Unlinked",
+      "proxyConnectFailed": "Couldn't open the web UI",
+      "typeReset": "Device type reset to auto-detected",
+      "typeResetFailed": "Couldn't reset the device type",
+      "typeUpdateFailed": "Couldn't update the device type",
+      "typeUpdated": "Device type updated",
+      "unlinkFailed": "Couldn't unlink the device",
+      "unlinked": "Device unlinked",
       "linked": "Device linked",
-      "linkFailed": "Failed to link device"
+      "linkFailed": "Couldn't link the device"
     },
     "unlink": "Unlink",
     "unlinking": "Unlinking…",
     "viewManagedDevice": "View managed device",
-    "autoLinkSuppressed": "Auto-linking disabled — unlinked by a user",
+    "autoLinkSuppressed": "Auto-linking is off for this asset because someone unlinked it. Link it manually to turn it back on.",
     "linkManually": "Link manually…",
     "linkManuallySelectDevice": "Select a device",
     "linkManuallyLinking": "Linking…",
@@ -2184,7 +2184,13 @@
     "showMore": "Show more",
     "showLess": "Show less",
     "showAllPorts": "Show all ({{count}})",
-    "showFewerPorts": "Show fewer"
+    "showFewerPorts": "Show fewer",
+    "tryAgain": "Try again",
+    "snmpFields": {
+      "sysName": "System name",
+      "sysDescr": "Description",
+      "sysObjectId": "Object ID (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

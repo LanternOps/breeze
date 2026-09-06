@@ -2088,17 +2088,17 @@
     "configurePrefix": "Konfigurieren Sie SNMP-Abfragen und Netzwerkmonitore über das",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
     "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
-    "connecting": "Verbindung wird hergestellt…",
+    "connecting": "Verbindung wird hergestellt",
     "discoveryAssetView": "Discovery-Asset-Ansicht",
     "emptyPorts": "Keine offenen Ports erkannt.",
     "emptySnmp": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "errors": {
-      "load": "Laden",
-      "malformed": "Missgebildet",
+      "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
       "notFound": "Netzwerkgerät nicht gefunden"
     },
     "fields": {
-      "assetType": "Asset-Typ",
+      "assetType": "Typ",
       "discoveryMethods": "Entdeckungsmethoden",
       "discoveryProfile": "Entdeckungsprofil",
       "displayName": "Anzeigename",
@@ -2107,15 +2107,15 @@
       "ipAddress": "IP-Adresse",
       "lastSeen": "Zuletzt gesehen",
       "linkedDevice": "Verknüpftes Gerät",
-      "macAddress": "Mac-Adresse",
+      "macAddress": "MAC-Adresse",
       "manufacturer": "Hersteller",
       "model": "Modell",
-      "netbiosName": "Netbios-Name",
+      "netbiosName": "NetBIOS-Name",
       "networkMonitoring": "Netzwerküberwachung",
       "notes": "Notizen",
-      "osFingerprint": "Os-Fingerabdruck",
+      "osFingerprint": "OS-Fingerabdruck",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP Überwachung",
+      "snmpMonitoring": "SNMP-Überwachung",
       "status": "Status",
       "tags": "Schlagworte"
     },
@@ -2132,9 +2132,9 @@
     "proxyPort": "Port",
     "proxyPortInvalid": "Geben Sie einen Port zwischen 1 und 65535 ein",
     "proxyErrors": {
-      "disabled": "Dieses Ziel wurde für den Proxy-Zugriff deaktiviert. Ein Administrator muss es in den Einstellungen wieder aktivieren, bevor Sie sich verbinden können.",
-      "mfaRequired": "Für den Fernzugriff ist eine Zwei-Faktor-Authentifizierung erforderlich – aktivieren Sie sie in Ihrem Profil.",
-      "noOnlineAgent": "Kein Online-Agent verfügbar, um diese Verbindung zu vermitteln. Ein Agent muss online sein, um zu {{ip}} zu proxen.",
+      "disabled": "Ein Administrator hat den Proxy-Zugriff auf dieses Ziel deaktiviert. Bitten Sie ihn, es unter Einstellungen, Fernzugriff wieder zu aktivieren.",
+      "mfaRequired": "Für den Fernzugriff ist eine Zwei-Faktor-Authentifizierung erforderlich. Aktivieren Sie sie in Ihrem Profil und versuchen Sie es erneut.",
+      "noOnlineAgent": "Im Moment kann kein Online-Agent {{ip}} erreichen. Bringen Sie einen Agenten in diesem Netzwerk online und versuchen Sie es erneut.",
       "agentListFailed": "Die Liste der Agenten konnte nicht geladen werden. Erneut versuchen."
     },
     "resetToAutoDetected": "Auf „Automatisch erkannt“ zurücksetzen",
@@ -2144,7 +2144,7 @@
       "monitoringStatus": "Überwachungsstatus",
       "networkReachability": "Netzwerk-Erreichbarkeit",
       "openPorts": "Offene Ports",
-      "snmpData": "SNMP Daten"
+      "snmpData": "SNMP-Daten"
     },
     "stats": {
       "asOf": "Stand: {{time}}"
@@ -2154,20 +2154,20 @@
       "monitoring": "Überwachung"
     },
     "toasts": {
-      "proxyConnectFailed": "Proxy-Verbindung konnte nicht gestartet werden",
-      "typeReset": "Geben Sie Zurücksetzen ein",
-      "typeResetFailed": "Geben Sie „Zurücksetzen fehlgeschlagen“ ein",
-      "typeUpdateFailed": "Typaktualisierung fehlgeschlagen",
-      "typeUpdated": "Typ aktualisiert",
-      "unlinkFailed": "Verknüpfung aufheben fehlgeschlagen",
-      "unlinked": "Nicht verknüpft",
+      "proxyConnectFailed": "Web-UI konnte nicht geöffnet werden",
+      "typeReset": "Gerätetyp auf automatisch erkannt zurückgesetzt",
+      "typeResetFailed": "Gerätetyp konnte nicht zurückgesetzt werden",
+      "typeUpdateFailed": "Gerätetyp konnte nicht aktualisiert werden",
+      "typeUpdated": "Gerätetyp aktualisiert",
+      "unlinkFailed": "Gerät konnte nicht getrennt werden",
+      "unlinked": "Gerät getrennt",
       "linked": "Gerät verknüpft",
-      "linkFailed": "Verknüpfen des Geräts fehlgeschlagen"
+      "linkFailed": "Gerät konnte nicht verknüpft werden"
     },
     "unlink": "Verknüpfung aufheben",
     "unlinking": "Verknüpfung wird aufgehoben…",
     "viewManagedDevice": "Verwaltetes Gerät anzeigen",
-    "autoLinkSuppressed": "Automatische Verknüpfung deaktiviert — von einem Benutzer getrennt",
+    "autoLinkSuppressed": "Die automatische Verknüpfung ist für dieses Gerät deaktiviert, weil es manuell getrennt wurde. Verknüpfen Sie es manuell, um sie wieder zu aktivieren.",
     "linkManually": "Manuell verknüpfen…",
     "linkManuallySelectDevice": "Gerät auswählen",
     "linkManuallyLinking": "Wird verknüpft…",
@@ -2184,7 +2184,13 @@
     "showMore": "Mehr anzeigen",
     "showLess": "Weniger anzeigen",
     "showAllPorts": "Alle anzeigen ({{count}})",
-    "showFewerPorts": "Weniger anzeigen"
+    "showFewerPorts": "Weniger anzeigen",
+    "tryAgain": "Erneut versuchen",
+    "snmpFields": {
+      "sysName": "Systemname",
+      "sysDescr": "Beschreibung",
+      "sysObjectId": "Objekt-ID (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

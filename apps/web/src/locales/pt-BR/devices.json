@@ -2088,17 +2088,17 @@
     "configurePrefix": "Configure a consulta SNMP e os monitores de rede em",
     "confirmUnlink": "Desvincular este dispositivo?",
     "confirmUnlinkMessage": "O ativo descoberto e o dispositivo gerenciado serão exibidos como itens separados. A vinculação automática permanecerá desativada para este ativo até que você o vincule novamente.",
-    "connecting": "Conectando…",
-    "discoveryAssetView": "Visualização do ativo de descoberta",
+    "connecting": "Conectando",
+    "discoveryAssetView": "visualização do ativo de descoberta",
     "emptyPorts": "Nenhuma porta aberta detectada.",
     "emptySnmp": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido sondado. Verifique se o método SNMP está ativado e se a string de comunidade está definida no perfil de descoberta.",
     "errors": {
-      "load": "Falha ao carregar o dispositivo de rede",
-      "malformed": "Dados do dispositivo de rede malformados",
+      "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
+      "malformed": "O servidor retornou uma resposta inesperada para este dispositivo de rede. Tente novamente e, se o problema persistir, entre em contato com o suporte.",
       "notFound": "Dispositivo de rede não encontrado"
     },
     "fields": {
-      "assetType": "Tipo de ativo",
+      "assetType": "Tipo",
       "discoveryMethods": "Métodos de descoberta",
       "discoveryProfile": "Perfil de descoberta",
       "displayName": "Nome de exibição",
@@ -2132,9 +2132,9 @@
     "proxyPort": "Porta",
     "proxyPortInvalid": "Informe uma porta entre 1 e 65535",
     "proxyErrors": {
-      "disabled": "Este destino foi desativado para acesso por proxy. Um administrador precisa reativá-lo em Configurações antes que você possa se conectar.",
-      "mfaRequired": "O acesso remoto requer autenticação de dois fatores — ative-a no seu perfil.",
-      "noOnlineAgent": "Nenhum agente on-line disponível para intermediar esta conexão. Um agente precisa estar on-line para fazer proxy até {{ip}}.",
+      "disabled": "Um administrador desativou o acesso por proxy a este destino. Peça a ele para reativá-lo em Configurações, Acesso remoto.",
+      "mfaRequired": "O acesso remoto exige autenticação de dois fatores. Ative-a no seu perfil e tente novamente.",
+      "noOnlineAgent": "Nenhum agente on-line consegue alcançar {{ip}} agora. Coloque um agente desta rede on-line e tente novamente.",
       "agentListFailed": "Não foi possível carregar a lista de agentes. Tentar novamente."
     },
     "resetToAutoDetected": "Redefinir para detecção automática",
@@ -2154,20 +2154,20 @@
       "monitoring": "Monitoramento"
     },
     "toasts": {
-      "proxyConnectFailed": "Falha ao iniciar a conexão de proxy",
-      "typeReset": "Tipo redefinido",
-      "typeResetFailed": "Falha ao redefinir o tipo",
-      "typeUpdateFailed": "Falha ao atualizar o tipo",
-      "typeUpdated": "Tipo atualizado",
-      "unlinkFailed": "Falha ao desvincular",
-      "unlinked": "Desvinculado",
+      "proxyConnectFailed": "Não foi possível abrir a interface web",
+      "typeReset": "Tipo de dispositivo redefinido para detecção automática",
+      "typeResetFailed": "Não foi possível redefinir o tipo do dispositivo",
+      "typeUpdateFailed": "Não foi possível atualizar o tipo do dispositivo",
+      "typeUpdated": "Tipo do dispositivo atualizado",
+      "unlinkFailed": "Não foi possível desvincular o dispositivo",
+      "unlinked": "Dispositivo desvinculado",
       "linked": "Dispositivo vinculado",
-      "linkFailed": "Falha ao vincular dispositivo"
+      "linkFailed": "Não foi possível vincular o dispositivo"
     },
     "unlink": "Desvincular",
     "unlinking": "Desvinculando…",
     "viewManagedDevice": "Ver dispositivo gerenciado",
-    "autoLinkSuppressed": "Vinculação automática desativada — desvinculado por um usuário",
+    "autoLinkSuppressed": "A vinculação automática está desativada para este ativo porque alguém o desvinculou. Vincule-o manualmente para reativá-la.",
     "linkManually": "Vincular manualmente…",
     "linkManuallySelectDevice": "Selecionar um dispositivo",
     "linkManuallyLinking": "Vinculando…",
@@ -2184,7 +2184,13 @@
     "showMore": "Mostrar mais",
     "showLess": "Mostrar menos",
     "showAllPorts": "Mostrar todas ({{count}})",
-    "showFewerPorts": "Mostrar menos"
+    "showFewerPorts": "Mostrar menos",
+    "tryAgain": "Tentar novamente",
+    "snmpFields": {
+      "sysName": "Nome do sistema",
+      "sysDescr": "Descrição",
+      "sysObjectId": "ID do objeto (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

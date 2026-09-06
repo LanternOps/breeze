@@ -690,7 +690,10 @@
     "connect": "Se connecter",
     "allowSelfSigned": "Autoriser les certificats auto-signés (courant pour les imprimantes, iLO/IPMI, commutateurs)",
     "discoveredThisAsset": "a découvert cet actif",
-    "pickAgentHint": "Choisissez un agent sur le même réseau que {{ip}}."
+    "pickAgentHint": "Choisissez un agent sur le même réseau que {{ip}}.",
+    "scheme": "Protocole",
+    "allowSelfSignedHint": "Ignore la vérification du certificat uniquement pour cette session.",
+    "throughAgentHelp": "Le trafic vers cet appareil est relayé par l'agent Breeze sélectionné, qui doit se trouver sur le même réseau."
   },
   "assetTypes": {
     "workstation": "Poste de travail",

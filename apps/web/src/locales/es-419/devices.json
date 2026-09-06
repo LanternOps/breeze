@@ -2088,34 +2088,34 @@
     "configurePrefix": "Configure los monitores de red y sondeo SNMP desde el",
     "confirmUnlink": "¿Desvincular este dispositivo?",
     "confirmUnlinkMessage": "El activo detectado y el dispositivo administrado se mostrarán como elementos separados. La vinculación automática permanecerá desactivada para este activo hasta que lo vuelva a vincular.",
-    "connecting": "Conectando…",
-    "discoveryAssetView": "Vista de activos de descubrimiento",
+    "connecting": "Conectando",
+    "discoveryAssetView": "vista de activos de descubrimiento",
     "emptyPorts": "No se detectaron puertos abiertos.",
     "emptySnmp": "No se recopilaron datos de SNMP; es posible que el dispositivo no haya respondido o que no se haya sondeado SNMP. Compruebe que el método SNMP esté habilitado y que la cadena de comunidad esté configurada en el perfil de descubrimiento.",
     "errors": {
-      "load": "Cargar",
-      "malformed": "Malformado",
+      "load": "No se pudo cargar este dispositivo de red. Comprueba tu conexión e inténtalo de nuevo.",
+      "malformed": "El servidor devolvió una respuesta inesperada para este dispositivo de red. Inténtalo de nuevo y, si el problema persiste, comunícate con soporte.",
       "notFound": "Dispositivo de red no encontrado"
     },
     "fields": {
-      "assetType": "Tipo de activo",
+      "assetType": "Tipo",
       "discoveryMethods": "Métodos de descubrimiento",
       "discoveryProfile": "Perfil de descubrimiento",
       "displayName": "Nombre para mostrar",
-      "firstSeen": "visto por primera vez",
+      "firstSeen": "Visto por primera vez",
       "hostname": "Nombre de host",
       "ipAddress": "Dirección IP",
       "lastSeen": "Visto por última vez",
       "linkedDevice": "Dispositivo vinculado",
-      "macAddress": "Dirección Mac",
+      "macAddress": "Dirección MAC",
       "manufacturer": "Fabricante",
       "model": "Modelo",
-      "netbiosName": "Nombre de Netbios",
+      "netbiosName": "Nombre de NetBIOS",
       "networkMonitoring": "Monitoreo de red",
       "notes": "Notas",
-      "osFingerprint": "Os huellas dactilares",
+      "osFingerprint": "Huella del SO",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP Monitoreo",
+      "snmpMonitoring": "Monitoreo SNMP",
       "status": "Estado",
       "tags": "Etiquetas"
     },
@@ -2132,9 +2132,9 @@
     "proxyPort": "Puerto",
     "proxyPortInvalid": "Ingresa un puerto entre 1 y 65535",
     "proxyErrors": {
-      "disabled": "Este destino se ha deshabilitado para el acceso por proxy. Un administrador debe volver a habilitarlo en Configuración antes de poder conectarse.",
-      "mfaRequired": "El acceso remoto requiere autenticación de dos factores; actívala en tu perfil.",
-      "noOnlineAgent": "No hay ningún agente en línea disponible para hacer de puente en esta conexión. Un agente debe estar en línea para conectarse por proxy a {{ip}}.",
+      "disabled": "Un administrador deshabilitó el acceso por proxy a este destino. Pídele que lo vuelva a habilitar en Configuración, Acceso remoto.",
+      "mfaRequired": "El acceso remoto requiere autenticación de dos factores. Actívala en tu perfil y vuelve a intentarlo.",
+      "noOnlineAgent": "Ningún agente en línea puede llegar a {{ip}} en este momento. Pon en línea un agente de esta red y vuelve a intentarlo.",
       "agentListFailed": "No se pudo cargar la lista de agentes. Reintentar."
     },
     "resetToAutoDetected": "Restablecer a detección automática",
@@ -2144,7 +2144,7 @@
       "monitoringStatus": "Estado de monitoreo",
       "networkReachability": "Accesibilidad de la red",
       "openPorts": "Puertos abiertos",
-      "snmpData": "SNMP Datos"
+      "snmpData": "Datos SNMP"
     },
     "stats": {
       "asOf": "a partir de {{time}}"
@@ -2154,20 +2154,20 @@
       "monitoring": "Monitoreo"
     },
     "toasts": {
-      "proxyConnectFailed": "No se pudo iniciar la conexión proxy",
-      "typeReset": "Tipo Restablecer",
-      "typeResetFailed": "Error al restablecer el tipo",
-      "typeUpdateFailed": "Error en la actualización de tipo",
-      "typeUpdated": "Tipo Actualizado",
-      "unlinkFailed": "Error al desvincular",
-      "unlinked": "Desvinculado",
+      "proxyConnectFailed": "No se pudo abrir la interfaz web",
+      "typeReset": "Tipo de dispositivo restablecido a detección automática",
+      "typeResetFailed": "No se pudo restablecer el tipo de dispositivo",
+      "typeUpdateFailed": "No se pudo actualizar el tipo de dispositivo",
+      "typeUpdated": "Tipo de dispositivo actualizado",
+      "unlinkFailed": "No se pudo desvincular el dispositivo",
+      "unlinked": "Dispositivo desvinculado",
       "linked": "Dispositivo vinculado",
-      "linkFailed": "Error al vincular el dispositivo"
+      "linkFailed": "No se pudo vincular el dispositivo"
     },
     "unlink": "Desconectar",
     "unlinking": "Desvinculando…",
     "viewManagedDevice": "Ver dispositivo administrado",
-    "autoLinkSuppressed": "Vinculación automática deshabilitada: un usuario la desvinculó",
+    "autoLinkSuppressed": "La vinculación automática está desactivada para este activo porque alguien lo desvinculó. Vincúlalo manualmente para reactivarla.",
     "linkManually": "Vincular manualmente…",
     "linkManuallySelectDevice": "Seleccionar un dispositivo",
     "linkManuallyLinking": "Vinculando…",
@@ -2184,7 +2184,13 @@
     "showMore": "Mostrar más",
     "showLess": "Mostrar menos",
     "showAllPorts": "Mostrar todos ({{count}})",
-    "showFewerPorts": "Mostrar menos"
+    "showFewerPorts": "Mostrar menos",
+    "tryAgain": "Intentar de nuevo",
+    "snmpFields": {
+      "sysName": "Nombre del sistema",
+      "sysDescr": "Descripción",
+      "sysObjectId": "ID de objeto (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

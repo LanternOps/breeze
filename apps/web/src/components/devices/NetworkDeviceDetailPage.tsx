@@ -28,6 +28,7 @@ import { useEscapeClose } from '../../hooks/useEscapeClose';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import HelpTooltip from '../shared/HelpTooltip';
 import { formatPing, pingColor } from '../discovery/pingFormat';
 import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import {
@@ -86,15 +87,19 @@ function defaultSchemeForPort(port: number, service?: string): 'http' | 'https' 
   return 'http';
 }
 
-// Friendly labels for the scalar SNMP system OIDs the discovery scan collects.
-const SNMP_FIELD_LABELS: Record<string, string> = {
-  sysName: 'System Name',
-  sysDescr: 'Description',
-  sysObjectId: 'Object ID',
+// Translation keys for the scalar SNMP system OIDs the discovery scan
+// collects. Values live in locale under `networkDeviceDetailPage.snmpFields`;
+// an unrecognized key (a vendor-specific OID the UI doesn't have a friendly
+// name for) falls back to the raw key rather than a translation lookup.
+const SNMP_FIELD_LABEL_KEYS: Record<string, string> = {
+  sysName: 'networkDeviceDetailPage.snmpFields.sysName',
+  sysDescr: 'networkDeviceDetailPage.snmpFields.sysDescr',
+  sysObjectId: 'networkDeviceDetailPage.snmpFields.sysObjectId',
 };
 
-function snmpFieldLabel(key: string): string {
-  return SNMP_FIELD_LABELS[key] ?? key;
+function snmpFieldLabel(key: string, t: (key: string) => string): string {
+  const labelKey = SNMP_FIELD_LABEL_KEYS[key];
+  return labelKey ? t(/* i18n-dynamic */ labelKey) : key;
 }
 
 function formatTimestamp(value?: string | null): string {
@@ -392,8 +397,9 @@ function ProxyConnectPopover({
           ) : (
             <div className="space-y-2">
               <div>
-                <label className="text-xs font-medium text-muted-foreground">
+                <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                   {t('discovery:proxyConnect.throughAgent')}
+                  <HelpTooltip text={t('discovery:proxyConnect.throughAgentHelp')} />
                 </label>
                 {useBridgeCombobox ? (
                   <>
@@ -436,30 +442,44 @@ function ProxyConnectPopover({
                 )}
               </div>
 
-              <select
-                data-testid="proxy-popover-scheme-select"
-                value={scheme}
-                onChange={(e) => {
-                  const next = e.target.value as 'http' | 'https';
-                  setScheme(next);
-                  if (next !== 'https') setSkipTlsVerify(false);
-                }}
-                className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-              >
-                <option value="http">HTTP</option>
-                <option value="https">HTTPS</option>
-              </select>
+              <div>
+                <label
+                  htmlFor={`proxy-scheme-${assetId}-${variant}-${initialPort}`}
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  {t('discovery:proxyConnect.scheme')}
+                </label>
+                <select
+                  id={`proxy-scheme-${assetId}-${variant}-${initialPort}`}
+                  data-testid="proxy-popover-scheme-select"
+                  value={scheme}
+                  onChange={(e) => {
+                    const next = e.target.value as 'http' | 'https';
+                    setScheme(next);
+                    if (next !== 'https') setSkipTlsVerify(false);
+                  }}
+                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                </select>
+              </div>
 
               {scheme === 'https' && (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={skipTlsVerify}
-                    onChange={(e) => setSkipTlsVerify(e.target.checked)}
-                    data-testid="proxy-popover-allow-self-signed"
-                  />
-                  {t('discovery:proxyConnect.allowSelfSigned')}
-                </label>
+                <div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={skipTlsVerify}
+                      onChange={(e) => setSkipTlsVerify(e.target.checked)}
+                      data-testid="proxy-popover-allow-self-signed"
+                    />
+                    {t('discovery:proxyConnect.allowSelfSigned')}
+                  </label>
+                  <p className="ml-6 text-xs text-muted-foreground">
+                    {t('discovery:proxyConnect.allowSelfSignedHint')}
+                  </p>
+                </div>
               )}
 
               <button
@@ -931,13 +951,23 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         </button>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
           <p className="text-sm text-destructive">{error || t('networkDeviceDetailPage.errors.notFound')}</p>
-          <button
-            type="button"
-            onClick={handleBack}
-            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            {t('networkDeviceDetailPage.goBack')}
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              data-testid="network-detail-retry"
+              onClick={() => void fetchAsset()}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              {t('networkDeviceDetailPage.tryAgain')}
+            </button>
+            <button
+              type="button"
+              onClick={handleBack}
+              className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              {t('networkDeviceDetailPage.goBack')}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1203,7 +1233,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
                     <Fragment key={key}>
-                      <dt className="text-muted-foreground">{snmpFieldLabel(key)}</dt>
+                      <dt className="text-muted-foreground">{snmpFieldLabel(key, t)}</dt>
                       <SnmpValue fieldKey={key} value={String(value ?? '')} />
                     </Fragment>
                   ))
@@ -1277,7 +1307,6 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               <a href={`/discovery?asset=${asset.id}#assets`} className="text-primary hover:underline">
                 {t('networkDeviceDetailPage.discoveryAssetView')}
               </a>
-              .
             </p>
           </Section>
 

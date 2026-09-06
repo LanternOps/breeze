@@ -108,7 +108,8 @@ describe('NetworkDeviceDetailPage', () => {
     expect(ports.textContent).toContain('443 (https)');
 
     const snmp = screen.getByTestId('network-detail-snmp');
-    expect(snmp.textContent).toContain('System Name');
+    expect(snmp.textContent).toContain('System name');
+    expect(snmp.textContent).toContain('Description');
     expect(snmp.textContent).toContain('Cisco IOS');
   });
 
@@ -154,6 +155,30 @@ describe('NetworkDeviceDetailPage', () => {
 
     await screen.findByTestId('network-device-detail-error');
     expect(screen.queryByTestId('network-device-detail')).toBeNull();
+    expect(
+      screen.getByText(
+        "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows a recovery message and a "Try again" action that re-fetches the asset on a load failure', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({}, false, 500))
+      .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+      .mockResolvedValueOnce(devicesResponse([])); // proxy bridge device list, fetched once the asset loads
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+
+    await screen.findByTestId('network-device-detail-error');
+    expect(
+      screen.getByText("Couldn't load this network device. Check your connection and try again."),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('network-detail-retry'));
+
+    await screen.findByTestId('network-device-detail');
+    expect(fetchWithAuthMock.mock.calls[1][0]).toBe(`/discovery/assets/${ASSET_ID}`);
   });
 
   it('does NOT render agent-only sections (scripts, terminal, remote desktop, processes)', async () => {
@@ -183,7 +208,7 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-detail-monitoring');
     expect(window.location.hash).toBe('#monitoring');
     const monitoring = screen.getByTestId('network-detail-monitoring');
-    expect(monitoring.textContent).toContain('SNMP Monitoring');
+    expect(monitoring.textContent).toContain('SNMP monitoring');
     expect(monitoring.textContent).toContain('Enabled');
     expect(monitoring.textContent).toContain('Not linked');
   });
@@ -262,7 +287,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     await screen.findByTestId('network-detail-monitoring');
     expect(screen.getByTestId('network-detail-suppressed').textContent).toContain(
-      'Auto-linking disabled',
+      'Auto-linking is off for this asset because someone unlinked it',
     );
   });
 
@@ -571,6 +596,20 @@ describe('NetworkDeviceDetailPage', () => {
       expect(screen.queryByTestId('network-detail-port-proxy-22')).toBeNull();
     });
 
+    it('gives the protocol select an accessible label', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+
+      const select = await screen.findByLabelText('Protocol');
+      expect(select).toBe(screen.getByTestId('proxy-popover-scheme-select'));
+    });
+
     it("fetches the bridge device list scoped to the asset's site, or unscoped when the asset has no site", async () => {
       fetchWithAuthMock
         .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, siteId: 'site-1' } }))
@@ -861,7 +900,7 @@ describe('NetworkDeviceDetailPage', () => {
       fireEvent.click(screen.getByTestId('proxy-popover-connect'));
 
       await waitFor(() =>
-        expect(screen.getByText('This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.')).toBeTruthy(),
+        expect(screen.getByText('An administrator disabled proxy access to this target. Ask them to re-enable it under Settings, Remote access.')).toBeTruthy(),
       );
       expect(openSpy).not.toHaveBeenCalled();
       expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
@@ -948,6 +987,28 @@ describe('NetworkDeviceDetailPage', () => {
       expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
     });
 
+    it('renders SNMP field labels from locale, including the Object ID (OID) field', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({
+            data: {
+              ...baseAsset,
+              snmpData: { sysName: 'core-switch-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1' },
+            },
+          }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const snmp = screen.getByTestId('network-detail-snmp');
+      expect(snmp.textContent).toContain('System name');
+      expect(snmp.textContent).toContain('Description');
+      expect(snmp.textContent).toContain('Object ID (OID)');
+      expect(snmp.textContent).toContain('1.3.6.1.4.1.9.1');
+    });
+
     it('clamps a long SNMP value behind a Show more / Show less toggle', async () => {
       const longDescr = 'x'.repeat(250);
       fetchWithAuthMock
@@ -1013,7 +1074,7 @@ describe('NetworkDeviceDetailPage', () => {
       render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
       await screen.findByTestId('network-device-detail');
 
-      const label = screen.getByText('Os Fingerprint');
+      const label = screen.getByText('OS fingerprint');
       const dd = label.parentElement?.querySelector('dd');
       expect(dd?.textContent).toBe('—');
     });
