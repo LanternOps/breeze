@@ -85,11 +85,16 @@ vi.mock('../../jobs/deviceBulkPurge', () => ({
 vi.mock('./helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./helpers')>()),
   getDeviceWithOrgAndSiteCheck: vi.fn(),
+  getDevicesWithOrgAndSiteCheck: vi.fn(),
 }));
 
 import { bulkLifecycleRoutes } from './bulkLifecycle';
 import { restoreRemovedDevice, DeviceLifecycleError } from '../../services/deviceLifecycle';
-import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import {
+  getDeviceWithOrgAndSiteCheck,
+  getDevicesWithOrgAndSiteCheck,
+  SITE_ACCESS_DENIED,
+} from './helpers';
 import { runOutsideDbContext, withDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueueDeviceBulkPurge, getDeviceBulkPurgeQueue } from '../../jobs/deviceBulkPurge';
@@ -122,6 +127,16 @@ beforeEach(() => {
   authState.scope = 'organization';
   authState.partnerId = 'partner-1';
   authState.accessibleOrgIds = [ORG_A];
+  // The batched lookup is what POST /bulk/permanent-delete calls. Route tests
+  // script `getDeviceWithOrgAndSiteCheck` (used by bulk restore), so mirror its
+  // verdicts here rather than making every test rig two mocks.
+  vi.mocked(getDevicesWithOrgAndSiteCheck).mockImplementation(async (ctx, deviceIds, a) => {
+    const out = new Map<string, unknown>();
+    for (const id of deviceIds) {
+      out.set(id, await vi.mocked(getDeviceWithOrgAndSiteCheck)(ctx, id, a));
+    }
+    return out as never;
+  });
   vi.mocked(runOutsideDbContext).mockImplementation(((fn: () => unknown) => fn()) as never);
   vi.mocked(withDbAccessContext).mockImplementation((async (
     _ctx: unknown,
@@ -299,6 +314,10 @@ describe('POST /devices/bulk/permanent-delete', () => {
     ]);
     expect(body.jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
+    // ONE batched lookup, not one round-trip per device (#2787 review minor).
+    expect(getDevicesWithOrgAndSiteCheck).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getDevicesWithOrgAndSiteCheck).mock.calls[0]![1]).toEqual([DEV_1, DEV_2]);
+
     expect(enqueueDeviceBulkPurge).toHaveBeenCalledTimes(1);
     const sent = vi.mocked(enqueueDeviceBulkPurge).mock.calls[0]![0];
     expect(sent.targets).toHaveLength(1);
@@ -348,6 +367,34 @@ describe('POST /devices/bulk/permanent-delete', () => {
     const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: ids });
     expect(res.status).toBe(400);
     expect(enqueueDeviceBulkPurge).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The site allowlist has to survive the switch to a batched lookup — a batch
+   * that dropped it would hand a site-scoped tech devices from sites they
+   * cannot see, and the enqueue is a permanent delete.
+   */
+  it('rejects a device outside the caller site allowlist and enqueues only the rest', async () => {
+    vi.mocked(getDevicesWithOrgAndSiteCheck).mockResolvedValue(
+      new Map<string, unknown>([
+        [DEV_1, accessibleDevice(DEV_1)],
+        [DEV_2, SITE_ACCESS_DENIED],
+      ]) as never,
+    );
+
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      accepted: number;
+      rejected: Array<{ deviceId: string; code: string }>;
+    };
+    expect(body.accepted).toBe(1);
+    expect(body.rejected).toEqual([
+      { deviceId: DEV_2, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied' },
+    ]);
+    expect(vi.mocked(enqueueDeviceBulkPurge).mock.calls[0]![0].targets.map(t => t.deviceId))
+      .toEqual([DEV_1]);
   });
 });
 

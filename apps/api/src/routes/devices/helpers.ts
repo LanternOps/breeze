@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../../db';
@@ -201,4 +201,81 @@ export async function getDeviceWithOrgAndSiteCheck(
     return SITE_ACCESS_DENIED;
   }
   return device;
+}
+
+/**
+ * Batched sibling of {@link getDeviceWithOrgAndSiteCheck}.
+ *
+ * `POST /devices/bulk/permanent-delete` validates up to 500 devices inside the
+ * ambient request transaction. Done one at a time that is 500 sequential
+ * single-row round-trips holding one pooled connection for the duration; this
+ * collapses them into a single `WHERE id IN (...)`.
+ *
+ * It must reach EXACTLY the verdict the single helper would, so it delegates to
+ * the same two exported predicates — `ensureOrgAccess` and `canAccessSite` —
+ * rather than restating their logic. The one thing worth stating twice is the
+ * fail-closed posture: a device the query did not return, an org the caller
+ * cannot access, a malformed id, or (under a site allowlist) a row with no
+ * usable `site_id` are all denials, never "assume accessible".
+ *
+ * Returns a Map keyed by the id AS PASSED IN — including malformed ones, so a
+ * caller iterating its own input never silently drops an entry:
+ *   - the device row when accessible
+ *   - `null` when missing OR org-denied OR malformed (→ 404)
+ *   - {@link SITE_ACCESS_DENIED} when org passes but the site allowlist
+ *     excludes it (→ 403)
+ */
+export async function getDevicesWithOrgAndSiteCheck(
+  c: Context,
+  deviceIds: readonly string[],
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+): Promise<Map<string, typeof devices.$inferSelect | null | typeof SITE_ACCESS_DENIED>> {
+  const out = new Map<string, typeof devices.$inferSelect | null | typeof SITE_ACCESS_DENIED>();
+
+  // Same uuid guard as the single helper, and for the same reason: `devices.id`
+  // is uuid-typed, so a malformed value reaches Postgres as a 22P02 and takes
+  // the WHOLE batch down with it rather than 404ing one entry (#2968).
+  const validIds: string[] = [];
+  for (const id of deviceIds) {
+    if (PG_UUID_REGEX.test(id)) validIds.push(id);
+    else out.set(id, null);
+  }
+  if (validIds.length === 0) return out;
+
+  const rows = await db.select().from(devices).where(inArray(devices.id, validIds));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  // Read the permissions context ONCE, and only after we know there is at
+  // least one row to judge — but before any verdict, so the programmer-error
+  // throw cannot be skipped by an all-denied batch.
+  const userPerms = c.get('permissions') as UserPermissions | undefined;
+  if (!userPerms) {
+    throw new HTTPException(500, {
+      message:
+        'getDevicesWithOrgAndSiteCheck called without requirePermission middleware — permissions context is missing',
+    });
+  }
+
+  for (const id of validIds) {
+    const device = byId.get(id);
+    if (!device) {
+      out.set(id, null);
+      continue;
+    }
+    if (!(await ensureOrgAccess(device.orgId, auth))) {
+      out.set(id, null);
+      continue;
+    }
+    if (!userPerms.allowedSiteIds) {
+      out.set(id, device);
+      continue;
+    }
+    if (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId)) {
+      out.set(id, SITE_ACCESS_DENIED);
+      continue;
+    }
+    out.set(id, device);
+  }
+
+  return out;
 }

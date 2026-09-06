@@ -39,7 +39,11 @@ import {
   type DeviceBulkPurgeResult,
 } from '../../jobs/deviceBulkPurge';
 import { bulkDeviceIdsSchema } from './schemas';
-import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import {
+  getDeviceWithOrgAndSiteCheck,
+  getDevicesWithOrgAndSiteCheck,
+  SITE_ACCESS_DENIED,
+} from './helpers';
 
 export const bulkLifecycleRoutes = new Hono();
 
@@ -176,8 +180,16 @@ bulkLifecycleRoutes.post(
     const targets: DeviceBulkPurgeJobPayload['targets'] = [];
     const rejected: BulkFailed[] = [];
 
+    // ONE query for the whole selection. Per-device lookups here would be up
+    // to 500 sequential single-row round-trips inside the ambient request
+    // transaction, pinning a pooled connection for the duration (#1105) — and
+    // unlike bulk restore, this handler has no per-item transaction to hide
+    // behind. Same verdicts as the single chokepoint: the batched helper
+    // delegates to the same ensureOrgAccess / canAccessSite predicates.
+    const lookups = await getDevicesWithOrgAndSiteCheck(c, ids, auth);
+
     for (const deviceId of ids) {
-      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      const device = lookups.get(deviceId) ?? null;
       if (device === SITE_ACCESS_DENIED) {
         rejected.push({
           deviceId,
