@@ -68,7 +68,15 @@ import { customFieldDefinitions, devices } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { createAccessToken } from '../../services/jwt';
+import {
+  createOrganization,
+  createPartner,
+  createSite,
+  createUser,
+  setupTestEnvironment,
+} from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -684,11 +692,83 @@ describe('device_custom_field_values — device org move', () => {
   });
 });
 
+describe('device_custom_field_values — POST /devices/:id/move-org', () => {
+  runDb('carries values through the real route and records the counts in the audit', async () => {
+    // The two tests above drive the DB helper and the org flip directly. This
+    // one proves the ROUTE wires them together: that `moveOrg.ts` calls the
+    // re-home BEFORE its own org flip (so the flip's cascade trigger does not
+    // hit the coherence guard), inside the move transaction (so the DEFERRED
+    // composite FK resolves), and that a DROPPED value — which is
+    // unrecoverable — leaves a trace in the move audit rather than vanishing.
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: sourceOrg, site: sourceSite, user, role } = env;
+    const targetOrg = await createOrganization({ partnerId: partner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+
+    const sourceDef = await createDefinition({ orgId: sourceOrg.id, fieldKey: 'asset_tag' });
+    const targetDef = await createDefinition({ orgId: targetOrg.id, fieldKey: 'asset_tag' });
+    // Only the SOURCE org defines this one, so it has no counterpart and is
+    // dropped by the move.
+    const orphanDef = await createDefinition({ orgId: sourceOrg.id, fieldKey: 'rack_slot' });
+    const deviceId = await createDevice(sourceOrg.id, sourceSite.id, 'dcfv-route-move');
+    await insertValue({
+      deviceId, orgId: sourceOrg.id, definitionId: sourceDef,
+      fieldKey: 'asset_tag', valueText: 'AB-1',
+    });
+    await insertValue({
+      deviceId, orgId: sourceOrg.id, definitionId: orphanDef,
+      fieldKey: 'rack_slot', valueText: 'SLOT-9',
+    });
+
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: 'dcfv-move-session',
+    });
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+    const response = await app.request(`/devices/${deviceId}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: targetOrg.id, siteId: targetSite.id }),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+
+    const rows = await sys(() => db.execute<{
+      fieldKey: string; orgId: string; definitionId: string;
+    }>(sql`
+      SELECT field_key AS "fieldKey", org_id AS "orgId", definition_id AS "definitionId"
+        FROM public.device_custom_field_values
+       WHERE device_id = ${deviceId}::uuid ORDER BY field_key`));
+    expect(rows).toEqual([
+      { fieldKey: 'asset_tag', orgId: targetOrg.id, definitionId: targetDef },
+    ]);
+    expect(await readProjection(deviceId)).toEqual({ asset_tag: 'AB-1' });
+
+    const audits = await sys(() => db.execute<{ details: Record<string, unknown> }>(sql`
+      SELECT details FROM public.audit_logs
+       WHERE resource_id = ${deviceId}::uuid
+         AND action IN ('device.move_org.source', 'device.move_org.target')`));
+    expect(audits.length).toBeGreaterThan(0);
+    for (const audit of audits) {
+      expect(audit.details).toMatchObject({ customFieldValues: { rehomed: 1, dropped: 1 } });
+    }
+  });
+});
+
 /**
  * Exercises the DB-side helper the move path calls, then performs the org flip
- * itself so `breeze_cascade_device_org_id`'s generic loop runs for real. The
- * route is covered by `deviceMoveOrg*.integration.test.ts`; what is under test
- * here is that the flip does not abort on the coherence trigger.
+ * itself so `breeze_cascade_device_org_id`'s generic loop runs for real, with no
+ * route in the way. The route itself is covered by the suite immediately above;
+ * what is under test here is that the flip does not abort on the coherence
+ * trigger and that the disposition (re-home vs drop) is exactly right.
  */
 async function rehomeAndMove(
   deviceId: string,
