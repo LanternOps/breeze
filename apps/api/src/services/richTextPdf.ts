@@ -659,6 +659,18 @@ function drawRuns(
   forceBold = false,
 ): void {
   const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
+  if (align !== 'left') {
+    // pdfkit applies `align`/`width` to EVERY `continued: true` call, not just
+    // the paragraph as a whole — so the left-align path below (which leans on
+    // pdfkit's own continued-text wrapping) makes each run re-center/re-right-
+    // anchor itself inside `width`, painting every run of a line on top of the
+    // others. Lay the lines out ourselves instead: word-wrap the runs exactly
+    // like countWrappedLines measures them, then position each wrapped LINE
+    // (not each run) against the box.
+    drawAlignedRuns(doc, effectiveRuns, x, y, width, fontSize, bodyFonts, align, color, forceBold);
+    doc.fillColor(TEXT_COLOR);
+    return;
+  }
   effectiveRuns.forEach((run, i) => {
     const isFirst = i === 0;
     const isLast = i === effectiveRuns.length - 1;
@@ -675,6 +687,125 @@ function drawRuns(
     }
   });
   doc.fillColor(TEXT_COLOR);
+}
+
+/** One word/whitespace token from a run, carrying back a reference to its
+ *  source run so wrapping can measure it at the run's own font. `isBreak`
+ *  marks a hard line break (a `\n` inside the run's text, from `<br>`). */
+interface RunToken { text: string; run: RichTextRun; isWhitespace: boolean; isBreak?: boolean }
+
+function tokenizeRunsForWrap(runs: RichTextRun[]): RunToken[] {
+  const tokens: RunToken[] = [];
+  for (const run of runs) {
+    const segments = run.text.split('\n');
+    segments.forEach((segment, segIndex) => {
+      if (segIndex > 0) tokens.push({ text: '', run, isWhitespace: false, isBreak: true });
+      if (!segment.length) return;
+      for (const text of segment.split(/(\s+)/).filter((t) => t.length > 0)) {
+        tokens.push({ text, run, isWhitespace: text.trim().length === 0 });
+      }
+    });
+  }
+  return tokens;
+}
+
+/** Greedy-fills tokens into wrapped lines, mirroring countWrappedLines'
+ *  algorithm exactly (same width check, same drop-trailing-whitespace-at-a-
+ *  wrap rule) so the line count here matches what was already measured and
+ *  charged for via measureInlineRuns/countWrappedLines. Mutates doc.font/
+ *  fontSize as it measures — caller saves/restores. */
+function wrapRunsIntoLines(doc: PDFKit.PDFDocument, runs: RichTextRun[], width: number, fontSize: number, bodyFonts: BodyFonts, forceBold: boolean): RunToken[][] {
+  const lines: RunToken[][] = [[]];
+  let lineWidth = 0;
+  for (const token of tokenizeRunsForWrap(runs)) {
+    if (token.isBreak) {
+      lines.push([]);
+      lineWidth = 0;
+      continue;
+    }
+    doc.font(fontFor(bodyFonts, forceBold || token.run.bold, token.run.italic)).fontSize(fontSize);
+    const tokenWidth = doc.widthOfString(token.text);
+    if (lineWidth > 0 && lineWidth + tokenWidth > width) {
+      if (token.isWhitespace) continue; // drop trailing/would-be-leading space at a wrap point
+      lines.push([]);
+      lineWidth = 0;
+    }
+    lines[lines.length - 1]!.push(token);
+    lineWidth += tokenWidth;
+  }
+  return lines;
+}
+
+/** A maximal same-run chunk of one wrapped line, with its drawn width. */
+interface RunFragment { text: string; run: RichTextRun; width: number }
+
+/** Trims leading/trailing whitespace tokens off one wrapped line (matching
+ *  pdfkit's own line-trimming) and merges consecutive same-run tokens into one
+ *  fragment per draw call — reconstructing e.g. a multi-word link run as a
+ *  single fragment rather than one draw call per word. Mutates doc.font/
+ *  fontSize as it measures — caller saves/restores. */
+function fragmentsForLine(doc: PDFKit.PDFDocument, tokens: RunToken[], fontSize: number, bodyFonts: BodyFonts, forceBold: boolean): RunFragment[] {
+  let start = 0;
+  let end = tokens.length;
+  while (start < end && tokens[start]!.isWhitespace) start++;
+  while (end > start && tokens[end - 1]!.isWhitespace) end--;
+
+  const fragments: RunFragment[] = [];
+  for (const token of tokens.slice(start, end)) {
+    const last = fragments[fragments.length - 1];
+    if (last && last.run === token.run) last.text += token.text;
+    else fragments.push({ text: token.text, run: token.run, width: 0 });
+  }
+  for (const frag of fragments) {
+    doc.font(fontFor(bodyFonts, forceBold || frag.run.bold, frag.run.italic)).fontSize(fontSize);
+    frag.width = doc.widthOfString(frag.text);
+  }
+  return fragments;
+}
+
+/** Draws a run sequence for center/right alignment: wraps the runs into lines
+ *  itself (see wrapRunsIntoLines), then positions each LINE's total width
+ *  against the box and draws its fragments run after run — as opposed to
+ *  pdfkit's continued-text mode, which would align each run independently
+ *  inside `width` and stack every run of a line on top of the others. */
+function drawAlignedRuns(
+  doc: PDFKit.PDFDocument,
+  runs: RichTextRun[],
+  x: number,
+  y: number,
+  width: number,
+  fontSize: number,
+  bodyFonts: BodyFonts,
+  align: 'center' | 'right',
+  color: string,
+  forceBold: boolean,
+): void {
+  const lines = wrapRunsIntoLines(doc, runs, width, fontSize, bodyFonts, forceBold);
+  const lineHeight = maxLineHeightForRuns(doc, runs, fontSize, bodyFonts, forceBold);
+  lines.forEach((lineTokens, i) => {
+    const fragments = fragmentsForLine(doc, lineTokens, fontSize, bodyFonts, forceBold);
+    if (!fragments.length) return;
+    const lineWidth = fragments.reduce((sum, f) => sum + f.width, 0);
+    let curX = align === 'center' ? x + (width - lineWidth) / 2 : x + width - lineWidth;
+    const curY = y + i * lineHeight;
+    for (const frag of fragments) {
+      doc.font(fontFor(bodyFonts, forceBold || frag.run.bold, frag.run.italic)).fontSize(fontSize).fillColor(frag.run.link ? LINK_COLOR : color);
+      // A `width` wide enough that this single fragment never itself wraps —
+      // it already fits by construction (wrapRunsIntoLines wrapped against the
+      // same box width). Needed even though wrapping isn't wanted: without a
+      // `width` option pdfkit takes single-fragment `_line`'s no-wrapper path,
+      // which never populates options.textWidth/wordCount — the exact values
+      // link-annotation placement below reads, so a link run drew as
+      // `unsupported number: NaN` with lineBreak:false instead.
+      doc.text(frag.text, curX, curY, {
+        width,
+        lineBreak: false,
+        underline: frag.run.underline || !!frag.run.link,
+        link: frag.run.link ?? null,
+      });
+      curX += frag.width;
+    }
+  });
 }
 
 /** Same per-run measurement for a single inline-runs string (table cells):
