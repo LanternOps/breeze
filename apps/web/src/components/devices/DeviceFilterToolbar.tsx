@@ -328,9 +328,14 @@ export function DeviceFilterToolbar({
           quick-preset chips, and the "+ Add filter" picker. The bar itself owns
           the border + focus ring; everything inside is borderless/chip-light so
           the controls read as one cohesive tool, not three stacked widgets. */}
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background px-2 py-1.5 transition focus-within:ring-2 focus-within:ring-ring sm:flex-nowrap">
+      {/* Stacked on phones (search / chips / controls, each full width so the
+          chip strip keeps a real scroll port), one row from `sm` up. Only
+          ubiquitous responsive utilities here on purpose: Astro's client
+          router keeps the previous page's inline dev stylesheet on Back, and a
+          variant that exists nowhere else can be missing from that copy. */}
+      <div className="flex flex-col gap-2 rounded-lg border bg-background px-2 py-1.5 transition focus-within:ring-2 focus-within:ring-ring sm:flex-row sm:items-center">
         {/* Device search — borderless, blends into the bar (the one live filter). */}
-        <div className="flex w-40 shrink-0 items-center gap-2 sm:w-56">
+        <div className="flex shrink-0 items-center gap-2 sm:w-56">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             type="text"
@@ -343,15 +348,12 @@ export function DeviceFilterToolbar({
         </div>
 
         {/* Divider between the live search and the chip controls. */}
-        <div className="h-5 w-px shrink-0 bg-border" aria-hidden="true" />
+        <div className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
 
         {/* Quick-preset chips — scroll horizontally if they outgrow the row.
             The scrollbar is hidden, so left/right gradient fades are the cue
             that more chips exist off-screen. */}
-        {/* On narrow screens the chip strip takes its own full-width row (and
-            sorts last) so it keeps a real scroll port instead of collapsing to
-            zero width beside the search box. */}
-        <div className="relative order-last flex min-w-0 flex-1 basis-full items-center sm:order-none sm:basis-auto">
+        <div className="relative flex min-w-0 flex-1 items-center">
           <div
             ref={chipsRef}
             data-testid="quick-add-chips"
@@ -397,49 +399,51 @@ export function DeviceFilterToolbar({
         {/* + Add filter — the field-type picker, chip-styled so it reads as part
             of the chip row. Kept OUTSIDE the scroll group so its dropdown isn't
             clipped, and so it stays pinned/reachable as presets scroll. */}
-        <FilterAddDropdown
-          align="right"
-          onCreateGroup={onCreateGroup}
-          onSelect={(field) => addCondition(defaultConditionForField(field))}
-          renderTrigger={({ open, toggle }) => (
-            <button
-              type="button"
-              data-testid="filter-more-button"
-              aria-haspopup="true"
-              aria-expanded={open}
-              onClick={toggle}
-              className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-dashed px-2.5 py-0.5 text-xs transition-colors hover:border-solid hover:bg-muted hover:text-foreground ${
-                open
-                  ? "border-solid bg-muted text-foreground"
-                  : "text-muted-foreground"
-              }`}
-            >
-              <Plus className="h-3 w-3" />
-              {t("deviceFilterToolbar.addFilter")}{" "}
-            </button>
-          )}
-        />
+        <div className="flex shrink-0 items-center gap-2">
+          <FilterAddDropdown
+            align="right"
+            onCreateGroup={onCreateGroup}
+            onSelect={(field) => addCondition(defaultConditionForField(field))}
+            renderTrigger={({ open, toggle }) => (
+              <button
+                type="button"
+                data-testid="filter-more-button"
+                aria-haspopup="true"
+                aria-expanded={open}
+                onClick={toggle}
+                className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-dashed px-2.5 py-0.5 text-xs transition-colors hover:border-solid hover:bg-muted hover:text-foreground ${
+                  open
+                    ? "border-solid bg-muted text-foreground"
+                    : "text-muted-foreground"
+                }`}
+              >
+                <Plus className="h-3 w-3" />
+                {t("deviceFilterToolbar.addFilter")}{" "}
+              </button>
+            )}
+          />
 
-        {/* Views — save/recall named filter templates (its own ghost menu so
-            recall stays separate from building chips). */}
-        <SavedViewsMenu value={value} onApply={onChange} />
+          {/* Views — save/recall named filter templates (its own ghost menu so
+              recall stays separate from building chips). */}
+          <SavedViewsMenu value={value} onApply={onChange} />
 
-        {/* Advanced — de-emphasized ghost toggle; opens the boolean sentence
-            builder for power users. */}
-        <button
-          type="button"
-          data-testid="filter-advanced-toggle"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((o) => !o)}
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-            advancedOpen
-              ? "bg-muted text-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground"
-          }`}
-        >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          {t("deviceFilterToolbar.advanced")}{" "}
-        </button>
+          {/* Advanced — de-emphasized ghost toggle; opens the boolean sentence
+              builder for power users. */}
+          <button
+            type="button"
+            data-testid="filter-advanced-toggle"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((o) => !o)}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+              advancedOpen
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            }`}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            {t("deviceFilterToolbar.advanced")}{" "}
+          </button>
+        </div>
       </div>
 
       {/* Active editable-chip row — only when the group has chips. */}
