@@ -395,8 +395,10 @@ describe('POST /devices/:id/move-org', () => {
       // ORDER, which is the cross-axis lock order (#4657, #4743, #4643).
       // ALERT_CHILD_ORG_REWRITE_TABLES (#4867 — the alert-axis children with
       // no device_id) come next, pinned to their array's order the same way:
-      // member -> group -> verdict, because each later predicate reads the
-      // rows the earlier statement just re-stamped. The SITE loop runs last
+      // group -> member -> verdict, matching the correlation job's own write
+      // order (services/alertCorrelationGroups.ts) so the two writers can't
+      // form an AB-BA, and because each later predicate reads the rows the
+      // group statement just re-stamped. The SITE loop runs last
       // and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
@@ -871,13 +873,29 @@ describe('POST /devices/:id/move-org', () => {
       return matches[0]!;
     }
 
-    it('re-stamps alert_correlation_members via the alert join — a member row always follows its alert', async () => {
+    it('re-stamps alert_correlation_members only for groups that actually moved — a member never travels apart from its group', async () => {
       const { statements } = await moveDevice();
 
+      // #5005 post-merge review (split-brain): the gate is the GROUP's org_id
+      // after the group statement, NOT the member's own alert.
+      // correlationMetadataCondition (routes/alerts/alerts.ts) joins a member to
+      // its group and pins BOTH org_ids, so a member re-stamped to the target
+      // while its group was held back is visible to NEITHER org. Matching on
+      // `g.org_id = <target>` rather than on the group statement's RETURNING ids
+      // also heals a member the pre-fix code stranded under a group that is
+      // already in the target org.
       expect(onlyStatement(statements, 'alert_correlation_members')).toBe(collapseStmt(`
-        UPDATE alert_correlation_members SET org_id = ${TARGET_ORG}::uuid
-        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)
-        RETURNING id
+        UPDATE alert_correlation_members m SET org_id = ${TARGET_ORG}::uuid
+        WHERE m.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_groups g
+        WHERE g.id = m.group_id
+        AND g.org_id = ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m2
+        JOIN alerts a ON a.id = m2.alert_id
+        WHERE m2.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid))
+        RETURNING m.id
       `));
     });
 
@@ -939,7 +957,7 @@ describe('POST /devices/:id/move-org', () => {
       `));
     });
 
-    it('orders the three AFTER the generic alerts re-stamp, and the group before the verdict', async () => {
+    it('takes the GROUP before its MEMBERS (the correlation job\'s lock order), all after the generic alerts re-stamp', async () => {
       const { statements } = await moveDevice();
 
       const idx = (prefix: string) => {
@@ -948,13 +966,20 @@ describe('POST /devices/:id/move-org', () => {
         return found;
       };
 
-      // Load-bearing: the group predicate reads `alerts.org_id` AS RE-STAMPED
-      // by the generic loop, so running earlier would see every moved alert
-      // still in the source org and hold every group back.
+      // Load-bearing: the group guard reads `alerts.org_id` AS RE-STAMPED by
+      // the generic loop, so running earlier would see every moved alert still
+      // in the source org and hold every group back.
       const alertsRestamp = idx('UPDATE alerts SET org_id');
-      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(alertsRestamp);
       expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(alertsRestamp);
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(alertsRestamp);
       expect(idx('UPDATE ai_alert_verdicts ')).toBeGreaterThan(alertsRestamp);
+
+      // THE LOCK ORDER (#5005 review). services/alertCorrelationGroups.ts
+      // upserts the GROUP and then its MEMBERS on every correlation pass. A
+      // mover that took members first would be an AB-BA against a concurrent
+      // pass over the same group and lose one side to 40P01 — a 500 on an
+      // admin action. Same discipline as services/ticketOrgMoveLockOrder.ts.
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(idx('UPDATE alert_correlation_groups '));
 
       // Load-bearing: the verdict's group leg selects groups already sitting in
       // the TARGET org, which is only true of a group this move just re-stamped
@@ -964,30 +989,57 @@ describe('POST /devices/:id/move-org', () => {
       // Extends — never reorders — the documented ticket-child lock order
       // (services/ticketOrgMoveLockOrder.ts): the alert-axis statements all
       // follow the last ticket-chain table.
-      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(idx('UPDATE ticket_email_links '));
+      expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(idx('UPDATE ticket_email_links '));
     });
 
-    it('counts the groups it touched but held back, for the audit trail', async () => {
+    it('counts the groups it held back SPLIT BY CAUSE, and this device\'s memberships that stayed with them', async () => {
       const { statements } = await moveDevice();
 
       // A held group is one this device's alerts belong to that is still not in
-      // the target org after the re-stamp — i.e. split across orgs, or blocked
-      // by an occupied group_key. Counted so an operator asking "why did the
-      // correlation badge not follow this device?" has the number in the audit
-      // row instead of having to reconstruct it.
-      const held = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*)::int AS held '));
+      // the target org after the re-stamp. The group UPDATE has already run, so
+      // it failed exactly one of its two skippable guards — it spans two orgs,
+      // or its (org_id, group_key) slot is occupied there. The two have
+      // different operator answers (#5005 review): spanning resolves itself when
+      // the last device moves, a key collision never does.
+      const held = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*) FILTER'));
       expect(
         held,
         `Expected exactly one held-group count.\nStatements:\n${statements.join('\n')}`,
       ).toEqual([
         collapseStmt(`
-          SELECT count(*)::int AS held
+          SELECT
+          count(*) FILTER (WHERE t.spans)::int AS held_spanning,
+          count(*) FILTER (WHERE NOT t.spans)::int AS held_key_collision
+          FROM (
+          SELECT EXISTS (
+          SELECT 1 FROM alert_correlation_members m2
+          JOIN alerts a2 ON a2.id = m2.alert_id
+          WHERE m2.group_id = g.id
+          AND a2.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid) AS spans
           FROM alert_correlation_groups g
           WHERE g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
           AND EXISTS (
           SELECT 1 FROM alert_correlation_members m
           JOIN alerts a ON a.id = m.alert_id
           WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid)
+          ) t
+        `),
+      ]);
+
+      // The members that stayed behind WITH a held group — this device's alerts
+      // that moved without their correlation membership.
+      const heldMembers = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*)::int AS held_members'));
+      expect(
+        heldMembers,
+        `Expected exactly one held-member count.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        collapseStmt(`
+          SELECT count(*)::int AS held_members
+          FROM alert_correlation_members m
+          JOIN alerts a ON a.id = m.alert_id
+          JOIN alert_correlation_groups g ON g.id = m.group_id
+          WHERE a.device_id = ${DEVICE_ID}::uuid
+          AND g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
         `),
       ]);
     });
@@ -997,15 +1049,18 @@ describe('POST /devices/:id/move-org', () => {
         if (text.startsWith('UPDATE alert_correlation_members ')) return [{ id: 'm1' }, { id: 'm2' }];
         if (text.startsWith('UPDATE alert_correlation_groups ')) return [{ id: 'g1' }];
         if (text.startsWith('UPDATE ai_alert_verdicts ')) return [{ id: 'v1' }, { id: 'v2' }, { id: 'v3' }];
-        if (text.startsWith('SELECT count(*)::int AS held ')) return [{ held: 4 }];
+        if (text.startsWith('SELECT count(*) FILTER')) return [{ held_spanning: 4, held_key_collision: 2 }];
+        if (text.startsWith('SELECT count(*)::int AS held_members')) return [{ held_members: 5 }];
         return null;
       };
       await moveDevice();
 
       const expected = {
-        correlationMembers: 2,
         correlationGroups: 1,
-        correlationGroupsHeld: 4,
+        correlationGroupsHeldSpanning: 4,
+        correlationGroupsHeldKeyCollision: 2,
+        correlationMembers: 2,
+        correlationMembersHeld: 5,
         alertVerdicts: 3,
       };
       const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
