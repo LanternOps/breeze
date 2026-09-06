@@ -2658,6 +2658,94 @@
       },
       "catalogUnavailable": "Impossible de charger le catalogue d'outils. Vous pouvez toujours modifier la liste des permissions directement ci-dessous.",
       "loading": "Chargement des capacités…"
+    },
+    "summary": {
+      "edit": "Modifier",
+      "createdDisabled": "Créé désactivé",
+      "enabled": "Activé",
+      "allOrganizations": "toutes les organisations",
+      "rowLabels": {
+        "runsWhen": "S'exécute quand",
+        "canRead": "Peut lire",
+        "mayPropose": "Peut proposer",
+        "executesUnattended": "Exécute sans surveillance",
+        "neverTouches": "Ne touche jamais",
+        "limits": "Limites",
+        "approvers": "Demande l'approbation de"
+      },
+      "runsWhen": {
+        "triage": "S'exécute lors de nouvelles alertes de gravité {{severities}} sur n'importe quel appareil.",
+        "anySeverity": "toute gravité",
+        "patch": "S'exécute selon un horaire, ou lorsqu'il est déclenché manuellement, pour examiner les correctifs manquants.",
+        "helpdesk": "S'exécute quand un ticket est créé, reçoit sa première réponse ou est marqué comme résolu.",
+        "maintenanceWindows": "Attend la fin des fenêtres de maintenance.",
+        "ticketWrites": "Écrit des mises à jour de ticket sans attendre un technicien."
+      },
+      "canRead": "Données d'appareils, d'alertes et de parc pour {{scope}}: inventaire, métriques, journaux, correctifs, sauvegardes, tickets et historique d'audit ({{count}} outils en lecture seule, toujours actifs).",
+      "mayPropose": "{{operations}} opérations réparties sur {{capabilities}} capacités: {{approvalRequests}} déclenchent une demande d'approbation qu'un technicien tranche, et {{loggedProposals}} sont consignées comme propositions et ne sont jamais exécutées.",
+      "mayProposeNone": "Cet agent ne propose encore aucune opération.",
+      "unrecognisedLabel": "Non reconnues par le catalogue d'outils actuel:",
+      "executesUnattendedNone": "Rien. Le mode observation se contente d'observer et de proposer; rien ne s'exécute sans l'approbation d'un technicien.",
+      "executesUnattendedNoneAct": "Rien pour l'instant — aucune opération sélectionnée n'est éligible à une exécution sans surveillance.",
+      "executesUnattendedList": "Exécute {{list}} sans attendre l'approbation d'un technicien.",
+      "preauthorizedNote": "Certaines sont des opérations préautorisées, accordées à l'avance via le processus de contrôle à quatre yeux.",
+      "neverTouchesEmpty": "Rien n'est encore protégé.",
+      "limits": "Jusqu'à {{devices}} appareils par exécution, {{runsPerHour}} exécutions par heure, {{minutes}} minutes par exécution, un budget quotidien de {{budget}}, pas plus de {{fleetPercent}} du parc par jour, et {{cooldown}} minutes entre deux exécutions sur le même appareil.",
+      "approvers": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversNone": "Aucun rôle n'est encore configuré, donc personne ne sera notifié."
+    },
+    "flow": {
+      "title": "Nouvel agent",
+      "stepperAriaLabel": "Étapes du nouvel agent",
+      "back": "Retour",
+      "next": "Suivant : {{step}}",
+      "createAgent": "Créer l'agent",
+      "createdDisabledNote": "Les nouveaux agents sont créés désactivés. Vous déciderez de le démarrer à la dernière étape, après avoir tout vérifié.",
+      "startEnabled": "Démarrer activé",
+      "startEnabledHint": "Désactivé est le choix sûr par défaut. Vérifiez le résumé ci-dessus, puis activez ceci lorsque vous voulez que l'agent commence à fonctionner.",
+      "previewFailed": "Impossible de charger un aperçu en direct de la politique de cet agent. Vous pouvez tout de même le créer — vérifiez vos choix attentivement au préalable.",
+      "previewLoading": "Chargement de l'aperçu…",
+      "protectedResourcesLegend": "Ressources protégées",
+      "steps": {
+        "purpose": {
+          "label": "Objectif et posture",
+          "description": "Mode, type, propriété et nom"
+        },
+        "does": {
+          "label": "Ce qu'il fait",
+          "description": "Déclencheurs et capacités"
+        },
+        "safety": {
+          "label": "Sécurité et supervision",
+          "description": "Ressources protégées, limites et approbateurs"
+        },
+        "review": {
+          "label": "Vérifier et créer",
+          "description": "Confirmez ce que cet agent va faire"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Surveille les alertes et propose des correctifs pour celles qui comptent.",
+          "runsWhen": "une nouvelle alerte atteint les gravités que vous choisissez",
+          "recommended": "redémarrer les services bloqués et libérer de l'espace disque"
+        },
+        "patch": {
+          "blurb": "Examine les correctifs manquants et propose lesquels installer.",
+          "runsWhen": "son horaire se déclenche, ou vous le déclenchez manuellement",
+          "recommended": "approuver et installer les correctifs, puis redémarrer les services concernés"
+        },
+        "helpdesk": {
+          "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
+          "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
+          "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "S'exécute quand :",
+        "recommendedPrefix": "Recommandé :",
+        "taken": "Déjà utilisé pour ce propriétaire"
+      }
     }
   },
   "apiKeyForm": {

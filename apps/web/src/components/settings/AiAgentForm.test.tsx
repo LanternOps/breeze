@@ -27,7 +27,7 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
-import { AI_AGENT_KINDS, type AgentToolCatalogDto } from '@breeze/shared';
+import { type AgentToolCatalogDto } from '@breeze/shared';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -147,17 +147,13 @@ function mockEndpoints(registry: RegistryRow[] = []): void {
   });
 }
 
+// Task 13 (#5051): AiAgentsPage only ever opens this drawer for EDIT now
+// (`AgentCreateFlow` owns create), so `Props.agent` is a real `AiAgentDto` —
+// every test renders against one, either this default or an override.
 function renderForm(props: Partial<React.ComponentProps<typeof AiAgentForm>> = {}) {
   return render(
     <AiAgentForm
-      agent={null}
-      agents={[]}
-      // Default to "every kind already has a baseline" — the pre-#4170
-      // neutral state — so existing tests never see the new hint unless a
-      // test opts into the empty set to exercise it directly.
-      partnerBaselineKinds={new Set(AI_AGENT_KINDS)}
-      showOwnerScope={false}
-      defaultOwnerScope="organization"
+      agent={makeAgent()}
       onClose={vi.fn()}
       onSaved={vi.fn()}
       {...props}
@@ -520,86 +516,20 @@ describe('AiAgentForm — alert severities', () => {
   });
 });
 
-describe('AiAgentForm — mode cards', () => {
-  it('top-aligns the option cards so the three labels share a baseline', async () => {
-    // A <button>'s content box is vertically centred by the UA stylesheet, so
-    // three cards of unequal height put their labels on three different lines.
-    mockEndpoints();
-    renderForm();
-
-    for (const mode of ['off', 'shadow', 'act']) {
-      const card = await screen.findByTestId(`ai-agent-mode-${mode}`);
-      expect(card.className).toContain('flex-col');
-      expect(card.className).toContain('items-start');
-    }
-  });
-});
-
-// #4170 — an org-only agent overrides a partner-wide baseline of the same
-// kind; with none, the resolver treats the row as if it did not exist.
-describe('AiAgentForm — no-partner-baseline hint', () => {
-  it('warns when creating an org-only agent of a kind with no partner baseline', async () => {
-    mockEndpoints();
-    renderForm({ partnerBaselineKinds: new Set() });
-
-    expect(await screen.findByTestId('ai-agent-no-baseline-hint')).toBeInTheDocument();
-  });
-
-  it('does not warn when a partner baseline already exists for the selected kind', async () => {
-    mockEndpoints();
-    renderForm({ partnerBaselineKinds: new Set(['triage']) });
-
-    await screen.findByTestId('ai-agent-kind');
-    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
-  });
-
-  it('does not warn when creating a partner-wide agent', async () => {
-    mockEndpoints();
-    renderForm({ defaultOwnerScope: 'partner', partnerBaselineKinds: new Set() });
-
-    await screen.findByTestId('ai-agent-kind');
-    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
-  });
-
-  it('does not warn when editing an existing agent', async () => {
-    mockEndpoints();
-    renderForm({
-      agent: {
-        id: 'a-1',
-        kind: 'triage',
-        name: 'Triage',
-        enabled: true,
-        mode: 'shadow',
-        model: null,
-        orgId: 'org-1',
-        partnerId: null,
-        ownerScope: 'organization',
-        allOrgs: false,
-        supportedModes: ['off', 'shadow', 'act'],
-        toolAllowlist: [],
-        protectedResources: {},
-        limits: {},
-        triggers: {},
-        recipients: {},
-        actAssets: {},
-        instructions: null,
-        cooldownSeconds: 900,
-        disabledAt: null,
-        createdAt: '2026-08-01T00:00:00.000Z',
-        updatedAt: '2026-08-01T00:00:00.000Z',
-      } as AiAgentDto,
-      partnerBaselineKinds: new Set(),
-    });
-
-    await screen.findByTestId('ai-agent-name');
-    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
-  });
-});
+// Task 10 (#5051 review): "mode cards" (top-alignment) moved to
+// ModeChoice.test.tsx — a component-level assertion, not anything specific
+// to the drawer. "no-partner-baseline hint" is gone entirely: AiAgentsPage
+// now only ever opens this drawer for EDIT (Task 13, #5051), and that hint
+// was create-only (`isCreate && draft.ownerScope === 'organization' &&
+// !partnerBaselineKinds.has(draft.kind)`) — deleted along with every other
+// create-only branch now that `agent` is narrowed to a real `AiAgentDto`.
+// Its remaining coverage (including the two "does not warn" negative cases)
+// lives in AgentCreateFlow.test.tsx's "kind cards and owner scope" describe.
 
 describe('AiAgentForm — name', () => {
   it('marks the name as required and says so on blur, not only after a failed save', async () => {
     mockEndpoints();
-    renderForm();
+    renderForm({ agent: makeAgent({ name: '' }) });
 
     const input = await screen.findByTestId('ai-agent-name');
     expect(input).toBeRequired();
@@ -623,16 +553,38 @@ describe('AiAgentForm — name', () => {
   });
 });
 
+describe('AiAgentForm — numeric limits', () => {
+  it('falls back a cleared numeric limit to its minimum, never 0 (Number(\'\') is 0, not NaN)', async () => {
+    // The old guard only checked `Number.isFinite(next)` on the theory that
+    // clearing the box yields `'' -> NaN` — it does not, `Number('')` is `0`,
+    // which IS finite, so the guard never fired and a cleared limit silently
+    // stored 0 rather than falling back at all.
+    mockEndpoints();
+    renderForm({ agent: makeAgent() });
+
+    const input = await screen.findByTestId('ai-agent-limit-devices');
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input).toHaveValue(1); // this field's min
+
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+
+    expect((writeBody().limits as { maxDevicesPerRun: number }).maxDevicesPerRun).toBe(1);
+  });
+});
+
 describe('AiAgentForm — Save button', () => {
   // Review finding — the disabled Save button was missing the
   // `disabled:cursor-not-allowed` affordance already used by
   // `RunsListPage.tsx`'s Load more button.
   it('shows a not-allowed cursor while disabled, matching the rest of the AI agents UI', async () => {
     mockEndpoints();
-    // No available kinds on a create form disables Save (see the
-    // `disabled` expression below the button) without needing to wait on
-    // an async validation state.
-    renderForm();
+    // The `disabled:cursor-not-allowed` Tailwind variant is a static part of
+    // the button's className regardless of whether `disabled` is currently
+    // true, so this needs no particular disabled state to assert on.
+    renderForm({ agent: makeAgent() });
 
     const save = await screen.findByTestId('ai-agent-save');
     expect(save.className).toContain('disabled:cursor-not-allowed');

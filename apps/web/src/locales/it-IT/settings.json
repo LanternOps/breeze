@@ -2658,6 +2658,94 @@
       },
       "catalogUnavailable": "Impossibile caricare il catalogo degli strumenti. È comunque possibile modificare l'elenco dei permessi direttamente qui sotto.",
       "loading": "Caricamento delle capacità…"
+    },
+    "summary": {
+      "edit": "Modifica",
+      "createdDisabled": "Creato disattivato",
+      "enabled": "Attivato",
+      "allOrganizations": "tutte le organizzazioni",
+      "rowLabels": {
+        "runsWhen": "Si esegue quando",
+        "canRead": "Può leggere",
+        "mayPropose": "Può proporre",
+        "executesUnattended": "Esegue senza supervisione",
+        "neverTouches": "Non tocca mai",
+        "limits": "Limiti",
+        "approvers": "Chiede l'approvazione a"
+      },
+      "runsWhen": {
+        "triage": "Si esegue in presenza di nuovi avvisi di gravità {{severities}} su qualsiasi dispositivo.",
+        "anySeverity": "qualsiasi gravità",
+        "patch": "Si esegue secondo una pianificazione, o quando avviato manualmente, per verificare le patch mancanti.",
+        "helpdesk": "Si esegue quando un ticket viene creato, riceve la prima risposta o viene contrassegnato come risolto.",
+        "maintenanceWindows": "Attende la fine delle finestre di manutenzione.",
+        "ticketWrites": "Scrive aggiornamenti del ticket senza attendere un tecnico."
+      },
+      "canRead": "Dati di dispositivi, avvisi e flotta per {{scope}}: inventario, metriche, log, patch, backup, ticket e cronologia di controllo ({{count}} strumenti di sola lettura, sempre attivi).",
+      "mayPropose": "{{operations}} operazioni distribuite su {{capabilities}} funzionalità: {{approvalRequests}} generano una richiesta di approvazione decisa da un tecnico, e {{loggedProposals}} vengono registrate come proposte e non vengono mai eseguite.",
+      "mayProposeNone": "Questo agente non propone ancora alcuna operazione.",
+      "unrecognisedLabel": "Non riconosciute dall'attuale catalogo di strumenti:",
+      "executesUnattendedNone": "Nulla. La modalità shadow si limita a osservare e proporre; nulla viene eseguito senza l'approvazione di un tecnico.",
+      "executesUnattendedNoneAct": "Ancora nulla: nessuna operazione selezionata è idonea per l'esecuzione senza supervisione.",
+      "executesUnattendedList": "Esegue {{list}} senza attendere l'approvazione di un tecnico.",
+      "preauthorizedNote": "Alcune di queste sono operazioni preautorizzate, concesse in anticipo tramite il processo di revisione a quattro occhi.",
+      "neverTouchesEmpty": "Non è ancora protetto nulla.",
+      "limits": "Fino a {{devices}} dispositivi per esecuzione, {{runsPerHour}} esecuzioni all'ora, {{minutes}} minuti per esecuzione, un budget giornaliero di {{budget}}, non più del {{fleetPercent}} della flotta al giorno, e {{cooldown}} minuti tra un'esecuzione e l'altra sullo stesso dispositivo.",
+      "approvers": "Vengono interpellati {{count}} ruoli, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "approversNone": "Non sono ancora stati configurati ruoli, quindi nessuno verrà notificato."
+    },
+    "flow": {
+      "title": "Nuovo agente",
+      "stepperAriaLabel": "Passaggi del nuovo agente",
+      "back": "Indietro",
+      "next": "Avanti: {{step}}",
+      "createAgent": "Crea agente",
+      "createdDisabledNote": "I nuovi agenti vengono creati disattivati. Deciderai se avviarlo nell'ultimo passaggio, dopo aver rivisto tutto.",
+      "startEnabled": "Avvia attivato",
+      "startEnabledHint": "Disattivato è l'impostazione predefinita sicura. Rivedi il riepilogo sopra, poi attivalo quando vuoi che l'agente inizi a funzionare.",
+      "previewFailed": "Impossibile caricare un'anteprima live della policy di questo agente. Puoi comunque crearlo: rivedi prima con attenzione le tue scelte.",
+      "previewLoading": "Caricamento anteprima…",
+      "protectedResourcesLegend": "Risorse protette",
+      "steps": {
+        "purpose": {
+          "label": "Scopo e impostazione",
+          "description": "Modalità, tipo, proprietà e nome"
+        },
+        "does": {
+          "label": "Cosa fa",
+          "description": "Trigger e funzionalità"
+        },
+        "safety": {
+          "label": "Sicurezza e supervisione",
+          "description": "Risorse protette, limiti e approvatori"
+        },
+        "review": {
+          "label": "Rivedi e crea",
+          "description": "Conferma cosa farà questo agente"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Monitora gli avvisi e propone soluzioni per quelli importanti.",
+          "runsWhen": "un nuovo avviso supera le severità scelte",
+          "recommended": "riavviare i servizi bloccati e liberare spazio su disco"
+        },
+        "patch": {
+          "blurb": "Esamina le patch mancanti e propone quali installare.",
+          "runsWhen": "si attiva la pianificazione, oppure lo avvii manualmente",
+          "recommended": "approvare e installare le patch, quindi riavviare i servizi interessati"
+        },
+        "helpdesk": {
+          "blurb": "Gestisce i ticket non appena vengono creati, ricevono una risposta o vengono risolti.",
+          "runsWhen": "un ticket viene creato, riceve la sua prima risposta o viene contrassegnato come risolto",
+          "recommended": "riavviare i servizi e liberare spazio su disco per risolvere le richieste comuni"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Si esegue quando:",
+        "recommendedPrefix": "Consigliato:",
+        "taken": "Già in uso per questo proprietario"
+      }
     }
   },
   "apiKeyForm": {

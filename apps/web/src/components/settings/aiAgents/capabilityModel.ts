@@ -1,4 +1,10 @@
-import type { AgentCeilingDto, AgentToolCatalogDto, AgentToolOperationDto } from '@breeze/shared';
+import { outcomeFor, type AgentCeilingDto, type AgentToolCatalogDto } from '@breeze/shared';
+
+// Task 13 (#5051 review) — the ONE outcome rule: this used to be a local
+// copy byte-identical to `agentPreview.ts`'s server-side `resolveOutcome`.
+// Re-exported so `CapabilityPicker.tsx` and this module's own test suite
+// keep importing it from here unchanged.
+export { outcomeFor };
 
 export type OperationOutcome = 'approval_request' | 'logged_proposal' | 'unattended';
 export type AgentModeLike = 'off' | 'shadow' | 'act';
@@ -85,11 +91,6 @@ export function capabilityState(
   const checked =
     selectedCount === 0 ? 'none' : selectedCount === totalCount && allInCeilingSelected ? 'all' : 'some';
   return { checked, selectedCount, totalCount };
-}
-
-export function outcomeFor(op: AgentToolOperationDto, mode: AgentModeLike): OperationOutcome {
-  if (mode === 'act' && op.actEligible) return 'unattended';
-  return op.tier === 3 ? 'approval_request' : 'logged_proposal';
 }
 
 export function isWithinCeiling(opKey: string, ceiling: AgentCeilingDto | null): boolean {

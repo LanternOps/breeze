@@ -606,10 +606,6 @@ describe('AiAgentForm — partner ceiling hint', () => {
     render(
       <AiAgentForm
         agent={agent(ownerScope, mode)}
-        agents={[]}
-        partnerBaselineKinds={new Set()}
-        showOwnerScope={ownerScope === 'partner'}
-        defaultOwnerScope={ownerScope}
         onClose={() => {}}
         onSaved={() => {}}
       />,

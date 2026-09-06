@@ -3681,6 +3681,122 @@ describe('GET /ai-agents/ceiling', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Task 11 (#5051) — POST /preview. `buildAgentPreview` is the REAL
+// implementation (not mocked, unlike `buildAgentToolCatalog`/
+// `loadPartnerBaselineCeiling` above): it is a pure function over its two
+// inputs, and its own full branch coverage (bare-entry expansion, ceiling
+// narrowing, outcome/preauthorized rules) is agentPreview.test.ts. These
+// route tests exercise only routing/auth/validation and which scope resolves
+// a ceiling — the same convention as `/tool-catalog` and `/ceiling` above.
+// ---------------------------------------------------------------------------
+function previewRequest(app: Hono, body: Record<string, unknown>) {
+  return app.request('/ai-agents/preview', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+describe('POST /ai-agents/preview', () => {
+  it('evaluates a draft policy against the mocked catalog', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce(null);
+
+    const res = await previewRequest(buildApp(), { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'] });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { operations: unknown[]; readOnlyToolCount: number } };
+    expect(body.data.operations).toEqual([{
+      key: 'manage_services:restart',
+      capability: 'services_startup',
+      outcome: 'approval_request',
+      preauthorized: false,
+      withinCeiling: true,
+    }]);
+    expect(body.data.readOnlyToolCount).toBe(0);
+  });
+
+  it('rejects a body missing the required kind field', async () => {
+    const res = await previewRequest(buildApp(), { mode: 'shadow', toolAllowlist: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await previewRequest(buildApp(), { kind: 'triage', mode: 'shadow', toolAllowlist: [] });
+    expect(res.status).toBe(403);
+  });
+
+  it('resolves the ceiling for an org-scoped caller previewing an org-owned draft', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [] });
+
+    const res = await previewRequest(
+      buildApp(false, { partnerId: PARTNER_ID }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+  });
+
+  it('resolves the ceiling for a partner-scope caller previewing an org-owned draft (mirrors GET /ceiling\'s own scope gate)', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [] });
+
+    const res = await previewRequest(
+      buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+    const body = (await res.json()) as { data: { operations: Array<{ withinCeiling: boolean }> } };
+    // ceiling's toolAllowlist is empty, so the draft's tool falls outside it.
+    expect(body.data.operations[0]!.withinCeiling).toBe(false);
+  });
+
+  it('does not resolve a ceiling for a partner-scope caller previewing its own partner-wide draft (its own row IS the ceiling)', async () => {
+    const res = await previewRequest(
+      buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'], ownerScope: 'partner' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+    const body = (await res.json()) as { data: { operations: Array<{ withinCeiling: boolean }> } };
+    expect(body.data.operations[0]!.withinCeiling).toBe(true);
+  });
+
+  it('does not resolve a ceiling for an org-scoped caller previewing a partner-wide draft', async () => {
+    const res = await previewRequest(
+      buildApp(false, { partnerId: PARTNER_ID }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'partner' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a ceiling for a system-scope caller', async () => {
+    const res = await previewRequest(
+      buildApp(false, { scope: 'system', partnerId: PARTNER_ID, orgId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a ceiling when the caller carries no partnerId at all (self-hosted)', async () => {
+    const res = await previewRequest(
+      buildApp(false, { partnerId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task 5 route half (#5049) — org rows cannot add supervisedActionKeys
 // outside the four-eyes grant executor. Mirrors the
 // InvalidSupervisedActionKeysError 422 mapping test above; the guard's own
