@@ -590,6 +590,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #2787 item 4: daily purge of removed devices past their org's
+    // device_lifecycle retention window.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
+    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
+    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    name: 'removedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/removedDevicePurge');
+      return { init: m.initializeRemovedDevicePurge, shutdown: m.shutdownRemovedDevicePurge };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
