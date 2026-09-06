@@ -36,11 +36,20 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS decommissioned_at timestamptz;
 -- silently affects 0 rows. CI's superuser masks that, so the elevation must be
 -- here rather than discovered in production. The row count is reported so the
 -- backfill leaves a forensic trail even when it is 0.
+--
+-- The CANONICAL top-level `SELECT set_config(...)` form, not the equivalent
+-- `SET LOCAL breeze.scope = 'system'` inside the DO block: the commit-time
+-- guard (`src/db/migrationRlsScope.ts`) recognises only SELECT/PERFORM
+-- set_config, so SET LOCAL elevates at runtime but still reports this file as
+-- an unscoped write. Reference shape:
+-- 2026-09-30-100000-rls-scoped-backfill-replay.sql.
+--
+-- `is_local = true` scopes the setting to autoMigrate's per-file transaction.
+SELECT set_config('breeze.scope', 'system', true);
+
 DO $$
 DECLARE n int;
 BEGIN
-  SET LOCAL breeze.scope = 'system';
-
   UPDATE devices
      SET decommissioned_at = updated_at
    WHERE status = 'decommissioned' AND decommissioned_at IS NULL;

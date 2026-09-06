@@ -1292,7 +1292,18 @@ describe('device removal retention: decommissioned_at + device_lifecycle feature
     // Without breeze.scope=system it is a SILENT 0-row no-op on managed
     // Postgres, and the CI superuser masks that — so the elevation and the
     // row-count report are both asserted, not assumed.
-    expect(migrationSql).toMatch(/SET LOCAL breeze\.scope = 'system'/);
+    //
+    // The CANONICAL form specifically: `migrationRlsScope.ts` recognises only
+    // `SELECT`/`PERFORM set_config(...)`, so a functionally-equivalent
+    // `SET LOCAL breeze.scope = 'system'` elevates at runtime but is invisible
+    // to the guard — which then reports this file as an unscoped write.
+    expect(migrationSql).toMatch(
+      /SELECT set_config\('breeze\.scope', 'system', true\);/,
+    );
+    // Line comments stripped: the file DOCUMENTS why `SET LOCAL` is the wrong
+    // form, so a naive negative match would fail on its own explanation.
+    const executable = migrationSql.replace(/--[^\n]*/g, '');
+    expect(executable).not.toMatch(/SET LOCAL breeze\.scope/);
     expect(migrationSql).toMatch(/GET DIAGNOSTICS/);
     expect(migrationSql).toMatch(/RAISE WARNING/);
     expect(migrationSql).toMatch(
