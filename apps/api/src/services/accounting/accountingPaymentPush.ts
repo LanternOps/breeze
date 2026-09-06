@@ -67,11 +67,17 @@ import {
 // The marker module is a dependency-free LEAF. Importing `accountingPaymentPull`
 // here instead would close a cycle: invoiceService -> this module -> pull ->
 // invoiceService (pull needs `recomputeInvoiceStatus`).
-import { buildPaymentPrivateNote, paymentMappingRemoteId } from './accountingPaymentMarker';
+import { buildPaymentPrivateNote, paymentMappingRemoteId, partialRefundDivergenceMessage } from './accountingPaymentMarker';
 // Defined in the dependency-free marker module because the PULL must respect the
 // same lease (it can drop a delete-pending mapping); re-exported here so this
 // module stays the coordinator-facing home of the constant.
 export { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
+// The refund-divergence string lives in the same leaf, for the same reason:
+// the PULL has to recognise it (so a QuickBooks re-save cannot clobber the
+// refund instruction), and importing this module from there would be a second
+// edge into the coordinator. Re-exported so `stripeReconcile` and the tests
+// keep their existing import site.
+export { partialRefundDivergenceMessage } from './accountingPaymentMarker';
 import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // CURRENCY-AWARE minor-unit helpers — the same pair the Stripe refund path
 // uses, and deliberately not `invoiceMath`'s `toCents`/`fromCents`, whose fixed
@@ -173,27 +179,6 @@ export function paymentPushGaveUpMessage(previous: string): string {
  * (`notePaymentJobSkipped` increments nothing).
  */
 export const PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS = 480;
-
-/**
- * The ONE divergence string both refund paths write into `last_error` — the
- * Stripe webhook (`stripeReconcile.reflectStripeRefund`, partial-refund arm) and
- * this module's own mid-flight `diverged` branch. Sharing it is not tidiness:
- * two texts quoting two different quantities is how a bookkeeper enters the
- * wrong refund.
- *
- * `totalRefunded` is the CUMULATIVE amount refunded so far, in the payment's
- * currency, 2dp — Stripe's `amount_refunded` is itself cumulative, and the
- * coordinator derives the same figure as (pushed amount − current amount). The
- * wording restates it as a RUNNING TOTAL on purpose: the previous text quoted a
- * bare amount ("Partially refunded in Stripe (67.00)"), which a bookkeeper who
- * had already recorded an earlier 40.00 refund read as a second, fresh 67.00 to
- * enter. The trailing clause says what QuickBooks currently shows, so the reader
- * can reconcile the two numbers without opening Stripe.
- */
-export function partialRefundDivergenceMessage(totalRefunded: string): string {
-  return `Refunded in Stripe, total ${totalRefunded}; record the refund in QuickBooks `
-    + '(this QuickBooks payment still shows the full amount)';
-}
 
 export type AccountingPaymentPushErrorCode =
   | 'not_connected' | 'reauth_required'

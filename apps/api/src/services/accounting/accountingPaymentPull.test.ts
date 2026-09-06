@@ -71,7 +71,7 @@ import { accountingConnections, accountingEntityMappings, invoicePayments, invoi
 import { db } from '../../db';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
-import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
+import { PAYMENT_CLAIM_LEASE_MS, partialRefundDivergenceMessage } from './accountingPaymentMarker';
 import {
   applyAccountingPayment,
   mapQboPaymentMethod,
@@ -1360,6 +1360,33 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
       action: 'accounting.payment.diverged',
       details: expect.objectContaining({ reason: 'amount_changed', remoteAmountMinor: 4000 }),
     }));
+  });
+
+  it('does NOT clobber a Stripe partial-refund instruction with "Edited in QuickBooks"', async () => {
+    // stripeReconcile lowers `invoice_payments.amount` on a partial refund and
+    // stamps the row with the "record the refund in QuickBooks" instruction —
+    // deliberately leaving the QuickBooks Payment at its full amount. Any later
+    // re-save of that Payment (a memo edit, a deposit) therefore arrives here
+    // with amount != amount, and overwriting the instruction with the generic
+    // divergence text loses the only place the operator was told what to enter,
+    // plus writes a false `amount_changed` audit for an edit nobody made.
+    currentPayments = [breezePaymentRow({ amount: '83.00' })]; // 150.00 less a 67.00 refund
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      syncStatus: 'error',
+      lastError: partialRefundDivergenceMessage('67.00'),
+    })];
+
+    const r = await applyAccountingPayment(
+      conn(), { ...LINE, remotePaymentSyncToken: '3', amountMinor: 15000 }, runCtx, REALM_FP,
+    );
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+    expect(currentMappings[1]).toMatchObject({
+      remoteSyncToken: '3', // the token is still stored — a later delete needs it
+      syncStatus: 'error',
+      lastError: partialRefundDivergenceMessage('67.00'),
+    });
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
   it('leaves a pending DELETE owed while recording the divergence', async () => {

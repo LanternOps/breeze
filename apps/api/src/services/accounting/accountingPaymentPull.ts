@@ -87,7 +87,11 @@ import { accountingConnections } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { AccountingCurrencyContractError, normalizeAccountingPayment } from './accountingCurrency';
 import type { NormalizedAccountingPayment } from './accountingCurrency';
-import { PAYMENT_CLAIM_LEASE_MS, paymentMappingRemoteId } from './accountingPaymentMarker';
+import {
+  PAYMENT_CLAIM_LEASE_MS,
+  paymentMappingRemoteId,
+  isPartialRefundDivergenceMessage,
+} from './accountingPaymentMarker';
 import type { AccountingConnection } from './accountingConnectionService';
 import { INVOICE_REMOTE_DELETED_ERROR, type ChangeSetPaymentLine } from './types';
 import { recomputeInvoiceStatus } from '../invoiceService';
@@ -752,6 +756,22 @@ async function applyBreezeOriginEcho(
     // (a memo edit, a deposit). Nothing to do, and NOT an error.
     return noAudit(result(
       'replayed', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
+    ));
+  }
+
+  // A Stripe PARTIAL REFUND already made these two amounts disagree ON PURPOSE
+  // (review finding 3): `stripeReconcile` lowers `invoice_payments.amount` and
+  // stamps the row with the instruction to record the refund in QuickBooks,
+  // deliberately leaving the QuickBooks Payment at its full amount. Every later
+  // re-save of that Payment — a memo edit, a deposit — therefore lands here
+  // looking like a QuickBooks amount change. Overwriting the instruction with
+  // the generic "Edited in QuickBooks" text destroys the only place the
+  // operator was told what to enter, and the audit would name an
+  // `amount_changed` edit nobody made. The token is stored above either way, so
+  // a later corrective delete still has the SyncToken it needs.
+  if (isPartialRefundDivergenceMessage(existing.lastError)) {
+    return noAudit(result(
+      'skipped_breeze_origin', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
     ));
   }
 
