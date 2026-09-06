@@ -6,6 +6,7 @@ import { ErrorNotice, PageHeader } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 
 const config = buildServerApiConfig(Astro.request);
 const [overview, devices] = await Promise.all([
@@ -14,6 +15,14 @@ const [overview, devices] = await Promise.all([
 ]);
 if (overview.statusCode === 401 || devices.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
+}
+
+// enable_security off 403s BOTH calls with PORTAL_SECURITY_DISABLED. That is a
+// setting, not a load failure, so the page bounces instead of asking the customer
+// to chase their IT team about a switch the IT team just threw (#4932). Every
+// other 403 ("Account is not active") still renders inline via the error copy.
+if (isPortalPageDisabled(overview, devices)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
 }
 ---
 

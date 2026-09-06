@@ -751,3 +751,139 @@ func TestAShownPromptIsNotFollowedByARedundantToast(t *testing.T) {
 		t.Errorf("notifications = %d, want 0 — the dialog was the warning: %+v", len(*notifications), *notifications)
 	}
 }
+
+// TestAPostponementDoesNotImmediatelyAskAgain is #4941. A postponement re-plans
+// the whole schedule, and the new plan's lead rung is armed at offset zero — the
+// instant the user's "not now" was accepted. While budget remains that rung is
+// deferrable, so the dialog the user just closed reopened in front of them with
+// the counter decremented ("You can postpone this restart 1 more time."). The
+// warning itself must still go out: telling the user the countdown moved is how
+// they learn the new time (#3197).
+func TestAPostponementDoesNotImmediatelyAskAgain(t *testing.T) {
+	rm, timers, notifications, osCalls, clock, prompts := newPromptTestManager(t, 3, rebootActionPostpone(time.Hour))
+	if err := rm.ScheduleWithOptions(60*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	timers.runAt(0) // the lead rung: the user postpones
+	if len(*prompts) != 1 {
+		t.Fatalf("prompts = %d, want 1", len(*prompts))
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Fatalf("DeferralsUsed = %d, want 1 — the click did not postpone anything", got)
+	}
+
+	warned := len(*notifications)
+	timers.runAt(0) // the RE-PLANNED lead rung, which fires immediately
+
+	if len(*prompts) != 1 {
+		t.Errorf("prompts = %d, want 1 — a user who just postponed was handed the same dialog back (#4941)",
+			len(*prompts))
+	}
+	if len(*notifications) <= warned {
+		t.Error("the re-planned lead rung warned nobody; the user must still be told the new restart time (#3197)")
+	}
+	if len(*osCalls) != 0 {
+		t.Error("a postponement invoked the OS reboot")
+	}
+	if got := rm.State().DeferralsUsed; got != 1 {
+		t.Errorf("DeferralsUsed = %d, want 1 — the re-planned lead rung spent budget nobody asked for", got)
+	}
+}
+
+// TestTheNextPostponementOfferArrivesWithAReminderRung pins the other half of
+// #4941's fix: quieting the re-planned lead rung must not cost the user the rest
+// of their budget. The reminder rungs of the new schedule still offer it.
+func TestTheNextPostponementOfferArrivesWithAReminderRung(t *testing.T) {
+	rm, timers, _, _, clock, prompts := newPromptTestManager(t, 3, rebootActionPostpone(time.Hour))
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+
+	timers.runAt(0) // the lead rung: postponed, so the schedule is now 75 minutes
+	plan := PlanReboot(75 * time.Minute)
+	if len(plan.Notifications) < 2 {
+		t.Fatalf("the re-planned ladder has %d rungs, want a reminder after the lead", len(plan.Notifications))
+	}
+
+	timers.runAt(0) // the re-planned lead rung warns without a dialog
+	if len(*prompts) != 1 {
+		t.Fatalf("prompts = %d after the re-planned lead rung, want 1 (#4941)", len(*prompts))
+	}
+
+	timers.runAt(plan.Notifications[1].After) // the first reminder rung
+	if len(*prompts) != 2 {
+		t.Fatalf("prompts = %d, want 2 — the reminder rungs must still offer the remaining postponement", len(*prompts))
+	}
+	if got := len((*prompts)[1].actions); got != 2 {
+		t.Errorf("the reminder rung offered %d button(s), want the postponement as well", got)
+	}
+}
+
+// TestAFreshScheduleStillPromptsAtItsLeadRung guards the scope of #4941: the
+// quiet lead rung belongs to the re-plan a postponement caused, not to every
+// schedule that follows one. An operator's next dispatch is a fresh decision and
+// must still offer the postponement the moment it lands.
+func TestAFreshScheduleStillPromptsAtItsLeadRung(t *testing.T) {
+	rm, timers, _, _, clock, prompts := newPromptTestManager(t, 3)
+	if err := rm.ScheduleWithOptions(15*time.Minute, clock.now().Add(5*time.Hour), "Patch", "patch_job",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("ScheduleWithOptions: %v", err)
+	}
+	if _, err := rm.Defer(); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+
+	// A second, unrelated dispatch supersedes the postponed schedule.
+	if err := rm.ScheduleWithOptions(30*time.Minute, clock.now().Add(5*time.Hour), "Second", "manual",
+		allowDeferral(2, 60)); err != nil {
+		t.Fatalf("replacement ScheduleWithOptions: %v", err)
+	}
+
+	timers.runAt(0)
+
+	if len(*prompts) != 1 {
+		t.Fatalf("prompts = %d, want 1 — the fresh schedule's lead rung must still offer a postponement", len(*prompts))
+	}
+	if got := len((*prompts)[0].actions); got != 2 {
+		t.Errorf("the fresh lead rung offered %d button(s), want 2", got)
+	}
+}
+
+// TestPlanRebootRungsQuietLead is the pure-data half of #4941: only the lead
+// rung's dialog goes away. Its warning text is untouched, and every later rung —
+// including the closing one, which was never deferrable — is bit-for-bit what
+// planRebootRungs produced.
+func TestPlanRebootRungsQuietLead(t *testing.T) {
+	t.Parallel()
+	for _, delay := range []time.Duration{
+		MinRebootDelay, 4 * time.Minute, 15 * time.Minute, 61 * time.Minute,
+		75 * time.Minute, 4 * time.Hour, 24 * time.Hour,
+	} {
+		t.Run(delay.String(), func(t *testing.T) {
+			plan := PlanReboot(delay)
+			loud := planRebootRungs(plan)
+			quiet := planRebootRungsQuietLead(plan)
+
+			if len(quiet) != len(loud) {
+				t.Fatalf("rungs = %d, want %d", len(quiet), len(loud))
+			}
+			if quiet[0].deferrable {
+				t.Error("the lead rung is still deferrable, so it still opens a dialog")
+			}
+			if quiet[0].promptWindow != 0 {
+				t.Errorf("lead promptWindow = %v, want 0", quiet[0].promptWindow)
+			}
+			if quiet[0].notification != loud[0].notification {
+				t.Errorf("the lead warning changed:\n%+v\nwant\n%+v", quiet[0].notification, loud[0].notification)
+			}
+			for i := 1; i < len(quiet); i++ {
+				if quiet[i] != loud[i] {
+					t.Errorf("rung %d changed:\n%+v\nwant\n%+v", i, quiet[i], loud[i])
+				}
+			}
+		})
+	}
+}
