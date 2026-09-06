@@ -1037,7 +1037,15 @@
     "online": "Çevrimiçi"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} ajanlı, {{network}} ağ",
+    "agentOnlyBulkAction": "Yalnızca ajanlı cihazlar için geçerlidir",
+    "eligibleOfSelected": "{{count}} / {{total}}",
+    "linkAsVmHost": "VM ana bilgisayarı + konuklar olarak bağla",
+    "notApplicable": "Geçerli değil",
+    "viewDevice": "{{name}} görüntüle",
     "tableColumns": {
+      "class": "Sınıf",
+      "type": "Tür",
       "device": "Cihaz",
       "organization": "Organizasyon",
       "site": "Sitesi",
@@ -1049,6 +1057,8 @@
       "lastSeen": "Son Görülme"
     },
     "sortBy": {
+      "class": "Sınıfa göre sırala",
+      "type": "Türe göre sırala",
       "device": "Cihaza göre sırala",
       "organization": "Kuruluşa göre sırala",
       "site": "Siteye göre sırala",
@@ -1839,6 +1849,9 @@
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
+    "hiddenNetworkNotice_one": "1 ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
+    "hiddenNetworkNotice_other": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
+    "hiddenNetworkNotice": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
@@ -1883,7 +1896,10 @@
       "maintenanceOff": "Bakım Kapalı",
       "maintenanceOn": "Bakım Açık",
       "multibootLinked": "Çoklu Önyükleme Bağlantılı",
-      "networkSkipped": "{{count}} ağ cihazı/cihazları atlandı — bu eylem yalnızca aracı cihazlar için geçerlidir.",
+      "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
@@ -2203,80 +2219,97 @@
     "backToDevices": "Cihazlara geri dön",
     "configurePrefix": "SNMP yoklama ve ağ monitörlerini yapılandırma",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
-    "connecting": "Bağlanılıyor…",
-    "discoveryAssetView": "Discovery varlık görünümü",
-    "emptyPorts": "Açık bağlantı noktası algılanmadı.",
+    "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
+    "connecting": "Bağlanılıyor",
+    "discoveryAssetView": "keşif varlık görünümü",
+    "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
-      "load": "Yükle",
-      "malformed": "Bozuk biçimlendirilmiş",
+      "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
+      "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
       "notFound": "Ağ cihazı bulunamadı"
     },
     "fields": {
-      "assetType": "Varlık Türü",
-      "discoveryMethods": "Keşif Yöntemleri",
-      "discoveryProfile": "Keşif Profili",
-      "displayName": "Görünen Ad",
-      "firstSeen": "İlk Görülme",
+      "assetType": "Tür",
+      "discoveryMethods": "Keşif yöntemleri",
+      "discoveryProfile": "Keşif profili",
+      "displayName": "Görünen ad",
+      "firstSeen": "İlk görülme",
       "hostname": "Ana Bilgisayar Adı",
-      "ipAddress": "IP Adresi",
-      "lastSeen": "Son Görülme",
-      "linkedDevice": "Bağlantılı Cihaz",
-      "macAddress": "Mac Adresi",
+      "linkedDevice": "Bağlantılı cihaz",
       "manufacturer": "Üretici",
       "model": "Modeli",
-      "netbiosName": "Netbios Adı",
-      "networkMonitoring": "Ağ İzleme",
+      "netbiosName": "NetBIOS adı",
+      "networkMonitoring": "Ağ izleme",
       "notes": "Notlar",
-      "osFingerprint": "İşletim Sistemi Parmak İzi",
+      "osFingerprint": "İşletim sistemi parmak izi",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP İzleme",
+      "snmpMonitoring": "SNMP izleme",
       "status": "Durum",
       "tags": "Etiketler"
     },
     "goBack": "Geri dön",
-    "lastSeen": "Son görülme {{time}}",
+    "live": {
+      "webUiOpened": "Web arayüzü yeni bir sekmede açıldı",
+      "refreshed": "Cihaz ayrıntıları yenilendi"
+    },
     "loading": "Ağ cihazı yükleniyor...",
     "manageInDiscovery": "Discovery'de yönetin",
     "manuallySet": "Manüel olarak ayarlandı",
     "manuallySetWithDetected": "Manuel olarak ayarlandı · tarama algılandı {{type}}",
     "networkDevice": "Ağ Cihazı",
     "notConfigured": "Yapılandırılmadı",
-    "notLinked": "Bağlantılı değil",
+    "notLinked": "Henüz yönetilen bir cihaza bağlanmadı.",
     "openWebUi": "Web kullanıcı arayüzünü aç",
+    "ports": {
+      "insecure": "Şifrelenmemiş",
+      "insecureHint": "Bu hizmet kimlik bilgilerini düz metin olarak gönderir. Mümkünse cihazda devre dışı bırakın.",
+      "kind": {
+        "mgmt": "Yönetim",
+        "remote": "Uzaktan erişim",
+        "print": "Yazdırma",
+        "file": "Dosya paylaşımı"
+      }
+    },
+    "proxyPort": "Bağlantı noktası",
+    "proxyPortInvalid": "1 ile 65535 arasında bir bağlantı noktası girin",
     "proxyErrors": {
-      "disabled": "Bu hedef proxy erişimi için devre dışı bırakıldı. Bağlanabilmeniz için yöneticinin bunu Ayarlar'da yeniden etkinleştirmesi gerekir.",
-      "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir; bunu profilinizde etkinleştirin.",
-      "noOnlineAgent": "Bu bağlantıyı köprüleyecek çevrimiçi bir temsilci mevcut değil. Bir temsilcinin {{ip}} proxy'sini kullanabilmesi için çevrimiçi olması gerekir."
+      "disabled": "Bir yönetici bu hedefin proxy erişimini devre dışı bıraktı. Ayarlar, Uzaktan erişim bölümünden yeniden etkinleştirmesini isteyin.",
+      "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir. Bunu profilinizde etkinleştirip tekrar deneyin.",
+      "noOnlineAgent": "Şu anda {{ip}} adresine hiçbir çevrimiçi temsilci ulaşamıyor. Bu ağdaki bir temsilciyi çevrimiçi yapıp tekrar deneyin.",
+      "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
+    "savingType": "Kaydediliyor…",
+    "resettingType": "Sıfırlanıyor…",
     "sections": {
       "discovery": "Keşif",
       "identity": "Kimlik",
-      "monitoringStatus": "İzleme Durumu",
-      "networkReachability": "Ağa Erişilebilirlik",
-      "openPorts": "Açık Bağlantı Noktaları",
-      "snmpData": "SNMP Veri"
+      "monitoringStatus": "İzleme durumu",
+      "openPorts": "Açık bağlantı noktaları",
+      "snmpData": "SNMP verisi"
+    },
+    "stats": {
+      "asOf": "{{time}} itibarıyla"
     },
     "tabs": {
       "overview": "Genel Bakış",
       "monitoring": "İzleme"
     },
     "toasts": {
-      "proxyConnectFailed": "Proxy bağlantısı başlatılamadı",
-      "typeReset": "Tür Sıfırla",
-      "typeResetFailed": "Tür Sıfırlama Başarısız",
-      "typeUpdateFailed": "Tür Güncellemesi Başarısız",
-      "typeUpdated": "Tür Güncellendi",
-      "unlinkFailed": "Bağlantıyı Kaldırma Başarısız",
-      "unlinked": "Bağlantı kaldırıldı",
+      "proxyConnectFailed": "Web arayüzü açılamadı",
+      "typeReset": "Cihaz türü otomatik algılamaya sıfırlandı",
+      "typeResetFailed": "Cihaz türü sıfırlanamadı",
+      "typeUpdateFailed": "Cihaz türü güncellenemedi",
+      "typeUpdated": "Cihaz türü güncellendi",
+      "unlinkFailed": "Cihazın bağlantısı kaldırılamadı",
+      "unlinked": "Cihazın bağlantısı kaldırıldı",
       "linked": "Cihaz bağlandı",
       "linkFailed": "Cihaz bağlanamadı"
     },
     "unlink": "Bağlantıyı kaldır",
     "unlinking": "Bağlantı kaldırılıyor…",
-    "viewManagedDevice": "Yönetilen cihazı görüntüle",
-    "autoLinkSuppressed": "Otomatik bağlantı devre dışı bırakıldı — bir kullanıcı tarafından bağlantı kaldırıldı",
+    "autoLinkSuppressed": "Birisi bağlantısını kaldırdığı için bu varlık için otomatik bağlama kapalı. Tekrar açmak için manuel olarak bağlayın.",
     "linkManually": "Manuel olarak bağlantı kurun…",
     "linkManuallySelectDevice": "Bir cihaz seçin",
     "linkManuallyLinking": "Bağlanıyor…",
@@ -2289,7 +2322,17 @@
       "auto": "— otomatik olarak algılandı",
       "manual": "— manuel olarak ayarlayın"
     },
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
+    "sameDeviceAs": "{{name}} ile aynı cihaz",
+    "showMore": "Daha fazla göster",
+    "showLess": "Daha az göster",
+    "showAllPorts": "Tümünü göster ({{count}})",
+    "showFewerPorts": "Daha az göster",
+    "tryAgain": "Yeniden dene",
+    "snmpFields": {
+      "sysName": "Sistem adı",
+      "sysDescr": "Açıklama",
+      "sysObjectId": "Nesne kimliği (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",
@@ -2329,7 +2372,7 @@
       "critical": "Kritik",
       "lowDisk": "Düşük Disk",
       "needsPatches": "Yamalara İhtiyaç Var",
-      "notSeen7d": "Görülmedi7d",
+      "notSeen7d": "7 gündür görülmedi",
       "offline": "Çevrimdışı",
       "online": "Çevrimiçi",
       "rebootNeeded": "Yeniden Başlatma Gerekiyor",

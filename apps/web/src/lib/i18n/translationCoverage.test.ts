@@ -253,7 +253,11 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 142,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
@@ -356,7 +360,11 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 142,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
@@ -466,7 +474,9 @@ const namespaceDuplicateBaselines = {
     // "field_key" (literal format tokens/example keys, not wording); plus
     // customFieldImportPreview.columns.status "Status" and grid.name "Name"
     // — both spelled identically in German.
-    'devices.json': 154,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" arrived with the
+    // unified-device-list branch; re-measured after merging main.
+    'devices.json': 155,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an

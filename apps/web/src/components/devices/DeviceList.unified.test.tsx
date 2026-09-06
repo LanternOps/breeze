@@ -6,7 +6,7 @@ import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibili
 
 // Unified Devices list (#1322): network-discovered devices render alongside
 // agent endpoints with a class badge, a type badge, an All/Agent/Network
-// facet, and blank agent-only columns.
+// facet (owned by DevicesPage's DeviceClassSegment), and blank agent-only columns.
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 // Fleet view so the fleet-only Organization column stays available to these
@@ -72,32 +72,10 @@ describe('DeviceList — unified agent + network (#1322)', () => {
   it('hides the Class column and the facet entirely when the network arm is disabled', () => {
     render(<DeviceList devices={[agent, networkPrinter]} pageSize={50} />);
 
-    // No class badge cells and no class facet when the feature flag is off.
+    // No class badge cells when the feature flag is off.
     expect(screen.queryByTestId(`device-${agent.id}-class-badge`)).toBeNull();
-    expect(screen.queryByTestId('device-class-filter-network')).toBeNull();
     // The agent row still renders — it's just the agent-only view.
     expect(screen.getByText('agent-box')).toBeTruthy();
-  });
-
-  it('shows the All/Agent/Network facet only when a network device is present', () => {
-    const { rerender } = render(<DeviceList devices={[agent]} pageSize={50} networkDevicesEnabled />);
-    expect(screen.queryByTestId('device-class-filter-network')).toBeNull();
-
-    rerender(<DeviceList devices={[agent, networkPrinter]} pageSize={50} networkDevicesEnabled />);
-    expect(screen.getByTestId('device-class-filter-network')).toBeTruthy();
-  });
-
-  it('filters to network-only when the Network facet is selected', () => {
-    render(<DeviceList devices={[agent, networkPrinter]} pageSize={50} networkDevicesEnabled />);
-
-    // Both rows visible under "All".
-    expect(screen.getByText('agent-box')).toBeTruthy();
-    expect(screen.getByText('Lobby Printer')).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId('device-class-filter-network'));
-
-    expect(screen.queryByText('agent-box')).toBeNull();
-    expect(screen.getByText('Lobby Printer')).toBeTruthy();
   });
 
   it('routes a network row to onSelect (Discovery placeholder) via the View button', () => {
@@ -146,7 +124,7 @@ describe('DeviceList — unified agent + network (#1322)', () => {
     });
 
     it('network row: Type shows the asset type, Role is a dash', () => {
-      render(<DeviceList devices={[networkPrinter]} pageSize={50} networkDevicesEnabled />);
+      render(<DeviceList devices={[agent, networkPrinter]} pageSize={50} networkDevicesEnabled />);
 
       const typeCell = screen.getByTestId(`device-${networkPrinter.id}-type`);
       expect(typeCell.textContent).toMatch(/printer/i);
