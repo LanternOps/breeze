@@ -195,7 +195,7 @@ func TestTestRestore_HappyPath(t *testing.T) {
 	var progressCalls int
 	progressFn := func(current, total int) { progressCalls++ }
 
-	result, err := TestRestore(provider, snapshotID, progressFn)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestTestRestore_MissingFile(t *testing.T) {
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
 	provider := providers.NewLocalProvider(basePath)
-	result, err := TestRestore(provider, snapshotID, nil)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,11 +248,12 @@ func TestTestRestore_MissingFile(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_Success(t *testing.T) {
-	dir := filepath.Join(os.TempDir(), "breeze-restore-test", "test-cleanup")
+	configuredRoot := t.TempDir()
+	dir := filepath.Join(configuredRoot, "restore-work", "breeze-restore-test-test-cleanup")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "dummy.txt"), []byte("x"), 0o644)
 
-	if err := CleanupRestoreDir(dir); err != nil {
+	if err := CleanupRestoreDir(dir, configuredRoot); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -261,7 +262,7 @@ func TestCleanupRestoreDir_Success(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_PathTraversal(t *testing.T) {
-	err := CleanupRestoreDir("/etc/passwd")
+	err := CleanupRestoreDir("/etc/passwd", t.TempDir())
 	if err == nil {
 		t.Error("expected error for path outside restore prefix")
 	}
@@ -289,7 +290,7 @@ func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
 		},
 	}
 
-	result, err := TestRestore(provider, "dup-basenames", nil)
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
 		},
 	}
 
-	result, err := TestRestore(provider, "dup-basenames", nil)
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

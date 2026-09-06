@@ -117,6 +117,7 @@ func TestRestoreFromSnapshot_HappyPath(t *testing.T) {
 	cfg := RestoreConfig{
 		SnapshotID: snapID,
 		TargetPath: targetDir,
+		WorkRoot:   t.TempDir(),
 	}
 
 	var progressCalls int
@@ -185,7 +186,7 @@ func TestRestoreFromSnapshot_LongSourcePath(t *testing.T) {
 		name: "long path content",
 	})
 
-	snapshot, err := downloadManifest(provider, snapID)
+	snapshot, err := downloadManifest(provider, snapID, t.TempDir())
 	if err != nil {
 		t.Fatalf("download manifest: %v", err)
 	}
@@ -264,6 +265,7 @@ func TestRestoreFromSnapshot_CancelledMidway(t *testing.T) {
 	cfg := RestoreConfig{
 		SnapshotID: snapID,
 		TargetPath: targetDir,
+		WorkRoot:   t.TempDir(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -342,7 +344,7 @@ func TestRestoreFromSnapshot_Resume(t *testing.T) {
 		"file2.txt": "content2\n",
 	}
 	baseProvider, snapID := setupRestoreTestSnapshot(t, testFiles)
-	snapshot, err := downloadManifest(baseProvider, snapID)
+	snapshot, err := downloadManifest(baseProvider, snapID, t.TempDir())
 	if err != nil {
 		t.Fatalf("download manifest: %v", err)
 	}
@@ -357,9 +359,11 @@ func TestRestoreFromSnapshot_Resume(t *testing.T) {
 	}
 
 	targetDir := t.TempDir()
+	workRoot := t.TempDir()
 	cfg := RestoreConfig{
 		SnapshotID: snapID,
 		TargetPath: targetDir,
+		WorkRoot:   workRoot,
 	}
 
 	result1, err := RestoreFromSnapshot(provider, cfg, nil)
@@ -405,7 +409,7 @@ func TestRestoreFromSnapshot_ResumeRedownloadsMissingCompletedFile(t *testing.T)
 		"file2.txt": "content2\n",
 	}
 	baseProvider, snapID := setupRestoreTestSnapshot(t, testFiles)
-	snapshot, err := downloadManifest(baseProvider, snapID)
+	snapshot, err := downloadManifest(baseProvider, snapID, t.TempDir())
 	if err != nil {
 		t.Fatalf("download manifest: %v", err)
 	}
@@ -420,6 +424,7 @@ func TestRestoreFromSnapshot_ResumeRedownloadsMissingCompletedFile(t *testing.T)
 	cfg := RestoreConfig{
 		SnapshotID: snapID,
 		TargetPath: targetDir,
+		WorkRoot:   t.TempDir(),
 	}
 
 	result1, err := RestoreFromSnapshot(provider, cfg, nil)
@@ -485,6 +490,22 @@ func TestRestoreFromSnapshot_EmptySnapshotID(t *testing.T) {
 	_, err := RestoreFromSnapshot(provider, RestoreConfig{}, nil)
 	if err == nil {
 		t.Error("expected error for empty snapshot ID")
+	}
+}
+
+func TestRestoreFromSnapshot_RejectsUnsafeSnapshotID(t *testing.T) {
+	provider := providers.NewLocalProvider(t.TempDir())
+	for _, snapshotID := range []string{"../escape", "nested/id", "."} {
+		t.Run(snapshotID, func(t *testing.T) {
+			_, err := RestoreFromSnapshot(provider, RestoreConfig{
+				SnapshotID: snapshotID,
+				TargetPath: t.TempDir(),
+				WorkRoot:   t.TempDir(),
+			}, nil)
+			if err == nil {
+				t.Fatalf("snapshot ID %q was accepted", snapshotID)
+			}
+		})
 	}
 }
 
