@@ -2789,6 +2789,7 @@
       "runScriptRequired": "Aggiungi \"Esegui uno script\" in \"Cosa fa\" prima di autorizzare gli script.",
       "runScriptNotInBaseline": "La baseline del partner non consente \"Esegui uno script\" per questo tipo di agente, quindi nessuno script può essere eseguito senza supervisione.",
       "ceilingUnavailable": "Impossibile caricare la baseline del partner, quindi al momento non è possibile autorizzare script.",
+      "ceilingLoading": "Verifica della baseline del partner…",
       "loading": "Caricamento degli script…",
       "failed": "Impossibile caricare gli script, quindi l'autorizzazione degli script senza supervisione non può essere modificata al momento.",
       "empty": "Nessuno script disponibile.",

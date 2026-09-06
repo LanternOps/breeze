@@ -102,8 +102,13 @@ export function buildAgentPreview(
   // authorized however many both lists share (#5089 review — the same write
   // scriptAuthorization.ts rejects as run_script_not_allowed). Deduped: the
   // schema admits a repeated id, and one script is one authorization.
+  // The draft's OWN allowlist must admit run_script too (bare entry — the
+  // same test scriptAuthorization.ts applies): a draft whose picker
+  // unticked the capability cannot run any script, so its card must not
+  // say "N scripts authorized" (#5089 review).
+  const draftAdmitsRunScript = isToolAllowlisted(input.toolAllowlist, 'run_script', null);
   const ceilingAdmitsRunScript = !ceiling || isToolAllowlisted(ceiling.toolAllowlist, 'run_script', null);
-  const authorizedScriptIds = !ceilingAdmitsRunScript
+  const authorizedScriptIds = !draftAdmitsRunScript || !ceilingAdmitsRunScript
     ? []
     : [...new Set(input.actAssets.scriptIds)].filter((id) => !ceiling || ceiling.scriptIds.includes(id));
   const outcomeContext = { authorizedScriptCount: authorizedScriptIds.length };

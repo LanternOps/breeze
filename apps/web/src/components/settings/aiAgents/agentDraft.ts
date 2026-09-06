@@ -160,9 +160,10 @@ export function draftFrom(
   };
 }
 
-/** Whether the draft's tool allowlist admits `run_script` (bare, or any
- *  scoped form) — the precondition for authorizing scripts. Never auto-added
- *  by the picker: that would silently widen a separate control. */
+/** Whether the draft's tool allowlist admits the bare `run_script` entry —
+ *  the precondition for authorizing scripts. A scoped `run_script:x` does
+ *  not count (see below). Never auto-added by the picker: that would
+ *  silently widen a separate control. */
 export function allowsRunScript(toolAllowlist: string): boolean {
   // Bare entry only — the same test the server applies
   // (scriptAuthorization.ts: `isToolAllowlisted(toolAllowlist, 'run_script',
@@ -176,16 +177,21 @@ export function allowsRunScript(toolAllowlist: string): boolean {
  * How many of a draft's `scriptIds` `run_script` may actually execute
  * unattended — the web twin of `agentPreview.ts`'s `authorizedScriptIds`
  * (#5089 review), so the picker's live badge and the server's review card
- * read the same number. Effective policy is `partner ∩ org` with the
+ * read the same number. Zero unless the draft's OWN allowlist admits
+ * `run_script` (unticking the capability must not leave "N scripts
+ * authorized" standing). Effective policy is `partner ∩ org` with the
  * allowlists intersected FIRST: a ceiling that bars `run_script` itself
  * authorizes nothing, whatever both lists share. Deduped, like the schema.
  * A caller must still gate this on the ceiling being KNOWN
- * (`useAgentToolCatalog`'s `ceilingResolved`/`ceilingFailed`) — `null`
- * here means "no baseline", not "not loaded".
+ * (`useAgentToolCatalog`'s `ceilingState`) — `null` here means "no
+ * baseline", not "not loaded".
  */
-export function authorizedScriptCountFor(scriptIds: readonly string[], ceiling: AgentCeilingDto | null): number {
-  if (!isWithinCeiling('run_script', ceiling)) return 0;
-  return [...new Set(scriptIds)].filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
+export function authorizedScriptCountFor(
+  draft: Pick<Draft, 'scriptIds' | 'toolAllowlist'>,
+  ceiling: AgentCeilingDto | null,
+): number {
+  if (!allowsRunScript(draft.toolAllowlist) || !isWithinCeiling('run_script', ceiling)) return 0;
+  return [...new Set(draft.scriptIds)].filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
 }
 
 /**

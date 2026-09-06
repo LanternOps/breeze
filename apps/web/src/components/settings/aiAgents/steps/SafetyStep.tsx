@@ -28,6 +28,13 @@ export interface SafetyStepProps {
    *  not "no baseline" — the script picker locks rather than offering an
    *  unrestricted choice the server would 422 (#5089 review). */
   ceilingFailed?: boolean;
+  /** False while an org draft's ceiling is still being fetched — same
+   *  "unknown, not none" rule as `ceilingFailed` (#5089 review). */
+  ceilingResolved?: boolean;
+  /** The org an ORGANIZATION draft belongs to (the script picker loads and
+   *  filters that org's library, never the switcher's); `null` on a partner
+   *  draft. */
+  ownerOrgId: string | null;
   roles: RoleOption[];
   rolesFailed: boolean;
   policyKeys: PolicyDecidableKeyOption[];
@@ -60,6 +67,11 @@ export interface SafetyStepProps {
  * - ORG row in act mode on a brand-new create draft: nothing — it holds no
  *   keys, and the grant path the read-only list points at (the Graduation
  *   panel) is mounted by the drawer only (#5063 review).
+ *
+ * The script picker (#5065) is NOT under that registry gate: scripts are not
+ * grant-only, so an org act-mode draft authorizes them right here on the
+ * create flow (#5089 review). It shows for a partner row (its list is the
+ * ceiling for its organizations) and for any row in act mode.
  * - ORG row not in act mode: nothing — the "act acknowledgement pattern":
  *   additional unattended authority is only shown once the operator is
  *   already looking at the act-mode warning.
@@ -69,6 +81,8 @@ export default function SafetyStep({
   patch,
   ceiling,
   ceilingFailed = false,
+  ceilingResolved = true,
+  ownerOrgId,
   roles,
   rolesFailed,
   policyKeys,
@@ -181,13 +195,17 @@ export default function SafetyStep({
         </fieldset>
       )}
 
-      {/* #5065: the scripts `run_script` may execute unattended — shown under
-          the same gate as the registry above (act mode, or a partner row
-          whose list is the ceiling for its organizations). */}
-      {showPolicyDecide && (
+      {/* #5065: the scripts `run_script` may execute unattended. Its own
+          gate, deliberately looser than the registry's above: a partner row
+          (its list is the ceiling for its organizations) or ANY row in act
+          mode — including a brand-new org create draft, since scripts are
+          not grant-only (#5089 review). */}
+      {(draft.ownerScope === 'partner' || draft.mode === 'act') && (
         <ScriptAuthorizationPicker
           ownerScope={draft.ownerScope}
+          ownerOrgId={draft.ownerScope === 'organization' ? ownerOrgId : null}
           ceiling={ceiling}
+          ceilingResolved={ceilingResolved}
           ceilingUnavailable={draft.ownerScope === 'organization' && ceilingFailed}
           runScriptAllowed={allowsRunScript(draft.toolAllowlist)}
           selectedIds={draft.scriptIds}

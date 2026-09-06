@@ -17,10 +17,10 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 vi.mock('../../db', () => ({ db: { select: vi.fn() } }));
-vi.mock('./effectivePolicy', () => ({ loadPartnerBaselineCeiling: vi.fn() }));
+vi.mock('./effectivePolicy', () => ({ loadPartnerBaselineCeiling: vi.fn(), resolveOrgPartnerId: vi.fn() }));
 
 import { db } from '../../db';
-import { loadPartnerBaselineCeiling } from './effectivePolicy';
+import { loadPartnerBaselineCeiling, resolveOrgPartnerId } from './effectivePolicy';
 import { InvalidScriptIdsError, assertScriptIdsAuthorizable } from './scriptAuthorization';
 
 const ORG = 'org-1';
@@ -67,9 +67,31 @@ async function rejectedOf(run: () => Promise<void>) {
 beforeEach(() => {
   vi.mocked(db.select).mockReset();
   vi.mocked(loadPartnerBaselineCeiling).mockReset();
+  // An org row's partner comes from the organization (effectivePolicy.ts's
+  // resolveOrgPartnerId), not the owner tuple.
+  vi.mocked(resolveOrgPartnerId).mockReset().mockResolvedValue(PARTNER);
 });
 
 describe('assertScriptIdsAuthorizable', () => {
+  it('fails CLOSED when the org row is not visible to this context — never "no ceiling" (#5089 review)', async () => {
+    // organizations.partner_id is NOT NULL, so a null resolution means the
+    // row could not be read at all. The caller already passed canAccessOrg,
+    // so this is an invariant violation, not a legitimate "no baseline".
+    vi.mocked(resolveOrgPartnerId).mockResolvedValueOnce(null);
+    await expect(
+      assertScriptIdsAuthorizable({ orgId: ORG, partnerId: null }, 'triage', { existing: [], next: [S_ORG], toolAllowlist: ['run_script'] }),
+    ).rejects.toThrow(/not visible/);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(loadPartnerBaselineCeiling).not.toHaveBeenCalled();
+  });
+
+  it('a scoped run_script:x entry never admits run_script — same test the web\'s allowsRunScript applies (#5089 review)', async () => {
+    const rejected = await rejectedOf(() =>
+      assertScriptIdsAuthorizable({ orgId: null, partnerId: PARTNER }, 'triage', { existing: [], next: [S_PARTNER], toolAllowlist: ['run_script:execute'] }));
+    expect(rejected).toEqual([{ id: S_PARTNER, reason: 'run_script_not_allowed' }]);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('is a no-op when the write does not touch scriptIds or only removes ids — no query, no error', async () => {
     await assertScriptIdsAuthorizable({ orgId: null, partnerId: PARTNER }, 'triage', { existing: [S_PARTNER], next: undefined, toolAllowlist: [] });
     await assertScriptIdsAuthorizable({ orgId: null, partnerId: PARTNER }, 'triage', { existing: [S_PARTNER, S_SYSTEM], next: [S_SYSTEM], toolAllowlist: [] });
@@ -105,7 +127,7 @@ describe('assertScriptIdsAuthorizable', () => {
   });
 
   it('org row: accepts its own, same-partner partner-wide and system scripts inside the ceiling; rejects outside-ceiling ids and another org\'s script', async () => {
-    queueSelects([{ partnerId: PARTNER }], libraryRows([S_ORG, S_PARTNER, S_SYSTEM, S_OTHER_ORG]));
+    queueSelects(libraryRows([S_ORG, S_PARTNER, S_SYSTEM, S_OTHER_ORG]));
     vi.mocked(loadPartnerBaselineCeiling).mockResolvedValueOnce({
       toolAllowlist: ['run_script'],
       supervisedActionKeys: [],
@@ -125,7 +147,7 @@ describe('assertScriptIdsAuthorizable', () => {
   });
 
   it('org row: passes when every added id is visible and inside the ceiling', async () => {
-    queueSelects([{ partnerId: PARTNER }], libraryRows([S_ORG, S_PARTNER]));
+    queueSelects(libraryRows([S_ORG, S_PARTNER]));
     vi.mocked(loadPartnerBaselineCeiling).mockResolvedValueOnce({
       toolAllowlist: ['run_script'],
       supervisedActionKeys: [],
@@ -137,7 +159,7 @@ describe('assertScriptIdsAuthorizable', () => {
   });
 
   it('org row: with no live baseline, visibility alone decides (the row is inert until a baseline appears)', async () => {
-    queueSelects([{ partnerId: PARTNER }], libraryRows([S_ORG]));
+    queueSelects(libraryRows([S_ORG]));
     vi.mocked(loadPartnerBaselineCeiling).mockResolvedValueOnce(null);
     await expect(
       assertScriptIdsAuthorizable({ orgId: ORG, partnerId: null }, 'triage', { existing: [], next: [S_ORG], toolAllowlist: ['run_script'] }),
@@ -145,7 +167,7 @@ describe('assertScriptIdsAuthorizable', () => {
   });
 
   it('org row: rejects as run_script_not_allowed when the partner ceiling\'s allowlist does not admit run_script', async () => {
-    queueSelects([{ partnerId: PARTNER }], libraryRows([S_ORG]));
+    queueSelects(libraryRows([S_ORG]));
     vi.mocked(loadPartnerBaselineCeiling).mockResolvedValueOnce({
       toolAllowlist: ['manage_services:restart'],
       supervisedActionKeys: [],

@@ -337,6 +337,7 @@ const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
 import { AI_AGENT_GRADUATION_BY_ORG_BATCH, aiAgentsRoutes, mapError } from './aiAgents';
+import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -2141,6 +2142,21 @@ describe('mapError — agent-kind unique violation (#4189)', () => {
   });
 });
 
+describe('mapError — script authorization rejection (#5065, #5089 review)', () => {
+  it('maps InvalidScriptIdsError to a 422 carrying code + rejected[] so agentErrors.ts can render each id', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    const rejected = [{ id: '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b', reason: 'not_in_partner_baseline' as const }];
+
+    mapError(ctx, new InvalidScriptIdsError(rejected));
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_script_ids', rejected }),
+      422,
+    );
+  });
+});
+
 describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B, #3827)', () => {
   it('maps InvalidSupervisedActionKeysError to a 422 naming exactly which keys were rejected and why', async () => {
     const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
@@ -3661,12 +3677,25 @@ describe('GET /ai-agents/ceiling', () => {
     expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
   });
 
-  it('returns null for a system-scope session (nothing to project a ceiling onto)', async () => {
+  it('returns null for a system-scope session that names no org (nothing to project a ceiling onto)', async () => {
     const res = await buildApp(false, { scope: 'system', partnerId: PARTNER_ID, orgId: null })
       .request('/ai-agents/ceiling?kind=triage');
 
     expect(await res.json()).toEqual({ data: null });
     expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('projects the ORG\'s partner baseline for a system-scope session that names the org — the same ceiling the create enforces (#5089 review)', async () => {
+    resolveOrgPartnerIdMock.mockResolvedValueOnce(PARTNER_ID);
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] });
+
+    const res = await buildApp(false, { scope: 'system', partnerId: null, orgId: null, canAccessOrg: () => true })
+      .request(`/ai-agents/ceiling?kind=triage&orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(resolveOrgPartnerIdMock).toHaveBeenCalledWith(ORG_ID);
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+    expect(await res.json()).toEqual({ data: { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [] } });
   });
 
   it('returns null when the session carries no partnerId at all (self-hosted, no partner)', async () => {
@@ -3797,7 +3826,7 @@ describe('POST /ai-agents/preview', () => {
     expect(body.data.operations[0]!.withinCeiling).toBe(false);
   });
 
-  it('does not resolve a ceiling for a system-scope caller previewing an org draft whose org has no partner', async () => {
+  it('does not resolve a ceiling for a system-scope caller previewing an org draft whose org it cannot read (a preview never writes; the create fails closed instead)', async () => {
     resolveOrgPartnerIdMock.mockResolvedValueOnce(null);
 
     const res = await previewRequest(
@@ -3806,6 +3835,17 @@ describe('POST /ai-agents/preview', () => {
     );
 
     expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces resolveOrgId\'s error for a system-scope caller previewing an org draft without naming the org, like every other route here (#5089 review)', async () => {
+    const res = await previewRequest(
+      buildApp(false, { scope: 'system', partnerId: null, orgId: null, canAccessOrg: () => true }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(400);
+    expect(resolveOrgPartnerIdMock).not.toHaveBeenCalled();
     expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
   });
 

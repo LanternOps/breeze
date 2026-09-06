@@ -25,6 +25,7 @@ import {
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
+  type AgentCeilingDto,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -437,20 +438,25 @@ aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
  * same projection when editing/creating an ORG-owned row for its own
  * partner — a partner token CAN read its own partner rows directly, so this
  * exposes nothing new; `loadPartnerBaselineCeiling` just saves it a second
- * round trip. `null` for a system-scope session (nothing to project a
- * ceiling onto), when the caller carries no `partnerId` at all (self-hosted),
- * or when no live baseline exists for that kind yet.
+ * round trip. A system-scope session has no partner of its own, so it gets
+ * the ceiling of the org the query names (`orgId`, the org the draft is
+ * for — the same partner the create enforces, #5089 review) and `null` when
+ * it names none. `null` also when the caller carries no `partnerId` at all
+ * (self-hosted), or when no live baseline exists for that kind yet.
  */
 aiAgentsRoutes.get(
   '/ceiling',
   scopes,
   requireAiRead,
-  zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS) })),
+  zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS), orgId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
-    if (auth.scope === 'system' || !auth.partnerId) return c.json({ data: null });
-    const { kind } = c.req.valid('query');
-    return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
+    const { kind, orgId } = c.req.valid('query');
+    if (auth.scope === 'system' && !orgId) return c.json({ data: null });
+    const partner = await orgDraftCeilingPartnerId(auth, orgId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    if (!partner.partnerId) return c.json({ data: null });
+    return c.json({ data: await loadPartnerBaselineCeiling(partner.partnerId, kind) });
   },
 );
 
@@ -485,21 +491,36 @@ aiAgentsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const ceilingPartnerId = body.ownerScope !== 'partner' ? await previewCeilingPartnerId(auth, body.orgId) : null;
-    const ceiling = ceilingPartnerId ? await loadPartnerBaselineCeiling(ceilingPartnerId, body.kind) : null;
+    let ceiling: AgentCeilingDto | null = null;
+    if (body.ownerScope !== 'partner') {
+      const partner = await orgDraftCeilingPartnerId(auth, body.orgId);
+      if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+      ceiling = partner.partnerId ? await loadPartnerBaselineCeiling(partner.partnerId, body.kind) : null;
+    }
     return c.json({ data: buildAgentPreview(body, ceiling, buildAgentToolCatalog()) });
   },
 );
 
-/** The partner whose baseline narrows an org-owned draft for this caller — see POST /preview's docstring. */
-async function previewCeilingPartnerId(
+/**
+ * The partner whose baseline narrows an ORG-owned draft for this caller —
+ * shared by GET /ceiling and POST /preview (see their docstrings). A
+ * partner/org caller's own partnerId; a system-scope caller's comes from the
+ * org the request names, through the same `resolveOrgId` gate every write
+ * route applies, so a bad or missing orgId answers 400/403 here exactly as
+ * it would on POST / rather than degrading to a ceiling-less 200 (#5089
+ * review). `partnerId: null` when there is nothing to project onto: no
+ * partnerId at all (self-hosted), or an org row this context cannot read —
+ * a read never writes, so that one is left to the create to fail closed.
+ */
+async function orgDraftCeilingPartnerId(
   auth: Parameters<typeof resolveOrgId>[0],
   requestedOrgId: string | undefined,
-): Promise<string | null> {
-  if (auth.scope !== 'system') return auth.partnerId ?? null;
+): Promise<{ partnerId: string | null } | { error: string; status: 400 | 403 }> {
+  if (auth.scope !== 'system') return { partnerId: auth.partnerId ?? null };
   const orgResult = resolveOrgId(auth, requestedOrgId, true);
-  if ('error' in orgResult || !orgResult.orgId) return null;
-  return resolveOrgPartnerId(orgResult.orgId);
+  if ('error' in orgResult) return orgResult;
+  if (!orgResult.orgId) return { error: 'orgId is required', status: 400 };
+  return { partnerId: await resolveOrgPartnerId(orgResult.orgId) };
 }
 
 /**

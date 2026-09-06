@@ -29,11 +29,11 @@
  *
  * Bound to the ROW's owner, never the ambient organization switcher.
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, inArray, isNull } from 'drizzle-orm';
 import type { AiAgentKind } from '@breeze/shared';
 import { db } from '../../db';
-import { organizations, scripts } from '../../db/schema';
-import { loadPartnerBaselineCeiling } from './effectivePolicy';
+import { scripts } from '../../db/schema';
+import { loadPartnerBaselineCeiling, resolveOrgPartnerId } from './effectivePolicy';
 import { isToolAllowlisted } from './toolAllowlist';
 
 /** Structural twin of `agentService.ts`'s `AgentOwner` (not imported: that module imports this one). */
@@ -83,15 +83,18 @@ export async function assertScriptIdsAuthorizable(
   }
 
   // An org row's partner comes from the organization, not the owner tuple
-  // (org-owned rows carry `partnerId: null`).
+  // (org-owned rows carry `partnerId: null`). `organizations.partner_id` is
+  // NOT NULL, so a null resolution means the org row itself is not visible
+  // here — the caller already passed canAccessOrg, so that is an invariant
+  // violation. Fail CLOSED: falling through to "no ceiling" would silently
+  // drop both partner-baseline checks and admit the id on visibility alone
+  // (#5089 review).
   let partnerId = owner.partnerId;
   if (owner.orgId !== null) {
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, owner.orgId))
-      .limit(1);
-    partnerId = org?.partnerId ?? null;
+    partnerId = await resolveOrgPartnerId(owner.orgId);
+    if (partnerId === null) {
+      throw new Error(`scriptAuthorization: organization ${owner.orgId} is not visible to this context`);
+    }
   }
 
   const rows = await db

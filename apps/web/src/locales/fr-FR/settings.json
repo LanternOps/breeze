@@ -2789,6 +2789,7 @@
       "runScriptRequired": "Ajoutez « Exécuter un script » dans « Ce qu'il fait » avant d'autoriser des scripts.",
       "runScriptNotInBaseline": "Le référentiel du partenaire n'autorise pas « Exécuter un script » pour ce type d'agent : aucun script ne peut donc s'exécuter sans intervention.",
       "ceilingUnavailable": "Impossible de charger le référentiel du partenaire : aucun script ne peut être autorisé pour le moment.",
+      "ceilingLoading": "Vérification du référentiel du partenaire…",
       "loading": "Chargement des scripts…",
       "failed": "Impossible de charger les scripts ; l'autorisation de scripts sans intervention ne peut pas être modifiée pour le moment.",
       "empty": "Aucun script disponible.",

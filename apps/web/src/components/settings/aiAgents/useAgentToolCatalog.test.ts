@@ -188,6 +188,39 @@ describe('useAgentToolCatalog', () => {
     expect(result.current.ceiling).toBeNull();
   });
 
+  it('names the draft\'s own org on the ceiling request when given one, so a system session (or a drawer opened on another org\'s agent) gets THAT org\'s ceiling (#5089 review)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url === '/ai/agents/ceiling?kind=triage&orgId=org-9') return Promise.resolve(json({ data: CEILING }));
+      return Promise.resolve(json({ error: 'wrong url' }, false, 500));
+    });
+    const { result } = renderHook(() => useAgentToolCatalog({ kind: 'triage', ownerScope: 'organization', orgId: 'org-9' }));
+    await waitFor(() => expect(result.current.ceiling).toEqual(CEILING));
+    expect(result.current.ceilingState).toBe('resolved');
+  });
+
+  it('exposes the ceiling question as one state: not_applicable / loading / resolved / failed', async () => {
+    let resolveCeiling: (value: Response) => void = () => {};
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+      if (url === '/ai/agents/ceiling?kind=triage') return new Promise<Response>((resolve) => { resolveCeiling = resolve; });
+      return Promise.resolve(json({ error: 'boom' }, false, 500));
+    });
+    const { result, rerender } = renderHook(
+      ({ ownerScope, kind }: { ownerScope: 'organization' | 'partner'; kind: 'triage' | 'patch' }) => useAgentToolCatalog({ kind, ownerScope }),
+      { initialProps: { ownerScope: 'partner' as 'organization' | 'partner', kind: 'triage' as 'triage' | 'patch' } },
+    );
+    await waitFor(() => expect(result.current.ceilingState).toBe('not_applicable'));
+
+    rerender({ ownerScope: 'organization', kind: 'triage' });
+    await waitFor(() => expect(result.current.ceilingState).toBe('loading'));
+    resolveCeiling(json({ data: null }));
+    await waitFor(() => expect(result.current.ceilingState).toBe('resolved'));
+
+    rerender({ ownerScope: 'organization', kind: 'patch' });
+    await waitFor(() => expect(result.current.ceilingState).toBe('failed'));
+  });
+
   it('treats an unrecognised ceiling body as a failed fetch, and fills in the lists an older API build omits (#5089 review)', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));

@@ -2789,6 +2789,7 @@
       "runScriptRequired": "Fügen Sie unter „Was er tut“ zuerst „Skript ausführen“ hinzu, bevor Sie Skripte autorisieren.",
       "runScriptNotInBaseline": "Die Partner-Baseline erlaubt „Skript ausführen“ für diesen Agententyp nicht, daher kann kein Skript unbeaufsichtigt laufen.",
       "ceilingUnavailable": "Die Partner-Baseline konnte nicht geladen werden, daher können derzeit keine Skripte autorisiert werden.",
+      "ceilingLoading": "Partner-Baseline wird geprüft…",
       "loading": "Skripte werden geladen…",
       "failed": "Skripte konnten nicht geladen werden, daher lässt sich die unbeaufsichtigte Skriptautorisierung gerade nicht ändern.",
       "empty": "Keine Skripte verfügbar.",

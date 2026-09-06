@@ -169,6 +169,7 @@ export default function AiAgentForm({
   const { catalog: fetchedCatalog, ceiling, ceilingResolved, ceilingFailed, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
     ownerScope: draft.ownerScope,
+    orgId: agent.orgId ?? null,
   });
   // Defensive, same reasoning as the policy-decidable-keys row filter above:
   // this catalog is server-owned, so a shape the picker cannot use must
@@ -308,7 +309,7 @@ export default function AiAgentForm({
   // or has failed, and badge run_script as unattended (#5063, #5089 review).
   const authorizedScriptCount = !ceilingResolved || ceilingFailed
     ? 0
-    : authorizedScriptCountFor(draft.scriptIds, ceiling);
+    : authorizedScriptCountFor(draft, ceiling);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
@@ -445,6 +446,8 @@ export default function AiAgentForm({
               patch={patch}
               ceiling={ceiling}
               ceilingFailed={ceilingFailed}
+              ceilingResolved={ceilingResolved}
+              ownerOrgId={agent.orgId ?? null}
               editing
               roles={roles}
               rolesFailed={rolesFailed}

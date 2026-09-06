@@ -2789,6 +2789,7 @@
       "runScriptRequired": "Add \"Run a script\" under What it does before authorizing scripts.",
       "runScriptNotInBaseline": "The partner baseline doesn't allow \"Run a script\" for this kind of agent, so no script can run unattended.",
       "ceilingUnavailable": "Couldn't load the partner baseline, so scripts can't be authorized right now.",
+      "ceilingLoading": "Checking the partner baseline…",
       "loading": "Loading scripts…",
       "failed": "Couldn't load scripts, so unattended script authorization can't be changed right now.",
       "empty": "No scripts available.",

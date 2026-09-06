@@ -101,9 +101,11 @@ export default function AgentCreateFlow({
   // the server would 409 on `agent_kind_exists` anyway.
   const kindsExhausted = freeKinds(agents, draft.ownerScope, orgScope.orgId).length === 0;
 
+  const ownerOrgId = draft.ownerScope === 'organization' ? orgScope.orgId : null;
   const { catalog: fetchedCatalog, ceiling, ceilingResolved, ceilingFailed, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
     ownerScope: draft.ownerScope,
+    orgId: ownerOrgId,
   });
   const catalog = fetchedCatalog && Array.isArray(fetchedCatalog.tools) && fetchedCatalog.presets ? fetchedCatalog : null;
 
@@ -269,7 +271,7 @@ export default function AgentCreateFlow({
               // counts until an org draft's ceiling is actually KNOWN — an
               // in-flight or failed fetch must not read as "no baseline"
               // (#5089 review).
-              authorizedScriptCount={!ceilingResolved || ceilingFailed ? 0 : authorizedScriptCountFor(draft.scriptIds, ceiling)}
+              authorizedScriptCount={!ceilingResolved || ceilingFailed ? 0 : authorizedScriptCountFor(draft, ceiling)}
             />
           )}
           {step === 2 && (
@@ -278,6 +280,8 @@ export default function AgentCreateFlow({
               patch={patch}
               ceiling={ceiling}
               ceilingFailed={ceilingFailed}
+              ceilingResolved={ceilingResolved}
+              ownerOrgId={ownerOrgId}
               roles={roles}
               rolesFailed={rolesFailed}
               policyKeys={policyKeys}

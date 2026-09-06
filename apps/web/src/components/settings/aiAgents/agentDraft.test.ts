@@ -191,16 +191,32 @@ describe('buildAgentSaveBody', () => {
 describe('authorizedScriptCountFor (#5089 review)', () => {
   const a = 'aaaaaaaa-0000-4000-8000-000000000001';
   const b = 'aaaaaaaa-0000-4000-8000-000000000002';
+  const withRunScript = (scriptIds: string[]) => ({ scriptIds, toolAllowlist: 'manage_services:restart\nrun_script' });
 
   it('with no ceiling counts each distinct id once', () => {
-    expect(authorizedScriptCountFor([a, a, b], null)).toBe(2);
+    expect(authorizedScriptCountFor(withRunScript([a, a, b]), null)).toBe(2);
   });
 
   it('with a ceiling counts only the ids the baseline also lists (partner ∩ org)', () => {
-    expect(authorizedScriptCountFor([a, b], { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [b] })).toBe(1);
+    expect(authorizedScriptCountFor(withRunScript([a, b]), { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [b] })).toBe(1);
   });
 
   it('counts nothing when the ceiling bars run_script itself, whatever it lists', () => {
-    expect(authorizedScriptCountFor([a], { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [a] })).toBe(0);
+    expect(authorizedScriptCountFor(withRunScript([a]), { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [a] })).toBe(0);
+  });
+
+  it('counts nothing while the draft\'s OWN allowlist does not admit run_script — unticking the capability must not leave "N scripts authorized" standing', () => {
+    expect(authorizedScriptCountFor({ scriptIds: [a], toolAllowlist: 'manage_services:restart' }, null)).toBe(0);
+    expect(authorizedScriptCountFor({ scriptIds: [a], toolAllowlist: 'run_script:execute' }, null)).toBe(0);
+  });
+});
+
+describe('buildAgentSaveBody scriptIds (#5089 review)', () => {
+  it('sends a cleared list as an explicit [] on both scopes, so a PATCH revokes rather than leaves the stored ids alone', () => {
+    const base = draftFrom(null, { ownerScope: 'partner', kind: 'triage' });
+    const partner = buildAgentSaveBody({ ...base, scriptIds: [] }, { isCreate: false, orgId: null }) as { actAssets: { scriptIds: string[] } };
+    expect(partner.actAssets.scriptIds).toEqual([]);
+    const org = buildAgentSaveBody({ ...base, ownerScope: 'organization', scriptIds: [] }, { isCreate: false, orgId: 'org-1' }) as { actAssets: { scriptIds: string[] } };
+    expect(org.actAssets.scriptIds).toEqual([]);
   });
 });
