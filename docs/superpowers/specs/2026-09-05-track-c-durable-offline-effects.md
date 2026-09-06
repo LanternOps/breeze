@@ -175,7 +175,7 @@ Stable IDs must continue through streams, pubsub, durable dispatch and local han
 
 ## Migration and tenancy integration
 
-Reserve migration `2026-10-09-000800-offline-transition-effects.sql` (main max000600;
+Reserve migration `2026-10-11-170100-offline-transition-effects.sql` (main max000600;
 parallel MFA work reserves000700). New table, policies, constraints and indexes
 are idempotent; no shipped migration edits. Register schema export, tenant-cascade,
 tenant-export policy (payload excludedOpen; scalar fields classified), and org-merge
