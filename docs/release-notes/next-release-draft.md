@@ -93,7 +93,9 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   suppressed and counted as `skipped_pull_disabled` on the run line: a new
   import, an edit of one already imported (which would otherwise have rewritten
   a Breeze payment amount) and a deletion (which would otherwise have deleted
-  the Breeze payment row).
+  the Breeze payment row). The CDC cursor is HELD while pull is off, so turning
+  `pull_payments` back on still imports everything from the window it was
+  switched off in — nothing is permanently skipped.
 - A QuickBooks **reauth outage no longer retires pending payment pushes.** A
   payment job skipped because the realm is not connected records the reason on
   the mapping but no longer counts as an attempt, so an outage longer than about

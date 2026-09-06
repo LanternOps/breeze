@@ -471,6 +471,32 @@ export async function processReconcileConnectionJob(
       throw new Error(`accounting reconcile for connection ${fresh.id} had ${summary.failed} failed item(s)`);
     }
 
+    // PULL OFF: the cursor stays exactly where it was (review wave 2, finding 4).
+    // This pass ran only because `push_payments` is on — it adopts, diverges and
+    // notices removals for Breeze-origin rows — and it skipped every
+    // QuickBooks-origin change as `skipped_pull_disabled`. Advancing past those
+    // windows would make the suppression PERMANENT: turning `pull_payments` back
+    // on would resume from a watermark that already stepped over everything it
+    // never imported, and CDC has no way to ask for a window again.
+    //
+    // Re-processing the same window every sweep is the accepted cost, and it is
+    // safe: the Breeze-origin lines this pass DOES act on are idempotent — an
+    // adoption is guarded on `remote_entity_id IS NULL`, a replay is a no-op,
+    // and a divergence marker rewrites the same text.
+    if (!fresh.pullPayments) {
+      console.log(
+        '[AccountingReconcileWorker] cursor held — pull_payments is off, so this window stays replayable',
+        `connectionId=${fresh.id}`, `partnerId=${data.partnerId}`, `trigger=${data.trigger}`,
+        `skippedPullDisabled=${summary.skippedPullDisabled}`,
+      );
+      // Reported as unchanged rather than left null: the stored watermark really
+      // is still `cursorBefore`, and null on the run line means "did not
+      // advance for an unknown reason" (the realm-changed branch above).
+      summary.cursorAfter = summary.cursorBefore;
+      finish();
+      return summary;
+    }
+
     const advanced = await runInDbContext(() => advanceReconcileCursor(
       db, fresh.id, data.partnerId, expectedRealmFingerprint, changes.cursor, new Date(),
     ));

@@ -547,6 +547,46 @@ describe('processReconcileConnectionJob: cursor', () => {
     });
   });
 
+  it('FREEZES the cursor when pull is off, so re-enabling pull can still backfill the window', async () => {
+    // The gate widened to pull-OR-push, so a pull-off/push-on realm now runs the
+    // CDC pass and skips every QuickBooks-origin change as
+    // `skipped_pull_disabled`. Advancing the cursor past those windows made the
+    // suppression PERMANENT: turning pull back on would resume from a watermark
+    // that already stepped over everything it never imported.
+    const conn = connectionRow({ pullPayments: false, pushPayments: true });
+    getConnectionMock.mockResolvedValue(conn);
+    resolveConnectionAndTokenMock.mockImplementation(async () => ({
+      conn, liveConn: { ...conn, accessToken: 'tok' },
+    }));
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180' })],
+    });
+    applyReturns('skipped_pull_disabled');
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      skippedPullDisabled: 1,
+      cursorBefore: CURSOR_BEFORE,
+      cursorAfter: CURSOR_BEFORE, // unchanged — the window stays replayable
+    });
+  });
+
+  it('ADVANCES the cursor on a pull-ON run, as before', async () => {
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180' })],
+    });
+    applyReturns('applied');
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ cursorAfter: (await reconcileChangesMock.mock.results[0]!.value).cursor });
+  });
+
   it('counts an invoice marked deleted and a reversal in the summary', async () => {
     reconcileChangesMock.mockResolvedValue({
       ...EMPTY_CHANGESET,
