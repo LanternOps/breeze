@@ -263,4 +263,49 @@ describe('text block separator (#5106)', () => {
     const assistantRow = insertedRows.find((r) => r.role === 'assistant');
     expect(assistantRow?.content).toBe(`${FIRST_TEXT}\n\n${SECOND_TEXT}`);
   });
+
+  it('separates every text block in a text -> tool_use -> text -> tool_use -> text turn (three text blocks, two tools)', async () => {
+    const THIRD_TEXT = 'All done.';
+    const message = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: FIRST_TEXT },
+          { type: 'tool_use', id: TOOL_USE_ID, name: 'mcp__breeze__query_devices', input: {} },
+          { type: 'text', text: SECOND_TEXT },
+          { type: 'tool_use', id: 'toolu_report_02', name: 'mcp__breeze__query_devices', input: {} },
+          { type: 'text', text: THIRD_TEXT },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    };
+    mockSdkQuery([
+      messageStartEvent(),
+      textBlockStartEvent(),
+      textDeltaEvent(FIRST_TEXT),
+      toolUseBlockStartEvent(TOOL_USE_ID, 'mcp__breeze__query_devices'),
+      textBlockStartEvent(),
+      textDeltaEvent(SECOND_TEXT),
+      toolUseBlockStartEvent('toolu_report_02', 'mcp__breeze__query_devices'),
+      textBlockStartEvent(),
+      textDeltaEvent(THIRD_TEXT),
+      messageDeltaEvent(),
+      message,
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-three-text-blocks', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const deltas = session.eventBus
+      .getReplayEvents()
+      .filter((e): e is { type: 'content_delta'; delta: string } => e.type === 'content_delta')
+      .map((e) => e.delta);
+    expect(deltas).toEqual([FIRST_TEXT, '\n\n', SECOND_TEXT, '\n\n', THIRD_TEXT]);
+
+    const assistantRow = insertedRows.find((r) => r.role === 'assistant');
+    expect(assistantRow?.content).toBe(`${FIRST_TEXT}\n\n${SECOND_TEXT}\n\n${THIRD_TEXT}`);
+  });
 });
