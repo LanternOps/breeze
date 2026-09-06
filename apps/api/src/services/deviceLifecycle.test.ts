@@ -99,7 +99,12 @@ describe('restoreRemovedDevice', () => {
       return { cancelled: 1, retainedOtherOwner: 0, alreadyDispatched: 0 };
     });
     await restoreRemovedDevice(tx, DEV);
-    expect(calls.indexOf('lock')).toBeGreaterThanOrEqual(0);
+    // Guard every operand against -1 before comparing indices: a missing
+    // statement indexes to -1, which compares "less than" everything and would
+    // let the ordering assertions pass vacuously.
+    for (const step of ['lock', 'release', 'update']) {
+      expect(calls.indexOf(step), `${step} was never recorded`).toBeGreaterThanOrEqual(0);
+    }
     expect(calls.indexOf('lock')).toBeLessThan(calls.indexOf('release'));
     expect(calls.indexOf('release')).toBeLessThan(calls.indexOf('update'));
   });
@@ -107,6 +112,12 @@ describe('restoreRemovedDevice', () => {
   it('bounds the wait for the devices row lock instead of blocking forever', async () => {
     const { tx, calls, statements } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
     await restoreRemovedDevice(tx, DEV);
+    // Both statements must actually have been issued. Without this, dropping
+    // tightenLockTimeout entirely would make indexOf return -1, which is
+    // "less than" the lock's index — the ordering assertion below would pass
+    // against code that never bounds the wait at all.
+    expect(calls.indexOf('tighten-lock-timeout')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('lock')).toBeGreaterThanOrEqual(0);
     // The bound has to be applied BEFORE the lock is attempted, or a delete
     // racing a long-running site move / moveOrg pins a pooled connection for
     // as long as the other writer holds the row (same reasoning as
@@ -179,6 +190,8 @@ describe('purgeRemovedDevice', () => {
       pendingUninstall: true,
     });
     await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({ code: 'UNINSTALL_PENDING' });
+    expect(calls.indexOf('lock')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('pending-check')).toBeGreaterThanOrEqual(0);
     // Lock order is non-negotiable: devices FIRST, device_commands second.
     // The inverse order against a concurrent Remove (which locks devices then
     // writes device_commands) is a textbook AB-BA deadlock (40P01).
