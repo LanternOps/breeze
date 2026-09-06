@@ -196,10 +196,15 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
     expect(updateSetMock).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'decommissioned', updatedAt: expect.any(Date) })
     );
-    // Field set matches the admin decommission route EXACTLY — no
-    // decommissionedAt (the schema has no such column) and no extraneous keys.
+    // Field set matches the admin decommission route EXACTLY — including
+    // `decommissionedAt` (#2787 item 4). A reaped device is a REMOVED device;
+    // if this path stopped stamping it, the retention job would never purge an
+    // auto-reaped device while purging a hand-removed one, and the migration's
+    // one-off backfill would have made pre-existing reaped devices eligible
+    // while every future one silently was not.
     const setArg = updateSetMock.mock.calls[0]![0] as Record<string, unknown>;
-    expect(Object.keys(setArg).sort()).toEqual(['status', 'updatedAt']);
+    expect(Object.keys(setArg).sort()).toEqual(['decommissionedAt', 'status', 'updatedAt']);
+    expect(setArg.decommissionedAt).toBeInstanceOf(Date);
   });
 
   it('the guarded UPDATE WHERE clause carries the exact binding predicate (both halves) plus the status exclusion', async () => {

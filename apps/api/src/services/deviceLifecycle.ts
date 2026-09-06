@@ -139,9 +139,13 @@ export async function restoreRemovedDevice(tx: Tx, deviceId: string): Promise<Re
 
   const release = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
 
+  // `decommissionedAt: null` is not cosmetic (#2787 item 4): it is the field
+  // the retention purge job measures its window from. A restored device that
+  // kept its stamp would stay eligible for permanent deletion by the very
+  // policy the operator just overrode by hand.
   const [device] = await tx
     .update(devices)
-    .set({ status: 'offline', updatedAt: new Date() })
+    .set({ status: 'offline', decommissionedAt: null, updatedAt: new Date() })
     .where(eq(devices.id, deviceId))
     .returning();
 

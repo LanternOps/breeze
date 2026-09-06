@@ -194,6 +194,28 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
   });
 
+  // #2787 item 4 — the retention job ("permanently delete removed devices N
+  // days after removal") measures the window from this stamp. `updated_at`
+  // cannot stand in for it: every unrelated write to the row afterwards would
+  // silently push the purge date out. If this write ever stops carrying
+  // `decommissionedAt`, the device is simply never purged (fail closed) and the
+  // feature quietly stops working for every device removed from then on.
+  it('stamps decommissionedAt alongside the status flip', async () => {
+    const { set } = rigDecommission(ONLINE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // First `set` on the shared counter is the tx status flip (see rigDecommission).
+    const setArg = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(setArg).sort()).toEqual(['decommissionedAt', 'status', 'updatedAt']);
+    expect(setArg.status).toBe('decommissioned');
+    expect(setArg.decommissionedAt).toBeInstanceOf(Date);
+  });
+
   it('does not tear down when the device is already decommissioned (400)', async () => {
     rigDecommission({ ...ONLINE_DEVICE, status: 'decommissioned' });
 

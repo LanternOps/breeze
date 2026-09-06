@@ -42,6 +42,7 @@ interface Script {
 function makeTx(script: Script) {
   const calls: string[] = [];
   const statements: string[] = [];
+  const setPayloads: Array<Record<string, unknown>> = [];
   const tx = {
     execute: vi.fn(async (q: unknown) => {
       const text = JSON.stringify(q);
@@ -66,18 +67,21 @@ function makeTx(script: Script) {
       return [];
     }),
     update: vi.fn(() => ({
-      set: () => ({
-        where: () => ({
-          returning: async () => {
-            calls.push('update');
-            return [script.updatedRow ?? { id: DEV, status: 'offline' }];
-          },
-        }),
-      }),
+      set: (values: Record<string, unknown>) => {
+        setPayloads.push(values);
+        return {
+          where: () => ({
+            returning: async () => {
+              calls.push('update');
+              return [script.updatedRow ?? { id: DEV, status: 'offline' }];
+            },
+          }),
+        };
+      },
     })),
     select: vi.fn(),
   };
-  return { tx: tx as never, calls, statements };
+  return { tx: tx as never, calls, statements, setPayloads };
 }
 
 beforeEach(() => {
@@ -141,6 +145,23 @@ describe('restoreRemovedDevice', () => {
       status: 409,
     });
     expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
+  });
+
+  // #2787 item 4 — Restore is the ONLY way a device leaves 'decommissioned',
+  // so it is the only place `decommissioned_at` can be cleared. Leaving the
+  // stamp behind on a restored device would make the retention job eligible to
+  // permanently delete a device the operator deliberately brought back.
+  it('clears decommissioned_at in the same write that flips the status back', async () => {
+    const { tx, setPayloads } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
+
+    await restoreRemovedDevice(tx, DEV);
+
+    expect(setPayloads).toHaveLength(1);
+    expect(setPayloads[0]).toEqual({
+      status: 'offline',
+      decommissionedAt: null,
+      updatedAt: expect.any(Date),
+    });
   });
 
   it('reports uninstallAlreadyDispatched from the release result', async () => {

@@ -804,7 +804,11 @@ export async function processReapUninstallIntent(): Promise<{
       const reaped = await runWithSystemDbAccess(async () => {
         const [updated] = await db
           .update(devices)
-          .set({ status: 'decommissioned', updatedAt: new Date() })
+          // decommissionedAt (#2787 item 4): a reaped device is a REMOVED
+          // device and must enter the retention policy's window like any
+          // other, or auto-reaped devices would be silently exempt from an
+          // org's "purge removed devices after N days" setting forever.
+          .set({ status: 'decommissioned', decommissionedAt: new Date(), updatedAt: new Date() })
           .where(and(eq(devices.id, candidate.id), ...reapPredicate))
           .returning({ id: devices.id });
 

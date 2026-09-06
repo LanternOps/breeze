@@ -1798,6 +1798,11 @@ coreRoutes.delete(
         .update(devices)
         .set({
           status: 'decommissioned',
+          // #2787 item 4 — the window the `device_lifecycle` retention policy
+          // measures ("purge removed devices after N days") starts HERE.
+          // `updatedAt` cannot serve: every unrelated write to the row
+          // afterwards would push the purge date out. Cleared again on Restore.
+          decommissionedAt: new Date(),
           updatedAt: new Date()
         })
         .where(eq(devices.id, deviceId))
