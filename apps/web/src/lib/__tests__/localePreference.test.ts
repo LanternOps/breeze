@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest';
 import {
   LOCALE_OPTIONS,
+  LOCALE_COOKIE_NAME,
   LOCALE_STORAGE_KEY,
   PARTNER_LOCALE_STORAGE_KEY,
   isValidLocale,
@@ -16,9 +17,17 @@ import {
   applyAppearancePreferences,
 } from '../appearance';
 
+function clearCookies(): void {
+  for (const pair of document.cookie.split(';')) {
+    const name = pair.split('=')[0]?.trim();
+    if (name) document.cookie = `${name}=; Path=/; Max-Age=0`;
+  }
+}
+
 describe('locale preference', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    clearCookies();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -126,5 +135,29 @@ describe('locale preference', () => {
     expect(readLocalePreference()).toBe('pt-BR');
     applyAppearancePreferences({});
     expect(readLocalePreference()).toBe('pt-BR'); // untouched when absent
+  });
+
+  it('mirrors an explicit locale write into the breeze.locale cookie', () => {
+    writeLocalePreference('pt-BR');
+    expect(document.cookie).toContain(`${LOCALE_COOKIE_NAME}=pt-BR`);
+
+    writeLocalePreference('fr-CA');
+    expect(document.cookie).toContain(`${LOCALE_COOKIE_NAME}=fr-CA`);
+  });
+
+  it('applyResolvedLocalePreferences mirrors the resolved user/partner locale into the cookie', () => {
+    applyResolvedLocalePreferences(undefined, 'pt-BR');
+    expect(document.cookie).toContain(`${LOCALE_COOKIE_NAME}=pt-BR`);
+
+    applyResolvedLocalePreferences('de-DE', 'pt-BR');
+    expect(document.cookie).toContain(`${LOCALE_COOKIE_NAME}=de-DE`);
+  });
+
+  it('applyResolvedLocalePreferences clears the cookie when neither user nor partner locale is set', () => {
+    applyResolvedLocalePreferences('pt-BR', undefined);
+    expect(document.cookie).toContain(LOCALE_COOKIE_NAME);
+
+    applyResolvedLocalePreferences(undefined, undefined);
+    expect(document.cookie).not.toContain(`${LOCALE_COOKIE_NAME}=pt-BR`);
   });
 });
