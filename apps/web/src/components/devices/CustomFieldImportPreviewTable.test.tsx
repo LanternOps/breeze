@@ -162,6 +162,33 @@ describe('CustomFieldImportPreviewTable', () => {
     expect([...next].sort()).toEqual([matched.index, linkMatch.index].sort());
   });
 
+  it('select-all deselects the bulk set on a second click, without touching non-bulk rows', async () => {
+    const { onSelectedChange } = renderTable([matched, linkMatch, ambiguous, notFound], {
+      selected: new Set([matched.index, linkMatch.index]),
+    });
+    await userEvent.click(screen.getByTestId('cf-import-select-all'));
+    const next = nextSelection(onSelectedChange, [matched.index, linkMatch.index]);
+    expect(next.has(matched.index)).toBe(false);
+    expect(next.has(linkMatch.index)).toBe(false);
+    expect(next.size).toBe(0);
+  });
+
+  it('toggling an unselected row checkbox adds only that row', async () => {
+    const { onSelectedChange } = renderTable([matched, linkMatch]);
+    await userEvent.click(screen.getByTestId(`cf-import-select-${matched.index}`));
+    const next = nextSelection(onSelectedChange);
+    expect(next).toEqual(new Set([matched.index]));
+  });
+
+  it('toggling an already-selected row checkbox removes only that row', async () => {
+    const { onSelectedChange } = renderTable([matched, linkMatch], {
+      selected: new Set([matched.index, linkMatch.index]),
+    });
+    await userEvent.click(screen.getByTestId(`cf-import-select-${matched.index}`));
+    const next = nextSelection(onSelectedChange, [matched.index, linkMatch.index]);
+    expect(next).toEqual(new Set([linkMatch.index]));
+  });
+
   it('an ambiguous row expands to ranked candidates showing serial, OS, enrolled and last-seen', async () => {
     renderTable([ambiguous]);
     await userEvent.click(screen.getByTestId(`cf-import-expand-${ambiguous.index}`));
