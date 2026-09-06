@@ -1062,7 +1062,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'disableMfa',
         tags: ['Auth'],
         summary: 'Disable MFA',
-        description: 'Disable MFA for the current user. Requires a valid MFA code (TOTP or SMS). May be blocked by organization policy requiring MFA.',
+        description: 'Disable MFA for the current user. Requires a valid MFA code (TOTP or SMS) plus the current password. May be blocked by organization policy requiring MFA. Disabling advances the user\'s MFA epoch and revokes every refresh token family, so all OTHER sessions are signed out; the calling session is replaced in the same response (new refresh/CSRF cookies plus `tokens.accessToken`) and must adopt it.',
         requestBody: {
           required: true,
           content: {
@@ -1070,24 +1070,42 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               schema: {
                 type: 'object',
                 properties: {
-                  code: { type: 'string', minLength: 6, maxLength: 6 }
+                  code: { type: 'string', minLength: 6, maxLength: 6 },
+                  currentPassword: { type: 'string', description: 'The account password, re-verified so a stolen access token alone cannot strip the second factor.' }
                 },
-                required: ['code']
+                required: ['code', 'currentPassword']
               }
             }
           }
         },
         responses: {
           '200': {
-            description: 'MFA disabled',
+            description: 'MFA disabled and the calling session replaced',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/Success' }
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    message: { type: 'string' },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller. Install it before the next request — the previous access token is invalid from this point. Withheld on the rare post-commit install failure, in which case the client must re-authenticate.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           '400': { $ref: '#/components/responses/BadRequest' },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { description: 'Organization or partner policy still requires MFA for this user.' },
+          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No factor was removed.' },
+          '428': { description: 'The client auth binding must be rotated before a session can be issued. Retry after re-bootstrapping the binding.' }
         }
       }
     },
