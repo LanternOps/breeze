@@ -35,9 +35,9 @@ describe('AiToolCallCard', () => {
   describe('approved-and-executing handoff (#5107)', () => {
     const handoff = { status: 'approved_executing', message: 'Approved…' };
 
-    it('reads as approved and running, not as an error', () => {
+    it('reads a server-asserted handoff as approved and running', () => {
       const { container } = render(
-        <AiToolCallCard toolName="manage_services" output={handoff} isError={false} />,
+        <AiToolCallCard toolName="manage_services" handoff="approved_executing" isError={false} />,
       );
       expect(container.textContent).toContain('aiToolCallCard.approvedRunning');
       // The status icon must not be the failure one.
@@ -45,12 +45,39 @@ describe('AiToolCallCard', () => {
       expect(container.querySelector('.text-amber-400')).not.toBeNull();
     });
 
-    it('stays approved even if isError is still set by a stale server', () => {
+    it('honours the server marker even when isError is set', () => {
+      // Unlike `output`, this field cannot be forged by the tool, so it
+      // outranks a stale or contradictory isError.
       const { container } = render(
-        <AiToolCallCard toolName="manage_services" output={handoff} isError />,
+        <AiToolCallCard toolName="manage_services" handoff="approved_executing" isError />,
       );
       expect(container.textContent).toContain('aiToolCallCard.approvedRunning');
       expect(container.querySelector('.text-amber-400')).not.toBeNull();
+    });
+
+    it('accepts the payload shape as a history-replay fallback', () => {
+      // The SSE-level marker is not persisted on the message row, so a
+      // reloaded conversation has only the payload to go on.
+      const { container } = render(
+        <AiToolCallCard toolName="manage_services" output={handoff} isError={false} />,
+      );
+      expect(container.textContent).toContain('aiToolCallCard.approvedRunning');
+    });
+
+    it('does NOT let a failing tool repaint itself as approved via its own output', () => {
+      // A tool owns its output payload. Without the isError gate, any tool —
+      // a third-party extension included — could hide a real failure behind
+      // the brand-coloured "approved" row that techs scan by.
+      const { container } = render(
+        <AiToolCallCard
+          toolName="manage_services"
+          output={{ error: 'restart failed', status: 'approved_executing' }}
+          isError
+        />,
+      );
+      expect(container.textContent).not.toContain('aiToolCallCard.approvedRunning');
+      expect(container.querySelector('.text-amber-400')).toBeNull();
+      expect(container.querySelector('.text-red-400')).not.toBeNull();
     });
 
     it('does not re-colour a tool that merely mentions the phrase', () => {

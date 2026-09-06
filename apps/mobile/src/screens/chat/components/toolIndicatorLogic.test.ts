@@ -2,18 +2,39 @@ import { describe, expect, it } from 'vitest';
 import { aiToolLabel, toolRowStatus, toolRowSuffix } from './toolIndicatorLogic';
 
 describe('toolRowStatus (#5107)', () => {
-  it('reads an approved-executing handoff as approved, not failed', () => {
+  it('reads a server-asserted handoff as approved, not failed', () => {
     // The bug: the user approved a service restart on their phone, the durable
     // approval worker took the action, and the chat then painted
     // "MANAGE_SERVICES · FAILED" in deny-red. The server now publishes this
-    // outcome with isError:false and a machine-readable status.
+    // outcome with isError:false and a trusted `handoff` marker.
+    expect(toolRowStatus({ isError: false, handoff: 'approved_executing' })).toBe('approved');
+  });
+
+  it('accepts output.status as a history-replay fallback', () => {
+    // The SSE-level `handoff` field is not persisted on the message row, so a
+    // conversation reloaded from history has only the payload to go on.
     expect(toolRowStatus({ isError: false, output: { status: 'approved_executing' } })).toBe('approved');
   });
 
-  it('trusts the status field even if isError were somehow still set', () => {
-    // Defense in depth: a stale API (or a replayed message row persisted
-    // before this fix) must not resurrect the red FAILED row.
-    expect(toolRowStatus({ isError: true, output: { status: 'approved_executing' } })).toBe('approved');
+  it('does NOT let a failing tool repaint itself as approved via its own output', () => {
+    // A tool owns its output payload. Without the isError gate, any tool —
+    // including a third-party extension — could emit this alongside a real
+    // error and have the chat show APPROVED · RUNNING in brand colour. On
+    // mobile that row has no expand affordance, so the error text would be
+    // unreachable in the UI: the original bug, inverted and worse.
+    expect(
+      toolRowStatus({ isError: true, output: { error: 'restart failed', status: 'approved_executing' } }),
+    ).toBe('failed');
+    // ...and a rejection still reads as a rejection, not as an approval.
+    expect(
+      toolRowStatus({ isError: true, output: { error: 'Access denied', status: 'approved_executing' } }),
+    ).toBe('denied');
+  });
+
+  it('still honours the trusted marker when isError is set', () => {
+    // The server said handoff; that outranks a stale/contradictory isError,
+    // because unlike `output` it cannot be forged by the tool.
+    expect(toolRowStatus({ isError: true, handoff: 'approved_executing' })).toBe('approved');
   });
 
   it('still distinguishes denial from generic failure', () => {

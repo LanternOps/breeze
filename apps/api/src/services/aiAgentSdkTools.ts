@@ -142,6 +142,14 @@ export type PostToolUseCallback = (
    *  the blob destined for action_intents.result, which must never appear in
    *  `output`. */
   sealed?: { intentId: string; sealedResult: Record<string, unknown> },
+  /**
+   * Set ONLY when the pre-tool-use gate itself reported an approval handoff
+   * (#5107) — never inferred from `output`. The same value also appears as
+   * `output.status`, but a tool controls its own output: without this trusted
+   * channel, any tool could stamp its own audit row and repaint its own
+   * failure as an approved, in-flight action.
+   */
+  handoff?: ToolHandoffStatus,
 ) => Promise<void>;
 
 // ============================================
@@ -377,11 +385,12 @@ async function safePostToolUse(
   isError: boolean,
   durationMs: number,
   sealed?: { intentId: string; sealedResult: Record<string, unknown> },
+  handoff?: ToolHandoffStatus,
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
     await withToolTimeout(
-      onPostToolUse(toolName, args, output, isError, durationMs, sealed),
+      onPostToolUse(toolName, args, output, isError, durationMs, sealed, handoff),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
     );
@@ -455,7 +464,7 @@ function makeHandler(
     if (onPreToolUse) {
       let check:
         | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-        | { allowed: false; error: string };
+        | { allowed: false; error: string; handoff?: ToolHandoffStatus };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -481,7 +490,7 @@ function makeHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0);
+        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -668,7 +677,7 @@ function makeSessionAwareHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0);
+        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -1094,7 +1103,7 @@ export function wrapExtraToolWithHooks(
         }
         if (!check.allowed) {
           const denial = preToolUseDenialResult(name, check);
-          await safePostToolUse(onPostToolUse, name, args, denial.text, denial.isError, 0);
+          await safePostToolUse(onPostToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
       }

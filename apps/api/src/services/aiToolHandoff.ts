@@ -65,6 +65,28 @@ export interface ToolHandoffResult {
   message: string;
 }
 
+/**
+ * The pre-tool-use decision for an approval handoff.
+ *
+ * The ONLY way to build one. `error` and `handoff` are separate fields on
+ * `PreToolUseCallback`'s denial variant and must always be set together — a
+ * handoff paired with a real failure string, or a failure that accidentally
+ * carries `handoff`, would both be published with the wrong `isError`. Pairing
+ * them here makes that unrepresentable at the two call sites rather than
+ * relying on each remembering the convention.
+ */
+export function approvedExecutingDenial(): {
+  allowed: false;
+  error: string;
+  handoff: ToolHandoffStatus;
+} {
+  return {
+    allowed: false,
+    error: APPROVED_EXECUTING_MESSAGE,
+    handoff: APPROVED_EXECUTING_STATUS,
+  };
+}
+
 export function buildToolHandoffResult(
   status: ToolHandoffStatus = APPROVED_EXECUTING_STATUS,
   message: string = APPROVED_EXECUTING_MESSAGE,

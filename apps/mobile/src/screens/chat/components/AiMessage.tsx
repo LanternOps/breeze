@@ -31,7 +31,7 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
       {message.toolEvents
         .filter((t) => t.state === 'completed')
         .map((t) => {
-          const status = toolRowStatus({ isError: t.isError, output: t.output });
+          const status = toolRowStatus({ isError: t.isError, output: t.output, handoff: t.handoff });
           // Anything that is not a plain completion renders as the audit
           // indicator, never as a block: a failure shouldn't masquerade as
           // data, and an approval handoff has no data yet — the worker is
@@ -45,6 +45,7 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
                 state="completed"
                 isError={t.isError}
                 output={t.output}
+                handoff={t.handoff}
               />
             );
           }

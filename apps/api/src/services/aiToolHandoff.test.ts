@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   APPROVED_EXECUTING_MESSAGE,
   APPROVED_EXECUTING_STATUS,
+  approvedExecutingDenial,
   buildToolHandoffResult,
   isToolHandoffResult,
 } from './aiToolHandoff';
@@ -27,6 +28,18 @@ describe('aiToolHandoff', () => {
     expect(buildToolHandoffResult()).toEqual({
       status: 'approved_executing',
       message: APPROVED_EXECUTING_MESSAGE,
+    });
+  });
+
+  it('pairs the marker with the message so a call site cannot get it wrong', () => {
+    // The two fields are separate on PreToolUseCallback's denial variant;
+    // pairing them in one constructor is what keeps a future third call site
+    // from setting `handoff` alongside a real failure string (which would be
+    // published with isError:false) or the reverse.
+    expect(approvedExecutingDenial()).toEqual({
+      allowed: false,
+      error: APPROVED_EXECUTING_MESSAGE,
+      handoff: APPROVED_EXECUTING_STATUS,
     });
   });
 

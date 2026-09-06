@@ -15,9 +15,12 @@ interface Props {
   // an approved-and-executing handoff as APPROVED, never FAILED (#5107).
   isError?: boolean;
   output?: unknown;
+  // Server-asserted approval handoff (#5107). Authoritative; `output` is only
+  // a history-replay fallback because the tool controls that payload.
+  handoff?: string;
 }
 
-export function ToolIndicator({ toolName, state, isError, output }: Props) {
+export function ToolIndicator({ toolName, state, isError, output, handoff }: Props) {
   const theme = useApprovalTheme('dark');
 
   if (state === 'started') {
@@ -43,7 +46,7 @@ export function ToolIndicator({ toolName, state, isError, output }: Props) {
   }
 
   // completed
-  const status = toolRowStatus({ isError, output });
+  const status = toolRowStatus({ isError, output, handoff });
   // An approval handoff is the user's own decision landing, so it gets the
   // brand colour — the same one the approval takeover uses — not deny-red.
   const color =

@@ -9,7 +9,11 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { aiToolLabel, isAiToolHandoffOutput } from "@breeze/shared";
+import {
+  AI_TOOL_APPROVED_EXECUTING,
+  aiToolLabel,
+  isAiToolHandoffOutput,
+} from "@breeze/shared";
 
 interface AiToolCallCardProps {
   toolName: string;
@@ -17,6 +21,11 @@ interface AiToolCallCardProps {
   output?: unknown;
   isError?: boolean;
   isExecuting?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107). Authoritative — `output` is only
+   * a history-replay fallback, because the tool controls that payload.
+   */
+  handoff?: string;
 }
 
 const MAX_PREVIEW_CHARS = 20_000;
@@ -36,6 +45,7 @@ export default function AiToolCallCard({
   output,
   isError,
   isExecuting,
+  handoff,
 }: AiToolCallCardProps) {
   const { t } = useTranslation("ai");
   const [expanded, setExpanded] = useState(false);
@@ -43,11 +53,17 @@ export default function AiToolCallCard({
   const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
 
   // #5107 — a human approved this and the durable approval worker is running
-  // it; this session declined to run it twice. Checked BEFORE `isError` so a
-  // stale server (or a message row persisted before the fix) still renders as
-  // approved rather than reverting to the red FAILED row the user saw right
-  // after tapping Approve. Shape-based, never a text match on the output.
-  const isApprovedExecuting = isAiToolHandoffOutput(output);
+  // it; this session declined to run it twice.
+  //
+  // TRUST ORDER: `handoff` comes from the server's own pre-tool-use gate. The
+  // `output` shape is only a fallback for rows replayed from history, where
+  // the SSE-level field is not persisted — and it is gated on `!isError`
+  // because a tool owns its output payload: an ungated check would let any
+  // tool emit `{ error: 'restart failed', status: 'approved_executing' }` and
+  // have the collapsed row (the one techs scan by) read as an approved,
+  // in-flight action.
+  const isApprovedExecuting =
+    handoff === AI_TOOL_APPROVED_EXECUTING || (!isError && isAiToolHandoffOutput(output));
 
   const StatusIcon = isApprovedExecuting
     ? () => <ShieldCheck className="h-3.5 w-3.5 text-amber-400" />

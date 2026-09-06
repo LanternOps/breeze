@@ -236,6 +236,7 @@ export function HomeScreen() {
                   state: 'completed',
                   output: ev.output,
                   isError: ev.isError ?? false,
+                  handoff: ev.handoff,
                 },
               }));
               dispatch(setInFlightTool(null));

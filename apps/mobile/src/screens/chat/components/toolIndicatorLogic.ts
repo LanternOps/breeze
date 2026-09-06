@@ -44,21 +44,34 @@ function isDenialText(output: unknown): boolean {
 /**
  * Classifies a completed tool event.
  *
- * The handoff check is on the STATUS FIELD and is checked FIRST — before
- * `isError` — so a stale server, or an older message row replayed out of
- * history, still renders as approved rather than reverting to red. Everything
- * else keeps the previous behaviour exactly.
+ * TRUST ORDER MATTERS. `event.handoff` is set by the server's own pre-tool-use
+ * gate and is the only authoritative signal; `output.status` is a FALLBACK for
+ * rows replayed from history, where the SSE-level field is not persisted.
+ *
+ * The fallback is gated on `!isError` on purpose. A tool owns its own output
+ * payload, so an ungated shape check would let any tool — a buggy one, or a
+ * third-party extension — emit `{ error: 'restart failed', status:
+ * 'approved_executing' }` and have the chat paint its genuine failure as an
+ * approved, in-flight action. On mobile that is unrecoverable: this row has no
+ * expand affordance, so the error text would be unreachable in the UI. Nothing
+ * is lost by the gate: a server that predates the handoff contract sends no
+ * `status` field at all, so there was never a real stale-server case for it to
+ * rescue.
  */
-export function toolRowStatus(event: { isError?: boolean; output?: unknown }): ToolRowStatus {
-  const { output, isError } = event;
-  if (
-    typeof output === 'object' &&
-    output !== null &&
-    (output as { status?: unknown }).status === APPROVED_EXECUTING_STATUS
-  ) {
-    return 'approved';
+export function toolRowStatus(event: {
+  isError?: boolean;
+  output?: unknown;
+  handoff?: string;
+}): ToolRowStatus {
+  const { output, isError, handoff } = event;
+  if (handoff === APPROVED_EXECUTING_STATUS) return 'approved';
+  if (!isError) {
+    return typeof output === 'object' &&
+      output !== null &&
+      (output as { status?: unknown }).status === APPROVED_EXECUTING_STATUS
+      ? 'approved'
+      : 'completed';
   }
-  if (!isError) return 'completed';
   return isDenialText(output) ? 'denied' : 'failed';
 }
 

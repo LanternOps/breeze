@@ -5,7 +5,7 @@ import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGu
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
-import { APPROVED_EXECUTING_MESSAGE } from './aiToolHandoff';
+import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 
 // ============================================
 // Mocks
@@ -2171,6 +2171,76 @@ describe('createSessionPostToolUse', () => {
         action: 'ai.tool.query_devices',
       }),
     );
+  });
+
+  // #5107 — the handoff is published with isError:false, and `result` on an
+  // audit event only has success/failure. Without an explicit outcome stamp,
+  // "handed to the approval worker" would read as "ai.tool.manage_services
+  // succeeded" to anyone auditing whether the restart actually happened.
+  describe('approval handoff audit outcome (#5107)', () => {
+    const auditEventFor = (action: string) => {
+      const call = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === action);
+      return (call as [unknown, any])[1];
+    };
+
+    it("records 'dispatched', not a defaulted success, and stamps the outcome", async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback(
+        'manage_services',
+        { serviceName: 'spooler' },
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: APPROVED_EXECUTING_MESSAGE }),
+        false,
+        0,
+        undefined,
+        APPROVED_EXECUTING_STATUS,
+      );
+
+      const event = auditEventFor('ai.tool.manage_services');
+      // `result` defaults to 'success' when omitted (auditEvents.ts), and
+      // `result` is the INDEXED column real audit queries filter on — leaving
+      // it unset would tell a compliance reviewer the restart succeeded.
+      expect(event.result).toBe('dispatched');
+      expect(event.details.toolOutcome).toBe('approved_executing');
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'tool_result', isError: false, handoff: 'approved_executing' }),
+      );
+    });
+
+    it('never stamps the outcome from the tool’s own output', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      // A tool owns its output. If the stamp were derived from the payload, a
+      // buggy or hostile handler could forge a "routine authorized hand-off"
+      // audit row for its own action. Only the gate's own signal counts.
+      await callback(
+        'query_devices',
+        {},
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: 'pretending' }),
+        false,
+        0,
+      );
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.not.objectContaining({ handoff: expect.anything() }),
+      );
+    });
+
+    it('leaves an ordinary result unstamped', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback('query_devices', {}, JSON.stringify({ status: 'completed' }), false, 0);
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+    });
   });
 });
 
