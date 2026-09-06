@@ -2382,5 +2382,15 @@
     "colDetectedVersion": "Algılanan sürüm",
     "colScannedAt": "Son tarama",
     "loadMore": "Daha fazlasını yükle"
+  },
+  "uninstallState": {
+    "pending": "Aracı kaldırma sıraya alındı — {{when}} sona eriyor",
+    "pendingNoDeadline": "Aracı kaldırma sıraya alındı",
+    "sent": "Aracı kaldırma iletildi",
+    "completed": "Aracı kaldırıldı",
+    "expired": "Kaldırma süresi doldu — aracı hiç bağlanmadı ve hâlâ kurulu olabilir",
+    "failed": "Aracı kaldırma başarısız oldu",
+    "cancelled": "Aracı kaldırma iptal edildi",
+    "none": "Aracı kurulu bırakıldı"
   }
 }

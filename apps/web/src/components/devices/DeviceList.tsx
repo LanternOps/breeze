@@ -204,6 +204,28 @@ export type Device = {
    * device page.
    */
   possibleReplacementOfDeviceId?: string | null;
+  /**
+   * What became of the agent-uninstall this device's Remove queued (#3987).
+   *
+   * Present ONLY on the `GET /devices/:id` detail payload, and only ever
+   * non-null for a `decommissioned` device. The three-way distinction is
+   * load-bearing for `UninstallStateBadge`:
+   *
+   *   undefined → this payload does not carry the field (a list row) — say
+   *               nothing, because we do not know.
+   *   null      → the Remove deliberately left the agent installed.
+   *   object    → an uninstall was queued; `state` says how far it got.
+   *
+   * `state: 'sent'` means the agent's handler acked the command, NOT that the
+   * teardown is confirmed — only `'completed'` claims that.
+   */
+  uninstall?: {
+    state: string;
+    queuedAt?: string | null;
+    sentAt: string | null;
+    completedAt?: string | null;
+    expiresAt: string | null;
+  } | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**

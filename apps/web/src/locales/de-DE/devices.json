@@ -2382,5 +2382,15 @@
     "colDetectedVersion": "Erkannte Version",
     "colScannedAt": "Letzter Scan",
     "loadMore": "Mehr laden"
+  },
+  "uninstallState": {
+    "pending": "Agent-Deinstallation in Warteschlange — läuft {{when}} ab",
+    "pendingNoDeadline": "Agent-Deinstallation in Warteschlange",
+    "sent": "Agent-Deinstallation zugestellt",
+    "completed": "Agent deinstalliert",
+    "expired": "Deinstallation abgelaufen — der Agent hat sich nie gemeldet und ist möglicherweise noch installiert",
+    "failed": "Agent-Deinstallation fehlgeschlagen",
+    "cancelled": "Agent-Deinstallation abgebrochen",
+    "none": "Agent wurde installiert gelassen"
   }
 }
