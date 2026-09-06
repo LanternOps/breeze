@@ -62,6 +62,15 @@ export interface InvoiceSummary {
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
   createdAt: string;
+  /**
+   * Last write to the invoice row. Always present on the detail payload (the
+   * API returns the whole row), but optional here because it was undeclared
+   * until now and list projections may omit it. Used by AccountingSyncCard as
+   * the only sub-minute "was this just issued?" signal the payload has —
+   * `issueDate` is a DATE and `sentAt` is null for an Issue that sent no
+   * email.
+   */
+  updatedAt?: string | null;
   /** null identifies an invoice created before device evidence was recorded. */
   evidenceVersion?: number | null;
 }

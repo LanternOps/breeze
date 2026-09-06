@@ -275,11 +275,10 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
-    // OverflowTabs renders each tab as `<button role="tab">` — the explicit
-    // role attribute overrides the element's implicit "button" role for
-    // getByRole, so these must query "tab" (pre-existing test defect found
-    // while running this wave's verification suite; also red on unmodified
-    // origin/main, unrelated to this wave's changes).
+    // OverflowTabs renders each tab as role="tab" inside a tablist (#5090),
+    // so the tab's accessible role is "tab", not "button". Querying for a
+    // "button" found nothing either way, which silently made the negative
+    // assertion below vacuous as well as breaking the positive one.
     expect(screen.queryByRole('tab', { name: 'Devices' })).toBeNull();
     expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
   });

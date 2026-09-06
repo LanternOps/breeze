@@ -1838,6 +1838,7 @@
       "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
       "docNumber": "QuickBooks document {{docNumber}}",
       "lastSynced": "Last synced {{when}}",
+      "syncing": "Syncing…",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
       "pushFailed": "Failed to push the invoice to QuickBooks.",
