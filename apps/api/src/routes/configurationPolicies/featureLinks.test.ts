@@ -90,6 +90,8 @@ const STUB_POLICY = {
   featureLinks: [],
 };
 
+const PARENT_POLICY_ID = '55555555-5555-5555-5555-555555555555';
+
 const STUB_POLICY_WITH_PATCH_LINK = {
   ...STUB_POLICY,
   featureLinks: [{ id: LINK_ID, featureType: 'patch' }],
@@ -978,6 +980,122 @@ describe('featureLinks routes', () => {
 
       expect(res.status).toBe(200);
       expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    // #5080: "removal ends suppression" stops holding once a link can be
+    // inherited — deleting the child's override REVERTS to the parent's window.
+    it('gates REMOVING a maintenance override when the parent has a maintenance link', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'maintenance' }],
+        },
+      });
+      // Armed so an un-gated route would actually complete the delete.
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    it('does NOT gate removal when the parent has no maintenance link of its own', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'event_log' }],
+        },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('does NOT gate removal of a non-maintenance override the parent also has', async () => {
+      // The revert exception is maintenance-only: reverting an event_log
+      // override restores config, not suppression.
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'event_log' }],
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'event_log' }],
+        },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'event_log' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    // FAIL-CLOSED regression. parentPolicyId set + parentPolicy null means the
+    // parent row was invisible to the read — an anomaly, since the write-time
+    // trigger only ever accepted a parent this tenant could see. Treating it as
+    // "no parent" would silently drop the MFA requirement.
+    it('gates removal when the parent CANNOT be resolved (fails closed)', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    // Control: a ROOT policy (no parentPolicyId at all) must stay ungated — the
+    // fail-closed branch keys on an UNRESOLVED parent, not on a missing one.
+    it('still allows removal on a root policy, where parentPolicy is legitimately absent', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: null,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('keeps patch DELETE unconditionally gated even with an inheriting parent', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_PATCH_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: { id: PARENT_POLICY_ID, name: 'Baseline', featureLinks: [] },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
     });
 
     it('gates patch the same way it always did (the gate that existed but was never tested)', async () => {

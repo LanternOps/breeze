@@ -6,6 +6,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // routes/auth/login.test.ts:271-280, routes/devices/commands.test.ts:17-25).
 // Defaults TRUE so no assertion here can be an "ENABLE_2FA is off in tests"
 // artefact.
+const { deleteConfigPolicyMock } = vi.hoisted(() => ({ deleteConfigPolicyMock: vi.fn() }));
+
+const { PolicyHasChildrenErrorMock } = vi.hoisted(() => ({
+  PolicyHasChildrenErrorMock: class PolicyHasChildrenError extends Error {
+    readonly code = 'POLICY_HAS_CHILDREN' as const;
+    constructor(public readonly children: { id: string; name: string }[]) {
+      super('Configuration policy has child policies that inherit from it');
+      this.name = 'PolicyHasChildrenError';
+    }
+  },
+}));
+
 const { enable2faState } = vi.hoisted(() => ({ enable2faState: { value: true } }));
 
 vi.mock('../routes/auth/schemas', async (importOriginal) => {
@@ -80,7 +92,7 @@ vi.mock('./configurationPolicy', () => ({
   getConfigPolicy: vi.fn(),
   createConfigPolicy: createConfigPolicyMock,
   updateConfigPolicy: vi.fn(),
-  deleteConfigPolicy: vi.fn(),
+  deleteConfigPolicy: deleteConfigPolicyMock,
   addFeatureLink: vi.fn(),
   updateFeatureLink: vi.fn(),
   removeFeatureLink: vi.fn(),
@@ -91,6 +103,9 @@ vi.mock('./configurationPolicy', () => ({
   canManagePartnerWidePolicies: canManagePartnerWidePoliciesMock,
   policyAccessCondition: policyAccessConditionMock,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE: 'partner-wide write denied',
+  // The real class shape — the handler branches on `instanceof`, so the mock has
+  // to export a constructor or that check throws on `undefined`.
+  PolicyHasChildrenError: PolicyHasChildrenErrorMock,
 }));
 
 import { db } from '../db';
@@ -658,6 +673,47 @@ describe('configuration policy AI tools', () => {
 
     expect(JSON.parse(output)).toEqual({ error: 'Target device is outside your site access' });
     expect(unassignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('manage_configuration_policy delete names the blocking children instead of a generic failure', async () => {
+    // Without the instanceof branch, safeHandler flattens this into
+    // "Operation failed. Check server logs for details." — leaving the model no
+    // way to tell an actionable refusal from a server fault.
+    deleteConfigPolicyMock.mockRejectedValue(
+      new PolicyHasChildrenErrorMock([{ id: 'c1', name: 'Child One' }]),
+    );
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_configuration_policy')!.handler(
+      { action: 'delete', policyId: POLICY_ID },
+      makePartnerAuth(),
+    );
+
+    const err = JSON.parse(output).error as string;
+    expect(err).toContain('Child One');
+    expect(err).toContain('1 policy/policies inherit from it');
+    expect(err).not.toContain('Check server logs');
+  });
+
+  it('manage_configuration_policy delete reports the lost RACE, not "0 policies inherit from it"', async () => {
+    // deleteConfigPolicy throws PolicyHasChildrenError([]) for the FK-caught race
+    // (a child appeared after the pre-check). The generic message would render a
+    // self-contradicting "0 policy/policies inherit from it" while still refusing.
+    deleteConfigPolicyMock.mockRejectedValue(new PolicyHasChildrenErrorMock([]));
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_configuration_policy')!.handler(
+      { action: 'delete', policyId: POLICY_ID },
+      makePartnerAuth(),
+    );
+
+    const err = JSON.parse(output).error as string;
+    expect(err).not.toMatch(/\b0 policy/);
+    expect(err).toMatch(/retry/i);
   });
 
   it('manage_configuration_policy create ownerScope=partner makes a partner-owned policy WITHOUT auto-assigning it (#2280 library model)', async () => {
