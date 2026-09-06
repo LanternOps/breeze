@@ -39,6 +39,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getBullMQConnection, getRedis } from '../services/redis';
 import { createAuditLog } from '../services/auditService';
+import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { captureException } from '../services/sentry';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -252,17 +253,24 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
         await createAuditLog({
           orgId,
           actorType: 'system',
-          actorId: 'removed-device-purge',
+          // `audit_logs.actor_id` is `uuid NOT NULL`, so the job name cannot go
+          // here (the plan's `'removed-device-purge'` would fail
+          // string_to_uuid). Same convention as every other scheduled writer:
+          // the anonymous system actor, with the job named in `details.job`.
+          actorId: ANONYMOUS_ACTOR_ID,
           action: 'device.permanent_delete',
           resourceType: 'device',
           resourceId: candidate.id,
           resourceName: candidate.hostname ?? candidate.id,
           details: {
+            job: 'removed-device-purge',
+            // What distinguishes this row from a human's Permanently Delete.
             retentionPolicy: true,
             purgeRemovedAfterDays: days,
             decommissionedAt: candidate.decommissionedAt?.toISOString() ?? null,
           },
           result: 'success',
+          initiatedBy: 'schedule',
         });
       } catch (err) {
         // The deletion has already committed. Nothing here may turn a completed

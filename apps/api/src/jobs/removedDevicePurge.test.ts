@@ -199,13 +199,18 @@ describe('runRemovedDevicePurgeOnce', () => {
     expect(createAuditLogMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
       orgId: ORG_A,
       actorType: 'system',
-      actorId: 'removed-device-purge',
+      // `audit_logs.actor_id` is uuid NOT NULL — the job names itself in details.
+      actorId: '00000000-0000-0000-0000-000000000000',
       action: 'device.permanent_delete',
       resourceType: 'device',
       resourceId: 'dev-1',
       resourceName: 'host-dev-1',
       result: 'success',
-      details: expect.objectContaining({ retentionPolicy: true, purgeRemovedAfterDays: 30 }),
+      details: expect.objectContaining({
+        job: 'removed-device-purge',
+        retentionPolicy: true,
+        purgeRemovedAfterDays: 30,
+      }),
     }));
   });
 

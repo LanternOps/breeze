@@ -735,7 +735,8 @@ export async function processReevaluateOfflineSweep(): Promise<{
  * terminal-status guard on heartbeat.ts's own device UPDATE). Decommission
  * writes the EXACT field set the admin decommission route writes
  * (routes/devices/core.ts's `DELETE /:id` — `status: 'decommissioned'` +
- * `updatedAt`; there is no `decommissionedAt` column in this schema), plus
+ * `decommissionedAt` + `updatedAt`; the stamp is what the device_lifecycle
+ * retention purge measures its window from, #2787 item 4), plus
  * one `device.decommission` audit event per row with
  * `details.reason: 'uninstall_intent_reaped'` so the trail distinguishes a
  * reaped device from a human-initiated decommission.
