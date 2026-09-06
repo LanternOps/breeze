@@ -97,7 +97,7 @@ import {
   DEVICE_LINKED_DEVICE_ID_TABLES,
   DEVICE_LINK_DEPENDENT_COLUMNS,
 } from './core';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
@@ -755,6 +755,74 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
     expect(res.status).toBe(200);
     expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Wave 05 (#5023 follow-up, #2787) — the cascade must run in a SYSTEM DB
+   * context, matching `jobs/deviceBulkPurge.ts`'s `purgeOne`. Today the route
+   * runs `purgeRemovedDevice` under the caller's tenant RLS context, and
+   * `services/deviceDeletion.ts` documents that at least one cascade table is
+   * deliberately invisible under tenant policy — so a single permanent delete
+   * can strand rows that bulk purge removes.
+   *
+   * `runOutsideDbContext` must run FIRST (CLAUDE.md's DB context helpers
+   * contract): the route is already inside the request's `withDbAccessContext`
+   * transaction, and escalating without first exiting it would hold two
+   * pooled connections at once.
+   *
+   * Authorisation must stay exactly where it is: `getDeviceWithOrgAndSiteCheck`
+   * (the `db.select` chokepoint) and the decommissioned pre-check both run
+   * BEFORE the escalation, so a caller who fails either check never reaches a
+   * system-scoped connection at all.
+   */
+  describe('escalates the cascade to a system DB context (#5023 wave 05)', () => {
+    it('calls runOutsideDbContext and withSystemDbAccessContext exactly once on a successful purge, after the chokepoint lookup', async () => {
+      rigDeviceLookup(DEVICE);
+      rigDeleteTransaction();
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+
+      // Ordering: the chokepoint's authorisation read must resolve BEFORE the
+      // escalation opens — authorised first, matching the bulk worker.
+      const selectOrder = vi.mocked(db.select).mock.invocationCallOrder[0];
+      const escalateOrder = vi.mocked(runOutsideDbContext).mock.invocationCallOrder[0];
+      expect(selectOrder).toBeDefined();
+      expect(escalateOrder).toBeDefined();
+      expect(selectOrder!).toBeLessThan(escalateOrder!);
+    });
+
+    it('does not escalate when the pre-check 400s (device not decommissioned)', async () => {
+      rigDeviceLookup({ ...DEVICE, status: 'online' });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('does not escalate when the chokepoint 404s (device missing)', async () => {
+      rigDeviceLookup(null);
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
   });
 
   // Still `decommissioned` — the route 400s anything else BEFORE it ever
