@@ -1894,7 +1894,8 @@
     "confirmDecommissionedSkip": {
       "message": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "title": "Certains appareils sélectionnés sont retirés"
-    }
+    },
+    "importFromRmm": "Importer depuis un autre RMM"
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",
@@ -2425,5 +2426,154 @@
     "failed": "Échec de la désinstallation de l'agent",
     "cancelled": "Désinstallation de l'agent annulée",
     "none": "L'agent a été laissé installé"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Importer depuis un autre RMM",
+    "description": "Récupérez les champs personnalisés et leurs valeurs depuis votre ancien RMM.",
+    "close": "Fermer",
+    "sourceLabel": "Source",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "CSV générique"
+    },
+    "steps": {
+      "definitions": "Définitions de champs",
+      "values": "Valeurs des appareils"
+    },
+    "backToDefinitions": "Retour aux définitions de champs"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Déposez ici un CSV de la liste de champs de votre ancien fournisseur, ou cliquez pour parcourir",
+    "errors": {
+      "previewFailed": "Impossible de prévisualiser ces définitions de champs",
+      "importFailed": "Impossible d'importer ces définitions de champs"
+    },
+    "ownerScope": {
+      "legend": "À qui appartiennent ces champs",
+      "allOrganizations": "Toutes les organisations",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
+    "grid": {
+      "heading": "{{count}} champ trouvé — renommez et typez chacun",
+      "heading_other": "{{count}} champs trouvés — renommez et typez chacun",
+      "sourceLabel": "Champ source",
+      "name": "Nom",
+      "type": "Type"
+    },
+    "actions": {
+      "preview": "Aperçu",
+      "previewing": "Aperçu en cours…",
+      "import": "Créer les champs",
+      "importing": "Création…",
+      "skipToValues": "Passer — continuer vers les valeurs"
+    },
+    "preview": {
+      "heading": "Aperçu"
+    },
+    "annotations": {
+      "create": "Sera créé",
+      "already-exists": "Existe déjà",
+      "type-conflict": "Conflit de type",
+      "key-shadowed": "Clé déjà utilisée dans l'autre portée",
+      "org-not-found": "Organisation introuvable",
+      "partner-wide-denied": "Vous ne pouvez pas créer de champs pour toutes les organisations"
+    },
+    "summary": "{{created}} créés, {{skipped}} ignorés, {{failed}} échoués"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Déposez ici un CSV de valeurs d'appareils, ou cliquez pour parcourir",
+    "errors": {
+      "previewFailed": "Impossible de prévisualiser ces valeurs",
+      "importFailed": "Impossible d'importer ces valeurs"
+    },
+    "mode": {
+      "label": "Quand une valeur est déjà définie",
+      "skip": "La laisser telle quelle",
+      "update": "L'écraser"
+    },
+    "dateFormat": {
+      "label": "Format de date",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Remplacer les données de garantie du fabricant",
+    "mapping": {
+      "ignore": "Ignorer cette colonne",
+      "identifierGroup": "Faire correspondre l'appareil par…",
+      "identifiers": {
+        "deviceId": "ID de l'appareil",
+        "externalSystem": "Système source",
+        "externalId": "ID de l'appareil dans la source",
+        "serialNumber": "Numéro de série",
+        "hostname": "Nom d'hôte",
+        "organizationId": "ID de l'organisation"
+      },
+      "customField": "Champ personnalisé…",
+      "warrantyGroup": "Garantie",
+      "warranty": {
+        "warrantyStartDate": "Date de début de garantie",
+        "warrantyEndDate": "Date de fin de garantie",
+        "manufacturer": "Fabricant"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} ligne ignorée — aucun identifiant ni valeur associé",
+      "droppedRows_other": "{{count}} lignes ignorées — aucun identifiant ni valeur associé"
+    },
+    "actions": {
+      "preview": "Prévisualiser {{count}} ligne",
+      "preview_other": "Prévisualiser {{count}} lignes",
+      "previewing": "Aperçu en cours…",
+      "import": "Importer {{count}} ligne",
+      "import_other": "Importer {{count}} lignes",
+      "importing": "Importation…"
+    },
+    "chunkedNotice": "Ce fichier est plus volumineux qu'une seule requête — il sera envoyé automatiquement en plusieurs parties.",
+    "progress": "Partie {{done}} sur {{total}}",
+    "summary": "{{applied}} appliquées, {{skipped}} ignorées, {{failed}} valeurs échouées"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Tout sélectionner",
+    "unresolved": "Non résolu",
+    "columns": {
+      "device": "Appareil",
+      "status": "Statut",
+      "values": "Valeurs"
+    },
+    "rowOutcomes": {
+      "matched": "Associé",
+      "linkMatch": "Lié",
+      "ambiguous": "Ambigu",
+      "notFound": "Introuvable",
+      "orgNotFound": "Organisation introuvable",
+      "identityConflict": "Correspondance en conflit"
+    },
+    "valueOutcomes": {
+      "applied": "Appliqué",
+      "skippedAlreadySet": "Déjà défini",
+      "skippedProviderOwned": "Géré par le fournisseur",
+      "noDefinition": "Champ inexistant",
+      "typeError": "Erreur de type",
+      "notApplicable": "Non applicable à cet appareil",
+      "deviceUnresolved": "Appareil non résolu"
+    },
+    "hideCandidates": "Masquer les candidats",
+    "showCandidates": "Afficher {{count}} candidat",
+    "showCandidates_other": "Afficher {{count}} candidats",
+    "picked": "{{deviceId}} choisi",
+    "candidate": {
+      "serial": "Série : {{value}}",
+      "os": "SE : {{value}}",
+      "enrolled": "Inscrit : {{value}}",
+      "lastSeen": "Vu pour la dernière fois : {{value}}",
+      "pick": "Choisir",
+      "picked": "Choisi"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Date de début de garantie",
+      "warrantyEndDate": "Date de fin de garantie",
+      "manufacturer": "Fabricant"
+    }
   }
 }

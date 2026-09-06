@@ -4191,7 +4191,8 @@
       "createField": "Alan Oluştur",
       "saveChanges": "Değişiklikleri Kaydet",
       "deleting": "Siliniyor...",
-      "deleteField": "Alanı Sil"
+      "deleteField": "Alanı Sil",
+      "importFromRmm": "Başka bir RMM'den içe aktar"
     },
     "errors": {
       "fetch": "Özel alanlar getirilemedi",

@@ -406,7 +406,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
                     <optgroup label={t('customFieldValueImport.mapping.identifierGroup')}>
                       {IDENTIFIER_FIELDS.map((f) => (
                         <option key={f} value={`identifier:${f}`}>
-                          {t(`customFieldValueImport.mapping.identifiers.${f}`)}
+                          {t(/* i18n-dynamic */ `customFieldValueImport.mapping.identifiers.${f}`)}
                         </option>
                       ))}
                     </optgroup>
@@ -414,7 +414,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
                     <optgroup label={t('customFieldValueImport.mapping.warrantyGroup')}>
                       {WARRANTY_FIELDS.map((f) => (
                         <option key={f} value={`warranty:${f}`}>
-                          {t(`customFieldValueImport.mapping.warranty.${f}`)}
+                          {t(/* i18n-dynamic */ `customFieldValueImport.mapping.warranty.${f}`)}
                         </option>
                       ))}
                     </optgroup>

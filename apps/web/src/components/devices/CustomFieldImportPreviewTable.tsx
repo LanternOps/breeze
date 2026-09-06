@@ -221,7 +221,7 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
 
   function targetLabel(target: MappingTarget): string {
     return target.kind === 'warranty'
-      ? t(`customFieldImportPreview.warrantyFields.${target.field}`, { defaultValue: target.field })
+      ? t(/* i18n-dynamic */ `customFieldImportPreview.warrantyFields.${target.field}`, { defaultValue: target.field })
       : target.fieldKey;
   }
 

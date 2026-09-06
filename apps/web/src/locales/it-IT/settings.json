@@ -4186,7 +4186,8 @@
       "createField": "Crea campo",
       "saveChanges": "Salva modifiche",
       "deleting": "Eliminazione in corso...",
-      "deleteField": "Elimina campo"
+      "deleteField": "Elimina campo",
+      "importFromRmm": "Importa da un altro RMM"
     },
     "errors": {
       "fetch": "Recupero campi personalizzati non riuscito",

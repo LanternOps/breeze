@@ -4138,7 +4138,8 @@
       "createField": "Créer un champ",
       "saveChanges": "Enregistrer les modifications",
       "deleting": "Suppression…",
-      "deleteField": "Supprimer le champ"
+      "deleteField": "Supprimer le champ",
+      "importFromRmm": "Importer depuis un autre RMM"
     },
     "errors": {
       "fetch": "Impossible de récupérer des champs personnalisés",

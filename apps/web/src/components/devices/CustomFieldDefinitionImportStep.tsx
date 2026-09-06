@@ -400,7 +400,7 @@ export default function CustomFieldDefinitionImportStep({
                     data-testid={`cf-def-annotation-${r.annotation}`}
                     className="rounded-full border px-2 py-0.5 text-xs"
                   >
-                    {t(`customFieldDefinitionImport.annotations.${r.annotation}`)}
+                    {t(/* i18n-dynamic */ `customFieldDefinitionImport.annotations.${r.annotation}`)}
                   </span>
                   {r.conflictReason && <span className="text-xs text-destructive">{r.conflictReason}</span>}
                 </li>

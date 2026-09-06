@@ -82,7 +82,7 @@ export default function RmmCustomFieldImport({ organizationId, onClose }: Props)
               >
                 {IMPORT_SYSTEMS.map((s) => (
                   <option key={s} value={s}>
-                    {t(`rmmCustomFieldImport.sources.${s}`)}
+                    {t(/* i18n-dynamic */ `rmmCustomFieldImport.sources.${s}`)}
                   </option>
                 ))}
               </select>
