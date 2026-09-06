@@ -582,7 +582,18 @@
     "selfSaving": "Bu bölüm kendi değişikliklerini kaydeder.",
     "saveSettings": "Ayarları Kaydet",
     "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
-    "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir."
+    "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
+    "modules": {
+      "title": "Modüller",
+      "description": "Bu MSP’nin Breeze’in hangi bölümlerini kullandığını seçin. Servis yönetimini kapatmak servis masasını ve müşteri faturalandırmasını her yerde gizler ve yeni talep oluşturulmasını durdurur.",
+      "nativeLabel": "Breeze servis masası ve faturalandırma",
+      "nativeDescription": "Talepler, zaman çizelgeleri, teklifler, faturalar ve sözleşmeler Breeze içinde yürütülür. Varsayılan seçenek budur.",
+      "offLabel": "Kapalı — yalnızca RMM",
+      "offDescription": "Servis masası ve Faturalandırma bölümlerini, ayrıca müşteri kaydındaki Talepler ve Faturalandırma sekmelerini gizler. Mevcut talepler okunabilir kalır; yenileri oluşturulamaz.",
+      "externalNote": "Bu iş ortağı harici bir PSA kullanıyor. Bu seçim buradan henüz değiştirilemez.",
+      "saved": "Modüller güncellendi",
+      "saveFailed": "Modüller güncellenemedi"
+    }
   },
   "loginBranding": {
     "saved": "Giriş markası kaydedildi",

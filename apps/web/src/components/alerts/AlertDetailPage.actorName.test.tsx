@@ -12,9 +12,11 @@ const fetchWithAuth = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 import AlertDetailPage from './AlertDetailPage';
+import { useOrgStore } from '@/stores/orgStore';
 
 const ACK_USER_ID = '9cea2f85-2da1-445d-88cc-7c404d7504c4';
 const RESOLVE_USER_ID = '1f0e3f2c-9a2b-4c7d-9f10-8f6a2b3c4d5e';
@@ -72,6 +74,7 @@ function renderPage(alert: RawAlert) {
 
 beforeEach(() => {
   fetchWithAuth.mockReset();
+  useOrgStore.setState({ serviceManagementMode: 'native' });
 });
 
 describe('AlertDetailPage — acknowledged/resolved actor (#3966)', () => {
@@ -119,5 +122,24 @@ describe('AlertDetailPage — acknowledged/resolved actor (#3966)', () => {
 
     await screen.findByText(/Dana Tech/);
     await waitFor(() => expect(container.textContent).not.toContain(RESOLVE_USER_ID));
+  });
+});
+
+describe('AlertDetailPage — Service Management mode gate (#5075 W04)', () => {
+  it('shows the Create ticket action when the partner runs the native mode', async () => {
+    useOrgStore.setState({ serviceManagementMode: 'native' });
+    renderPage(baseAlert);
+
+    await screen.findByTestId('alert-create-ticket');
+  });
+
+  it('hides the Create ticket action when the partner runs Service Management off', async () => {
+    useOrgStore.setState({ serviceManagementMode: 'off' });
+    renderPage(baseAlert);
+
+    // Something else from the page must render first, or a query that always
+    // finds nothing (because the page never mounted) would pass vacuously.
+    await screen.findByRole('heading', { name: baseAlert.title });
+    expect(screen.queryByTestId('alert-create-ticket')).toBeNull();
   });
 });

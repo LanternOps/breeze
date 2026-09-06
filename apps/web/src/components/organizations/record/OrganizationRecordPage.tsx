@@ -27,7 +27,7 @@ import { useOrgStore, type Organization } from '@/stores/orgStore';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
-import { tabFromHash, visibleTabs, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
+import { tabFromHash, visibleTabs, type OrgRecordTab } from './orgRecordTabs';
 
 type LoadState =
   | { kind: 'loading' }
@@ -88,10 +88,11 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   );
   const allOrgs = useOrgStore((s) => s.organizations);
 
-  // W04 replaces this with the partner's stored mode. Failing open to 'native'
-  // is deliberate: hiding a module a partner actually runs is worse than
-  // showing a tab they have turned off.
-  const mode: ServiceManagementMode = 'native';
+  // The partner's stored Service Management mode (#5075 W04). Persisted and
+  // seeded by the Sidebar's /orgs/partners/me fetch; it defaults to 'native' and
+  // a failed fetch leaves it alone, so the record fails OPEN — hiding a module a
+  // partner actually runs is worse than showing a tab they have turned off.
+  const mode = useOrgStore((s) => s.serviceManagementMode);
 
   const isOrgScoped = claims.status === 'resolved' && claims.claims.scope === 'organization';
 
@@ -288,7 +289,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
       {effectiveTab === 'overview' ? (
-        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} />
+        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} />
       ) : (
         // W02/W03 replace these with the real tabs; the ids are already routable
         // so a deep link saved today keeps working when they land.

@@ -582,7 +582,18 @@
     "selfSaving": "Esta seção salva as próprias alterações.",
     "saveSettings": "Salvar configurações",
     "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
-    "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações."
+    "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
+    "modules": {
+      "title": "Módulos",
+      "description": "Escolha quais partes do Breeze este MSP usa. Desativar a gestão de serviços oculta a central de serviços e o faturamento de clientes em todos os lugares e impede a criação de novos chamados.",
+      "nativeLabel": "Central de serviços e faturamento do Breeze",
+      "nativeDescription": "Chamados, apontamentos de horas, orçamentos, faturas e contratos são gerenciados no Breeze. Esta é a opção padrão.",
+      "offLabel": "Desativado — somente RMM",
+      "offDescription": "Oculta as seções Central de serviços e Faturamento e as abas Chamados e Faturamento do registro do cliente. Os chamados existentes continuam visíveis; novos não podem ser criados.",
+      "externalNote": "Este parceiro usa um PSA externo. Ainda não é possível alterar isso aqui.",
+      "saved": "Módulos atualizados",
+      "saveFailed": "Falha ao atualizar os módulos"
+    }
   },
   "loginBranding": {
     "saved": "Identidade visual do login salva",

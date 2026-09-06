@@ -582,7 +582,18 @@
     "selfSaving": "Dieser Abschnitt speichert seine eigenen Änderungen.",
     "saveSettings": "Einstellungen speichern",
     "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
-    "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen."
+    "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
+    "modules": {
+      "title": "Module",
+      "description": "Wählen Sie, welche Teile von Breeze dieser MSP nutzt. Wenn Service-Management deaktiviert ist, werden Service-Desk und Kundenabrechnung überall ausgeblendet und es können keine neuen Tickets erstellt werden.",
+      "nativeLabel": "Breeze Service-Desk & Abrechnung",
+      "nativeDescription": "Tickets, Zeiterfassung, Angebote, Rechnungen und Verträge laufen in Breeze. Dies ist die Standardeinstellung.",
+      "offLabel": "Aus – nur RMM",
+      "offDescription": "Blendet die Bereiche Service-Desk und Abrechnung sowie die Registerkarten Tickets und Abrechnung im Kundendatensatz aus. Vorhandene Tickets bleiben lesbar; neue können nicht erstellt werden.",
+      "externalNote": "Dieser Partner nutzt ein externes PSA. Eine Änderung ist hier noch nicht möglich.",
+      "saved": "Module aktualisiert",
+      "saveFailed": "Module konnten nicht aktualisiert werden"
+    }
   },
   "loginBranding": {
     "saved": "Login-Branding gespeichert",

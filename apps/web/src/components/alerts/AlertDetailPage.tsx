@@ -16,6 +16,7 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
+import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import {
@@ -89,6 +90,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
   const [linkedError, setLinkedError] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
+  const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
   const fetchAlert = useCallback(async () => {
     try {
@@ -313,15 +315,21 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setTicketDialogOpen(true)}
-              className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
-              data-testid="alert-create-ticket"
-            >
-              <Ticket className="mr-2 inline-block h-4 w-4" />
-              {t('alertDetailPage.createTicket')}
-            </button>
+            {/* #5075 W04 — Service Management 'off' withdraws ticket creation
+                for the partner. The API refuses it with a 409 regardless (the
+                backstop lives in ticketService.createTicket); this only avoids
+                offering a button that cannot succeed. */}
+            {serviceManagementMode === 'native' && (
+              <button
+                type="button"
+                onClick={() => setTicketDialogOpen(true)}
+                className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+                data-testid="alert-create-ticket"
+              >
+                <Ticket className="mr-2 inline-block h-4 w-4" />
+                {t('alertDetailPage.createTicket')}
+              </button>
+            )}
             {alert.status === 'active' && (
               <button
                 type="button"

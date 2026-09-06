@@ -21,6 +21,7 @@ const showToast = vi.fn();
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  registerOrgIdProvider: vi.fn(),
 }));
 vi.mock('../shared/Toast', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();

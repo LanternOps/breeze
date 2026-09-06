@@ -31,6 +31,8 @@ import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiProviderTab from './PartnerAiProviderTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
+import PartnerModulesCard from './PartnerModulesCard';
+import type { ServiceManagementMode } from '@/stores/orgStore';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import type {
@@ -69,6 +71,9 @@ type Partner = {
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature?: string | null;
   settings: PartnerSettings;
+  // #5075 W04 — which service-desk/billing module this partner runs. Absent on
+  // an older API; the card and the store both fall back to 'native'.
+  serviceManagementMode?: ServiceManagementMode;
   createdAt: string;
 };
 
@@ -583,7 +588,8 @@ export default function PartnerSettingsPage() {
 
           {/* Company Tab */}
           {activeTab === 'company' && (
-            <PartnerCompanyTab
+            <div className="space-y-6">
+              <PartnerCompanyTab
               name={companyName}
               address={address}
               contact={{
@@ -603,6 +609,8 @@ export default function PartnerSettingsPage() {
                 setContactWebsite(c.website || '');
               }}
             />
+              <PartnerModulesCard serviceManagementMode={partner?.serviceManagementMode} />
+            </div>
           )}
 
           {/* Regional Tab */}
