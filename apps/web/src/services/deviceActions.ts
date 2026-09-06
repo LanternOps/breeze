@@ -478,9 +478,20 @@ export async function restoreDevice(deviceId: string): Promise<{ success: boolea
   return data.data ?? data;
 }
 
+/**
+ * Permanently delete a REMOVED device.
+ *
+ * The body is `{ success: true }` and nothing else. It used to carry
+ * `agentUninstallSent` / `warning` describing a best-effort WS uninstall the
+ * API fired after the cascade; #2787 deleted that dispatch — permanent delete
+ * now REFUSES (409 `UNINSTALL_PENDING`) while a durable agent uninstall is
+ * still collectable, instead of destroying it and reporting a warning. There
+ * is nothing best-effort left to report, so the fields are gone rather than
+ * left declared-but-never-populated.
+ */
 export async function permanentDeleteDevice(
   deviceId: string
-): Promise<{ success: boolean; agentUninstallSent?: boolean; warning?: string }> {
+): Promise<{ success: boolean }> {
   const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
     method: 'DELETE'
   });
@@ -584,4 +595,122 @@ export async function toggleMaintenanceMode(
 
   const data = await response.json();
   return data.data ?? data;
+}
+
+// ---------------------------------------------------------------------------
+// Bulk lifecycle on REMOVED devices (#2787)
+// ---------------------------------------------------------------------------
+
+export type BulkLifecycleFailureCode =
+  | 'NOT_FOUND'
+  | 'NOT_REMOVED'
+  | 'UNINSTALL_PENDING'
+  | 'SITE_ACCESS_DENIED'
+  | 'ERROR';
+
+export interface BulkLifecycleFailure {
+  deviceId: string;
+  code: BulkLifecycleFailureCode | string;
+  message: string;
+}
+
+export interface BulkRestoreResult {
+  succeeded: Array<{ deviceId: string; uninstallAlreadyDispatched: boolean }>;
+  failed: BulkLifecycleFailure[];
+}
+
+/**
+ * Restore several removed devices in one call. Synchronous on the API side —
+ * the response already carries the final per-device outcome, so there is
+ * nothing to poll.
+ *
+ * Never throws for a per-DEVICE failure; a rejection here means the whole
+ * request was refused (auth, MFA, >500 ids).
+ */
+export async function bulkRestoreDevices(deviceIds: string[]): Promise<BulkRestoreResult> {
+  const response = await fetchWithAuth('/devices/bulk/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceIds }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to restore devices'));
+  }
+
+  return await response.json();
+}
+
+export interface BulkPurgeStart {
+  jobId: string;
+  accepted: number;
+  rejected: BulkLifecycleFailure[];
+}
+
+/**
+ * Thrown when the API refuses the WHOLE selection (409). Carries the per-device
+ * reasons so the caller can say which device failed which check — a plain
+ * `Error` would leave the operator with "no device can be deleted" and no way
+ * to tell why.
+ */
+export class BulkPurgeRejectedError extends Error {
+  readonly rejected: BulkLifecycleFailure[];
+  constructor(message: string, rejected: BulkLifecycleFailure[]) {
+    super(message);
+    this.name = 'BulkPurgeRejectedError';
+    this.rejected = rejected;
+  }
+}
+
+/**
+ * Start an async bulk permanent delete. Returns as soon as the job is queued —
+ * poll `fetchPurgeRun(jobId)` for the outcome.
+ *
+ * A partial rejection is NOT an error: the API returns 202 with `rejected`
+ * alongside `accepted`, and the caller surfaces both.
+ */
+export async function startBulkPurge(deviceIds: string[]): Promise<BulkPurgeStart> {
+  const response = await fetchWithAuth('/devices/bulk/permanent-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceIds }),
+  });
+
+  if (!response.ok) {
+    // Parsed ONCE, by hand: `getErrorMessage` consumes the body, and the 409
+    // carries `rejected` alongside `error` — reading it through that helper
+    // would leave the stream used up and the reasons unrecoverable.
+    const body = (await response.json().catch(() => null)) as
+      | { error?: unknown; rejected?: BulkLifecycleFailure[] }
+      | null;
+    const message = body
+      ? extractApiError(body, 'Failed to start the permanent delete')
+      : 'Failed to start the permanent delete';
+    if (response.status === 409) {
+      throw new BulkPurgeRejectedError(message, body?.rejected ?? []);
+    }
+    throw new Error(message);
+  }
+
+  return await response.json();
+}
+
+export interface PurgeRun {
+  state: string;
+  progress: { done: number; total: number };
+  result: { purged: string[]; skipped: Array<{ deviceId: string; code: string }> } | null;
+  failedReason: string | null;
+}
+
+/** Poll interval for `fetchPurgeRun`. */
+export const PURGE_POLL_INTERVAL_MS = 2000;
+
+export async function fetchPurgeRun(jobId: string): Promise<PurgeRun> {
+  const response = await fetchWithAuth(`/devices/bulk/purge-runs/${encodeURIComponent(jobId)}`);
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to read the permanent-delete run'));
+  }
+
+  return await response.json();
 }

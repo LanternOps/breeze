@@ -464,22 +464,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setTimeout(async () => {
             if (pdCancelled) return;
             try {
-              const result = await permanentDeleteDevice(device.id);
-              if (result.warning) {
-                showToast({
-                  type: "warning",
-                  message: t("deviceDetailPage.permanentlyDeletedWithWarning", {
-                    hostname: device.hostname,
-                    warning: result.warning,
-                  }),
-                  duration: 10000,
-                });
-              } else {
-                showToast({
-                  type: "success",
-                  message: `${device.hostname} has been permanently deleted`,
-                });
-              }
+              await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
+              showToast({
+                type: "success",
+                message: `${device.hostname} has been permanently deleted`,
+              });
               void navigateTo("/devices");
             } catch (err) {
               showToast({

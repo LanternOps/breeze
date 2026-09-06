@@ -55,6 +55,14 @@ vi.mock('../../services/deviceActions', () => ({
   linkDevicesVmHost: vi.fn(),
   // #3987: RemoveDeviceDialog fetches the env-driven drain window on open.
   fetchRemovalConfig: vi.fn(async () => ({ uninstallDrainWindowHours: 72 })),
+  // #2787 bulk lifecycle.
+  bulkRestoreDevices: vi.fn(),
+  startBulkPurge: vi.fn(),
+  fetchPurgeRun: vi.fn(),
+  PURGE_POLL_INTERVAL_MS: 2000,
+  BulkPurgeRejectedError: class BulkPurgeRejectedError extends Error {
+    rejected: unknown[] = [];
+  },
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -205,7 +213,7 @@ vi.mock('./DeviceList', () => ({
       data-wan-ips={devices.map(d => d.wanIp ?? '').join(',')}
       data-lan-ips={devices.map(d => d.lanIp ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare', 'restore', 'permanent-delete'].map(action => (
         <button
           key={action}
           type="button"
@@ -2148,13 +2156,15 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
   });
 });
 
-// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the
-// agent could not be reached for remote uninstall (decommission force-closes
-// the WS handshake, so this is the common case, not a rare race — see the
-// issue). The row/grid path must branch the toast on it instead of always
-// showing a green success, or the operator believes the endpoint is clean
-// when the agent is still installed and running.
-describe('DevicesPage — permanent delete surfaces the API warning (#4368)', () => {
+// #4368 was "surface the API's `warning` when the agent could not be reached
+// for remote uninstall". #2787 DELETED that warning: the best-effort WS
+// uninstall it described is gone, and permanent delete now REFUSES
+// (409 UNINSTALL_PENDING) while a durable agent uninstall is still
+// collectable, rather than deleting the device and hoping. So there is no
+// warning to surface any more, and the toast is unconditionally the success
+// one. What is pinned here is that the branch really is gone — not that it
+// happens not to fire for the bodies the API sends today.
+describe('DevicesPage — permanent delete toasts success, with no warning branch (#2787, was #4368)', () => {
   beforeEach(() => {
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
@@ -2180,38 +2190,39 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
     }
   }
 
-  it('shows a warning toast (not success) when the agent could not be reached', async () => {
+  it('shows a success toast for the plain { success: true } body the API now returns', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
-      success: true,
-      agentUninstallSent: false,
-      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-    } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(
-      expect.objectContaining({
-        type: 'warning',
-        message: expect.stringContaining('host-alpha'),
-      }),
+      expect.objectContaining({ type: 'success', message: expect.stringContaining('host-alpha') }),
     );
-    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
-    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
 
-  it('still shows a success toast when there is no warning', async () => {
+  /**
+   * The DISCRIMINATING half. Feeding a body that still carries the retired
+   * `warning` field proves the branch was removed rather than merely being
+   * unreachable with today's payloads — a dead `if` would resurrect the
+   * warning toast here and claim an uninstall attempt that no longer exists.
+   */
+  it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      warning: 'The agent could not be reached for remote uninstall.',
+    } as never);
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
-    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
   });
 
   // Paper cut: the undo toast shown the instant the delete is triggered never
@@ -2324,5 +2335,256 @@ describe('DevicesPage — Remove asks about the agent (#3987)', () => {
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(bulkDecommissionDevices).mock.calls[0][1]).toEqual({ uninstallAgent: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2787 — bulk Restore + async bulk Delete permanently
+// ---------------------------------------------------------------------------
+describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () => {
+  const removedFleet = () =>
+    ({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    }) as never;
+
+  async function renderWithRemovedFleet() {
+    vi.mocked(fetchAllDevices).mockResolvedValue(removedFleet());
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+  }
+
+  it('bulk Restore calls bulkRestoreDevices with the selected ids and toasts success', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [
+        { deviceId: DEV_1, uninstallAlreadyDispatched: false },
+        { deviceId: DEV_2, uninstallAlreadyDispatched: false },
+      ],
+      failed: [],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() => expect(vi.mocked(bulkRestoreDevices)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(bulkRestoreDevices).mock.calls[0]![0]).toEqual([DEV_1, DEV_2]);
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: '2 device(s) restored' }),
+      ),
+    );
+  });
+
+  it('warns separately when a restored device had already received its uninstall', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [
+        { deviceId: DEV_1, uninstallAlreadyDispatched: true },
+        { deviceId: DEV_2, uninstallAlreadyDispatched: false },
+      ],
+      failed: [],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    // The device row came back, but the MACHINE may already be wiped — a
+    // success toast alone would tell the operator everything is fine.
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'warning', message: expect.stringContaining('reinstalled') }),
+      ),
+    );
+  });
+
+  it('reports a partial bulk-restore failure as an error, not a success', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [{ deviceId: DEV_2, code: 'NOT_REMOVED', message: 'nope' }],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: '1 device(s) restored; 1 failed' }),
+      ),
+    );
+  });
+
+  it('bulk Delete permanently confirms with a typed count, then polls the run to completion', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-1', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun)
+      .mockResolvedValueOnce({
+        state: 'active',
+        progress: { done: 1, total: 2 },
+        result: null,
+        failedReason: null,
+      })
+      .mockResolvedValue({
+        state: 'completed',
+        progress: { done: 2, total: 2 },
+        result: { purged: [DEV_1, DEV_2], skipped: [] },
+        failedReason: null,
+      });
+
+    await renderWithRemovedFleet();
+    const fetchesBefore = vi.mocked(fetchAllDevices).mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+
+    // Nothing is started by opening the dialog.
+    expect(await screen.findByTestId('bulk-purge-count')).toBeInTheDocument();
+    expect(vi.mocked(startBulkPurge)).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    // Fake timers must be installed BEFORE the confirm: runBulkPurge schedules
+    // the FIRST poll tick synchronously after startBulkPurge resolves, and a
+    // tick scheduled on the real clock is invisible to advanceTimersByTime.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalledWith([DEV_1, DEV_2]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: '2 device(s) permanently deleted' }),
+      ),
+    );
+    // The purged rows must leave the list; without a refetch they linger and
+    // the next action against them 404s.
+    await waitFor(() =>
+      expect(vi.mocked(fetchAllDevices).mock.calls.length).toBeGreaterThan(fetchesBefore),
+    );
+  });
+
+  it('surfaces a whole-selection rejection and never starts polling', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockRejectedValue(
+      new Error('No selected device can be permanently deleted'),
+    );
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: 'No selected device can be permanently deleted',
+        }),
+      ),
+    );
+    expect(vi.mocked(fetchPurgeRun)).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed run with the reason instead of a silent stall', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-2', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'failed',
+      progress: { done: 0, total: 2 },
+      result: null,
+      failedReason: 'Redis went away',
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Redis went away') }),
+      ),
+    );
+  });
+
+  it('names the skipped devices when a run completes with refusals', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-3', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'completed',
+      progress: { done: 2, total: 2 },
+      result: {
+        purged: [DEV_1],
+        skipped: [{ deviceId: DEV_2, code: 'UNINSTALL_PENDING' }],
+      },
+      failedReason: null,
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // A bare "1 deleted" would hide the refusal entirely — the operator would
+    // never learn that a device is waiting on an agent uninstall.
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'warning',
+          message: expect.stringContaining('UNINSTALL_PENDING'),
+        }),
+      ),
+    );
   });
 });

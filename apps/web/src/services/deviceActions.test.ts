@@ -155,3 +155,126 @@ describe('fetchRemovalConfig', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('/devices/removal-config');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2787 — bulk restore / bulk permanent delete
+// ---------------------------------------------------------------------------
+
+describe('bulkRestoreDevices', () => {
+  it('POSTs the ids to /devices/bulk/restore and returns the per-device outcome', async () => {
+    const { bulkRestoreDevices } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({
+        succeeded: [{ deviceId: 'd1', uninstallAlreadyDispatched: true }],
+        failed: [{ deviceId: 'd2', code: 'NOT_REMOVED', message: 'nope' }],
+      }),
+    );
+
+    const result = await bulkRestoreDevices(['d1', 'd2']);
+
+    expect(fetchMock).toHaveBeenCalledWith('/devices/bulk/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: ['d1', 'd2'] }),
+    });
+    expect(result.succeeded).toEqual([{ deviceId: 'd1', uninstallAlreadyDispatched: true }]);
+    expect(result.failed).toEqual([{ deviceId: 'd2', code: 'NOT_REMOVED', message: 'nope' }]);
+  });
+
+  it("throws with the API's error message on a non-OK response", async () => {
+    const { bulkRestoreDevices } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'MFA required' }, false, 403));
+
+    await expect(bulkRestoreDevices(['d1'])).rejects.toThrow('MFA required');
+  });
+});
+
+describe('startBulkPurge', () => {
+  it('POSTs to /devices/bulk/permanent-delete and returns the jobId', async () => {
+    const { startBulkPurge } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({ jobId: 'job-1', accepted: 3, rejected: [] }, true, 202),
+    );
+
+    const result = await startBulkPurge(['d1', 'd2', 'd3']);
+
+    expect(fetchMock).toHaveBeenCalledWith('/devices/bulk/permanent-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: ['d1', 'd2', 'd3'] }),
+    });
+    expect(result).toEqual({ jobId: 'job-1', accepted: 3, rejected: [] });
+  });
+
+  /**
+   * The 409 "nothing is eligible" body carries per-device reasons the caller
+   * needs to show. A plain `throw new Error(message)` would discard them, and
+   * the operator would be told "no device can be deleted" with no idea which
+   * device failed which check.
+   */
+  it('attaches the per-device rejections to the thrown error on 409', async () => {
+    const { startBulkPurge, BulkPurgeRejectedError } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse(
+        {
+          error: 'No selected device can be permanently deleted',
+          rejected: [{ deviceId: 'd1', code: 'NOT_REMOVED', message: 'not removed' }],
+        },
+        false,
+        409,
+      ),
+    );
+
+    await expect(startBulkPurge(['d1'])).rejects.toBeInstanceOf(BulkPurgeRejectedError);
+    await expect(startBulkPurge(['d1'])).rejects.toMatchObject({
+      message: 'No selected device can be permanently deleted',
+      rejected: [{ deviceId: 'd1', code: 'NOT_REMOVED', message: 'not removed' }],
+    });
+  });
+
+  it('throws a plain Error (not BulkPurgeRejectedError) on a non-409 failure', async () => {
+    const { startBulkPurge, BulkPurgeRejectedError } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'MFA required' }, false, 403));
+
+    await expect(startBulkPurge(['d1'])).rejects.toThrow('MFA required');
+    await expect(startBulkPurge(['d1'])).rejects.not.toBeInstanceOf(BulkPurgeRejectedError);
+  });
+});
+
+describe('fetchPurgeRun', () => {
+  it('GETs the run status by job id', async () => {
+    const { fetchPurgeRun } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({
+        state: 'completed',
+        progress: { done: 3, total: 3 },
+        result: { purged: ['d1', 'd2', 'd3'], skipped: [] },
+        failedReason: null,
+      }),
+    );
+
+    const run = await fetchPurgeRun('job-1');
+
+    expect(fetchMock).toHaveBeenCalledWith('/devices/bulk/purge-runs/job-1');
+    expect(run.state).toBe('completed');
+    expect(run.result).toEqual({ purged: ['d1', 'd2', 'd3'], skipped: [] });
+  });
+
+  it('url-encodes the job id', async () => {
+    const { fetchPurgeRun } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({ state: 'active', progress: { done: 0, total: 1 }, result: null, failedReason: null }),
+    );
+
+    await fetchPurgeRun('a/b');
+
+    expect(fetchMock).toHaveBeenCalledWith('/devices/bulk/purge-runs/a%2Fb');
+  });
+
+  it("throws with the API's error message on a non-OK response", async () => {
+    const { fetchPurgeRun } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'Purge run not found' }, false, 404));
+
+    await expect(fetchPurgeRun('job-1')).rejects.toThrow('Purge run not found');
+  });
+});

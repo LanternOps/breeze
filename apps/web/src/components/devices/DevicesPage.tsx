@@ -12,6 +12,7 @@ import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
+import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
@@ -33,7 +34,7 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -194,6 +195,13 @@ export default function DevicesPage() {
   // #3987: bulk Remove asks the agent question ONCE for the whole selection,
   // then runBulkRemove runs the per-device DELETE loop with that one answer.
   const [pendingBulkRemove, setPendingBulkRemove] = useState<Device[] | null>(null);
+  // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
+  // runBulkPurge then starts the async job and polls it.
+  const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
+  const purgePollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped whenever a poll chain is superseded (a new run, or unmount), so a
+  // tick already in flight cannot land its result over a newer run's.
+  const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -963,19 +971,10 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (pdCancelled) return;
             try {
-              const result = await permanentDeleteDevice(device.id);
-              showToast(
-                result.warning
-                  ? {
-                      type: 'warning',
-                      message: t('devicesPage.toasts.permanentlyDeletedWithWarning', {
-                        hostname: device.hostname,
-                        warning: result.warning,
-                      }),
-                      duration: 10000,
-                    }
-                  : { type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) }
-              );
+              await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
+              showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
               await fetchDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
@@ -1244,6 +1243,40 @@ export default function DevicesPage() {
           return;
         }
 
+        case 'restore': {
+          // #2787. Synchronous: the API returns the final per-device outcome,
+          // so there is nothing to poll. Emitted by the bulk bar ONLY for an
+          // all-removed selection (REMOVED_ONLY_BULK_ACTIONS).
+          const result = await bulkRestoreDevices(deviceIds);
+          const dispatched = result.succeeded.filter(r => r.uninstallAlreadyDispatched).length;
+          if (result.failed.length === 0) {
+            showToast({ type: 'success', message: t('devicesPage.toasts.bulkRestored', { count: result.succeeded.length }) });
+          } else if (result.succeeded.length === 0) {
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }) });
+          } else {
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }) });
+          }
+          // A SEPARATE toast, deliberately: the device row came back, but those
+          // machines had already been handed the uninstall and may be gone.
+          // Folding it into the success line would let it read as "all fine".
+          if (dispatched > 0) {
+            showToast({ type: 'warning', message: t('devicesPage.toasts.bulkRestoreUninstallAlreadySent', { count: dispatched }) });
+          }
+          await fetchDevices();
+          break;
+        }
+
+        case 'permanent-delete': {
+          // Confirm first — this is the only irreversible bulk action, and the
+          // dialog makes the operator type the count. runBulkPurge starts the
+          // job. Prune to rows still present in the current fetch: the
+          // selection persists across filter changes, so a stale id would be
+          // rejected by the API and counted against the typed total.
+          const present = new Set(devices.map(d => d.id));
+          setPendingBulkPurge(selectedDevices.filter(d => present.has(d.id)));
+          return;
+        }
+
         case 'wake': {
           // One round-trip; server iterates per-device with relay-pick per LAN
           // and returns per-device outcome. We render one summary toast
@@ -1280,6 +1313,120 @@ export default function DevicesPage() {
       }
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action }) });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // #2787: the second half of bulk Delete permanently.
+  //
+  // The API returns 202 the moment the job is queued, so the only way the
+  // operator learns the outcome is this poll. It is deliberately shaped like
+  // MergeOrgModal's: a token ref invalidates a superseded chain so a tick
+  // already in flight cannot land its result over a newer run's (or after
+  // unmount), and every terminal state stops the chain explicitly rather than
+  // relying on the next tick not being scheduled.
+  // -------------------------------------------------------------------------
+  const stopPurgePolling = useCallback(() => {
+    if (purgePollTimeoutRef.current !== null) {
+      clearTimeout(purgePollTimeoutRef.current);
+      purgePollTimeoutRef.current = null;
+    }
+    purgePollTokenRef.current += 1;
+  }, []);
+
+  useEffect(() => stopPurgePolling, [stopPurgePolling]);
+
+  const pollPurgeRun = useCallback(
+    async (jobId: string, token: number) => {
+      const scheduleNextTick = () => {
+        if (purgePollTokenRef.current !== token) return; // superseded meanwhile
+        purgePollTimeoutRef.current = setTimeout(
+          () => void pollPurgeRun(jobId, token),
+          PURGE_POLL_INTERVAL_MS,
+        );
+      };
+
+      let run: Awaited<ReturnType<typeof fetchPurgeRun>>;
+      try {
+        run = await fetchPurgeRun(jobId);
+      } catch {
+        // A transient blip is not a failed purge — the job is running in the
+        // worker either way. Retry on the next tick.
+        scheduleNextTick();
+        return;
+      }
+      if (purgePollTokenRef.current !== token) return; // stale — drop silently
+
+      if (run.state === 'completed') {
+        stopPurgePolling();
+        const purged = run.result?.purged.length ?? 0;
+        const skipped = run.result?.skipped ?? [];
+        if (skipped.length === 0) {
+          showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeDone', { count: purged }) });
+        } else {
+          // Group by refusal code: a 50-device run with 40 UNINSTALL_PENDING
+          // must not become 40 toasts, and a bare count would hide WHY.
+          const byCode: Record<string, number> = {};
+          for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
+          const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+          showToast({
+            type: 'warning',
+            message: purged === 0
+              ? t('devicesPage.toasts.bulkPurgeNoneDeleted', { reasons })
+              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
+          });
+        }
+        await fetchDevices();
+        return;
+      }
+
+      if (run.state === 'failed') {
+        stopPurgePolling();
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkPurgeFailed', {
+            reason: run.failedReason ?? t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+          }),
+        });
+        // The job may have deleted some devices before failing, so the list is
+        // stale either way.
+        await fetchDevices();
+        return;
+      }
+
+      scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
+    },
+    [fetchDevices, stopPurgePolling, t],
+  );
+
+  const runBulkPurge = async (targets: Device[]) => {
+    if (targets.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const started = await startBulkPurge(targets.map(d => d.id));
+      showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeStarted', { count: started.accepted }) });
+      if (started.rejected.length > 0) {
+        // A partial rejection is NOT an error — the accepted devices are being
+        // deleted. Say which ones were left out and why, or they silently
+        // survive a delete the operator believes they ordered.
+        const byCode: Record<string, number> = {};
+        for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
+        const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged: started.accepted, skipped: started.rejected.length, reasons }) });
+      }
+      stopPurgePolling(); // drop anything from a previous run
+      const token = purgePollTokenRef.current;
+      purgePollTimeoutRef.current = setTimeout(
+        () => void pollPurgeRun(started.jobId, token),
+        PURGE_POLL_INTERVAL_MS,
+      );
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+      });
     } finally {
       setActionInProgress(false);
     }
@@ -1724,6 +1871,20 @@ export default function DevicesPage() {
           }}
           isLoading={actionInProgress}
           confirmTestId="confirm-bulk-remove"
+        />
+      )}
+
+      {pendingBulkPurge && (
+        <BulkPurgeDialog
+          open
+          targets={pendingBulkPurge.map(d => ({ hostname: d.hostname, orgId: d.orgId }))}
+          onClose={() => setPendingBulkPurge(null)}
+          onConfirm={() => {
+            const devicesToPurge = pendingBulkPurge;
+            setPendingBulkPurge(null);
+            void runBulkPurge(devicesToPurge);
+          }}
+          isLoading={actionInProgress}
         />
       )}
 

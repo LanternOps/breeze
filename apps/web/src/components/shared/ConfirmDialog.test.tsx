@@ -263,3 +263,58 @@ describe('ConfirmDialog focus while loading', () => {
     expect(document.activeElement).toBe(confirm);
   });
 });
+
+describe('ConfirmDialog — confirmDisabled (#2787)', () => {
+  it('blocks Confirm while confirmDisabled, without claiming a request is in flight', () => {
+    const onConfirm = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        title="Delete"
+        message="Sure?"
+        confirmLabel="Delete"
+        confirmDisabled
+        confirmTestId="confirm-btn"
+      />,
+    );
+
+    const confirm = screen.getByTestId('confirm-btn');
+    fireEvent.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    // Not `aria-busy`, and still labelled Delete: nothing is happening, the
+    // precondition simply is not met yet.
+    expect(confirm).toHaveAttribute('aria-busy', 'false');
+    expect(confirm).toHaveTextContent('Delete');
+  });
+
+  it('allows Confirm once confirmDisabled clears', () => {
+    const onConfirm = vi.fn();
+    const view = render(
+      <ConfirmDialog
+        open
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        title="Delete"
+        message="Sure?"
+        confirmDisabled
+        confirmTestId="confirm-btn"
+      />,
+    );
+    view.rerender(
+      <ConfirmDialog
+        open
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        title="Delete"
+        message="Sure?"
+        confirmDisabled={false}
+        confirmTestId="confirm-btn"
+      />,
+    );
+    fireEvent.click(screen.getByTestId('confirm-btn'));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
