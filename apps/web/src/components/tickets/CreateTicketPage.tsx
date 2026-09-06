@@ -21,11 +21,23 @@ interface AvailableTicketForm {
 // Sentinel for the "type a requester manually" choice in the select.
 const MANUAL_REQUESTER = '__manual__';
 
+/** Reads `#orgId=<id>` from a deep link (the organization record's Tickets
+ *  tab links here as `/tickets/new#orgId=<id>` — #5075 W03). Pre-fills the
+ *  organization select rather than locking it: `orgLocked` stays reserved for
+ *  the genuinely org-scoped session case below, where the API allows no other
+ *  choice — this is just a convenience default the tech can still change. */
+function orgIdFromHash(): string {
+  if (typeof window === 'undefined') return '';
+  const raw = window.location.hash.replace(/^#/, '');
+  if (!raw) return '';
+  return new URLSearchParams(raw).get('orgId') ?? '';
+}
+
 export default function CreateTicketPage() {
   const { t } = useTranslation('tickets');
   const [orgs, setOrgs] = useState<Option[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [orgId, setOrgId] = useState('');
+  const [orgId, setOrgId] = useState(() => orgIdFromHash());
   const [orgLocked, setOrgLocked] = useState(false);
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');

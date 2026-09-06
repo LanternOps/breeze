@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CreateTicketPage from './CreateTicketPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -79,6 +79,20 @@ describe('CreateTicketPage', () => {
     vi.clearAllMocks();
     // Default to partner scope so existing tests behave as before.
     mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('pre-fills the organization from a #orgId= deep link (the org record\'s Tickets tab)', async () => {
+    window.location.hash = '#orgId=org-b';
+    mockOptionsApi();
+    render(<CreateTicketPage />);
+    await screen.findByTestId('create-ticket-form');
+    await waitFor(() => expect(screen.getByTestId('create-ticket-org-input')).toHaveValue('org-b'));
+    // A convenience default, not a lock — the select stays enabled and editable.
+    expect(screen.getByTestId('create-ticket-org-input')).not.toBeDisabled();
   });
 
   it('omits deviceId, categoryId and description from the payload when left empty', async () => {

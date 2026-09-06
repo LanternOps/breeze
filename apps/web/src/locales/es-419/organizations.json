@@ -94,6 +94,22 @@
       "title": "No se pudo cargar esta organización",
       "description": "Ocurrió un error al obtener el registro. Verifique su conexión e intente de nuevo."
     },
-    "loading": "Cargando organización…"
+    "loading": "Cargando organización…",
+    "tickets": {
+      "tabs": {
+        "open": "Abiertos",
+        "all": "Todos",
+        "closed": "Cerrado"
+      },
+      "newTicket": "Nuevo ticket",
+      "loadFailed": "Los tickets no se pudieron cargar."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contratos",
+        "invoices": "Facturas",
+        "quotes": "Cotizaciones"
+      }
+    }
   }
 }

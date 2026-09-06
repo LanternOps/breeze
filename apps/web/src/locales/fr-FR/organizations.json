@@ -94,6 +94,22 @@
       "title": "Impossible de charger cette organisation",
       "description": "Une erreur s'est produite lors de la récupération de la fiche. Vérifiez votre connexion et réessayez."
     },
-    "loading": "Chargement de l'organisation…"
+    "loading": "Chargement de l'organisation…",
+    "tickets": {
+      "tabs": {
+        "open": "Ouverts",
+        "all": "Tous",
+        "closed": "Fermé"
+      },
+      "newTicket": "Nouveau ticket",
+      "loadFailed": "Les tickets n’ont pas été chargés."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contrats",
+        "invoices": "Factures",
+        "quotes": "Devis"
+      }
+    }
   }
 }

@@ -94,6 +94,22 @@
       "title": "Diese Organisation konnte nicht geladen werden",
       "description": "Beim Abrufen des Datensatzes ist ein Fehler aufgetreten. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
     },
-    "loading": "Organisation wird geladen…"
+    "loading": "Organisation wird geladen…",
+    "tickets": {
+      "tabs": {
+        "open": "Offen",
+        "all": "Alle",
+        "closed": "Geschlossen"
+      },
+      "newTicket": "Neues Ticket",
+      "loadFailed": "Die Tickets konnten nicht geladen werden."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Verträge",
+        "invoices": "Rechnungen",
+        "quotes": "Angebote"
+      }
+    }
   }
 }

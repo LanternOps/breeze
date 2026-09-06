@@ -94,6 +94,22 @@
       "title": "Impossibile caricare questa organizzazione",
       "description": "Si è verificato un errore durante il recupero della scheda. Controlla la connessione e riprova."
     },
-    "loading": "Caricamento organizzazione…"
+    "loading": "Caricamento organizzazione…",
+    "tickets": {
+      "tabs": {
+        "open": "Aperti",
+        "all": "Tutti",
+        "closed": "Chiusi"
+      },
+      "newTicket": "Nuovo ticket",
+      "loadFailed": "Impossibile caricare i ticket."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contratti",
+        "invoices": "Fatture",
+        "quotes": "Preventivi"
+      }
+    }
   }
 }
