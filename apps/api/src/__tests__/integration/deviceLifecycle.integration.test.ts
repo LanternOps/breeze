@@ -178,6 +178,77 @@ describe('deviceLifecycle (integration)', () => {
     expect(await deviceExists(device.id)).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // NEGATIVE CONTROLS on the refusal predicate.
+  //
+  // The refusal above only earns its keep if it is NARROW. A predicate that
+  // fired on "any pending self_uninstall" would wedge permanent delete forever
+  // behind an expired row, and — the incident `deviceUninstallDrain.ts`'s
+  // module doc exists to prevent — behind an abuse-suspension or
+  // tenant-offboarding row that this feature does not own.
+  //
+  // Each case differs from a genuinely-draining row in EXACTLY ONE arm, so a
+  // pass here pins that arm specifically rather than "some row shape".
+  // -------------------------------------------------------------------------
+
+  it('purge PROCEEDS when the device_remove uninstall deadline has already passed', async () => {
+    const tenant = await seedTenant();
+    const device = await seedDevice(tenant.orgId, tenant.siteId);
+    await queueRemoveUninstall(device.id, tenant.userId);
+
+    // Backdate ONLY the deadline. Reason, type and status still match a
+    // draining row, so this isolates the `device_remove_expires_at > now()`
+    // arm — and `now()` is the DATABASE clock, which is why this case cannot
+    // be argued on compiled SQL.
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        UPDATE device_commands
+           SET device_remove_expires_at = now() - interval '1 hour'
+         WHERE device_id = ${device.id} AND type = 'self_uninstall'
+      `),
+    );
+
+    // Control: the row is still pending and still carries the reason, so the
+    // only thing standing between this and a refusal is the deadline.
+    const [row] = (await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        SELECT status, uninstall_reasons FROM device_commands
+         WHERE device_id = ${device.id} AND type = 'self_uninstall'
+      `),
+    )) as unknown as Array<{ status: string; uninstall_reasons: string[] }>;
+    expect(row!.status).toBe('pending');
+    expect(row!.uninstall_reasons).toContain('device_remove');
+
+    await withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id)));
+    expect(await deviceExists(device.id)).toBe(false);
+  });
+
+  it('purge PROCEEDS when the only pending uninstall belongs to tenant offboarding', async () => {
+    const tenant = await seedTenant();
+    const device = await seedDevice(tenant.orgId, tenant.siteId);
+
+    // A row that is draining in every respect EXCEPT the reason: pending, the
+    // right type, and an UNEXPIRED deadline. That isolates the
+    // `uninstall_reasons @> ARRAY['device_remove']` arm. A predicate keyed on
+    // bare presence of a pending self_uninstall would refuse here — and would
+    // also sweep up abuse-suspension rows, which is the incident
+    // deviceUninstallDrain.ts was written to prevent.
+    await withSystemDbAccessContext(() =>
+      db.insert(deviceCommands).values({
+        deviceId: device.id,
+        type: 'self_uninstall',
+        payload: { removeConfig: true },
+        status: 'pending',
+        targetRole: 'agent',
+        uninstallReasons: ['tenant_offboarding'],
+        deviceRemoveExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+      }),
+    );
+
+    await withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id)));
+    expect(await deviceExists(device.id)).toBe(false);
+  });
+
   it('purge racing restore: the purge that commits second loses cleanly (NOT_REMOVED)', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
