@@ -73,6 +73,7 @@ const catalog: AgentToolCatalogDto = {
     },
   ],
   presets: { triage: [], patch: [], helpdesk: [] },
+  unreachableTools: [],
 };
 
 /** A structurally-valid preview input, defaulted through the real schema so
@@ -84,12 +85,14 @@ function draft(overrides: Partial<{
   kind: PreviewAiAgentInput['kind'];
   toolAllowlist: string[];
   supervisedActionKeys: string[];
+  cooldownSeconds: number;
 }> = {}): PreviewAiAgentInput {
   return previewAiAgentSchema.parse({
     kind: overrides.kind ?? 'triage',
     mode: overrides.mode ?? 'shadow',
     toolAllowlist: overrides.toolAllowlist ?? [],
     actAssets: { supervisedActionKeys: overrides.supervisedActionKeys ?? [] },
+    ...(overrides.cooldownSeconds === undefined ? {} : { cooldownSeconds: overrides.cooldownSeconds }),
   });
 }
 
@@ -217,6 +220,14 @@ describe('buildAgentPreview', () => {
     expect(preview.protectedResources).toEqual(input.protectedResources);
     expect(preview.limits).toEqual(input.limits);
     expect(preview.recipients).toEqual(input.recipients);
+  });
+
+  it('carries cooldownSeconds through from the draft (a sibling of limits, not one of its fields)', () => {
+    const preview = buildAgentPreview(draft({ cooldownSeconds: 1800 }), null, catalog);
+    expect(preview.cooldownSeconds).toBe(1800);
+
+    const defaulted = buildAgentPreview(draft(), null, catalog);
+    expect(defaulted.cooldownSeconds).toBe(900);
   });
 
   it('capability is projected from the catalog tool the operation belongs to', () => {

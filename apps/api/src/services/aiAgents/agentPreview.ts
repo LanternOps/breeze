@@ -123,6 +123,7 @@ export function buildAgentPreview(
     },
     protectedResources: input.protectedResources,
     limits: input.limits,
+    cooldownSeconds: input.cooldownSeconds,
     recipients: input.recipients,
   };
 }

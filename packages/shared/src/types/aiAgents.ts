@@ -656,6 +656,11 @@ export interface AgentPreviewDto {
   };
   protectedResources: AiAgentProtectedResources;
   limits: AiAgentLimits;
+  /** `AiAgentPolicy.cooldownSeconds` is a sibling of `limits`, not one of its
+   *  fields — carried through separately so the review card's "six exposed
+   *  limits" (spec §4.6 step 4) can render it alongside the five in `limits`
+   *  without reaching into a differently-shaped policy row. */
+  cooldownSeconds: number;
   recipients: AiAgentRecipients;
 }
 
