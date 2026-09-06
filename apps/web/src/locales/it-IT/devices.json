@@ -2382,5 +2382,15 @@
     "colDetectedVersion": "Versione rilevata",
     "colScannedAt": "Ultima scansione",
     "loadMore": "Carica altro"
+  },
+  "uninstallState": {
+    "pending": "Disinstallazione dell'agent in coda — scade {{when}}",
+    "pendingNoDeadline": "Disinstallazione dell'agent in coda",
+    "sent": "Disinstallazione dell'agent consegnata",
+    "completed": "Agent disinstallato",
+    "expired": "Disinstallazione scaduta — l'agent non si è mai collegato e potrebbe essere ancora installato",
+    "failed": "Disinstallazione dell'agent non riuscita",
+    "cancelled": "Disinstallazione dell'agent annullata",
+    "none": "L'agent è stato lasciato installato"
   }
 }

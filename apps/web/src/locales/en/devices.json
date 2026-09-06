@@ -2382,5 +2382,15 @@
     "colDetectedVersion": "Detected version",
     "colScannedAt": "Last scan",
     "loadMore": "Load more"
+  },
+  "uninstallState": {
+    "pending": "Agent uninstall queued — expires {{when}}",
+    "pendingNoDeadline": "Agent uninstall queued",
+    "sent": "Agent uninstall delivered",
+    "completed": "Agent uninstalled",
+    "expired": "Uninstall expired — the agent never checked in and may still be installed",
+    "failed": "Agent uninstall failed",
+    "cancelled": "Agent uninstall cancelled",
+    "none": "Agent was left installed"
   }
 }

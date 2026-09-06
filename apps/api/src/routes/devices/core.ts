@@ -66,6 +66,7 @@ import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
+import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -1263,6 +1264,19 @@ coreRoutes.get(
     // substitution) -- though `scheme_not_allowed` can only ever be
     // observed by the issuance path (POST), since detecting it requires the
     // substitution this availability check deliberately skips.
+    // What happened to the agent-uninstall this device's Remove queued
+    // (#3987 item 7). Only meaningful for a removed device, and deliberately
+    // skipped otherwise so the hot detail path is unchanged for the 99% case.
+    //
+    // Ordering is load-bearing, not incidental: `device_commands` carries no
+    // RLS (intentionally system-scoped for the agent WS path), so this read
+    // MUST sit downstream of `getDeviceWithOrgAndSiteCheck` above — which has
+    // already 403/404'd an id outside the caller's tenant or allowed sites.
+    // Pinned by core.uninstallState.test.ts.
+    const uninstall = device.status === 'decommissioned'
+      ? await getDeviceUninstallStatus(deviceId)
+      : null;
+
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
@@ -1294,6 +1308,7 @@ coreRoutes.get(
       remoteAccessPolicy,
       hasRemoteAccessLauncher,
       remoteAccessLaunchSkipReason,
+      uninstall,
     });
   }
 );

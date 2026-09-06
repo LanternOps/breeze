@@ -6,6 +6,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
+import UninstallStateBadge from './UninstallStateBadge';
 
 type Site = {
   id: string;
@@ -212,6 +213,10 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
               <p className="text-xs text-muted-foreground">
                 {t('deviceSettingsModal.decommissionedDescription')}
               </p>
+              {/* Whether the agent actually came off (#3987). Renders nothing
+                  when the modal was opened from a list row, whose payload
+                  carries no `uninstall` field — see UninstallStateBadge. */}
+              <UninstallStateBadge uninstall={device.uninstall} status={device.status} compact />
               <div className="flex gap-2">
                 <button
                   type="button"

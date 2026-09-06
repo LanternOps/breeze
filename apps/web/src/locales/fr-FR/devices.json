@@ -2382,5 +2382,15 @@
     "colDetectedVersion": "Version détectée",
     "colScannedAt": "Dernière analyse",
     "loadMore": "Charger plus"
+  },
+  "uninstallState": {
+    "pending": "Désinstallation de l'agent en file d'attente — expire {{when}}",
+    "pendingNoDeadline": "Désinstallation de l'agent en file d'attente",
+    "sent": "Désinstallation de l'agent transmise",
+    "completed": "Agent désinstallé",
+    "expired": "Désinstallation expirée — l'agent ne s'est jamais connecté et pourrait être encore installé",
+    "failed": "Échec de la désinstallation de l'agent",
+    "cancelled": "Désinstallation de l'agent annulée",
+    "none": "L'agent a été laissé installé"
   }
 }
