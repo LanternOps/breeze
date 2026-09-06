@@ -85,6 +85,10 @@ function parseActivityTimestamp(value: unknown): Date | null {
  * `redirected` action rather than being silently counted as allowed traffic.
  */
 function mapVerdict(verdict: string | undefined): DnsAction | null {
+  // An ABSENT verdict is drift, not a default: Cisco lists `verdict` in the
+  // required field set for a DNS activity record, so a record without one is
+  // not a shape we know how to read. Dropping and counting it beats inventing
+  // an `allowed` that nothing in the payload supports.
   if (!verdict) return null;
   if (verdict.includes('block')) return 'blocked';
   if (verdict.includes('proxied') || verdict.includes('redirect')) return 'redirected';

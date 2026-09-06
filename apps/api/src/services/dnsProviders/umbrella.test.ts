@@ -461,6 +461,18 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     expect(warnings()).toMatch(/unparseable/);
   });
 
+  // `verdict` is in Cisco's required field set for a DNS activity record, so
+  // its absence is drift — not a record we should default to `allowed`.
+  it('drops a record with no verdict at all', async () => {
+    const { verdict: _verdict, ...noVerdict } = activityRecord();
+    queueActivityPages({ data: [noVerdict] });
+
+    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+
+    expect(events).toEqual([]);
+    expect(warnings()).toMatch(/skipped 1 unparseable record/);
+  });
+
   it('warns when it drops unparseable records, so upstream shape drift is visible', async () => {
     queueActivityPages({ data: ['not-an-object', { domain: 'no-timestamp.example' }] });
 
