@@ -1224,7 +1224,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                       </>
                     ) : (
                       <>
-                        <span>{renderFieldValue(def, currentValue)}</span>
+                        <span data-testid={`device-custom-field-value-${def.fieldKey}`}>
+                          {renderFieldValue(def, currentValue)}
+                        </span>
                         <button
                           type="button"
                           onClick={() => {
