@@ -2531,7 +2531,11 @@
     },
     "chunkedNotice": "Bu dosya tek bir istekten daha büyük — otomatik olarak parçalar halinde gönderilecek.",
     "progress": "{{total}} parçadan {{done}}.",
-    "summary": "{{applied}} uygulandı, {{skipped}} atlandı, {{failed}} değer başarısız"
+    "summary": "{{applied}} uygulandı, {{skipped}} atlandı, {{failed}} değer başarısız",
+    "notAttempted": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "notAttempted_other": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "errorRow": "Satır {{index}}",
+    "previewStale": "Bu önizlemeden bu yana eşleme değişti — içe aktarmadan önce önizlemeyi yeniden çalıştırın"
   },
   "customFieldImportPreview": {
     "selectAll": "Tümünü seç",
@@ -2574,6 +2578,7 @@
       "warrantyStartDate": "Garanti başlangıç tarihi",
       "warrantyEndDate": "Garanti bitiş tarihi",
       "manufacturer": "Üretici"
-    }
+    },
+    "identityConflictNote": "Bu satırın tanımlayıcıları farklı cihazları işaret ediyor ve olduğu gibi içe aktarılamaz — dosyayı düzeltin ve önizlemeyi yeniden çalıştırın. Aşağıdaki adaylar yalnızca referans için gösterilmektedir."
   }
 }

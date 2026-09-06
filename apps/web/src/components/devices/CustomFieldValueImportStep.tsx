@@ -7,9 +7,11 @@ import { runAction } from '../../lib/runAction';
 import { parseCsv } from '../../lib/csvParse';
 import { asList } from '@/lib/asList';
 import { coerceCellForType, type CustomFieldImportDateFormat } from './customFieldImportCoercion';
+import type { ImportSystem } from './CustomFieldDefinitionImportStep';
 import CustomFieldImportPreviewTable, {
   bulkSelectableValueRows,
   defaultValueImportSelection,
+  isValueRowSelectable,
   type AnnotatedValueRow,
   type MappingTarget,
 } from './CustomFieldImportPreviewTable';
@@ -75,17 +77,23 @@ export interface DeviceCustomFieldImportRow {
  * A single row whose OWN value count already exceeds `maxValues` cannot be
  * split further (a device row is atomic) and is sent alone as a best effort;
  * in practice a row carries at most ~30 values, far under any real cap.
+ *
+ * `getValueCount` defaults to reading `.values.length` off each row, but can
+ * be overridden so this same splitting algorithm works over rows wrapped with
+ * extra bookkeeping (see `commit()`'s index-tracking wrapper below) without
+ * duplicating the chunking logic.
  */
-export function chunkValueRows<T extends { values: unknown[] }>(
+export function chunkValueRows<T>(
   rows: readonly T[],
   maxRows: number,
   maxValues: number,
+  getValueCount: (row: T) => number = (row) => (row as { values: unknown[] }).values.length,
 ): T[][] {
   const chunks: T[][] = [];
   let current: T[] = [];
   let valueCount = 0;
   for (const row of rows) {
-    const rowValues = row.values.length;
+    const rowValues = getValueCount(row);
     if (current.length > 0 && (current.length >= maxRows || valueCount + rowValues > maxValues)) {
       chunks.push(current);
       current = [];
@@ -98,13 +106,42 @@ export function chunkValueRows<T extends { values: unknown[] }>(
   return chunks;
 }
 
-interface ValueImportSummary {
+export interface ValueImportSummary {
   appliedValues: number;
   skippedValues: number;
   failedValues: number;
   rows: Array<{ index: number; deviceId: string; organizationId: string; method: string; externalSystem: string | null; applied: number; skipped: number; failed: number; appliedFieldKeys: string[]; warranty: string; linkCreated: boolean }>;
   linksCreated: number;
   errors: Array<{ index: number; error: string; code: string }>;
+}
+
+/**
+ * Merge one chunk's commit response into the running aggregate, remapping
+ * `rows[].index` / `errors[].index` from CHUNK-LOCAL (0-based within that
+ * request) back to the ORIGINAL global preview-row index via `originalIndexes`
+ * (the ordered list of original indexes the chunk was built from).
+ *
+ * This is not a simple offset add: `chosenRows` is a SUBSET of the previewed
+ * rows (only the ticked ones), so a chunk's original indexes are not
+ * necessarily contiguous (e.g. rows 2 and 5 selected, row 3-4 unticked) — an
+ * offset would silently mislabel every row after the first gap. Looking up
+ * `originalIndexes[localIndex]` is correct regardless of gaps.
+ */
+export function mergeCommitChunkResult(
+  aggregate: ValueImportSummary,
+  chunkResult: ValueImportSummary,
+  originalIndexes: readonly number[],
+): void {
+  aggregate.appliedValues += chunkResult.appliedValues;
+  aggregate.skippedValues += chunkResult.skippedValues;
+  aggregate.failedValues += chunkResult.failedValues;
+  aggregate.linksCreated += chunkResult.linksCreated;
+  for (const r of chunkResult.rows) {
+    aggregate.rows.push({ ...r, index: originalIndexes[r.index] ?? r.index });
+  }
+  for (const e of chunkResult.errors) {
+    aggregate.errors.push({ ...e, index: originalIndexes[e.index] ?? e.index });
+  }
 }
 
 function targetTypeFor(target: MappingTarget, fieldTypeByKey: Record<string, CustomFieldType>): CustomFieldType {
@@ -115,11 +152,13 @@ function targetTypeFor(target: MappingTarget, fieldTypeByKey: Record<string, Cus
 interface Props {
   /** The organization every row resolves within, unless a column maps organizationId. */
   organizationId: string | null;
+  /** The incumbent RMM this file was exported from — recorded in the audit trail. */
+  source: ImportSystem;
   onCommitted?: (summary: ValueImportSummary) => void;
   onUnauthorized?: () => void;
 }
 
-export default function CustomFieldValueImportStep({ organizationId, onCommitted, onUnauthorized }: Props) {
+export default function CustomFieldValueImportStep({ organizationId, source, onCommitted, onUnauthorized }: Props) {
   const { t } = useTranslation('devices');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -132,18 +171,41 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
   const [overrideProviderWarranty, setOverrideProviderWarranty] = useState(false);
 
   const [fieldTypeByKey, setFieldTypeByKey] = useState<Record<string, CustomFieldType>>({});
+  const [conflictingFieldKeys, setConflictingFieldKeys] = useState<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
     fetchWithAuth('/custom-fields')
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`GET /custom-fields → ${r.status}`))))
       .then((data) => {
-        if (cancelled || !data) return;
+        if (cancelled) return;
         const list = asList<{ fieldKey: string; type: CustomFieldType }>(data);
-        setFieldTypeByKey(Object.fromEntries(list.map((f) => [f.fieldKey, f.type])));
+        const byKey: Record<string, CustomFieldType> = {};
+        const conflicts = new Set<string>();
+        for (const f of list) {
+          // A partner-wide caller's GET /custom-fields can return every org's
+          // definitions. Two orgs may legitimately give the same key different
+          // types (e.g. one org's leftover text field vs another's number
+          // field of the same name) — coercing every row against whichever
+          // definition happened to sort last would silently corrupt the other
+          // org's column. Detected conflicts fall back to no type-specific
+          // coercion (raw pass-through), same as an unknown key.
+          if (f.fieldKey in byKey && byKey[f.fieldKey] !== f.type) {
+            conflicts.add(f.fieldKey);
+          } else {
+            byKey[f.fieldKey] = f.type;
+          }
+        }
+        setFieldTypeByKey(byKey);
+        setConflictingFieldKeys(conflicts);
       })
-      .catch(() => {
-        // Best-effort lookup: unknown field types fall back to 'text' coercion,
-        // which the server's own type-error annotation catches downstream.
+      .catch((err: unknown) => {
+        // Best-effort lookup: unknown field types fall back to 'text'
+        // coercion, which the server's own type-error annotation catches
+        // downstream — but a failure here should still leave a trace, since
+        // silently downgrading every number/boolean/date column to text is
+        // otherwise invisible to anyone debugging a "why is this a type-error"
+        // report.
+        console.error('[CustomFieldValueImportStep] field-type lookup failed', err);
       });
     return () => {
       cancelled = true;
@@ -151,6 +213,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
   }, []);
 
   const [previewRows, setPreviewRows] = useState<AnnotatedValueRow[] | null>(null);
+  const [previewStale, setPreviewStale] = useState(false);
   const [builtRows, setBuiltRows] = useState<DeviceCustomFieldImportRow[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [picks, setPicks] = useState<Map<number, string>>(new Map());
@@ -159,6 +222,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
   const [committing, setCommitting] = useState(false);
   const [commitProgress, setCommitProgress] = useState<{ done: number; total: number } | null>(null);
   const [summary, setSummary] = useState<ValueImportSummary | null>(null);
+  const [notAttempted, setNotAttempted] = useState(0);
 
   function loadFile(file: File) {
     void file.text().then((text) => {
@@ -169,15 +233,20 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
       setRoles({});
       setFieldKeys({});
       setPreviewRows(null);
+      setPreviewStale(false);
       setBuiltRows([]);
       setSelected(new Set());
       setPicks(new Map());
       setSummary(null);
+      setNotAttempted(0);
     });
   }
 
   function setRole(header: string, role: ColumnRole) {
     setRoles((prev) => ({ ...prev, [header]: role }));
+    // The mapping changed; whatever is on screen no longer reflects it until
+    // a fresh preview replaces it.
+    if (previewRows) setPreviewStale(true);
   }
 
   /** Every mapped-column row, coerced against its target's declared type. Rows
@@ -215,7 +284,10 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
       if (!row.organizationId && organizationId) row.organizationId = organizationId;
       for (const { idx, target } of valueCols) {
         const rawCell = raw[idx] ?? '';
-        const type = targetTypeFor(target, fieldTypeByKey);
+        const type =
+          target.kind === 'customField' && conflictingFieldKeys.has(target.fieldKey)
+            ? 'text'
+            : targetTypeFor(target, fieldTypeByKey);
         const coerced = coerceCellForType(rawCell, type, dateFormat);
         if (coerced === null) continue;
         row.values.push({ target, value: coerced });
@@ -228,7 +300,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
       rows.push(row);
     }
     return { rows, dropped };
-  }, [headers, csvRows, roles, fieldKeys, dateFormat, fieldTypeByKey, organizationId]);
+  }, [headers, csvRows, roles, fieldKeys, dateFormat, fieldTypeByKey, conflictingFieldKeys, organizationId]);
 
   const importRows = mapped.rows;
   const totalValues = importRows.reduce((n, r) => n + r.values.length, 0);
@@ -236,6 +308,7 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
   async function preview() {
     setPreviewing(true);
     setSummary(null);
+    setNotAttempted(0);
     const chunks = chunkValueRows(importRows, MAX_IMPORT_ROWS, MAX_IMPORT_VALUES);
     setPreviewProgress({ done: 0, total: chunks.length });
     const merged: AnnotatedValueRow[] = [];
@@ -246,24 +319,33 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
           request: () =>
             fetchWithAuth('/devices/custom-fields/import/preview', {
               method: 'POST',
-              body: JSON.stringify({ mode, overrideProviderWarranty, rows: chunk }),
+              body: JSON.stringify({ mode, overrideProviderWarranty, externalSystem: source, rows: chunk }),
             }),
           errorFallback: t('customFieldValueImport.errors.previewFailed'),
           onUnauthorized,
         });
+        // Every chunk previews the FULL row set in order (unlike commit, which
+        // only sends the selected subset), so chunk-local indexes really are
+        // contiguous here — a plain cumulative offset is correct.
         for (const r of res.rows) merged.push({ ...r, index: r.index + offset });
         offset += chunk.length;
         setPreviewProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
       }
       setPreviewRows(merged);
+      setPreviewStale(false);
       setBuiltRows(importRows);
       setSelected(defaultValueImportSelection(merged));
       setPicks(new Map());
     } catch {
-      // runAction already toasted (or routed the 401). Whatever previewed
-      // before the failing chunk is discarded rather than shown as partial —
-      // a preview is advisory, so there's nothing partial to protect here
-      // (unlike commit, which always keeps what it wrote).
+      // A failed (re-)preview must not leave a stale, fully-committable table
+      // on screen from a PRIOR successful preview — that table no longer
+      // reflects the current mapping/CSV, and a user could commit data built
+      // from state they believe they just discarded.
+      setPreviewRows(null);
+      setPreviewStale(false);
+      setBuiltRows([]);
+      setSelected(new Set());
+      setPicks(new Map());
     } finally {
       setPreviewing(false);
       setPreviewProgress(null);
@@ -272,7 +354,13 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
 
   async function commit() {
     if (!previewRows) return;
-    const chosenIndexes = previewRows.filter((r) => selected.has(r.index)).map((r) => r.index);
+    // Defense in depth: the checkbox `disabled` attribute is the primary
+    // guard, but `commit()` re-derives selectability itself rather than
+    // trusting `selected` blindly — a future bulk-select feature or a stale
+    // index after re-preview must not be able to submit an unpickable row.
+    const chosenIndexes = previewRows
+      .filter((r) => selected.has(r.index) && isValueRowSelectable(r, picks))
+      .map((r) => r.index);
     if (chosenIndexes.length === 0) return;
     const chosenRows = chosenIndexes.map((i) => {
       const row = previewRows.find((r) => r.index === i)!;
@@ -286,7 +374,12 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
     });
 
     setCommitting(true);
-    const chunks = chunkValueRows(chosenRows, MAX_IMPORT_ROWS, MAX_IMPORT_VALUES);
+    setNotAttempted(0);
+    // Pair each row with its ORIGINAL (possibly non-contiguous) preview index
+    // so a chunk's response — 0-indexed within that request — can be mapped
+    // back to the row it actually describes (see `mergeCommitChunkResult`).
+    const indexed = chosenIndexes.map((originalIndex, i) => ({ originalIndex, row: chosenRows[i]! }));
+    const chunks = chunkValueRows(indexed, MAX_IMPORT_ROWS, MAX_IMPORT_VALUES, (ir) => ir.row.values.length);
     setCommitProgress({ done: 0, total: chunks.length });
     const aggregate: ValueImportSummary = {
       appliedValues: 0,
@@ -296,30 +389,47 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
       linksCreated: 0,
       errors: [],
     };
+    let chunksCompleted = 0;
     try {
       for (const chunk of chunks) {
+        const originalIndexes = chunk.map((ir) => ir.originalIndex);
         const result = await runAction<ValueImportSummary>({
           request: () =>
             fetchWithAuth('/devices/custom-fields/import', {
               method: 'POST',
-              body: JSON.stringify({ mode, overrideProviderWarranty, rows: chunk }),
+              body: JSON.stringify({
+                mode,
+                overrideProviderWarranty,
+                externalSystem: source,
+                rows: chunk.map((ir) => ir.row),
+              }),
             }),
           errorFallback: t('customFieldValueImport.errors.importFailed'),
           onUnauthorized,
         });
-        aggregate.appliedValues += result.appliedValues;
-        aggregate.skippedValues += result.skippedValues;
-        aggregate.failedValues += result.failedValues;
-        aggregate.linksCreated += result.linksCreated;
-        aggregate.rows.push(...result.rows);
-        aggregate.errors.push(...result.errors);
+        mergeCommitChunkResult(aggregate, result, originalIndexes);
+        chunksCompleted += 1;
+        // This chunk is done (succeeded or reported its own row-level errors,
+        // either way the server has ruled on it) — never resend it if the
+        // operator retries after a LATER chunk fails.
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const ir of chunk) next.delete(ir.originalIndex);
+          return next;
+        });
         setCommitProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
       }
       setSummary(aggregate);
       onCommitted?.(aggregate);
     } catch {
-      // A failing chunk still leaves every EARLIER chunk's writes committed —
-      // aggregate carries only what actually completed, and is still shown.
+      // Chunks 0..chunksCompleted-1 already wrote (or definitively refused)
+      // their rows and are reflected in `aggregate` — that's real, keep it.
+      // Chunks from chunksCompleted onward were never attempted; report that
+      // explicitly rather than letting applied+skipped+failed silently fall
+      // short of the number of rows the operator selected.
+      const attemptedRows = chunks.slice(0, chunksCompleted).reduce((n, c) => n + c.length, 0);
+      const totalRows = chunks.reduce((n, c) => n + c.length, 0);
+      setNotAttempted(totalRows - attemptedRows);
       setSummary(aggregate);
     } finally {
       setCommitting(false);
@@ -467,6 +577,11 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
 
       {previewRows && (
         <div className="space-y-2">
+          {previewStale && (
+            <p data-testid="cf-val-preview-stale" className="text-xs text-amber-700 dark:text-amber-400">
+              {t('customFieldValueImport.previewStale')}
+            </p>
+          )}
           <CustomFieldImportPreviewTable
             rows={previewRows}
             selected={selected}
@@ -496,13 +611,32 @@ export default function CustomFieldValueImportStep({ organizationId, onCommitted
       )}
 
       {summary && (
-        <p data-testid="cf-val-summary" className="text-sm text-muted-foreground">
-          {t('customFieldValueImport.summary', {
-            applied: summary.appliedValues,
-            skipped: summary.skippedValues,
-            failed: summary.failedValues,
-          })}
-        </p>
+        <div className="space-y-2">
+          <p
+            data-testid="cf-val-summary"
+            className={`text-sm ${summary.failedValues > 0 || summary.errors.length > 0 ? 'text-destructive' : 'text-muted-foreground'}`}
+          >
+            {t('customFieldValueImport.summary', {
+              applied: summary.appliedValues,
+              skipped: summary.skippedValues,
+              failed: summary.failedValues,
+            })}
+          </p>
+          {notAttempted > 0 && (
+            <p data-testid="cf-val-not-attempted" className="text-sm text-destructive">
+              {t('customFieldValueImport.notAttempted', { count: notAttempted })}
+            </p>
+          )}
+          {summary.errors.length > 0 && (
+            <ul data-testid="cf-val-errors" className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+              {summary.errors.map((e) => (
+                <li key={e.index} data-testid={`cf-val-error-${e.index}`}>
+                  {t('customFieldValueImport.errorRow', { index: e.index + 1 })}: {e.error}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

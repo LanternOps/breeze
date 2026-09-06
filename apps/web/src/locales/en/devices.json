@@ -2531,7 +2531,11 @@
     },
     "chunkedNotice": "This file is larger than one request — it will be sent in chunks automatically.",
     "progress": "Chunk {{done}} of {{total}}",
-    "summary": "Applied {{applied}}, skipped {{skipped}}, failed {{failed}} values"
+    "summary": "Applied {{applied}}, skipped {{skipped}}, failed {{failed}} values",
+    "notAttempted": "{{count}} row was not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "notAttempted_other": "{{count}} rows were not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "errorRow": "Row {{index}}",
+    "previewStale": "The mapping changed since this preview — re-run preview before importing"
   },
   "customFieldImportPreview": {
     "selectAll": "Select all",

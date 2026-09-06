@@ -114,7 +114,7 @@ export default function RmmCustomFieldImport({ organizationId, onClose }: Props)
             >
               {t('rmmCustomFieldImport.backToDefinitions')}
             </button>
-            <CustomFieldValueImportStep organizationId={organizationId} />
+            <CustomFieldValueImportStep organizationId={organizationId} source={source} />
           </div>
         )}
       </div>

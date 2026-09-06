@@ -2531,7 +2531,11 @@
     },
     "chunkedNotice": "Questo file è più grande di una singola richiesta — verrà inviato automaticamente a blocchi.",
     "progress": "Blocco {{done}} di {{total}}",
-    "summary": "{{applied}} applicati, {{skipped}} saltati, {{failed}} valori falliti"
+    "summary": "{{applied}} applicati, {{skipped}} saltati, {{failed}} valori falliti",
+    "notAttempted": "{{count}} riga non tentata perché una parte precedente non è riuscita — correggi l'errore qui sotto e riesegui l'importazione per le righe rimanenti",
+    "notAttempted_other": "{{count}} righe non tentate perché una parte precedente non è riuscita — correggi l'errore qui sotto e riesegui l'importazione per le righe rimanenti",
+    "errorRow": "Riga {{index}}",
+    "previewStale": "La mappatura è cambiata da questa anteprima — riesegui l'anteprima prima di importare"
   },
   "customFieldImportPreview": {
     "selectAll": "Seleziona tutto",
@@ -2574,6 +2578,7 @@
       "warrantyStartDate": "Data di inizio garanzia",
       "warrantyEndDate": "Data di fine garanzia",
       "manufacturer": "Produttore"
-    }
+    },
+    "identityConflictNote": "Gli identificatori di questa riga puntano a dispositivi diversi e non possono essere importati così come sono — correggi il file e riesegui l'anteprima. I candidati qui sotto sono mostrati solo come riferimento."
   }
 }

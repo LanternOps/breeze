@@ -2531,7 +2531,11 @@
     },
     "chunkedNotice": "Diese Datei ist größer als eine Anfrage — sie wird automatisch in Teilen gesendet.",
     "progress": "Teil {{done}} von {{total}}",
-    "summary": "{{applied}} angewendet, {{skipped}} übersprungen, {{failed}} fehlgeschlagene Werte"
+    "summary": "{{applied}} angewendet, {{skipped}} übersprungen, {{failed}} fehlgeschlagene Werte",
+    "notAttempted": "{{count}} Zeile wurde nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "notAttempted_other": "{{count}} Zeilen wurden nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "errorRow": "Zeile {{index}}",
+    "previewStale": "Die Zuordnung hat sich seit dieser Vorschau geändert — führen Sie die Vorschau erneut aus, bevor Sie importieren"
   },
   "customFieldImportPreview": {
     "selectAll": "Alle auswählen",
@@ -2574,6 +2578,7 @@
       "warrantyStartDate": "Garantiebeginn",
       "warrantyEndDate": "Garantieende",
       "manufacturer": "Hersteller"
-    }
+    },
+    "identityConflictNote": "Die Kennungen dieser Zeile verweisen auf unterschiedliche Geräte und können so nicht importiert werden — korrigieren Sie die Datei und führen Sie die Vorschau erneut aus. Die unten aufgeführten Kandidaten dienen nur zur Information."
   }
 }

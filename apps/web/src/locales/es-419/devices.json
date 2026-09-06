@@ -2531,7 +2531,11 @@
     },
     "chunkedNotice": "Este archivo es más grande que una sola solicitud — se enviará automáticamente en partes.",
     "progress": "Parte {{done}} de {{total}}",
-    "summary": "{{applied}} aplicados, {{skipped}} omitidos, {{failed}} valores fallidos"
+    "summary": "{{applied}} aplicados, {{skipped}} omitidos, {{failed}} valores fallidos",
+    "notAttempted": "{{count}} fila no se intentó porque una parte anterior falló — corrija el error a continuación y vuelva a ejecutar la importación para las filas restantes",
+    "notAttempted_other": "{{count}} filas no se intentaron porque una parte anterior falló — corrija el error a continuación y vuelva a ejecutar la importación para las filas restantes",
+    "errorRow": "Fila {{index}}",
+    "previewStale": "La asignación cambió desde esta vista previa — vuelva a generar la vista previa antes de importar"
   },
   "customFieldImportPreview": {
     "selectAll": "Seleccionar todo",
@@ -2574,6 +2578,7 @@
       "warrantyStartDate": "Fecha de inicio de garantía",
       "warrantyEndDate": "Fecha de fin de garantía",
       "manufacturer": "Fabricante"
-    }
+    },
+    "identityConflictNote": "Los identificadores de esta fila apuntan a dispositivos diferentes y no se puede importar tal cual — corrija el archivo y vuelva a ejecutar la vista previa. Los candidatos a continuación se muestran solo como referencia."
   }
 }
