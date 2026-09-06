@@ -389,9 +389,17 @@ export type ValueRowOutcome = DeviceRowOutcome;
  *
  * - `applied` — written (or, at preview, would be written).
  * - `skipped-already-set` — a value is already stored for this target on this
- *   device. Covers BOTH "the stored value is identical" (a re-import: a no-op
- *   in either mode) and "the stored value differs and the mode is `skip`", so
- *   the operator sees one honest reason instead of two synonyms.
+ *   device, and writing would change nothing OR the mode is `skip`. Covers BOTH
+ *   "the stored value is identical" (a re-import: a no-op in either mode) and
+ *   "the stored value differs and the default `skip` mode declines to overwrite
+ *   it" — one honest reason instead of two synonyms for "nothing to do here".
+ * - `skipped-provider-owned` — WARRANTY only. A manufacturer API lookup
+ *   (`data_source = 'provider'`) owns this device's warranty and the operator
+ *   did not opt into overriding it. Its OWN member rather than
+ *   `skipped-already-set`: "already correct, nothing to do" and "refused, and
+ *   there is a switch you can flip" are different messages to show a tech, and
+ *   a consumer branching on `outcome` must not have to parse a warning string
+ *   to tell them apart. Mirrors `WarrantyImportOutcome` one layer up.
  * - `no-definition` — no `custom_field_definitions` row visible to this
  *   device's organization owns this key. Run the DEFINITIONS import (W07) first.
  * - `type-error` — `validateCustomFieldValue` refused it; `reason` says how.
@@ -405,6 +413,7 @@ export type ValueRowOutcome = DeviceRowOutcome;
 export type ValueOutcome =
   | 'applied'
   | 'skipped-already-set'
+  | 'skipped-provider-owned'
   | 'no-definition'
   | 'type-error'
   | 'not-applicable-to-device'
@@ -424,22 +433,36 @@ export type CustomFieldImportRejection =
   | 'too_long'
   | 'invalid_date';
 
-export interface AnnotatedImportValue {
+/**
+ * Advisory, and genuinely ORTHOGONAL to `outcome` — several outcomes can carry
+ * one, so unlike `reason` it is not folded into an arm below. Today:
+ *
+ *  - on `applied`, the partner-integration identity keys (`asset_tag`,
+ *    `inventory_id`, `external_id` and their camelCase spellings), which
+ *    `routes/partnerApi/devices.ts` republishes as a device's
+ *    `stableIdentifiers` to every integration the partner has connected.
+ *    Writing them is intended; doing it fleet-wide without being told is not.
+ *  - on `skipped-provider-owned`, how to override the refusal.
+ */
+interface ImportValueAdvice {
   target: MappingTarget;
-  outcome: ValueOutcome;
-  /** Set on `type-error`. */
-  reason?: CustomFieldImportRejection;
-  /**
-   * Advisory, and ORTHOGONAL to `outcome` — an `applied` value carries one when
-   * the write has a consequence beyond the device. Today that is the
-   * partner-integration identity keys (`asset_tag`, `inventory_id`,
-   * `external_id`), which `routes/partnerApi/devices.ts` republishes as a
-   * device's `stableIdentifiers` to every integration the partner has
-   * connected. Writing them is intended; doing it fleet-wide without being told
-   * is not, so preview says so on the value.
-   */
   warning?: string;
 }
+
+/**
+ * `reason` is DISCRIMINATED onto the one outcome that has it, rather than being
+ * an optional field beside a comment — the same reasoning (and the same JSON
+ * shape, since every arm is literals and strings) as `DeviceResolution` above.
+ * A producer cannot mint `{ outcome: 'applied', reason: 'too_long' }`, and a
+ * consumer cannot read `reason` without first narrowing to `type-error`.
+ */
+export type AnnotatedImportValue = ImportValueAdvice & (
+  | { outcome: 'type-error'; reason: CustomFieldImportRejection }
+  | {
+      outcome: Exclude<ValueOutcome, 'type-error'>;
+      reason?: never;
+    }
+);
 
 export interface AnnotatedValueRow {
   index: number;
@@ -483,11 +506,20 @@ export type ValueImportErrorCode =
   | 'match-unconfirmed'
   | 'write-failed';
 
-/** What `applyWarrantyImport` did with a row's warranty columns. */
+/**
+ * What the row's warranty columns did, at ROW level.
+ *
+ * `none` means the file mapped no warranty column at all — never "it mapped one
+ * and nothing came of it". `rejected` is that second case: a warranty column WAS
+ * mapped and every mapped cell was refused (see the per-value outcomes for
+ * which). Collapsing the two would tell an operator their warranty column was
+ * never mapped when in fact it was read and thrown away.
+ */
 export type WarrantyImportOutcome =
   | 'applied'
   | 'skipped-provider-owned'
   | 'skipped-already-set'
+  | 'rejected'
   | 'none';
 
 export interface ValueImportRowResult {
@@ -532,6 +564,11 @@ export interface ValueImportSummary {
    * Counts VALUES, not rows. An operator cannot reconcile "30,000 in the file"
    * against "1,180 imported" otherwise — and a row count would hide the very
    * partial-application behaviour this importer is built around.
+   *
+   * MIND THE UNITS when totalling problems: `failedValues` counts values inside
+   * rows that DID reach a device, while a row refused outright (resolution or a
+   * stale acknowledgement) contributes nothing to it and appears only in
+   * `errors[]`, in ROW units. The two are not addable without converting.
    */
   appliedValues: number;
   skippedValues: number;

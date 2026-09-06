@@ -302,6 +302,35 @@ describe('POST /devices/custom-fields/import — wire schema', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a row that maps two columns onto the same target', async () => {
+    // A duplicate is not one bad cell — the column-to-target mapping is chosen
+    // once for the whole file, so it would repeat on every row and the last
+    // column would silently win.
+    for (const path of BOTH) {
+      const res = await post(path, { rows: [row({ values: [value('asset_tag', 'A'), value('asset_tag', 'B')] })] });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/same custom field or warranty field/i);
+    }
+    expect(previewMock).not.toHaveBeenCalled();
+    expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a row that maps the same WARRANTY field twice', async () => {
+    const warranty = (v: string) => ({ target: { kind: 'warranty', field: 'warrantyEndDate' }, value: v });
+    const res = await post(PREVIEW, { rows: [row({ values: [warranty('2027-01-01'), warranty('2028-01-01')] })] });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts two DIFFERENT warranty fields on one row', async () => {
+    const res = await post(PREVIEW, {
+      rows: [row({ values: [
+        { target: { kind: 'warranty', field: 'warrantyEndDate' }, value: '2027-01-01' },
+        { target: { kind: 'warranty', field: 'manufacturer' }, value: 'Dell' },
+      ] })],
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('rejects an unknown mapping kind', async () => {
     const res = await post(PREVIEW, {
       rows: [row({ values: [{ target: { kind: 'tags', fieldKey: 'x' }, value: 'y' }] })],

@@ -33,6 +33,7 @@ const {
   txCount,
   insertFailures,
   linkReturns,
+  fieldReturns,
   applyWarrantyImportMock,
 } = vi.hoisted(() => ({
   tableQueues: new Map<string, unknown[][]>(),
@@ -42,6 +43,7 @@ const {
   txCount: { current: 0 },
   insertFailures: { current: null as null | ((table: string, values: Record<string, unknown>) => void) },
   linkReturns: { current: [{ id: 'link-1' }] as unknown[] },
+  fieldReturns: { current: null as null | ((values: Record<string, unknown>) => unknown[]) },
   applyWarrantyImportMock: vi.fn(),
 }));
 
@@ -99,7 +101,7 @@ vi.mock('../../../db', () => {
         const returning = async () =>
           name === 'device_external_links'
             ? linkReturns.current
-            : [{ fieldKey: values.fieldKey }];
+            : (fieldReturns.current?.(values) ?? [{ fieldKey: values.fieldKey }]);
         return {
           onConflictDoUpdate: () => ({ returning }),
           onConflictDoNothing: () => ({ returning }),
@@ -176,6 +178,11 @@ function device(seed: DeviceSeed) {
   };
 }
 
+/** A calendar date `days` in the future, as the `date` column stores it. */
+function futureDate(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 const DEFINITIONS = [
   { id: DEF_TAG, fieldKey: 'asset_tag', name: 'Asset Tag', type: 'text', options: null, deviceTypes: null, required: false, scriptWrite: false, orgId: ORG, partnerId: null },
   { id: DEF_UNITS, fieldKey: 'rack_units', name: 'Rack Units', type: 'number', options: null, deviceTypes: null, required: false, scriptWrite: false, orgId: ORG, partnerId: null },
@@ -186,7 +193,14 @@ interface SeedOptions {
   devices?: ReturnType<typeof device>[];
   links?: Array<{ deviceId: string; system: string; externalId: string; sourceInstance: string | null }>;
   storedValues?: Array<{ deviceId: string; definitionId: string; fieldKey: string; valueText: string | null; valueNumber: number | null; valueBool: boolean | null; valueDate: string | null }>;
-  warranty?: Array<{ deviceId: string; dataSource: string | null }>;
+  warranty?: Array<{
+    deviceId: string;
+    dataSource: string | null;
+    status?: string;
+    warrantyStartDate?: string | null;
+    warrantyEndDate?: string | null;
+    manufacturer?: string | null;
+  }>;
   definitions?: typeof DEFINITIONS;
 }
 
@@ -198,7 +212,13 @@ function seed(options: SeedOptions = {}) {
   queueTable('devices', options.devices ?? [device({ deviceId: D1 })]);
   queueTable('device_external_links', options.links ?? []);
   queueTable('device_custom_field_values', options.storedValues ?? []);
-  queueTable('device_warranty', options.warranty ?? []);
+  queueTable('device_warranty', (options.warranty ?? []).map((row) => ({
+    status: 'unknown',
+    warrantyStartDate: null,
+    warrantyEndDate: null,
+    manufacturer: null,
+    ...row,
+  })));
   queueTable('custom_field_definitions', options.definitions ?? DEFINITIONS);
 }
 
@@ -210,6 +230,7 @@ beforeEach(() => {
   txCount.current = 0;
   insertFailures.current = null;
   linkReturns.current = [{ id: 'link-1' }];
+  fieldReturns.current = null;
   applyWarrantyImportMock.mockReset().mockResolvedValue('applied');
 });
 
@@ -255,6 +276,19 @@ describe('previewDeviceCustomFieldImport', () => {
     seed({ storedValues: stored });
     const [updateRow] = await preview([{ deviceId: D1, values: [v('asset_tag', 'AB-1')] }], { ...ctx, mode: 'update' });
     expect(updateRow!.values[0]!.outcome).toBe('applied');
+  });
+
+  it('skips an IDENTICAL stored value even in update mode', async () => {
+    // Update mode means "overwrite a differing value", not "rewrite everything":
+    // a no-op UPDATE still takes the per-org export lock through the projection
+    // trigger, which is exactly what the compare-before-write exists to avoid.
+    seed({
+      storedValues: [{ deviceId: D1, definitionId: DEF_TAG, fieldKey: 'asset_tag', valueText: 'AB-1', valueNumber: null, valueBool: null, valueDate: null }],
+    });
+
+    const [row] = await preview([{ deviceId: D1, values: [v('asset_tag', 'AB-1')] }], { ...ctx, mode: 'update' });
+
+    expect(row!.values[0]!.outcome).toBe('skipped-already-set');
   });
 
   it('warns on a reserved partner-integration identity key without refusing it', async () => {
@@ -325,10 +359,13 @@ describe('previewDeviceCustomFieldImport', () => {
     expect(row!.values[1]).toMatchObject({ outcome: 'type-error', reason: 'invalid_date' });
   });
 
-  it('annotates a provider-owned warranty row as skipped-already-set unless the operator opted in', async () => {
+  it('gives a provider-owned warranty its OWN outcome, not skipped-already-set', async () => {
+    // "already correct, nothing to do" and "refused, and there is a switch you
+    // can flip" are different messages to show a tech. A consumer must not have
+    // to parse a warning string to tell them apart.
     seed({ warranty: [{ deviceId: D1, dataSource: 'provider' }] });
     const [guarded] = await preview([{ deviceId: D1, values: [w('warrantyEndDate', '2027-03-04')] }]);
-    expect(guarded!.values[0]!.outcome).toBe('skipped-already-set');
+    expect(guarded!.values[0]!.outcome).toBe('skipped-provider-owned');
     expect(guarded!.values[0]!.warning).toMatch(/manufacturer/i);
 
     seed({ warranty: [{ deviceId: D1, dataSource: 'provider' }] });
@@ -337,6 +374,55 @@ describe('previewDeviceCustomFieldImport', () => {
       { ...ctx, overrideProviderWarranty: true },
     );
     expect(opted!.values[0]!.outcome).toBe('applied');
+  });
+
+  it('previews an unchanged warranty cell as skipped-already-set, the way commit will treat it', async () => {
+    // Preview's whole job is to predict commit. Before this, a re-import of an
+    // unchanged file previewed every warranty cell as `applied` and then
+    // committed it as skipped.
+    const end = futureDate(200);
+    seed({ warranty: [{ deviceId: D1, dataSource: 'import', status: 'active', warrantyEndDate: end, manufacturer: 'dell' }] });
+
+    const [row] = await preview([{
+      deviceId: D1, values: [w('warrantyEndDate', end), w('manufacturer', 'Dell'), w('warrantyStartDate', '2020-01-01')],
+    }], { ...ctx, mode: 'update' });
+
+    expect(row!.values.map((x) => x.outcome)).toEqual(['skipped-already-set', 'skipped-already-set', 'applied']);
+  });
+
+  it('treats an unchanged end date whose STORED STATUS has gone stale as a change', async () => {
+    // The status is derived from the date and decays with time. If an unchanged
+    // date short-circuited the write, the import would quietly stop being the
+    // thing that refreshes a stale status.
+    const end = futureDate(30);
+    seed({ warranty: [{ deviceId: D1, dataSource: 'import', status: 'active', warrantyEndDate: end, manufacturer: null }] });
+
+    const [row] = await preview([{ deviceId: D1, values: [w('warrantyEndDate', end)] }], { ...ctx, mode: 'update' });
+
+    expect(row!.values[0]!.outcome).toBe('applied');
+  });
+
+  it('annotates every value on an unresolved row as device-unresolved, whatever the row outcome', async () => {
+    seed({ devices: [] });
+
+    const [notFound] = await preview([{ hostname: 'ghost', values: [v('asset_tag', 'x'), w('warrantyEndDate', '2027-03-04')] }]);
+    expect(notFound!.outcome).toBe('not-found');
+    expect(notFound!.values.map((x) => x.outcome)).toEqual(['device-unresolved', 'device-unresolved']);
+
+    seed({ devices: [] });
+    const [orgNotFound] = await preview([{
+      organizationId: '99999999-9999-4999-8999-999999999999', hostname: 'ghost', values: [v('asset_tag', 'x')],
+    }]);
+    expect(orgNotFound!.outcome).toBe('org-not-found');
+    expect(orgNotFound!.values[0]!.outcome).toBe('device-unresolved');
+  });
+
+  it('handles a row that maps no values at all', async () => {
+    // Legal on the wire: an external-id-only row exists to mint the durable link.
+    seed();
+    const [row] = await preview([{ deviceId: D1, values: [] }]);
+    expect(row).toMatchObject({ outcome: 'matched', deviceId: D1 });
+    expect(row!.values).toEqual([]);
   });
 
   it('writes nothing at all', async () => {
@@ -574,6 +660,90 @@ describe('commitDeviceCustomFieldImport', () => {
     });
     expect(applyWarrantyImportMock.mock.calls[0]![2]).toEqual({ overrideProvider: false });
     expect(summary.rows[0]).toMatchObject({ warranty: 'applied', applied: 3 });
+  });
+
+  it('counts a value the DATABASE declined as skipped, not applied', async () => {
+    // `persistDeviceCustomFieldValues`' compare-before-write returns no row when
+    // a concurrent writer already stored the same value. The tally must follow
+    // what the database DID, not what the annotator predicted.
+    seed();
+    linkReturns.current = [];
+    const returnNothing = { current: true };
+    insertFailures.current = () => { /* no throw; the empty return is rigged below */ };
+    fieldReturns.current = () => (returnNothing.current ? [] : [{ fieldKey: 'asset_tag' }]);
+
+    const summary = await commit([{ deviceId: D1, values: [v('asset_tag', 'AB-1')] }], ctx, actor, { mode: 'update' });
+
+    expect(summary.rows[0]).toMatchObject({ applied: 0, skipped: 1, appliedFieldKeys: [] });
+    expect(summary.appliedValues).toBe(0);
+    expect(summary.skippedValues).toBe(1);
+  });
+
+  it('does not count the same target twice when a row maps it twice', async () => {
+    // The wire schema refuses this, but the service is reachable directly and
+    // must not inflate the count an operator reconciles the file against: two
+    // columns onto one target write ONE datum (last wins).
+    seed();
+
+    const summary = await commit([{
+      deviceId: D1, values: [v('asset_tag', 'FIRST'), v('asset_tag', 'SECOND')],
+    }], ctx, actor, { mode: 'update' });
+
+    expect(summary.rows[0]).toMatchObject({ applied: 1, skipped: 1 });
+    expect(summary.appliedValues).toBe(1);
+  });
+
+  it('refuses a stale pin on a row that resolves unambiguously', async () => {
+    seed();
+
+    const summary = await commit([{
+      deviceId: D1, expectedDeviceId: GONE, values: [v('asset_tag', 'x')],
+    }]);
+
+    expect(summary.errors.map((e) => e.code)).toEqual(['match-changed']);
+    expect(txCount.current).toBe(0);
+  });
+
+  it('round-trips externalSourceInstance through the link key it writes', async () => {
+    // The reserved discriminator is part of the composite link key. If the
+    // write side and the resolver's read side ever disagreed about it, a second
+    // run would mint a duplicate link instead of matching.
+    seed();
+    const row = {
+      externalSystem: 'datto_rmm',
+      externalId: 'uid-si',
+      externalSourceInstance: 'tenant-a',
+      hostname: 'wkstn-1',
+      values: [v('asset_tag', 'AB-1')],
+    } as CommitValueRowInput;
+
+    const first = await commit([row], ctx, actor, { mode: 'update' });
+    expect(first.linksCreated).toBe(1);
+    expect(txInserts.find((i) => i.table === 'device_external_links')!.values)
+      .toMatchObject({ sourceInstance: 'tenant-a', externalId: 'uid-si' });
+
+    // Feed that exact link back and the row must resolve BY LINK, proving both
+    // sides build the same key. A different sourceInstance must NOT match.
+    seed({ links: [{ deviceId: D1, system: 'datto_rmm', externalId: 'uid-si', sourceInstance: 'tenant-a' }] });
+    const second = await commit([row], ctx, actor, { mode: 'update' });
+    expect(second.rows[0]).toMatchObject({ method: 'link', linkCreated: false });
+
+    seed({ links: [{ deviceId: D1, system: 'datto_rmm', externalId: 'uid-si', sourceInstance: 'tenant-b' }] });
+    const other = await commit([row], ctx, actor, { mode: 'update' });
+    expect(other.rows[0]).toMatchObject({ method: 'hostname', linkCreated: true });
+  });
+
+  it('reports a warranty column whose every cell was refused as rejected, not "none"', async () => {
+    // `none` means "no warranty column was mapped". Saying it here would tell an
+    // operator their column was never read, when it was read and thrown away.
+    seed();
+
+    const summary = await commit([{
+      deviceId: D1, values: [v('asset_tag', 'AB-1'), w('warrantyEndDate', 'whenever')],
+    }], ctx, actor, { mode: 'update' });
+
+    expect(applyWarrantyImportMock).not.toHaveBeenCalled();
+    expect(summary.rows[0]).toMatchObject({ warranty: 'rejected', applied: 1, failed: 1 });
   });
 
   it('reports a declined warranty column as skipped-provider-owned, never as "none"', async () => {

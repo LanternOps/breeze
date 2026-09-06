@@ -9,6 +9,7 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { captureException } from '../../services/sentry';
 import { resolveImportPartnerId } from '../importScope';
 import {
   commitDeviceCustomFieldImport,
@@ -20,6 +21,8 @@ import {
   DEFAULT_IMPORT_SYSTEM,
   MAX_IMPORT_ROWS,
   MAX_IMPORT_VALUES,
+  type MappingTarget,
+  type WarrantyImportField,
 } from '../../services/customFields/import/types';
 
 /**
@@ -64,7 +67,20 @@ const requireDeviceWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.action,
 );
 
-const WARRANTY_FIELDS = ['warrantyStartDate', 'warrantyEndDate', 'manufacturer'] as const;
+/**
+ * `satisfies Record<WarrantyImportField, true>` is the COMPILE-TIME TIE between
+ * this hand-written wire schema and the domain union. Without it the schema is a
+ * mirror maintained by prose: a new `WarrantyImportField` would still typecheck
+ * everywhere (a narrower literal union is always assignable to a wider one) and
+ * would simply be unselectable from the wire, silently, forever.
+ */
+const WARRANTY_FIELD_SET = {
+  warrantyStartDate: true,
+  warrantyEndDate: true,
+  manufacturer: true,
+} as const satisfies Record<WarrantyImportField, true>;
+
+const WARRANTY_FIELDS = Object.keys(WARRANTY_FIELD_SET) as [WarrantyImportField, ...WarrantyImportField[]];
 
 const ROW_CAP_MESSAGE =
   `At most ${MAX_IMPORT_ROWS} device rows per request — split the file into chunks`;
@@ -87,6 +103,34 @@ const mappingTargetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('customField'), fieldKey: z.string().min(1).max(100) }),
   z.object({ kind: z.literal('warranty'), field: z.enum(WARRANTY_FIELDS) }),
 ]);
+
+/** The other direction: the wire may never parse a target the domain cannot express. */
+type _WireTargetIsADomainTarget = z.infer<typeof mappingTargetSchema> extends MappingTarget ? true : never;
+const _wireTargetIsADomainTarget: _WireTargetIsADomainTarget = true;
+void _wireTargetIsADomainTarget;
+
+const DUPLICATE_TARGET_MESSAGE =
+  'Two columns on this row are mapped to the same custom field or warranty field — '
+  + 'each target may be mapped at most once';
+
+/**
+ * One row may not map the same target twice.
+ *
+ * Refused here, not annotated per value, because the column-to-target mapping is
+ * chosen ONCE for the whole file: a duplicate is not one bad cell, it is a
+ * mis-configured wizard step that would repeat on every row. Silently letting it
+ * through means the last column wins and the operator is never told which of
+ * their two columns the device actually holds.
+ */
+function targetsAreUnique(row: { values: Array<{ target: z.infer<typeof mappingTargetSchema> }> }): boolean {
+  const seen = new Set<string>();
+  for (const { target } of row.values) {
+    const key = target.kind === 'customField' ? `field\u0000${target.fieldKey}` : `warranty\u0000${target.field}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
 
 // Mirrors `customFieldValueSchema` in `routes/devices/customFieldValues.ts`, so
 // a bulk write cannot carry a value the single PATCH would reject on size.
@@ -113,7 +157,9 @@ const importRowFields = {
   values: z.array(importValueSchema).max(MAX_IMPORT_VALUES),
 };
 
-const previewRowSchema = z.object(importRowFields);
+const previewRowSchema = z
+  .object(importRowFields)
+  .refine(targetsAreUnique, { message: DUPLICATE_TARGET_MESSAGE, path: ['values'] });
 
 /**
  * A row as submitted to a COMMIT. Both acknowledgements are re-checked against
@@ -135,7 +181,8 @@ const commitRowSchema = z
   .refine(
     (row) => row.expectedOutcome !== 'ambiguous' || row.expectedDeviceId !== undefined,
     { message: AMBIGUOUS_NEEDS_PIN, path: ['expectedDeviceId'] },
-  );
+  )
+  .refine(targetsAreUnique, { message: DUPLICATE_TARGET_MESSAGE, path: ['values'] });
 
 /**
  * The row cap alone does not bound the work: 1000 rows x 30 values is 30,000
@@ -265,6 +312,12 @@ customFieldImportRoutes.post(
         devices: summary.rows.length,
         error: err instanceof Error ? err.message : String(err),
       });
+      // Reaching here means a bug in the fan-out itself (the persistence below
+      // it is decoupled and self-healing), and it drops the provenance trail for
+      // a whole import batch. A log line alone would need someone grepping for
+      // it; `auditService.enqueueForRetry` pages for a lost audit event for the
+      // same reason.
+      captureException(err);
     }
 
     return c.json(summary);

@@ -260,6 +260,7 @@ describe('device custom-field VALUE import (real Postgres)', () => {
     const world = await seedWorld();
     const device = await seedDevice({ orgId: world.orgA, siteId: world.siteA, hostname: 'partial-1', serialNumber: 'sn-partial-1' });
     await seedDefinition({ partnerId: world.partnerA, fieldKey: 'bitlocker_status', type: 'text', deviceTypes: ['macos'] });
+    await seedDefinition({ partnerId: world.partnerA, fieldKey: 'rack_position', type: 'number' });
 
     const ctx: ValueImportContext = {
       partnerId: world.partnerA, accessibleOrgIds: [world.orgA], allowedSiteIds: null, mode: 'update',
@@ -273,7 +274,7 @@ describe('device custom-field VALUE import (real Postgres)', () => {
             v('asset_tag', 'AB-1'),
             v('rack_units', 4),
             v('never_defined', 'x'),
-            v('rack_units', 'not a number'),
+            v('rack_position', 'not a number'),
             v('bitlocker_status', 'on'),
           ],
         }] as CommitValueRowInput[],
@@ -376,6 +377,82 @@ describe('device custom-field VALUE import (real Postgres)', () => {
     expect(annotated[0]!.values.map((x) => x.outcome)).toEqual(['skipped-already-set', 'skipped-already-set']);
   });
 
+  runDb('re-running an identical WARRANTY file previews and commits as already-set', async () => {
+    // Preview and commit must agree on warranty exactly as they do on custom
+    // fields; before the review pass, preview promised `applied` here.
+    const world = await seedWorld();
+    const device = await seedDevice({ orgId: world.orgA, siteId: world.siteA, hostname: 'warranty-3', serialNumber: 'sn-warranty-3' });
+
+    const ctx: ValueImportContext = {
+      partnerId: world.partnerA, accessibleOrgIds: [world.orgA], allowedSiteIds: null, mode: 'update',
+    };
+    const rows = [{
+      hostname: 'warranty-3', values: [w('warrantyEndDate', inDays(30)), w('manufacturer', 'Dell')],
+    }] as CommitValueRowInput[];
+
+    const first = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport(rows, ctx, actor));
+    expect(first.rows[0]!.warranty).toBe('applied');
+
+    const annotated = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      previewDeviceCustomFieldImport(rows, ctx));
+    expect(annotated[0]!.values.map((x) => x.outcome)).toEqual(['skipped-already-set', 'skipped-already-set']);
+
+    const again = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport(rows, ctx, actor));
+    expect(again.rows[0]!.warranty).toBe('skipped-already-set');
+    expect(again.appliedValues).toBe(0);
+
+    // And nothing was rewritten.
+    const [row] = await getTestDb()
+      .select({ endDate: deviceWarranty.warrantyEndDate })
+      .from(deviceWarranty)
+      .where(eq(deviceWarranty.deviceId, device));
+    expect(row).toMatchObject({ endDate: inDays(30) });
+  });
+
+  runDb('the durable link key round-trips through externalSourceInstance', async () => {
+    const world = await seedWorld();
+    const device = await seedDevice({ orgId: world.orgA, siteId: world.siteA, hostname: 'si-1', serialNumber: 'sn-si-1' });
+
+    const ctx: ValueImportContext = {
+      partnerId: world.partnerA, accessibleOrgIds: [world.orgA], allowedSiteIds: null, mode: 'update',
+    };
+    const row = {
+      externalSystem: 'datto_rmm',
+      externalId: 'uid-si-1',
+      externalSourceInstance: 'tenant-a',
+      hostname: 'si-1',
+      values: [v('asset_tag', 'AB-1')],
+    } as CommitValueRowInput;
+
+    const first = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport([row], ctx, actor));
+    expect(first.rows[0]).toMatchObject({ method: 'hostname', linkCreated: true });
+
+    // Second run, same row: the link written above must be the one the resolver
+    // reads back — proving the write side and W06's read side build the SAME
+    // composite key including the reserved discriminator.
+    const second = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport([{ ...row, values: [v('asset_tag', 'AB-2')] }], ctx, actor));
+    expect(second.rows[0]).toMatchObject({ deviceId: device, method: 'link', linkCreated: false });
+
+    // A DIFFERENT source instance is a different key and must not match it.
+    const other = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      commitDeviceCustomFieldImport(
+        [{ ...row, externalSourceInstance: 'tenant-b', values: [v('asset_tag', 'AB-3')] }],
+        ctx,
+        actor,
+      ));
+    expect(other.rows[0]).toMatchObject({ method: 'hostname', linkCreated: true });
+
+    const links = await getTestDb()
+      .select({ sourceInstance: deviceExternalLinks.sourceInstance })
+      .from(deviceExternalLinks)
+      .where(eq(deviceExternalLinks.deviceId, device));
+    expect(links.map((l) => l.sourceInstance).sort()).toEqual(['tenant-a', 'tenant-b']);
+  });
+
   runDb('the warranty target writes a COMPUTED status, so evaluateWarrantyAlerts actually fires', async () => {
     const world = await seedWorld();
     const device = await seedDevice({ orgId: world.orgA, siteId: world.siteA, hostname: 'warranty-1', serialNumber: 'sn-warranty-1' });
@@ -460,10 +537,13 @@ describe('device custom-field VALUE import (real Postgres)', () => {
       hostname: 'warranty-2', values: [w('warrantyEndDate', inDays(30))],
     }] as CommitValueRowInput[];
 
+    const guardedPreview = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
+      previewDeviceCustomFieldImport(rows, base));
+    expect(guardedPreview[0]!.values[0]!.outcome).toBe('skipped-provider-owned');
+
     const guarded = await withDbAccessContext(partnerCtx(world.partnerA, [world.orgA]), () =>
       commitDeviceCustomFieldImport(rows, base, actor));
-    // The ROW-level outcome names the reason; the per-VALUE annotation says
-    // `skipped-already-set` with the warning. Reporting `none` here would tell
+    // The ROW-level outcome names the reason. Reporting `none` here would tell
     // the operator their warranty column was never mapped.
     expect(guarded.rows[0]!.warranty).toBe('skipped-provider-owned');
     let [row] = await getTestDb()

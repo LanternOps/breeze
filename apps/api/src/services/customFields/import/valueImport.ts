@@ -15,12 +15,24 @@
  * are all per VALUE; only device resolution is per row.
  *
  * ── Where the reads happen ──────────────────────────────────────────────────
- * Device resolution (W06's `loadDeviceResolutionSnapshot`) escalates to a SYSTEM
- * context because a partner's import legitimately spans organizations and
- * `custom_field_definitions` has no partner-wide RLS SELECT branch. RLS is
- * therefore NOT the boundary on that read — the organization and site predicates
- * W06 carries in its SQL are the whole of it, and this module never widens the
- * scope it is handed.
+ * TWO separate escalations to a SYSTEM db context, for two different reasons.
+ * They are easy to conflate and the distinction matters, so:
+ *
+ *  1. **Device resolution** — W06's `loadDeviceResolutionSnapshot`. It escalates
+ *     because a partner's import legitimately spans that partner's
+ *     organizations; see its own header. It reads `organizations`, `devices`,
+ *     `device_hardware` and `device_external_links`, and touches
+ *     `custom_field_definitions` not at all. RLS is NOT the boundary on that
+ *     read — the organization and site predicates W06 carries IN ITS SQL are
+ *     the whole of it, and this module never widens the scope it is handed.
+ *  2. **Visible definitions** — W04's `loadVisibleCustomFieldDefinitions`,
+ *     called once per resolved organization below. It escalates for an
+ *     unrelated reason: `custom_field_definitions` has no partner-wide RLS
+ *     SELECT branch (it is in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`, TODO #4944),
+ *     so an org-scoped request context cannot see a partner-wide definition at
+ *     all and every value naming one would be annotated `no-definition`. That
+ *     rationale belongs to THAT function and would stop applying the day #4944
+ *     lands; it says nothing about (1).
  *
  * Everything else — the already-stored values, the existing warranty rows — is
  * read in the REQUEST's own context, deliberately. Those reads are bounded to
@@ -74,7 +86,14 @@ import {
   resolveDeviceRow,
   type DeviceResolutionScope,
 } from './resolveDevice';
-import { applyWarrantyImport, coerceWarrantyValue, type WarrantyImportWrite } from './warrantyTarget';
+import {
+  applyWarrantyImport,
+  coerceWarrantyValue,
+  warrantyCellUnchanged,
+  type ExistingWarrantyRow,
+  type WarrantyImportWrite,
+} from './warrantyTarget';
+import { captureException } from '../../sentry';
 import {
   DEFAULT_IMPORT_SYSTEM,
   type AnnotatedImportValue,
@@ -85,6 +104,7 @@ import {
   type DeviceCustomFieldImportValue,
   type DeviceMatchMethod,
   type DeviceResolution,
+  type MappingTarget,
   type ValueImportErrorCode,
   type ValueImportErrorEntry,
   type ValueImportMode,
@@ -144,6 +164,11 @@ interface StoredValue extends CustomFieldValueColumns {
   definitionId: string;
 }
 
+/** Identity of a mapped target, for de-duplicating within one row. */
+function targetKey(target: MappingTarget): string {
+  return target.kind === 'customField' ? `field\u0000${target.fieldKey}` : `warranty\u0000${target.field}`;
+}
+
 /** The device a row will actually be written to, once resolution and any pin agree. */
 interface RowTarget {
   deviceId: string;
@@ -157,8 +182,12 @@ interface AnnotationState {
   definitionsByOrg: Map<string, Map<string, VisibleCustomFieldDefinition>>;
   /** `deviceId` -> `definitionId` -> the value already stored. */
   storedByDevice: Map<string, Map<string, StoredValue>>;
-  /** `deviceId` -> the existing warranty row's provenance. */
-  warrantyByDevice: Map<string, string | null>;
+  /**
+   * `deviceId` -> the existing warranty row. The whole row, not just its
+   * provenance: preview compares each mapped cell against it so it annotates a
+   * re-import the way commit will actually treat it.
+   */
+  warrantyByDevice: Map<string, ExistingWarrantyRow>;
   mode: ValueImportMode;
   overrideProviderWarranty: boolean;
 }
@@ -255,11 +284,18 @@ async function loadAnnotationState(
   }
 
   const warranty = (await db
-    .select({ deviceId: deviceWarranty.deviceId, dataSource: deviceWarranty.dataSource })
+    .select({
+      deviceId: deviceWarranty.deviceId,
+      dataSource: deviceWarranty.dataSource,
+      status: deviceWarranty.status,
+      warrantyStartDate: deviceWarranty.warrantyStartDate,
+      warrantyEndDate: deviceWarranty.warrantyEndDate,
+      manufacturer: deviceWarranty.manufacturer,
+    })
     .from(deviceWarranty)
-    .where(inArray(deviceWarranty.deviceId, deviceIds))) as Array<{ deviceId: string; dataSource: string | null }>;
+    .where(inArray(deviceWarranty.deviceId, deviceIds))) as Array<ExistingWarrantyRow & { deviceId: string }>;
 
-  for (const row of warranty) state.warrantyByDevice.set(row.deviceId, row.dataSource);
+  for (const row of warranty) state.warrantyByDevice.set(row.deviceId, row);
 
   return state;
 }
@@ -302,10 +338,19 @@ function decideValue(
     if (!coerced.ok) {
       return { annotation: { target: mapping, outcome: 'type-error', reason: coerced.reason } };
     }
-    if (state.warrantyByDevice.get(target.deviceId) === 'provider' && !state.overrideProviderWarranty) {
+    const existing = state.warrantyByDevice.get(target.deviceId);
+    if (existing?.dataSource === 'provider' && !state.overrideProviderWarranty) {
       return {
-        annotation: { target: mapping, outcome: 'skipped-already-set', warning: PROVIDER_WARRANTY_WARNING },
+        annotation: { target: mapping, outcome: 'skipped-provider-owned', warning: PROVIDER_WARRANTY_WARNING },
       };
+    }
+    // Compared against the STORED row, exactly as the custom-field branch does
+    // below. Without this, a re-import of an unchanged file previews every
+    // warranty cell as `applied` and then commits it as skipped — preview and
+    // commit disagreeing on the one surface whose whole job is to predict the
+    // other.
+    if (existing && warrantyCellUnchanged(mapping.field, existing, coerced.value)) {
+      return { annotation: { target: mapping, outcome: 'skipped-already-set' } };
     }
     return {
       annotation: { target: mapping, outcome: 'applied' },
@@ -517,10 +562,22 @@ async function writeRow(
     warrantyWrite[decision.warrantyWrite.field] = decision.warrantyWrite.value;
     hasWarranty = true;
   }
-  /** A warranty column WAS mapped, and the annotator declined it. */
-  const warrantyDeclined = decisions.some(
-    (d) => d.annotation.target.kind === 'warranty' && d.annotation.outcome === 'skipped-already-set',
-  );
+  // A warranty column WAS mapped and produced no write. WHY it produced none is
+  // the operator-facing answer, and each reason is a different next step:
+  // provider-owned (flip the override), already-set (nothing to do), or every
+  // mapped cell refused (fix the file). `none` is reserved for "no warranty
+  // column was mapped at all".
+  const warrantyAnnotations = decisions
+    .filter((d) => d.annotation.target.kind === 'warranty')
+    .map((d) => d.annotation.outcome);
+  const declinedWarranty: WarrantyImportOutcome | null =
+    warrantyAnnotations.length === 0
+      ? null
+      : warrantyAnnotations.includes('skipped-provider-owned')
+        ? 'skipped-provider-owned'
+        : warrantyAnnotations.includes('skipped-already-set')
+          ? 'skipped-already-set'
+          : 'rejected';
 
   const externalId = row.externalId?.trim();
   // Only mint a link when the row was resolved some OTHER way — a link-match
@@ -564,16 +621,9 @@ async function writeRow(
       linkCreated = created.length > 0;
     }
 
-    // A warranty target the annotator already declined (today: the row is
-    // provider-owned and the operator did not opt in) is reported as the REASON
-    // it was declined, not as `none`. `none` means "this row mapped no warranty
-    // column at all", and collapsing the two would tell an operator their
-    // warranty column was never mapped when in fact it was refused.
     const warranty = hasWarranty
       ? await applyWarrantyImport(tx, warrantyWrite, { overrideProvider: ctx.overrideProviderWarranty ?? false })
-      : warrantyDeclined
-        ? ('skipped-provider-owned' as const)
-        : ('none' as const);
+      : (declinedWarranty ?? 'none');
 
     return { changedFieldKeys, linkCreated, warranty };
   });
@@ -591,12 +641,35 @@ function tallyRow(
   let skipped = 0;
   let failed = 0;
 
-  for (const decision of decisions) {
+  // A row that maps two columns onto the SAME target writes one datum — the
+  // last one wins, in the database and here. Without this, both decisions would
+  // find their key in `changed` and `applied` would be inflated by one per
+  // duplicate, corrupting the very count an operator reconciles the file
+  // against. The wire schema refuses such a row outright
+  // (`routes/devices/customFieldImport.ts`); this keeps the tally honest for a
+  // direct caller of the service, which is reachable and must fail safe.
+  // Only a decision that would actually WRITE can supersede an earlier one — a
+  // later column that failed validation wrote nothing and must not demote the
+  // value that did land.
+  const lastWriterByTarget = new Map<string, number>();
+  decisions.forEach((decision, index) => {
+    if (decision.annotation.outcome === 'applied') {
+      lastWriterByTarget.set(targetKey(decision.annotation.target), index);
+    }
+  });
+
+  for (const [index, decision] of decisions.entries()) {
     const outcome = decision.annotation.outcome;
-    if (outcome === 'skipped-already-set') {
+    const superseded = outcome === 'applied'
+      && lastWriterByTarget.get(targetKey(decision.annotation.target)) !== index;
+    if (outcome === 'skipped-already-set' || outcome === 'skipped-provider-owned') {
       skipped += 1;
     } else if (outcome === 'applied') {
-      if (decision.fieldWrite) {
+      if (superseded) {
+        // Overwritten within this same row by a later column mapped to the same
+        // target: exactly one datum landed, so exactly one is counted applied.
+        skipped += 1;
+      } else if (decision.fieldWrite) {
         // The database's compare-before-write can still decline an UPDATE that
         // would change nothing — a concurrent writer got there first. Counted as
         // skipped rather than applied so the totals describe what happened.
@@ -705,6 +778,13 @@ export async function commitDeviceCustomFieldImport(
         ...(constraint ? { constraint } : {}),
         error: err instanceof Error ? err.message : String(err),
       });
+      // A console line alone is only visible to whoever is grepping. An
+      // UNRECOGNISED sqlstate (or a plain JS error from a future refactor) is a
+      // code-level regression that would hit every row in the batch while the
+      // operator reads "check the server log" on all of them — page it.
+      // Recognised, expected refusals stay log-only so a bad CSV cannot flood
+      // Sentry.
+      if (!pgErrorCode(err) || !WRITE_FAILURE_COPY[pgErrorCode(err)!]) captureException(err);
       summary.errors.push(withCause({ index, ...writeFailure(err) }, err));
     }
   }

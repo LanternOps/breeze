@@ -117,12 +117,40 @@ export function hasWarrantyColumns(write: WarrantyImportWrite): boolean {
   return 'warrantyStartDate' in write || 'warrantyEndDate' in write || 'manufacturer' in write;
 }
 
-interface ExistingWarrantyRow {
+export interface ExistingWarrantyRow {
   dataSource: string | null;
   warrantyStartDate: string | null;
   warrantyEndDate: string | null;
   manufacturer: string | null;
   status: string;
+}
+
+/**
+ * Would writing `value` into `field` change anything?
+ *
+ * PREVIEW uses this so it annotates a warranty cell the way commit will treat
+ * it, instead of promising `applied` for a re-import of an unchanged file. It
+ * lives here, beside `applyWarrantyImport`, because the two must agree — and
+ * the end-date case is the reason it cannot be a naive equality check: the
+ * stored `status` is derived from that date and DECAYS with time, so a row
+ * whose date is unchanged but whose status has since gone stale ('active' that
+ * should now read 'expiring') must still be treated as a change, or the import
+ * would quietly stop being the thing that refreshes it.
+ */
+export function warrantyCellUnchanged(
+  field: WarrantyImportField,
+  existing: ExistingWarrantyRow,
+  value: string | null,
+): boolean {
+  if (field === 'manufacturer') {
+    const incoming = value === null ? null : normalizeManufacturer(value);
+    return (existing.manufacturer ?? null) === incoming;
+  }
+  if (field === 'warrantyStartDate') {
+    return (existing.warrantyStartDate ?? null) === value;
+  }
+  return (existing.warrantyEndDate ?? null) === value
+    && existing.status === computeWarrantyStatus(value);
 }
 
 function merge<T>(write: WarrantyImportWrite, key: keyof WarrantyImportWrite, existing: T): T {
