@@ -179,8 +179,14 @@ export interface AccountingPaymentPayload {
   /** `PaymentRefNum` — cheque number, Stripe `pi_…`. Already truncated to QBO's
    *  21-char cap by the coordinator. NEVER an ownership key. */
   reference: string | null;
-  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker. */
+  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker.
+   *  Deliberately NOT generation-tagged — the pull adopts on this exact string. */
   privateNote: string;
+  /** `accounting_entity_mappings.push_generation`: how many times this mapping
+   *  has been re-owned for a fresh create. 0 for a first push. The provider
+   *  folds it into the idempotency `requestid` so a re-push after a hand
+   *  deletion in QuickBooks is not answered from the 24h replay cache. */
+  pushGeneration: number;
 }
 
 export interface AccountingDeletePaymentPayload {

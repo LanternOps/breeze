@@ -34,9 +34,9 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   `push_payments`: once Breeze created a Payment in QuickBooks it owns its
   removal, so switching the feature off cannot strand money in the books.
 - Migration `2026-10-12-100000-quickbooks-payment-push.sql` adds
-  `accounting_connections.push_payments` and four columns on
+  `accounting_connections.push_payments` and five columns on
   `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`,
-  `sync_attempts`), one CHECK constraint and one partial index. It backfills `breeze_origin = true`
+  `sync_attempts`, `push_generation`), one CHECK constraint and one partial index. It backfills `breeze_origin = true`
   for existing invoice mappings under `set_config('breeze.scope','system', true)`
   and logs the row count as a `WARNING`. No new tables, no RLS changes.
 - New per-connection setting `push_payments` (default **on**) beside the
@@ -58,6 +58,15 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   per enqueue and the reconcile sweep re-enqueues every 15 minutes — so the
   practical horizon is about 20 sweeps, roughly five hours. A pending DELETE is
   never capped: once Breeze created a Payment in QuickBooks it owns the removal.
+- Re-pushing a payment after somebody **deleted the QuickBooks Payment by hand**
+  now actually creates a new one. QuickBooks replays a create's original
+  response for a repeated `requestid` for 24 hours, so the retry key can no
+  longer be the payment id alone: each time the invoice fan-out re-owns a
+  mapping for a fresh create it bumps `push_generation` and the key becomes
+  `<payment id>:g<n>`. It still never changes across retries of the same push,
+  so a lost response cannot double-book the customer. Previously the re-push
+  reported success and re-linked the mapping to the deleted Payment, leaving the
+  invoice balance wrong in QuickBooks with no error shown.
 - The reconcile sweep's gate widened from `pull_payments` to
   `pull_payments OR push_payments`, so a realm with pull off and push on now
   runs the CDC pass (it suppresses new QuickBooks-origin imports, logging

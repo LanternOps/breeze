@@ -110,6 +110,15 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // count not-connected skips, and uses the counter only to throttle its Sentry
   // reporting to about once a day.
   syncAttempts: integer('sync_attempts').notNull().default(0),
+  // How many times this mapping has been RE-OWNED for a fresh QuickBooks
+  // create. QuickBooks replays a create's cached response for a repeated
+  // `requestid` for 24 hours, so a re-push after somebody deleted the Payment
+  // by hand must present a NEW requestid or the worker gets the deleted
+  // Payment's id back and stamps the mapping synced against nothing. The
+  // requestid is `<invoice_payments.id>` at generation 0 and
+  // `<invoice_payments.id>:g<n>` above it — per ownership, but stable across
+  // BullMQ retries of that ownership. Payment rows only.
+  pushGeneration: integer('push_generation').notNull().default(0),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   lastError: text('last_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

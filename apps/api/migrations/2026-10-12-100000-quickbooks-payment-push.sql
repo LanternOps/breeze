@@ -38,6 +38,24 @@ ALTER TABLE accounting_entity_mappings
 ALTER TABLE accounting_entity_mappings
   ADD COLUMN IF NOT EXISTS sync_attempts integer NOT NULL DEFAULT 0;
 
+-- How many times this mapping has been re-owned for a FRESH QuickBooks create.
+-- QuickBooks caches a create's response against its `requestid` for 24 hours
+-- and REPLAYS it rather than creating again, which is exactly what makes a
+-- retry safe — and exactly what breaks a legitimate re-create. When somebody
+-- deletes a Breeze-created Payment by hand in QuickBooks, the pull clears
+-- `remote_entity_id` and the invoice fan-out re-owns the row for a new create;
+-- re-sending the same `requestid` would replay the ORIGINAL response, so the
+-- worker would report success and stamp the mapping synced with the id of a
+-- Payment that no longer exists (sandbox walk item 32 — silent data loss).
+-- The generation is bumped by that re-own and appended to the requestid
+-- (`<invoice_payments.id>:g<n>`), so it changes per ownership yet stays STABLE
+-- across BullMQ retries of the same ownership — which is what keeps the retry
+-- idempotency the requestid exists for. 0 means "never re-owned" and keeps the
+-- bare payment id as the requestid, so every existing row is unaffected.
+-- The PrivateNote adoption marker is deliberately NOT generation-tagged.
+ALTER TABLE accounting_entity_mappings
+  ADD COLUMN IF NOT EXISTS push_generation integer NOT NULL DEFAULT 0;
+
 DO $$
 BEGIN
   IF NOT EXISTS (

@@ -818,10 +818,24 @@ export class QuickbooksProvider implements AccountingProvider {
     // Idempotency key, exactly as pushInvoice's create path uses (`:663-678`):
     // QBO recognizes the same `requestid` for a rolling 24h window and returns
     // the ORIGINAL response rather than creating again, so a retry after a lost
-    // response cannot double-book the customer's money. Deterministic per Breeze
-    // payment and well under QBO's 50-char cap (a uuid is 36).
+    // response cannot double-book the customer's money.
+    //
+    // That replay is also a TRAP for a legitimate re-create. When a
+    // Breeze-created Payment is deleted by hand in QuickBooks, the pull clears
+    // the mapping's remote id and the invoice fan-out re-owns it for a new
+    // create; with the bare payment id as the requestid QBO would replay the
+    // original response, so the worker would report `pushed` and stamp the
+    // mapping synced with the id of a Payment that no longer exists (sandbox
+    // walk item 32). `push_generation` is bumped by that re-own, so the key
+    // changes per OWNERSHIP while staying identical across BullMQ retries of
+    // the same ownership — which is what the replay protection needs.
+    // Generation 0 keeps the bare id, so nothing already in flight changes.
+    // Still well under QBO's 50-char cap (a uuid is 36; `:g` + an integer).
+    const requestId = payment.pushGeneration > 0
+      ? `${payment.invoicePaymentId}:g${payment.pushGeneration}`
+      : payment.invoicePaymentId;
     const path = `payment?minorversion=${QBO_API_MINOR_VERSION}`
-      + `&requestid=${encodeURIComponent(payment.invoicePaymentId)}`;
+      + `&requestid=${encodeURIComponent(requestId)}`;
     const parsed = await this.qboRequest<{ Payment?: { Id?: string; SyncToken?: string } }>(
       conn,
       path,

@@ -153,6 +153,7 @@ interface MapRow {
   remoteEntityType: string; remoteEntityId: string | null; remoteSyncToken: string | null;
   breezeOrigin: boolean; pendingOp: string | null; claimedAt: Date | null; lastSyncedAt: Date | null;
   linkStatus: string; syncStatus: string; lastError: string | null; syncAttempts: number;
+  pushGeneration: number;
   createdAt: Date; updatedAt: Date;
 }
 
@@ -237,6 +238,7 @@ function mapRowBase(o: Partial<MapRow>): MapRow {
     remoteEntityType: 'Invoice', remoteEntityId: null, remoteSyncToken: null,
     breezeOrigin: false, pendingOp: null, claimedAt: null, lastSyncedAt: null,
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, syncAttempts: 0,
+    pushGeneration: 0,
     createdAt: ago(30 * MINUTE), updatedAt: ago(5 * MINUTE), ...o,
   };
 }
@@ -713,6 +715,19 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
 });
 
 describe('pushPaymentToAccounting', () => {
+  it("carries the mapping's push generation into the provider payload", async () => {
+    // The requestid the provider derives from this is what stops QuickBooks
+    // replaying the 24h-cached create response of a Payment that was deleted
+    // by hand — the generation has to survive the whole coordinator, not just
+    // the UPDATE that bumped it.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ pushGeneration: 3 })];
+    createPaymentMock.mockResolvedValueOnce({ id: '190', syncToken: '0' });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('pushed');
+
+    expect((createPaymentMock.mock.calls[0]![1] as { pushGeneration: number }).pushGeneration).toBe(3);
+  });
+
   it('refuses an ambient DB context', async () => {
     await expect(runCtx(() => pushPaymentToAccounting(MAPPING, PARTNER, runCtx)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
@@ -743,6 +758,7 @@ describe('pushPaymentToAccounting', () => {
         txnDate: '2026-09-02',
         reference: 'ch_123',
         privateNote: `Breeze payment ${PAYMENT}`,
+        pushGeneration: 0,
       },
     );
     expect(mapping()).toMatchObject({
@@ -1545,6 +1561,32 @@ describe('fanOutOwedPayments', () => {
     expect(mapping()).toMatchObject({
       pendingOp: 'push', syncStatus: 'pending', lastError: null, claimedAt: null,
     });
+  });
+
+  it('BUMPS the push generation on a re-own, so the new create gets a NEW QBO requestid', async () => {
+    // QuickBooks replays a requestid's original response for 24 hours. Re-using
+    // the bare payment id after a hand-deletion makes the worker report
+    // `pushed` and stamp the mapping synced with the id of a Payment that no
+    // longer exists — silent data loss (sandbox walk item 32).
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: null, pendingOp: null,
+      syncStatus: 'error', lastError: 'Deleted in QuickBooks', pushGeneration: 1,
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
+
+    expect(mapping()).toMatchObject({ pendingOp: 'push', pushGeneration: 2 });
+  });
+
+  it('leaves a freshly inserted mapping at generation 0 — the bare id stays the requestid', async () => {
+    currentPayments = [payRow({ id: PAYMENT }), payRow({ id: 'pay-2', amount: '10.00' })];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await fanOutOwedPayments(INVOICE, PARTNER, runCtx);
+
+    const inserts = stmtsOf('insert', 'accounting_entity_mappings');
+    expect(inserts).toHaveLength(2);
+    expect(inserts.every((s) => (s.values!.pushGeneration ?? 0) === 0)).toBe(true);
   });
 
   it('RESETS the attempt budget on a re-own — a fresh push must not inherit an exhausted counter', async () => {

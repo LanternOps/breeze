@@ -1053,6 +1053,14 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       // action (or a re-push after QuickBooks lost the Payment), and inheriting
       // an exhausted counter would make it give up on its first failure.
       syncAttempts: 0,
+      // A fresh push also needs a fresh QuickBooks idempotency key. QBO replays
+      // a requestid's original create response for 24 hours, so re-sending the
+      // bare payment id here would hand the worker the id of the very Payment
+      // somebody just deleted and stamp the mapping synced against nothing
+      // (sandbox walk item 32). Bumped IN THE UPDATE, never read-modify-write,
+      // so it cannot regress under a concurrent writer — and it moves once per
+      // OWNERSHIP, which is what keeps every retry of this push idempotent.
+      pushGeneration: sql`${accountingEntityMappings.pushGeneration} + 1`,
       updatedAt: new Date(),
     })
     .where(and(
@@ -1216,6 +1224,10 @@ export async function pushPaymentToAccounting(
         // human reference only — ownership lives in PrivateNote (decision 3).
         reference: payment.reference ? payment.reference.slice(0, PAYMENT_REF_MAX_LENGTH) : null,
         privateNote: buildPaymentPrivateNote(payment.id),
+        // Read off the row this job LEASED, so every BullMQ retry of this
+        // ownership sends the same requestid and QuickBooks' replay cache keeps
+        // doing its job; only a fan-out re-own moves it.
+        pushGeneration: claimed.pushGeneration,
       },
     } as const;
   });

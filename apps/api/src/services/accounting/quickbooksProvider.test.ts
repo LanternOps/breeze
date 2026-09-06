@@ -1055,6 +1055,7 @@ function paymentPayload(overrides: Partial<AccountingPaymentPayload> = {}): Acco
     remoteCustomerId: '55', remoteInvoiceId: '145',
     amount: '107.00', currencyCode: 'USD', txnDate: '2026-09-02',
     reference: 'ch_123', privateNote: 'Breeze payment 0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b',
+    pushGeneration: 0,
     ...overrides,
   };
 }
@@ -1072,7 +1073,9 @@ describe('createPayment', () => {
     expect(String(url)).toContain('/v3/company/realm123/payment?minorversion=70');
     // Deterministic per Breeze payment: a network-level retry of a create that
     // actually landed must return the ORIGINAL Payment, not mint a second one.
-    expect(String(url)).toContain('requestid=0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b');
+    // Generation 0 (every row that predates the generation column, and every
+    // first push) keeps the BARE id — unchanged wire behaviour.
+    expect(String(url)).toMatch(/requestid=0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b$/);
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body).toEqual({
       CustomerRef: { value: '55' },
@@ -1086,6 +1089,24 @@ describe('createPayment', () => {
     expect(body).not.toHaveProperty('CurrencyRef');
     expect(body).not.toHaveProperty('DepositToAccountRef');
     expect(body).not.toHaveProperty('PaymentMethodRef');
+  });
+
+  it('suffixes the requestid with the push generation once the mapping has been re-owned', async () => {
+    // QuickBooks replays the ORIGINAL create response for a requestid for 24h.
+    // After somebody deletes the Breeze-created Payment in QuickBooks, the
+    // fan-out re-owns the mapping and bumps its generation; without a NEW
+    // requestid the replay hands back the id of the Payment that no longer
+    // exists and the mapping is stamped synced against nothing.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ Payment: { Id: '190', SyncToken: '0' } }));
+
+    await quickbooksProvider.createPayment(conn(), paymentPayload({ pushGeneration: 2 }));
+
+    const url = String(fetchSpy.mock.calls[0]![0]);
+    expect(url).toContain('requestid=0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b%3Ag2');
+    // The adoption marker is generation-FREE: the pull matches Payments on it.
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    expect(body.PrivateNote).toBe('Breeze payment 0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b');
   });
 
   it('omits PaymentRefNum entirely when there is no reference', async () => {
