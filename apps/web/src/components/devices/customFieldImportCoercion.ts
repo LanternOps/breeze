@@ -37,18 +37,38 @@ function isValidCalendarDate(year: number, month: number, day: number): boolean 
   );
 }
 
+/** Matches a US/UK-style thousands-grouped number: groups of exactly 3 digits
+ *  after each comma, optional decimal tail. `1,234.50` matches; `1,5` (an
+ *  EU-style decimal comma) and `1.234,56` (EU thousands+decimal) do not. */
+const THOUSANDS_GROUPED = /^-?\d{1,3}(,\d{3})*(\.\d+)?$/;
+
 function coerceNumber(raw: string): unknown {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
-  const cleaned = trimmed.replace(/[$,]/g, '');
+  const withoutCurrency = trimmed.replace(/^\$/, '');
+  let cleaned: string;
+  if (THOUSANDS_GROUPED.test(withoutCurrency)) {
+    cleaned = withoutCurrency.replace(/,/g, '');
+  } else if (withoutCurrency.includes(',')) {
+    // A comma that isn't a valid US-style thousands grouping — could be a
+    // European decimal comma (`1,5`) or thousands separator (`1.234,56`).
+    // Guessing which convention wrote this file is exactly the "guess wrong
+    // silently" failure this module refuses to make; pass it through so the
+    // server's type-error names the cell instead.
+    return raw;
+  } else {
+    cleaned = withoutCurrency;
+  }
   const n = Number(cleaned);
   return Number.isFinite(n) && cleaned !== '' ? n : raw;
 }
 
 function coerceBoolean(raw: string): unknown {
-  const trimmed = raw.trim().toLowerCase();
-  if (BOOLEAN_TRUE.has(trimmed)) return true;
-  if (BOOLEAN_FALSE.has(trimmed)) return false;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const lower = trimmed.toLowerCase();
+  if (BOOLEAN_TRUE.has(lower)) return true;
+  if (BOOLEAN_FALSE.has(lower)) return false;
   return raw;
 }
 

@@ -75,6 +75,30 @@ const notFound: AnnotatedValueRow = {
   values: [],
 };
 
+const identityConflict: AnnotatedValueRow = {
+  index: 6,
+  outcome: 'identity-conflict',
+  deviceId: null,
+  method: null,
+  organizationId: 'org-1',
+  conflictingMethods: ['serial', 'hostname'],
+  candidates: [
+    {
+      deviceId: 'dev-conflict-a',
+      hostname: 'WKS-77',
+      displayName: 'Workstation 77',
+      serialNumber: 'SN-999',
+      osType: 'windows',
+      status: 'online',
+      enrolledAt: null,
+      lastSeenAt: null,
+      siteId: null,
+      method: 'serial',
+    },
+  ],
+  values: [{ target: { kind: 'customField', fieldKey: 'asset_owner' }, outcome: 'applied' }],
+};
+
 const partial: AnnotatedValueRow = {
   index: 4,
   outcome: 'matched',
@@ -175,6 +199,23 @@ describe('CustomFieldImportPreviewTable', () => {
     renderTable([notFound]);
     expect(screen.getByTestId(`cf-import-select-${notFound.index}`)).toBeDisabled();
   });
+
+  it('an identity-conflict row can never be picked into a commit — the server refuses it unconditionally', async () => {
+    const { onPick } = renderTable([identityConflict]);
+    // Candidates are shown as read-only diagnostic evidence...
+    await userEvent.click(screen.getByTestId(`cf-import-expand-${identityConflict.index}`));
+    expect(screen.getByTestId('cf-import-candidate-0')).toBeInTheDocument();
+    // ...but there is no pick control, and the row stays disabled no matter what.
+    expect(screen.queryByTestId('cf-import-candidate-0-pick')).toBeNull();
+    expect(screen.getByTestId(`cf-import-row-${identityConflict.index}`)).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByTestId(`cf-import-select-${identityConflict.index}`)).toBeDisabled();
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('an identity-conflict row stays unselectable even if a pick were somehow recorded for it', () => {
+    renderTable([identityConflict], { picks: new Map([[identityConflict.index, 'dev-conflict-a']]) });
+    expect(screen.getByTestId(`cf-import-select-${identityConflict.index}`)).toBeDisabled();
+  });
 });
 
 describe('isValueRowSelectable', () => {
@@ -190,6 +231,13 @@ describe('isValueRowSelectable', () => {
 
   it('not-found and org-not-found are never selectable', () => {
     expect(isValueRowSelectable(notFound, new Map())).toBe(false);
+  });
+
+  it('identity-conflict is never selectable, picked or not — the server refuses it unconditionally', () => {
+    expect(isValueRowSelectable(identityConflict, new Map())).toBe(false);
+    expect(
+      isValueRowSelectable(identityConflict, new Map([[identityConflict.index, 'dev-conflict-a']])),
+    ).toBe(false);
   });
 });
 

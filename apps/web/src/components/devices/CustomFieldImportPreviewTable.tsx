@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from 'react';
+import { Fragment, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -70,10 +70,8 @@ export type CustomFieldImportRejection =
   | 'too_long'
   | 'invalid_date';
 
-export interface AnnotatedImportValue {
+interface ImportValueAdvice {
   target: MappingTarget;
-  outcome: ValueOutcome;
-  reason?: CustomFieldImportRejection;
   /**
    * Advisory, non-fatal — the value still applies exactly as `outcome` says.
    * Today the only producer is the reserved partner-integration identity key
@@ -82,6 +80,19 @@ export interface AnnotatedImportValue {
    */
   warning?: string;
 }
+
+/**
+ * Discriminated on `outcome`, mirroring the API's own `AnnotatedImportValue`
+ * (types.ts) exactly: `reason` is reachable ONLY on `type-error`. A flat
+ * `reason?: CustomFieldImportRejection` would let a producer (or a test
+ * fixture) construct `{ outcome: 'applied', reason: 'too_long' }`, and the
+ * renderer below would show a stray rejection reason on a value the badge
+ * says succeeded.
+ */
+export type AnnotatedImportValue = ImportValueAdvice & (
+  | { outcome: 'type-error'; reason: CustomFieldImportRejection }
+  | { outcome: Exclude<ValueOutcome, 'type-error'>; reason?: never }
+);
 
 export interface AnnotatedValueRow {
   index: number;
@@ -137,17 +148,31 @@ const VALUE_OUTCOME_STYLES: Record<ValueOutcome, string> = {
 /** Row outcomes that resolved to exactly one device without operator input. */
 const AUTO_RESOLVED: ReadonlySet<ValueRowOutcome> = new Set(['matched', 'link-match']);
 
-/** Row outcomes that carry ranked candidates an operator must choose among. */
-const NEEDS_PICK: ReadonlySet<ValueRowOutcome> = new Set(['ambiguous', 'identity-conflict']);
+/**
+ * The ONLY outcome a candidate pick can turn into a commit. `identity-conflict`
+ * is deliberately excluded: the server's own commit loop (`valueImport.ts`)
+ * refuses it unconditionally via `REFUSED_OUTCOMES`, checked BEFORE it ever
+ * reads `expectedDeviceId` — no pin, however confident, changes the outcome.
+ * The only real fix for a conflicting-identifiers row is correcting the file
+ * and re-running preview, so letting the UI make it "pickable" would train an
+ * operator to trust a control that has no effect on the wire.
+ */
+const SELECTABLE_VIA_PICK: ReadonlySet<ValueRowOutcome> = new Set(['ambiguous']);
+
+/** Row outcomes whose ranked candidates are worth showing at all — as an
+ *  actionable pick for `ambiguous`, or as read-only diagnostic evidence
+ *  ("here is what each identifier on this row matched") for `identity-conflict`. */
+const SHOWS_CANDIDATES: ReadonlySet<ValueRowOutcome> = new Set(['ambiguous', 'identity-conflict']);
 
 /**
- * Every row the table lets the user tick. `ambiguous` / `identity-conflict`
- * become selectable only once the caller has recorded a pick for that row —
- * ticking one before that would commit with no `expectedDeviceId` to pin.
+ * Every row the table lets the user tick. `ambiguous` becomes selectable only
+ * once the caller has recorded a pick for that row — ticking one before that
+ * would commit with no `expectedDeviceId` to pin. `identity-conflict` is never
+ * selectable, picked or not (see `SELECTABLE_VIA_PICK`).
  */
 export function isValueRowSelectable(row: AnnotatedValueRow, picks: ReadonlyMap<number, string>): boolean {
   if (AUTO_RESOLVED.has(row.outcome)) return true;
-  if (NEEDS_PICK.has(row.outcome)) return picks.has(row.index);
+  if (SELECTABLE_VIA_PICK.has(row.outcome)) return picks.has(row.index);
   return false;
 }
 
@@ -247,13 +272,13 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
         <tbody>
           {rows.map((row) => {
             const selectable = isValueRowSelectable(row, picks);
-            const canExpand = NEEDS_PICK.has(row.outcome) && row.candidates.length > 0;
+            const canExpand = SHOWS_CANDIDATES.has(row.outcome) && row.candidates.length > 0;
+            const canPick = row.outcome === 'ambiguous';
             const isExpanded = expanded.has(row.index);
             const pickedId = picks.get(row.index);
             return (
-              <>
+              <Fragment key={row.index}>
                 <tr
-                  key={row.index}
                   data-testid={`cf-import-row-${row.index}`}
                   aria-disabled={!selectable}
                   className={`border-b border-border/50 last:border-0 ${!selectable ? 'opacity-70' : ''}`}
@@ -323,9 +348,14 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
                   </td>
                 </tr>
                 {canExpand && isExpanded && (
-                  <tr key={`${row.index}-candidates`} className="border-b border-border/50 bg-muted/20">
+                  <tr className="border-b border-border/50 bg-muted/20">
                     <td />
                     <td colSpan={3} className="px-2 py-2">
+                      {row.outcome === 'identity-conflict' && (
+                        <p data-testid={`cf-import-conflict-note-${row.index}`} className="mb-2 text-xs text-destructive">
+                          {t('customFieldImportPreview.identityConflictNote')}
+                        </p>
+                      )}
                       <ul className="space-y-2">
                         {row.candidates.map((c, ci) => (
                           <li
@@ -348,25 +378,27 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
                             <span data-testid="cf-import-candidate-last-seen" className="text-muted-foreground">
                               {t('customFieldImportPreview.candidate.lastSeen', { value: formatDate(c.lastSeenAt) })}
                             </span>
-                            <button
-                              type="button"
-                              data-testid={`cf-import-candidate-${ci}-pick`}
-                              onClick={() => onPick(row.index, c.deviceId)}
-                              className={`ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted ${
-                                pickedId === c.deviceId ? 'border-primary bg-primary/10 text-primary' : ''
-                              }`}
-                            >
-                              {pickedId === c.deviceId
-                                ? t('customFieldImportPreview.candidate.picked')
-                                : t('customFieldImportPreview.candidate.pick')}
-                            </button>
+                            {canPick && (
+                              <button
+                                type="button"
+                                data-testid={`cf-import-candidate-${ci}-pick`}
+                                onClick={() => onPick(row.index, c.deviceId)}
+                                className={`ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted ${
+                                  pickedId === c.deviceId ? 'border-primary bg-primary/10 text-primary' : ''
+                                }`}
+                              >
+                                {pickedId === c.deviceId
+                                  ? t('customFieldImportPreview.candidate.picked')
+                                  : t('customFieldImportPreview.candidate.pick')}
+                              </button>
+                            )}
                           </li>
                         ))}
                       </ul>
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             );
           })}
         </tbody>

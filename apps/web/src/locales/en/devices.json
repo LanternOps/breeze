@@ -2561,6 +2561,7 @@
     "hideCandidates": "Hide candidates",
     "showCandidates": "Show {{count}} candidate",
     "showCandidates_other": "Show {{count}} candidates",
+    "identityConflictNote": "This row's identifiers point at different devices and cannot be imported as-is — correct the file and re-run preview. The candidates below are shown for reference only.",
     "picked": "Picked {{deviceId}}",
     "candidate": {
       "serial": "Serial: {{value}}",

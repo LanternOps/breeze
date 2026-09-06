@@ -16,6 +16,14 @@ describe('coerceCellForType', () => {
     expect(coerceCellForType('abc', 'number')).toBe('abc');
   });
 
+  it('number: a European-style decimal or thousands comma is never guessed', () => {
+    // '1,5' could be 1.5 (EU decimal) or 15 (a stray thousands comma); '1.234,56'
+    // is EU thousands-then-decimal. Neither is a US-style thousands grouping, so
+    // both must pass through unchanged rather than silently mis-parsing.
+    expect(coerceCellForType('1,5', 'number')).toBe('1,5');
+    expect(coerceCellForType('1.234,56', 'number')).toBe('1.234,56');
+  });
+
   it('boolean: accepts the spreadsheet vocabulary', () => {
     for (const t of ['TRUE', 'Yes', 'Y', '1', 'true', 'y']) {
       expect(coerceCellForType(t, 'boolean')).toBe(true);
@@ -23,6 +31,11 @@ describe('coerceCellForType', () => {
     for (const f of ['FALSE', 'No', 'N', '0', 'false', 'n']) {
       expect(coerceCellForType(f, 'boolean')).toBe(false);
     }
+  });
+
+  it('boolean: an empty cell is "no data", not false', () => {
+    expect(coerceCellForType('', 'boolean')).toBeNull();
+    expect(coerceCellForType('   ', 'boolean')).toBeNull();
   });
 
   it('boolean: leaves an unrecognised token alone so the server annotates type-error', () => {
@@ -44,6 +57,15 @@ describe('coerceCellForType', () => {
   it('date: an explicit format resolves what would otherwise be ambiguous', () => {
     expect(coerceCellForType('03/04/2026', 'date', 'MM/DD/YYYY')).toBe('2026-03-04');
     expect(coerceCellForType('03/04/2026', 'date', 'DD/MM/YYYY')).toBe('2026-04-03');
+  });
+
+  it('date: an explicit format is not applied to a calendar-invalid reading', () => {
+    // Under MM/DD/YYYY, "02/30" would be month=2 day=30 — no such date.
+    expect(coerceCellForType('02/30/2026', 'date', 'MM/DD/YYYY')).toBe('02/30/2026');
+  });
+
+  it('date: neither reading is a valid calendar date', () => {
+    expect(coerceCellForType('13/13/2026', 'date')).toBe('13/13/2026');
   });
 
   it('date: an empty cell is "no data", not a parse failure', () => {
