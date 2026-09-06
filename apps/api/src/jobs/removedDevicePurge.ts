@@ -33,7 +33,7 @@
  * Structure mirrors `jobs/eventLogRetention.ts` (lazy Queue/Worker singletons,
  * short-lived system contexts, per-org loop, `recordRetentionRun`).
  */
-import { Queue, Worker, type Job } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { and, asc, eq, isNotNull, lt } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
@@ -313,8 +313,8 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
 export function createRemovedDevicePurgeWorker(): Worker {
   return new Worker(
     QUEUE_NAME,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (_job: Job) => runRemovedDevicePurgeOnce(),
+    // The job carries no payload: the sweep reads every org's policy itself.
+    () => runRemovedDevicePurgeOnce(),
     {
       connection: getBullMQConnection(),
       // The cascade takes wide row locks across ~40 tables; two of these racing
