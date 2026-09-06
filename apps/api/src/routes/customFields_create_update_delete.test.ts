@@ -628,4 +628,107 @@ describe('customFields routes', () => {
     });
   });
 
+  // ----------------------------------------------------------------
+  // Database-level key conflicts (#3257 W02/W03)
+  // ----------------------------------------------------------------
+  describe('key conflicts surface as 409, not 500', () => {
+    /**
+     * Two database guards on custom_field_definitions can refuse a create, and
+     * BOTH are the caller's own to fix:
+     *
+     *  - P0001 from the anti-shadowing trigger (#3257 W03,
+     *    2026-10-10-140000-custom-field-no-cross-axis-shadowing.sql) — the key
+     *    collides with one on the OTHER ownership axis under this partner.
+     *  - 23505 from W02's per-axis unique indexes — the key already exists on
+     *    THIS axis.
+     *
+     * Before this mapping both fell through to the global error handler as a
+     * bare 500, which tells the operator nothing about a condition whose fix is
+     * one word (rename the key). The errors are raised inside PostgreSQL, so the
+     * only way to reach them from a route unit test is to make the mocked insert
+     * throw the driver's shape.
+     *
+     * These use the DrizzleQueryError shape — SQLSTATE on `.cause`, a generic
+     * "Failed query: …" on the outer `.message` — deliberately. A handler
+     * reading a bare `err.code` would pass a flat-error test and still return
+     * 500 for every real Drizzle-issued insert; `pgErrorCode`/`pgErrorNode` walk
+     * the `.cause` chain, and only this shape proves they are being used.
+     */
+    function drizzleWrapped(code: string, message: string): Error {
+      const driverError = Object.assign(new Error(message), { code, severity: 'ERROR' });
+      return Object.assign(
+        new Error('Failed query: insert into "custom_field_definitions" ...'),
+        { cause: driverError }
+      );
+    }
+
+    function insertRejects(err: Error) {
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockRejectedValue(err)
+        })
+      } as any);
+    }
+
+    async function postCreate() {
+      return app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'UDF 7', fieldKey: 'udf7', type: 'text' })
+      });
+    }
+
+    it('maps the anti-shadowing P0001 to 409 field-key-shadowed', async () => {
+      insertRejects(drizzleWrapped(
+        'P0001',
+        'custom field key "udf7" already exists as an all-organizations field for this partner'
+      ));
+
+      const res = await postCreate();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('field-key-shadowed');
+      // The trigger's copy is written for a human and discloses nothing about
+      // the conflicting row beyond the key and the axis, so it is passed
+      // through verbatim rather than replaced with something vaguer.
+      expect(body.error).toContain('udf7');
+      expect(body.error).toContain('all-organizations field for this partner');
+    });
+
+    it('maps a duplicate key 23505 to 409 field-key-duplicate', async () => {
+      insertRejects(drizzleWrapped(
+        '23505',
+        'duplicate key value violates unique constraint "custom_field_definitions_org_key_uq"'
+      ));
+
+      const res = await postCreate();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('field-key-duplicate');
+      expect(body.error).toContain('udf7');
+      // The driver message names the internal index and (in `detail`) the
+      // offending column VALUES. Neither belongs in a client response, so this
+      // path builds its own copy instead of echoing the error.
+      expect(body.error).not.toContain('custom_field_definitions_org_key_uq');
+      expect(body.error).not.toContain('duplicate key value');
+    });
+
+    /**
+     * Anything that is NOT one of the two mapped conditions must keep
+     * propagating. Swallowing unknown SQLSTATEs into a 409 would turn a real
+     * outage — a dead connection, a permission problem — into a message telling
+     * the operator to rename their field.
+     */
+    it('does not swallow an unrelated database error', async () => {
+      insertRejects(drizzleWrapped('08006', 'connection failure'));
+
+      const res = await postCreate();
+
+      expect(res.status).not.toBe(409);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    });
+  });
+
 });
