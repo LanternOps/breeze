@@ -217,6 +217,7 @@ import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/wor
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
+import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
@@ -1748,6 +1749,11 @@ async function bootstrap(): Promise<void> {
   // installed before the queue-mode dispatch worker — or any event published
   // during worker boot — can reach it (codex Q3 hole #2, #4085).
   registerAllEventSubscribers(buildWebhookFanoutDeps());
+
+  // #4630 — dynamic device group membership re-evaluation. Purely in-process
+  // handler registration (no Redis/queue), so it runs unconditionally in
+  // every role, same as registerAllEventSubscribers above.
+  initializeDeviceEventHandlers();
 
   await initializeWorkers();
 

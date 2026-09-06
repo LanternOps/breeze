@@ -2,6 +2,11 @@ import { db } from '../db';
 import { deviceGroups } from '../db/schema';
 import { eq, or } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
+import {
+  evaluateDeviceMembershipForGroup,
+  removeDeviceFromAllGroups,
+  updateDeviceMemberships,
+} from '../services/groupMembership';
 
 /**
  * Event types that can trigger device change processing
@@ -168,9 +173,6 @@ export function createDeviceChangeEvent(
  * This should be called during app startup
  */
 export function initializeDeviceEventHandlers(): void {
-  // Import here to avoid circular dependencies
-  const { updateDeviceMemberships } = require('../services/groupMembership');
-
   // Handler for device updates - re-evaluate group memberships
   onDeviceChange('device.updated', async (event) => {
     if (event.changedFields.length > 0) {
@@ -224,7 +226,6 @@ export function initializeDeviceEventHandlers(): void {
     for (const group of groups) {
       try {
         // Evaluate if device matches the group's filter
-        const { evaluateDeviceMembershipForGroup } = require('../services/groupMembership');
         await evaluateDeviceMembershipForGroup(group.id, event.deviceId);
       } catch (error) {
         console.error(`Failed to evaluate membership for group ${group.id}:`, error);
@@ -234,7 +235,6 @@ export function initializeDeviceEventHandlers(): void {
 
   // Handler for device deletion - remove from all groups
   onDeviceChange('device.deleted', async (event) => {
-    const { removeDeviceFromAllGroups } = require('../services/groupMembership');
     await removeDeviceFromAllGroups(event.deviceId);
   });
 }
