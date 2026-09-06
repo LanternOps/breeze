@@ -1518,26 +1518,34 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
 
     expect(mapping()).toMatchObject({
-      // A PUSH row DOES count skips — it has a ceiling to reach, and a create
-      // nobody can complete must eventually retire.
-      syncAttempts: 2,
+      // A not-connected skip is NOT an attempt at anything (review finding 6):
+      // the outage is the operator's to fix and the row never reached
+      // QuickBooks, so it must not consume the push budget.
+      syncAttempts: 0,
       pendingOp: 'push', // still owed — a reconnect must be able to finish it
       syncStatus: 'error',
       lastError: PAYMENT_NOT_CONNECTED_MESSAGE,
     });
   });
 
-  it('retires a push row that has spent its whole budget on not-connected skips', async () => {
+  it('NEVER retires a push row over a reauth outage, however long it lasts', async () => {
+    // One skip per 15-minute sweep against a 100-attempt ceiling retired every
+    // pending push after ~25 hours of a disconnected realm — and the give-up
+    // clears `pending_op`, so reconnecting no longer completed them.
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
       syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
     })];
 
-    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+    for (let i = 0; i < 5; i++) {
+      await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+    }
 
     expect(mapping()).toMatchObject({
-      pendingOp: null,
-      lastError: paymentPushGaveUpMessage(PAYMENT_NOT_CONNECTED_MESSAGE),
+      pendingOp: 'push',
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+      lastError: PAYMENT_NOT_CONNECTED_MESSAGE,
     });
+    expect(mapping()!.lastError).not.toBe(paymentPushGaveUpMessage(PAYMENT_NOT_CONNECTED_MESSAGE));
   });
 
   it('stamps a skipped DELETE row but does NOT count the skip against its Sentry cadence', async () => {

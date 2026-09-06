@@ -119,13 +119,14 @@ export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
   'The invoice is not synced to QuickBooks yet; push the invoice first';
 
 /**
- * How many failed or skipped attempts a `pending_op = 'push'` row gets before
- * Breeze stops asking (final-review findings I1/I2).
+ * How many failed attempts a `pending_op = 'push'` row gets before Breeze stops
+ * asking (final-review findings I1/I2). A not-connected SKIP is not an attempt
+ * and never counts here — see `notePaymentJobSkipped`.
  *
  * Without a ceiling the outbox is unbounded: the 15-minute sweep re-enqueues
  * every row that still owes work, so a create QuickBooks will never accept —
- * an over-application, a realm that stays disconnected, a deleted QuickBooks
- * customer — is retried every quarter hour forever, and the operator's only
+ * an over-application, a deleted QuickBooks customer, an invoice whose own
+ * mapping is stuck — is retried every quarter hour forever, and the operator's only
  * signal is a `last_error` that keeps being rewritten with the same text.
  *
  * THE UNIT IS AN ATTEMPT, NOT A SWEEP, and one sweep is worth FIVE of them:
@@ -169,7 +170,7 @@ export function paymentPushGaveUpMessage(previous: string): string {
  * `convertToDelete` (or `requestPaymentDelete`) flipped over from a push carries
  * that push's failures with it, so its first delete failure can land mid-cycle.
  * The modulus still bounds the gap, and skips no longer inflate the count at all
- * (`notePaymentJobSkipped` does not increment a delete row).
+ * (`notePaymentJobSkipped` increments nothing).
  */
 export const PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS = 480;
 
@@ -681,11 +682,16 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
  * pull observes the deletion and satisfies it). The counter still earns its keep
  * there — it is what throttles the delete path's Sentry reporting.
  *
- * `countAttempt: 'push_only'` counts the attempt for a `push` row and leaves a
- * `delete` row's counter alone, decided inside the UPDATE so no read races it.
- * Only the not-connected skip uses it: a delete row's count is its ONLY Sentry
- * throttle, and letting a disconnected realm inflate it would mean the first
- * genuine failure after the reconnect landed mid-cycle and raised nothing.
+ * `countAttempt: 'never'` stamps the reason but touches neither the counter nor
+ * the ceiling. Only the not-connected skip uses it (review finding 6). A skip is
+ * not an attempt at anything: nothing reached QuickBooks, and the fix is an
+ * operator reconnect. Counting it retired EVERY pending push after a reauth
+ * outage of about 25 hours (one skip per 15-minute sweep against a 100-attempt
+ * ceiling) — and the give-up clears `pending_op`, so the reconnect the operator
+ * finally performed could no longer complete them. For a `delete` row the same
+ * setting protects its Sentry throttle: its count is the ONLY one, so a
+ * disconnected realm inflating it would mean the first genuine failure after the
+ * reconnect landed mid-cycle and raised nothing.
  *
  * Returns the row's NEW attempt count (unchanged for a delete row under
  * `push_only`), or null when no row matched. Zero rows is tolerated for the same
@@ -696,17 +702,16 @@ async function markPaymentMappingError(
   mappingId: string,
   partnerId: string,
   message: string,
-  opts: { clearPendingOp: boolean; countAttempt?: 'always' | 'push_only' },
+  opts: { clearPendingOp: boolean; countAttempt?: 'always' | 'never' },
 ): Promise<number | null> {
+  const counts = opts.countAttempt !== 'never';
   const rows = await db
     .update(accountingEntityMappings)
     .set({
       syncStatus: 'error',
       lastError: message,
       claimedAt: null,
-      syncAttempts: opts.countAttempt === 'push_only'
-        ? sql`CASE WHEN ${accountingEntityMappings.pendingOp} = 'push' THEN ${accountingEntityMappings.syncAttempts} + 1 ELSE ${accountingEntityMappings.syncAttempts} END`
-        : sql`${accountingEntityMappings.syncAttempts} + 1`,
+      ...(counts ? { syncAttempts: sql`${accountingEntityMappings.syncAttempts} + 1` } : {}),
       ...(opts.clearPendingOp ? { pendingOp: null } : {}),
       updatedAt: new Date(),
     })
@@ -721,7 +726,10 @@ async function markPaymentMappingError(
   const row = (rows as Array<{ syncAttempts: number; pendingOp: string | null }>)[0];
   if (!row) return null;
 
-  if (row.pendingOp === 'push' && row.syncAttempts >= PAYMENT_PUSH_MAX_ATTEMPTS) {
+  // An uncounted skip can never be what pushes a row over the ceiling, so it
+  // must not trip the give-up either — a row already sitting at the ceiling
+  // (its last real attempt raced this stamp) keeps its outbox entry.
+  if (counts && row.pendingOp === 'push' && row.syncAttempts >= PAYMENT_PUSH_MAX_ATTEMPTS) {
     await db
       .update(accountingEntityMappings)
       .set({
@@ -746,16 +754,19 @@ async function markPaymentMappingError(
  *
  * That silence is half of finding I2: the sweep re-enqueued the row every 15
  * minutes against a realm that was disconnected weeks ago, the operator saw a
- * mapping stuck on `pending` with an empty `last_error`, and nothing ever
- * counted the attempts. Routing the skip through `markPaymentMappingError` gives
- * it both — a reason on the card, and, for a PUSH row, the same ceiling a
- * QuickBooks failure gets, so a create nobody can complete eventually retires.
+ * mapping stuck on `pending` with an empty `last_error`, and nothing ever said
+ * why. Routing the skip through `markPaymentMappingError` puts the reason on the
+ * card.
  *
- * A DELETE row is stamped but NOT counted (`countAttempt: 'push_only'`). It has
- * no ceiling to move it towards, and its `sync_attempts` is the sole throttle on
- * its Sentry reporting: a realm disconnected for a week would otherwise push the
- * counter deep into a cycle, so the first REAL delete failure after the reconnect
- * would fail the `% PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS` test and raise nothing.
+ * NOTHING IS COUNTED (`countAttempt: 'never'`, review finding 6). A skip is not
+ * an attempt: no request left Breeze, and the only fix is an operator reconnect.
+ * Counting it burned one attempt per sweep, so a reauth outage longer than about
+ * 25 hours retired every pending push in the partner — and the give-up clears
+ * `pending_op`, so the reconnect could no longer complete them. For a DELETE row
+ * the same rule protects its Sentry cadence: `sync_attempts` is its ONLY
+ * throttle, so a week of disconnection would push the counter deep into a cycle
+ * and the first REAL delete failure after the reconnect would fail the
+ * `% PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS` test and raise nothing.
  *
  * Opens its OWN short system context (the worker calls this outside any) and
  * swallows its own failures: this is annotation of a job that is ending either
@@ -770,7 +781,7 @@ export async function notePaymentJobSkipped(
     await withSystemDbAccessContext(
       () => markPaymentMappingError(mappingId, partnerId, reason, {
         clearPendingOp: false,
-        countAttempt: 'push_only',
+        countAttempt: 'never',
       }),
       'accountingPaymentPush.notePaymentJobSkipped',
     );
