@@ -1037,7 +1037,15 @@
     "online": "Online"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} com agente, {{network}} de rede",
+    "agentOnlyBulkAction": "Aplica-se apenas a dispositivos com agente",
+    "eligibleOfSelected": "{{count}} de {{total}}",
+    "linkAsVmHost": "Vincular como host de VM + convidados",
+    "notApplicable": "Não aplicável",
+    "viewDevice": "Ver {{name}}",
     "tableColumns": {
+      "class": "Classe",
+      "type": "Tipo",
       "device": "Dispositivo",
       "organization": "Organização",
       "site": "Local",
@@ -1049,6 +1057,8 @@
       "lastSeen": "Visto por último"
     },
     "sortBy": {
+      "class": "Ordenar por classe",
+      "type": "Ordenar por tipo",
       "device": "Ordenar por dispositivo",
       "organization": "Ordenar por organização",
       "site": "Ordenar por local",
@@ -1839,6 +1849,9 @@
     "selectedOrganization": "a organização selecionada",
     "subtitle": "Gerencie e monitore sua frota.",
     "title": "Dispositivos",
+    "hiddenNetworkNotice_one": "1 dispositivo de rede oculto — {{fields}} aplica-se apenas a dispositivos com agente.",
+    "hiddenNetworkNotice_other": "{{count}} dispositivos de rede ocultos — {{fields}} aplica-se apenas a dispositivos com agente.",
+    "hiddenNetworkNotice": "{{count}} dispositivos de rede ocultos — {{fields}} aplica-se apenas a dispositivos com agente.",
     "toasts": {
       "actionFailed": "{{action}} falhou em {{hostname}}",
       "advancedFilterFailed": "Falha ao carregar o filtro avançado — nenhum dispositivo exibido. Edite ou limpe o filtro para tentar novamente.",
@@ -1883,7 +1896,10 @@
       "maintenanceOff": "Manutenção desativada",
       "maintenanceOn": "Manutenção ativada",
       "multibootLinked": "Inicialização múltipla vinculada",
-      "networkSkipped": "Dispositivos de rede ignorados: {{count}} — esta ação se aplica somente a dispositivos com agente.",
+      "networkSkipped_one": "1 dispositivo de rede ignorado — esta ação se aplica apenas a dispositivos com agente.",
+      "networkSkipped_other": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
+      "networkSkipped": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
+      "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
       "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} excluído permanentemente",
@@ -2203,26 +2219,24 @@
     "backToDevices": "Voltar para dispositivos",
     "configurePrefix": "Configure a consulta SNMP e os monitores de rede em",
     "confirmUnlink": "Desvincular este dispositivo?",
-    "connecting": "Conectando…",
-    "discoveryAssetView": "Visualização do ativo de descoberta",
-    "emptyPorts": "Nenhuma porta aberta detectada.",
+    "confirmUnlinkMessage": "O ativo descoberto e o dispositivo gerenciado serão exibidos como itens separados. A vinculação automática permanecerá desativada para este ativo até que você o vincule novamente.",
+    "connecting": "Conectando",
+    "discoveryAssetView": "visualização do ativo de descoberta",
+    "emptyPorts": "Nenhuma porta aberta encontrada na última verificação.",
     "emptySnmp": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido sondado. Verifique se o método SNMP está ativado e se a string de comunidade está definida no perfil de descoberta.",
     "errors": {
-      "load": "Falha ao carregar o dispositivo de rede",
-      "malformed": "Dados do dispositivo de rede malformados",
+      "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
+      "malformed": "O servidor retornou uma resposta inesperada para este dispositivo de rede. Tente novamente e, se o problema persistir, entre em contato com o suporte.",
       "notFound": "Dispositivo de rede não encontrado"
     },
     "fields": {
-      "assetType": "Tipo de ativo",
+      "assetType": "Tipo",
       "discoveryMethods": "Métodos de descoberta",
       "discoveryProfile": "Perfil de descoberta",
       "displayName": "Nome de exibição",
       "firstSeen": "Visto pela primeira vez",
       "hostname": "Nome do host",
-      "ipAddress": "Endereço IP",
-      "lastSeen": "Visto pela última vez",
       "linkedDevice": "Dispositivo vinculado",
-      "macAddress": "Endereço MAC",
       "manufacturer": "Fabricante",
       "model": "Modelo",
       "netbiosName": "Nome NetBIOS",
@@ -2235,48 +2249,67 @@
       "tags": "Tags"
     },
     "goBack": "Voltar",
-    "lastSeen": "Visto pela última vez {{time}}",
+    "live": {
+      "webUiOpened": "A interface da web foi aberta em uma nova guia",
+      "refreshed": "Detalhes do dispositivo atualizados"
+    },
     "loading": "Carregando dispositivo de rede...",
     "manageInDiscovery": "Gerenciar na Descoberta",
     "manuallySet": "Definido manualmente",
     "manuallySetWithDetected": "Definido manualmente · a verificação detectou {{type}}",
     "networkDevice": "Dispositivo de rede",
     "notConfigured": "Não configurado",
-    "notLinked": "Não vinculado",
+    "notLinked": "Ainda não vinculado a um dispositivo gerenciado.",
     "openWebUi": "Abrir interface web",
+    "ports": {
+      "insecure": "Não criptografado",
+      "insecureHint": "Este serviço envia credenciais em texto simples. Desative-o no dispositivo, se possível.",
+      "kind": {
+        "mgmt": "Gerenciamento",
+        "remote": "Acesso remoto",
+        "print": "Impressão",
+        "file": "Compartilhamento de arquivos"
+      }
+    },
+    "proxyPort": "Porta",
+    "proxyPortInvalid": "Informe uma porta entre 1 e 65535",
     "proxyErrors": {
-      "disabled": "Este destino foi desativado para acesso por proxy. Um administrador precisa reativá-lo em Configurações antes que você possa se conectar.",
-      "mfaRequired": "O acesso remoto requer autenticação de dois fatores — ative-a no seu perfil.",
-      "noOnlineAgent": "Nenhum agente on-line disponível para intermediar esta conexão. Um agente precisa estar on-line para fazer proxy até {{ip}}."
+      "disabled": "Um administrador desativou o acesso por proxy a este destino. Peça a ele para reativá-lo em Configurações, Acesso remoto.",
+      "mfaRequired": "O acesso remoto exige autenticação de dois fatores. Ative-a no seu perfil e tente novamente.",
+      "noOnlineAgent": "Nenhum agente on-line consegue alcançar {{ip}} agora. Coloque um agente desta rede on-line e tente novamente.",
+      "agentListFailed": "Não foi possível carregar a lista de agentes. Tentar novamente."
     },
     "resetToAutoDetected": "Redefinir para detecção automática",
+    "savingType": "Salvando…",
+    "resettingType": "Redefinindo…",
     "sections": {
       "discovery": "Descoberta",
       "identity": "Identidade",
       "monitoringStatus": "Status do monitoramento",
-      "networkReachability": "Acessibilidade da rede",
       "openPorts": "Portas abertas",
       "snmpData": "Dados SNMP"
+    },
+    "stats": {
+      "asOf": "em {{time}}"
     },
     "tabs": {
       "overview": "Visão geral",
       "monitoring": "Monitoramento"
     },
     "toasts": {
-      "proxyConnectFailed": "Falha ao iniciar a conexão de proxy",
-      "typeReset": "Tipo redefinido",
-      "typeResetFailed": "Falha ao redefinir o tipo",
-      "typeUpdateFailed": "Falha ao atualizar o tipo",
-      "typeUpdated": "Tipo atualizado",
-      "unlinkFailed": "Falha ao desvincular",
-      "unlinked": "Desvinculado",
+      "proxyConnectFailed": "Não foi possível abrir a interface web",
+      "typeReset": "Tipo de dispositivo redefinido para detecção automática",
+      "typeResetFailed": "Não foi possível redefinir o tipo do dispositivo",
+      "typeUpdateFailed": "Não foi possível atualizar o tipo do dispositivo",
+      "typeUpdated": "Tipo do dispositivo atualizado",
+      "unlinkFailed": "Não foi possível desvincular o dispositivo",
+      "unlinked": "Dispositivo desvinculado",
       "linked": "Dispositivo vinculado",
-      "linkFailed": "Falha ao vincular dispositivo"
+      "linkFailed": "Não foi possível vincular o dispositivo"
     },
     "unlink": "Desvincular",
     "unlinking": "Desvinculando…",
-    "viewManagedDevice": "Ver dispositivo gerenciado",
-    "autoLinkSuppressed": "Vinculação automática desativada — desvinculado por um usuário",
+    "autoLinkSuppressed": "A vinculação automática está desativada para este ativo porque alguém o desvinculou. Vincule-o manualmente para reativá-la.",
     "linkManually": "Vincular manualmente…",
     "linkManuallySelectDevice": "Selecionar um dispositivo",
     "linkManuallyLinking": "Vinculando…",
@@ -2289,7 +2322,17 @@
       "auto": "— detectado automaticamente",
       "manual": "— definido manualmente"
     },
-    "sameDeviceAs": "Mesmo dispositivo que {{name}}"
+    "sameDeviceAs": "Mesmo dispositivo que {{name}}",
+    "showMore": "Mostrar mais",
+    "showLess": "Mostrar menos",
+    "showAllPorts": "Mostrar todas ({{count}})",
+    "showFewerPorts": "Mostrar menos",
+    "tryAgain": "Tentar novamente",
+    "snmpFields": {
+      "sysName": "Nome do sistema",
+      "sysDescr": "Descrição",
+      "sysObjectId": "ID do objeto (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",

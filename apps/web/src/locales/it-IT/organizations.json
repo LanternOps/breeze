@@ -1,0 +1,99 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organizzazione",
+    "header": {
+      "type": {
+        "customer": "Cliente",
+        "internal": "Interna"
+      },
+      "primaryContact": "Contatto principale",
+      "noPrimaryContact": "Nessun contatto principale",
+      "sites_one": "{{count}} sito",
+      "sites_other": "{{count}} siti",
+      "scopeChip": "Workspace: {{orgName}}",
+      "scopeChipHint": "Il tuo workspace è impostato su un'altra organizzazione. Questa pagina mostra sempre {{orgName}}.",
+      "created": "Cliente dal {{date}}"
+    },
+    "actions": {
+      "workHere": "Lavora in questa organizzazione",
+      "workHereToast": "Passato a {{orgName}}",
+      "settings": "Impostazioni",
+      "more": "Altre azioni",
+      "archive": "Archivia",
+      "merge": "Unisci",
+      "restore": "Ripristina",
+      "retry": "Riprova"
+    },
+    "tabs": {
+      "overview": "Panoramica",
+      "contacts": "Contatti",
+      "sites": "Siti",
+      "devices": "Dispositivi",
+      "tickets": "Ticket",
+      "billing": "Contratti e fatturazione",
+      "activity": "Attività"
+    },
+    "comingSoon": {
+      "title": "In arrivo a breve",
+      "description": "Questa scheda sarà disponibile nel prossimo aggiornamento della scheda organizzazione."
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Dispositivi",
+        "devicesSub": "{{online}} di {{total}} online",
+        "alerts": "Avvisi aperti",
+        "alertsSub": "{{critical}} critici · {{high}} alti",
+        "tickets": "Ticket aperti",
+        "ticketsSub": "{{count}} in attesa del cliente",
+        "contracts": "Contratti attivi",
+        "contractsSub": "Prossimo rinnovo {{date}}",
+        "contractsNoRenewal": "Nessun rinnovo in arrivo",
+        "invoices": "In sospeso",
+        "invoicesSub": "Prossima scadenza {{date}}",
+        "invoicesOverdue_one": "{{count}} scaduta",
+        "invoicesOverdue_other": "{{count}} scadute",
+        "invoicesNothingDue": "Nulla in scadenza",
+        "contacts": "Contatti",
+        "portalUsers": "Utenti del portale",
+        "sites": "Siti"
+      },
+      "activity": {
+        "title": "Attività recente",
+        "empty": "Nessuna attività registrata finora.",
+        "failed": "Impossibile caricare l'attività recente.",
+        "viewAll": "Visualizza tutta l'attività"
+      },
+      "criticalAlerts": {
+        "title": "Avvisi critici aperti",
+        "empty": "Nessun avviso critico aperto.",
+        "failed": "Impossibile verificare gli avvisi critici aperti.",
+        "viewAll": "Visualizza tutti gli avvisi"
+      },
+      "lastActivity": "Ultima attività {{date}}",
+      "noSummary": "I totali di riepilogo non sono al momento disponibili."
+    },
+    "archived": {
+      "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
+      "restoreError": "Impossibile ripristinare questa organizzazione."
+    },
+    "lifecycle": {
+      "inaccessible": "Questa organizzazione è {{status}}, quindi i suoi dati in tempo reale non sono disponibili. Puoi comunque vederla nell'elenco delle organizzazioni.",
+      "backToList": "Torna alle organizzazioni"
+    },
+    "unavailable": {
+      "title": "Non disponibile in questo workspace",
+      "description": "Le schede organizzazione sono una vista a livello di partner. Il tuo accesso è limitato a una singola organizzazione, quindi qui non c'è nulla tra cui passare.",
+      "action": "Vai alla dashboard"
+    },
+    "notFound": {
+      "title": "Organizzazione non trovata",
+      "description": "Questa organizzazione non esiste più, oppure non hai più accesso ad essa.",
+      "action": "Torna alle organizzazioni"
+    },
+    "error": {
+      "title": "Impossibile caricare questa organizzazione",
+      "description": "Si è verificato un errore durante il recupero della scheda. Controlla la connessione e riprova."
+    },
+    "loading": "Caricamento organizzazione…"
+  }
+}

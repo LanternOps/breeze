@@ -135,7 +135,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "config_policy_backup_settings": tablePolicy("org_id", {"included":["id","feature_link_id","org_id","partner_id","backup_mode","backup_profile_id","destination_config_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["schedule","retention","paths","targets"]}),
   "config_policy_onedrive_libraries": tablePolicy("org_id", {"included":["id","settings_id","org_id","library_id","display_name","site_url","site_id","web_id","list_id","targeting_mode","group_id","group_name","hive_scope","sort_order","enabled","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "config_policy_onedrive_settings": tablePolicy("org_id", {"included":["id","feature_link_id","org_id","silent_account_config","files_on_demand","kfm_silent_opt_in","kfm_block_opt_out","tenant_association_id","restart_on_change","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["kfm_folders"]}),
-  "configuration_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","status","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // parent_policy_id is a plain tenant identifier (#5080). Export note: an ORG
+  // export may carry a parent_policy_id pointing at a PARTNER-WIDE parent that
+  // is outside the export set. There is no import path today (the roundtrip
+  // suite exports and erases), so this is documented rather than handled — a
+  // future importer must resolve or null a dangling parent.
+  "configuration_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","parent_policy_id","name","description","status","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "contact_external_links": tablePolicy("org_id", {"included":["id","contact_id","org_id","system","external_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // Every column `included` is the POINT of #3258: the same PII sat in
   // organizations.billing_contact / sites.contact as unshaped jsonb, was

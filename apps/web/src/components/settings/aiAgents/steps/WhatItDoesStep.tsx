@@ -1,9 +1,9 @@
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ALERT_SEVERITIES, type AgentCeilingDto, type AgentToolCatalogDto } from '@breeze/shared';
 import CapabilityPicker from '../CapabilityPicker';
+import { listField } from '../agentFields';
 import { ALERT_SEVERITY_KINDS, lines, toggle, type Draft } from '../agentDraft';
-
-const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
 export interface WhatItDoesStepProps {
   draft: Draft;
@@ -11,21 +11,34 @@ export interface WhatItDoesStepProps {
   catalog: AgentToolCatalogDto | null;
   ceiling: AgentCeilingDto | null;
   catalogLoading: boolean;
+  /** Scripts the row is effectively authorized to run unattended
+   *  (`actAssets.scriptIds` ∩ the partner ceiling), for the picker's
+   *  `run_script` outcome. The create flow cannot authorize scripts, so it
+   *  leaves this at 0; the edit drawer passes the row's real count. */
+  authorizedScriptCount?: number;
 }
 
 /**
- * Step 2 of the guided create flow (spec §4.6): "Runs when" (severities for
- * triage, maintenance windows, helpdesk ticket writes) above the capability
- * picker — same order and test ids as `AiAgentForm.tsx`'s "When it runs"
- * fieldset and Permissions section, so an operator moving between the drawer
- * and the guided flow finds identical controls.
+ * "What it does" — step 2 of the guided create flow (spec §4.6) AND the same
+ * block of the edit drawer (`AiAgentForm.tsx`, #5063): "Runs when"
+ * (severities for triage, maintenance windows, helpdesk ticket writes) above
+ * the capability picker. One rendering per setting, so the two surfaces
+ * cannot drift.
  */
-export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalogLoading }: WhatItDoesStepProps) {
+export default function WhatItDoesStep({
+  draft,
+  patch,
+  catalog,
+  ceiling,
+  catalogLoading,
+  authorizedScriptCount = 0,
+}: WhatItDoesStepProps) {
   const { t } = useTranslation('settings');
+  const permissionsHeadingId = useId();
   const usesAlertSeverities = ALERT_SEVERITY_KINDS.has(draft.kind);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="agent-step-does">
       <fieldset className="space-y-2 rounded-md border p-3">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
           {t('aiAgentsPage.sections.scope')}
@@ -54,6 +67,19 @@ export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalog
           />
           {t('aiAgentsPage.fields.respectMaintenanceWindows')}
         </label>
+        {/* P2-4 (#4191) review fix — ticket-triggered runs are admitted with
+            `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's `admitTriageRun`:
+            `createAndEnqueueAgentRun({ kind: 'helpdesk', triggerKind:
+            'ticket', profile: 'triage', ... })`), and runService.ts's
+            `resolveEffectiveAgentSystem(orgId, kind)` resolves the effective
+            policy off THAT `kind` field — never `triage`, which is a different
+            agent kind entirely (the drawer's scheduled-sweeps gate IS
+            genuinely triage-only; do not copy this gate from that one again).
+            Disabled — never hidden — on a partner-wide row: the merge reads
+            ONLY the org's own override (effectivePolicy.ts), so a partner
+            baseline value can never take effect; hiding it outright would
+            look like the field vanished rather than explain why it cannot be
+            set here. */}
         {draft.kind === 'helpdesk' && (
           <div className="space-y-1">
             <label className="flex items-center gap-2 text-sm">
@@ -73,9 +99,19 @@ export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalog
         )}
       </fieldset>
 
-      <section className="space-y-2 rounded-md border p-3" data-testid="ai-agent-permissions">
+      {/* Permissions carries the widest blast radius of the sections, so it
+          gets a real heading rather than one more 12px uppercase legend of
+          the same weight as "Limits". A <section> named by its <h3> — a
+          `region` landmark screen readers can jump to — and not a
+          <fieldset>: <legend>'s content model is phrasing content, so an
+          <h3> cannot live inside one. */}
+      <section
+        className="space-y-2 rounded-md border p-3"
+        aria-labelledby={permissionsHeadingId}
+        data-testid="ai-agent-permissions"
+      >
         <div>
-          <h3 className="text-sm font-semibold">{t('aiAgentsPage.sections.permissions')}</h3>
+          <h3 id={permissionsHeadingId} className="text-sm font-semibold">{t('aiAgentsPage.sections.permissions')}</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">{t('aiAgentsPage.sections.permissionsDescription')}</p>
         </div>
         {catalog ? (
@@ -86,6 +122,7 @@ export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalog
             mode={draft.mode}
             entries={lines(draft.toolAllowlist)}
             onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+            authorizedScriptCount={authorizedScriptCount}
           />
         ) : catalogLoading ? (
           <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">
@@ -97,16 +134,7 @@ export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalog
               {t('aiAgentsPage.catalog.catalogUnavailable')}
             </p>
             <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
-            <label className="space-y-1 text-sm">
-              <span className="font-medium">{t('aiAgentsPage.fields.toolAllowlist')}</span>
-              <textarea
-                className={`${inputCls} font-mono`}
-                rows={4}
-                value={draft.toolAllowlist}
-                onChange={(e) => patch({ toolAllowlist: e.target.value })}
-                data-testid="ai-agent-toolallowlist"
-              />
-            </label>
+            {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
           </>
         )}
       </section>

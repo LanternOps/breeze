@@ -2,6 +2,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
+
+// Dash cells append a visually-hidden "Not applicable" for screen readers;
+// compare the visible glyph only.
+const visible = (el: Element) => (el.textContent ?? '').replace(/Not applicable$/, '');
 import {
   COLUMN_LABELS,
   DEFAULT_VISIBLE_COLUMNS,
@@ -118,7 +122,7 @@ describe('DeviceList — WAN/LAN IP columns (#2503)', () => {
     const lanIps = () =>
       screen
         .getAllByTestId(/-lan-ip$/)
-        .map((cell) => cell.textContent);
+        .map((cell) => visible(cell));
 
     fireEvent.click(header);
     expect(lanIps()).toEqual(['192.168.1.9', '192.168.1.10', '—']);
@@ -144,7 +148,7 @@ describe('DeviceList — WAN/LAN IP columns (#2503)', () => {
     render(<DeviceList devices={[high, printer, low]} pageSize={50} />);
 
     const header = screen.getByTitle('Sort by WAN IP');
-    const wanIps = () => screen.getAllByTestId(/-wan-ip$/).map((cell) => cell.textContent);
+    const wanIps = () => screen.getAllByTestId(/-wan-ip$/).map((cell) => visible(cell));
 
     fireEvent.click(header);
     expect(wanIps()).toEqual(['198.51.100.9', '198.51.100.10', '—']);
