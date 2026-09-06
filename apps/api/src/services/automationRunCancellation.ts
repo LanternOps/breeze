@@ -7,6 +7,7 @@ import {
 } from '../db';
 import { automationActionResults, automationRuns } from '../db/schema';
 import { reconcileAutomationRun } from './automationActionResults';
+import { captureException } from './sentry';
 import type { RunCancelTally } from './scriptCancellation';
 
 // `scriptCancellation` reaches agentWs → commandQueue → configurationPolicy at
@@ -274,7 +275,22 @@ export async function cancelAutomationRun(input: {
   // Without this a run whose every action was still `pending` would sit at
   // devices_cancelled 0 and its device rows at `pending` until some unrelated
   // result happened to arrive.
-  await reconcileAutomationRun(runId);
+  //
+  // Best-effort ON PURPOSE. Everything that makes the stop real — the fence
+  // write, the terminalised action rows, the queued script_cancel commands —
+  // is already committed by here. Rethrowing would turn a cancel that
+  // SUCCEEDED into a 500, telling the operator their stop failed and inviting
+  // a retry, when all that actually failed is the roll-up of the counters.
+  // Reconciliation is idempotent and re-runs on the next child result.
+  try {
+    await reconcileAutomationRun(runId);
+  } catch (err) {
+    console.error('[automationRunCancellation] reconcile after cancel failed; the cancel itself is committed', {
+      runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { runId });
+  }
 
   return {
     kind: 'cancelled',

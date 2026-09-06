@@ -136,6 +136,8 @@ vi.mock('./automationActionResults', () => ({
   reconcileAutomationRun: reconcileAutomationRunMock,
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 import {
   assertRunNotCancelled,
   cancelAutomationRun,
@@ -155,7 +157,7 @@ beforeEach(() => {
   state.actionSelectWheres = [];
   state.cancelledActionIds = [];
   cancelExecutionsForRunMock.mockClear();
-  reconcileAutomationRunMock.mockClear();
+  reconcileAutomationRunMock.mockReset().mockResolvedValue(undefined);
   cancelExecutionsForRunMock.mockResolvedValue({
     requested: 0, retracted: 0, alreadyCancelling: 0, noActionNeeded: 0, failed: 0,
   });
@@ -279,6 +281,15 @@ describe('cancelAutomationRun', () => {
     reconcileAutomationRunMock.mockImplementation(async () => { order.push('reconcile'); });
     await cancelAutomationRun({ runId: 'run-1', ...actor });
     expect(order).toEqual(['fanout', 'reconcile']);
+  });
+
+  it('still reports success when the follow-up reconcile throws — the stop is already committed', async () => {
+    reconcileAutomationRunMock.mockRejectedValue(new Error('Redis down'));
+    await expect(cancelAutomationRun({ runId: 'run-1', ...actor }))
+      .resolves.toMatchObject({ kind: 'cancelled' });
+    // The fence write and the fan-out both happened before reconcile.
+    expect(state.runUpdatePatches.at(0)).toMatchObject({ status: 'cancelled' });
+    expect(cancelExecutionsForRunMock).toHaveBeenCalledTimes(1);
   });
 
   it('is idempotent: a second cancel re-asks the devices but does not rewrite the run', async () => {
