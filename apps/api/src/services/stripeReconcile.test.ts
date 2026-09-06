@@ -82,6 +82,13 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
+const { processPendingReversals } = vi.hoisted(() => ({
+  processPendingReversals: vi.fn().mockResolvedValue(0),
+}));
+vi.mock('./stripeReversalState', () => ({
+  processPendingStripeFinancialEventsForPayment: processPendingReversals,
+}));
+
 // The Phase D2 payment push/delete REQUEST helpers (Task 3). Mocked so this
 // suite asserts the DELEGATION and its ordering, not a second copy of the
 // coordinator's own suite. `partialRefundDivergenceMessage` is kept REAL via
@@ -128,6 +135,7 @@ beforeEach(() => {
   requestPaymentDelete.mockReset(); requestPaymentDelete.mockResolvedValue(null);
   enqueuePaymentPush.mockReset(); enqueuePaymentPush.mockResolvedValue(true);
   enqueuePaymentDelete.mockReset(); enqueuePaymentDelete.mockResolvedValue(true);
+  processPendingReversals.mockReset(); processPendingReversals.mockResolvedValue(0);
 });
 
 describe('recordStripePayment', () => {

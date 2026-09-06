@@ -1910,6 +1910,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
       queueResult(mappingRows);                                                          // payment mapping origin probe
       if (connectionRows) queueResult(connectionRows);                                   // QuickBooks connection probe
     }
+    queueResult([]);                                                                     // no Stripe mapping
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum

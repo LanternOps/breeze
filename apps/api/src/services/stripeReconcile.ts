@@ -10,6 +10,7 @@ import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
+import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -65,6 +66,12 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
       .where(eq(invoiceStripePayments.id, pre.id)).limit(1).for('update');
     if (!mapping) throw new Error(`Mapping for stripe object ${input.stripeObjectId} disappeared`);
     if (mapping.invoicePaymentId) return { kind: 'noop', invoiceId: mapping.invoiceId };
+    if (mapping.status === 'failed' || mapping.status === 'refunded' || mapping.status === 'disputed') {
+      return { kind: 'noop', invoiceId: mapping.invoiceId };
+    }
+    if (mapping.status === 'partially_refunded' || mapping.status === 'partially_disputed') {
+      throw new Error(`Partially reversed mapping ${mapping.id} lost its linked payment`);
+    }
 
     // TERMINAL conditions: a retry will NEVER succeed, so we must not throw (a
     // thrown error → 500 → Stripe retries forever). Instead mark the mapping
@@ -85,8 +92,17 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     if (String(input.currency).toUpperCase() !== String(inv.currencyCode).toUpperCase()) {
       return terminalFail(`currency mismatch (event=${input.currency} invoice=${inv.currencyCode})`);
     }
+    if (mapping.currency && String(input.currency).toUpperCase() !== String(mapping.currency).toUpperCase()) {
+      return terminalFail(`currency mismatch (event=${input.currency} mapping=${mapping.currency})`);
+    }
     if (!input.stripeAccountId || input.stripeAccountId !== mapping.stripeAccountId) {
       return terminalFail(`account mismatch (event=${input.stripeAccountId} mapping=${mapping.stripeAccountId})`);
+    }
+    if (mapping.stripePaymentIntentId && mapping.stripePaymentIntentId !== input.stripePaymentIntentId) {
+      return terminalFail(`payment intent mismatch (event=${input.stripePaymentIntentId} mapping=${mapping.stripePaymentIntentId})`);
+    }
+    if (mapping.amount != null && toCents(input.amount) !== toCents(mapping.amount)) {
+      return terminalFail(`amount mismatch (event=${input.amount} mapping=${mapping.amount})`);
     }
     // The locked row's balance is authoritative against the locking writers
     // (recordPayment, voidPayment, this path): each holds the invoice row lock
@@ -97,10 +113,11 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
       return terminalFail('overpayment: payment exceeds balance');
     }
 
+    const receivedAt = input.receivedAt ?? new Date().toISOString().slice(0, 10);
     const [payment] = await db.insert(invoicePayments).values({
       invoiceId: inv.id, orgId: inv.orgId, amount: Number(input.amount).toFixed(2),
       method: 'card', reference: input.stripePaymentIntentId,
-      receivedAt: input.receivedAt ?? new Date().toISOString().slice(0, 10), recordedBy: null, note: null
+      receivedAt, recordedBy: null, note: null
     }).returning();
 
     // Guarded link: only an UNLINKED mapping may take this payment id. Under the
@@ -108,6 +125,7 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     // Stripe retries; the tx rolls the orphan payment insert back too).
     const linked = await db.update(invoiceStripePayments)
       .set({ invoicePaymentId: payment!.id, status: 'succeeded', stripePaymentIntentId: input.stripePaymentIntentId,
+             paymentReceivedAt: receivedAt,
              lastEventAt: new Date(), updatedAt: new Date() })
       .where(and(eq(invoiceStripePayments.id, mapping.id), isNull(invoiceStripePayments.invoicePaymentId)))
       .returning({ id: invoiceStripePayments.id });
@@ -154,7 +172,19 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
         console.error('[stripeReconcile] enqueueAccountingPaymentPush failed (payment already committed)', `paymentId=${outcome.paymentId}`, err instanceof Error ? err.message : err);
       }
     }
-    if (outcome.paid) {
+    // A refund/dispute may have arrived before the capture linked its payment.
+    // Apply that durable inbox now, before announcing the invoice as paid.
+    const appliedReversals = await processPendingStripeFinancialEventsForPayment(
+      input.stripeAccountId,
+      input.stripePaymentIntentId,
+    );
+    let paidAfterReversals = outcome.paid;
+    if (appliedReversals > 0) {
+      const [current] = await withSystemDbAccessContext(() => db.select({ status: invoices.status })
+        .from(invoices).where(eq(invoices.id, outcome.invoiceId)).limit(1));
+      paidAfterReversals = current?.status === 'paid';
+    }
+    if (paidAfterReversals) {
       await emitInvoiceEvent({ type: 'invoice.paid', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId });
     }
   }

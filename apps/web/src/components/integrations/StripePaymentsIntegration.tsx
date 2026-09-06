@@ -30,6 +30,11 @@ interface ConnectState {
    *  (#3777 review F2). */
   cacheState?: "fresh" | "stale" | "unknown" | "reconnect_required";
   error?: { code: string; message: string } | null;
+  reconciliation?: {
+    state: "pending" | "healthy" | "error";
+    lastPolledAt: string | null;
+    error: string | null;
+  };
 }
 
 /** Mask an `acct_…` id so only the last 4 chars are shown (e.g. `acct_••••1A2b`). */
@@ -202,6 +207,18 @@ export default function StripePaymentsIntegration() {
           {t("stripePaymentsIntegration.reconnectRequired", {
             last4: state.last4 ?? "????",
             reason: state.error?.message ?? "",
+          })}
+        </p>
+      ) : null}
+
+      {!loading && !loadError && state.status === "connected" && state.reconciliation?.state === "error" ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="stripe-reconciliation-error"
+        >
+          {t("stripePaymentsIntegration.reconciliationError", {
+            reason: state.reconciliation.error ?? "",
           })}
         </p>
       ) : null}

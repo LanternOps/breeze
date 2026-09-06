@@ -14,7 +14,7 @@ const PARTNER_A = '11111111-1111-4111-8111-111111111111';
 const PARTNER_B = '22222222-2222-4222-8222-222222222222';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
 
-const { dbMocks, accountsRetrieveMock, systemContextCalls } = vi.hoisted(() => ({
+const { dbMocks, accountsRetrieveMock, eventsListMock, systemContextCalls } = vi.hoisted(() => ({
   dbMocks: {
     // queue of results for successive db.select()...limit() terminals
     selectResults: [] as unknown[][],
@@ -30,12 +30,14 @@ const { dbMocks, accountsRetrieveMock, systemContextCalls } = vi.hoisted(() => (
     insertSystemContextDepths: [] as number[],
   },
   accountsRetrieveMock: vi.fn(),
+  eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
   systemContextCalls: { count: 0, depth: 0 },
 }));
 
 vi.mock('stripe', () => ({
   default: class MockStripe {
     accounts = { retrieve: accountsRetrieveMock };
+    events = { list: eventsListMock };
     constructor(_key: string, _opts?: unknown) {}
   },
 }));
@@ -70,7 +72,10 @@ vi.mock('../db', () => ({
             return Promise.resolve(dbMocks.selectResults.shift() ?? []);
           };
           return {
-            limit: vi.fn(run),
+            limit: vi.fn(() => {
+              const result = run();
+              return Object.assign(result, { for: vi.fn(() => result) });
+            }),
             // listPartnersNeedingStripeAccountBootstrap terminates on orderBy.
             orderBy: vi.fn(run),
           };
@@ -152,9 +157,18 @@ beforeEach(() => {
   systemContextCalls.depth = 0;
   accountsRetrieveMock.mockReset();
   accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit' });
+  eventsListMock.mockReset();
+  eventsListMock.mockResolvedValue({ data: [], has_more: false });
 });
 
 describe('savePartnerStripeKey', () => {
+  it('rejects a restricted key that cannot read events before enabling payment collection', async () => {
+    eventsListMock.mockRejectedValue(Object.assign(new Error('events denied'), { type: 'StripePermissionError' }));
+    await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID }))
+      .rejects.toMatchObject({ code: 'INVALID_STRIPE_KEY', status: 400 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
   it('happy path: validates the key, pre-checks under a system context, then upserts encrypted', async () => {
     dbMocks.selectResults.push([]); // account not claimed by anyone
 
@@ -171,7 +185,7 @@ describe('savePartnerStripeKey', () => {
     // Pre-check ran inside the system context (partner-axis RLS would hide a
     // cross-partner claim from the request context).
     expect(systemContextCalls.count).toBe(2);
-    expect(dbMocks.callOrder).toEqual(['select', 'insert']);
+    expect(dbMocks.callOrder).toEqual(['select', 'select', 'insert']);
     expect(dbMocks.insertSystemContextDepths).toEqual([1]);
     const vals = dbMocks.insertedValues[0]!;
     expect(vals.partnerId).toBe(PARTNER_A);
