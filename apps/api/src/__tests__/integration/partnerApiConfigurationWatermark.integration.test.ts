@@ -651,17 +651,24 @@ describe('partner desired-configuration material watermarks', () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org.id });
-    await db.insert(customFieldDefinitions).values({
+    const [definition] = await db.insert(customFieldDefinitions).values({
       orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text',
-    });
+    }).returning();
+    if (!definition) throw new Error('custom field definition insert failed');
     const [device] = await db.insert(devices).values({
       orgId: org.id, siteId: site.id, agentId: `task7-${crypto.randomUUID()}`.slice(0, 64),
       hostname: 'task7-device', osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
-      customFields: {},
     }).returning();
     if (!device) throw new Error('device insert failed');
     const before = await stateClock(org.id, 'custom-fields');
-    await db.update(devices).set({ customFields: { rack: 'DC1-R07' } }).where(eq(devices.id, device.id));
+    // #3257 W05 — a value change is a write to device_custom_field_values. The
+    // projection trigger turns that into the UPDATE on devices.custom_fields that
+    // the export watermark trigger keys on, so driving the jsonb directly here
+    // would advance the clock through a path no shipped writer takes any more.
+    await db.insert(deviceCustomFieldValues).values({
+      deviceId: device.id, orgId: org.id, definitionId: definition.id,
+      fieldKey: 'rack', valueText: 'DC1-R07',
+    });
     expect((await stateClock(org.id, 'custom-fields')).getTime()).toBeGreaterThan(before.getTime());
 
     // Simulate the post-migration startup call. This blanket-grants table
@@ -918,7 +925,6 @@ describe('partner desired-configuration material watermarks', () => {
     const [device] = await db.insert(devices).values({
       orgId: org.id, siteId: site.id, agentId: `task7-route-${crypto.randomUUID()}`.slice(0, 64),
       hostname: 'task7-route', osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
-      customFields: { rack: 'R01' },
     }).returning();
     if (!device) throw new Error('route device insert failed');
     const [policy] = await db.insert(configurationPolicies).values({ orgId: org.id, name: 'Route policy' }).returning();
@@ -929,7 +935,20 @@ describe('partner desired-configuration material watermarks', () => {
     await db.insert(automations).values({
       orgId: org.id, name: 'Route automation', trigger: { type: 'manual' }, actions: [{ type: 'reboot' }],
     });
-    await db.insert(customFieldDefinitions).values({ orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text' });
+    await db.insert(backupConfigs).values({
+      orgId: org.id, name: 'Route destination', type: 'file', provider: 's3',
+      providerConfig: { endpoint: 'https://storage.example.test' },
+    });
+    const [routeDefinition] = await db.insert(customFieldDefinitions)
+      .values({ orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text' }).returning();
+    if (!routeDefinition) throw new Error('route custom field definition insert failed');
+    // #3257 W05 — seeded into the normalized table, not devices.custom_fields:
+    // /custom-field-values reads the table, so a jsonb-only seed would leave that
+    // route returning [] and the per-record orgId assertion below vacuous.
+    await db.insert(deviceCustomFieldValues).values({
+      deviceId: device.id, orgId: org.id, definitionId: routeDefinition.id,
+      fieldKey: 'rack', valueText: 'R01',
+    });
 
     const foreignPartner = await createPartner();
     const foreignOrg = await createOrganization({ partnerId: foreignPartner.id });
@@ -944,6 +963,15 @@ describe('partner desired-configuration material watermarks', () => {
       const response = await app.request(path);
       expect(response.status, `${path}: ${await response.clone().text()}`).toBe(200);
       const body = await response.json() as { data: Array<{ orgId: string }> };
+      // `every` on [] is vacuously true. /custom-field-values is the route this
+      // wave re-pointed at device_custom_field_values, so it gets a non-empty
+      // guard: a jsonb-only seed (what this test used to do) makes it return []
+      // and the orgId assertion below would then pass while proving nothing.
+      // The other six are left as they were — several of them are empty here for
+      // reasons that predate this wave and are not this PR's to change.
+      if (path === '/custom-field-values') {
+        expect(body.data.length, `${path} returned no records`).toBeGreaterThan(0);
+      }
       expect(body.data.every((record) => record.orgId === org.id)).toBe(true);
     }
   });
