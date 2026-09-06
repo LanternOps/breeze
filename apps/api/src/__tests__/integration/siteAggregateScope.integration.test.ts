@@ -54,12 +54,14 @@ async function fixture() {
   const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id, name: 'Partner Admin' });
   await grantRolePermissions(partnerRole.id, [{ resource: '*', action: '*' }]);
   const partnerNoRead = await createRole({ scope: 'partner', partnerId: partner.id });
+  const partnerReader = await createRole({ scope: 'partner', partnerId: partner.id });
+  await grantRolePermissions(partnerReader.id, [{ resource: 'devices', action: 'read' }]);
 
-  async function principal(scope: 'organization' | 'partner' | 'system', siteIds: string[] | null, canRead = true) {
+  async function principal(scope: 'organization' | 'partner' | 'system', siteIds: string[] | null, canRead = true, readOnly = false) {
     const user = await createUser({ partnerId: partner.id, email: `${randomUUID()}@example.com` });
     const roleId = scope === 'organization'
       ? (canRead ? role.id : noRead.id)
-      : (canRead ? partnerRole.id : partnerNoRead.id);
+      : (canRead ? (readOnly ? partnerReader.id : partnerRole.id) : partnerNoRead.id);
     if (scope === 'organization') {
       await getTestDb().insert(organizationUsers).values({ userId: user.id, orgId: org.id, roleId, siteIds });
     } else {
@@ -238,6 +240,23 @@ describe('RMM-QA-221 site-scoped aggregate acceptance', () => {
     const f = await fixture();
     const denied = await f.principal(scope, null, false);
     expect((await request(`${statusPath}?partnerId=${f.partner.id}`, denied.token)).status).toBe(403);
+  });
+
+  it('a partner custom role with only devices:read can read summaries without an org grant', async () => {
+    const f = await fixture();
+    const reader = await f.principal('partner', null, true, true);
+    expect((await read(statusPath, reader.token)).summary.totalAgents).toBe(1);
+    expect((await read(overviewPath, reader.token)).total).toBe(1);
+    expect((await read(threatsPath, reader.token)).pagination.total).toBe(1);
+  });
+
+  it('moving a device to a denied site immediately removes its existing facts', async () => {
+    const f = await fixture();
+    expect((await read(statusPath, f.restricted.token)).summary.totalAgents).toBe(1);
+    await getTestDb().update(devices).set({ siteId: f.siteB.id }).where(eq(devices.id, f.allowed.id));
+    expect((await read(statusPath, f.restricted.token)).summary).toEqual(zeroSecurity);
+    expect(await read(overviewPath, f.restricted.token)).toEqual(zeroSoftware);
+    expect((await read(threatsPath, f.restricted.token)).data).toEqual([]);
   });
 
   it('unmapped organization status does not expose partner integration metadata', async () => {
