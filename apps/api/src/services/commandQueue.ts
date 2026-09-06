@@ -265,7 +265,13 @@ export async function insertQueuedCommandInTransaction(
     deviceId: string;
     type: CommandType;
     payload: CommandPayload;
-    createdBy: string;
+    /**
+     * `device_commands.created_by` is a NULLABLE uuid. Pass `null` for a
+     * synthetic principal that `resolveCommandCreatedBy` degraded — NOT `''`,
+     * which Postgres rejects with `22P02 invalid input syntax for type uuid`
+     * and which rolls back the caller's whole transaction (#3525 W02b).
+     */
+    createdBy: string | null;
   },
 ): Promise<QueuedCommand> {
   const [command] = await tx.insert(deviceCommands).values({

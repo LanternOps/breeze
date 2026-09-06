@@ -152,6 +152,8 @@ export const TOOL_TIERS = {
   sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
+  // #3525 — the de-escalation that undoes run_script; same tier, same gate.
+  cancel_script_execution: 3,
   // Script library (read-only) — used by the script-builder assistant to
   // reference existing scripts. Absent here, createSessionPreToolUse rejects
   // them as "Unknown tool" before execution (the script-builder could not
@@ -1375,6 +1377,18 @@ export function createBreezeMcpServer(
         ...aiRunContextInputShape,
       },
       makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'cancel_script_execution',
+      'Stop a running script execution on a device. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      {
+        executionId: uuid,
+        // Mirrors toolInputSchemas.cancel_script_execution; the 30s ceiling is
+        // MAX_GRACE_SECONDS in services/scriptCancellation.
+        graceSeconds: z.number().int().min(0).max(30).optional(),
+      },
+      makeHandler('cancel_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

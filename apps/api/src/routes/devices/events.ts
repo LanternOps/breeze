@@ -477,6 +477,12 @@ const actionLabels: Record<string, string> = {
   'agent.recovery_keys.submit': 'Recovery keys escrowed',
   'script.execute': 'Script executed',
   'script.execution.cancel': 'Script execution cancelled',
+  // #3525: NOT YET EMITTED by anything — registered ahead of the cancellation
+  // closers (W03), which are what will write it when a cancel resolves without
+  // the device proving the stop. Grep will find no call site until then. The
+  // copy must not read as though the script kept running OR as though it was
+  // stopped, because an unconfirmed cancel says nothing about either.
+  'script.execution.cancel.unconfirmed': 'Script stop could not be confirmed',
   // These fire when the command is DISPATCHED to the agent, not when it
   // completes — the audit row's `result` is 'dispatched', not 'success' (see
   // commandQueue.ts, #4225). Keep the copy in the command-sent tense so it
@@ -484,6 +490,7 @@ const actionLabels: Record<string, string> = {
   'agent.command.install_patches': 'Patch install command sent',
   'agent.command.rollback_patches': 'Patch rollback command sent',
   'agent.command.script': 'Script run command sent',
+  'agent.command.script_cancel': 'Stop script command sent',
   'agent.command.software_uninstall': 'Software uninstall command sent',
   'agent.command.software_update': 'Software update command sent',
   'alert.acknowledge': 'Alert acknowledged',
