@@ -917,6 +917,66 @@ describe('partner desired-configuration material watermarks', () => {
     expect(JSON.stringify(valuePages)).not.toContain('Summer2026');
   });
 
+  /**
+   * The product contract behind this wave, asserted in the direction that can
+   * actually rot: /custom-field-values reads device_custom_field_values and
+   * NOTHING ELSE. A value present only in the devices.custom_fields jsonb is a
+   * value no shipped writer can produce any more (the jsonb is a one-way
+   * projection), so the export must not surface it.
+   *
+   * This is the mirror of `filterEngine … reads the table, not the jsonb
+   * projection` in deviceCustomFieldValues.integration.test.ts, and it is the
+   * only test positioned to catch a future "fix" that re-adds a jsonb fallback
+   * to the export — e.g. a COALESCE onto jsonb_extract_path_text to paper over a
+   * backfill gap. Such a fallback would re-open defect 1 (one datum exported
+   * twice when an org-owned and a partner-wide definition share a field_key),
+   * and every other test here would stay green because they all seed BOTH the
+   * row and, via the projection, the jsonb.
+   */
+  runDb('the export ignores a value that exists only in the devices.custom_fields jsonb', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [definition] = await db.insert(customFieldDefinitions).values({
+      orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text',
+    }).returning();
+    if (!definition) throw new Error('jsonb-only definition insert failed');
+    const [device] = await db.insert(devices).values({
+      orgId: org.id, siteId: site.id, agentId: `jsonb-only-${crypto.randomUUID()}`.slice(0, 64),
+      hostname: 'jsonb-only-device', osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1',
+    }).returning();
+    if (!device) throw new Error('jsonb-only device insert failed');
+
+    // Forge the pre-W05 state: the datum in the jsonb, no row in the table.
+    // Written with a raw UPDATE because no code path can produce this any more.
+    await db.execute(sql`
+      UPDATE public.devices SET custom_fields = '{"rack":"JSONB-ONLY"}'::jsonb
+       WHERE id = ${device.id}::uuid`);
+
+    const app = configurationExportApp(partner.id, org.id);
+    const blind = await app.request('/custom-field-values');
+    expect(blind.status, await blind.clone().text()).toBe(200);
+    const blindBody = await blind.json() as { data: unknown[] };
+    expect(blindBody.data).toEqual([]);
+    expect(JSON.stringify(blindBody)).not.toContain('JSONB-ONLY');
+
+    // Control: the SAME datum, written the way a shipped writer writes it, is
+    // exported. Without this half the assertion above would also pass if the
+    // route were broken outright, or if the fixture never reached it at all.
+    await db.insert(deviceCustomFieldValues).values({
+      deviceId: device.id, orgId: org.id, definitionId: definition.id,
+      fieldKey: 'rack', valueText: 'TABLE-BACKED',
+    });
+    const seeing = await app.request('/custom-field-values');
+    expect(seeing.status, await seeing.clone().text()).toBe(200);
+    const seeingBody = await seeing.json() as { data: Array<{ orgId: string }> };
+    expect(seeingBody.data).toHaveLength(1);
+    expect(JSON.stringify(seeingBody)).toContain('TABLE-BACKED');
+    // And the projection has overwritten the forged jsonb from the table.
+    expect(JSON.stringify(seeingBody)).not.toContain('JSONB-ONLY');
+  });
+
   runDb('all seven routes execute under app-role RLS and cannot expose another partner', async () => {
     const db = getTestDb();
     const partner = await createPartner();
@@ -934,10 +994,6 @@ describe('partner desired-configuration material watermarks', () => {
     await db.insert(scripts).values({ orgId: org.id, name: 'Route script', osTypes: ['linux'], language: 'bash', content: 'true' });
     await db.insert(automations).values({
       orgId: org.id, name: 'Route automation', trigger: { type: 'manual' }, actions: [{ type: 'reboot' }],
-    });
-    await db.insert(backupConfigs).values({
-      orgId: org.id, name: 'Route destination', type: 'file', provider: 's3',
-      providerConfig: { endpoint: 'https://storage.example.test' },
     });
     const [routeDefinition] = await db.insert(customFieldDefinitions)
       .values({ orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text' }).returning();
@@ -967,8 +1023,11 @@ describe('partner desired-configuration material watermarks', () => {
       // wave re-pointed at device_custom_field_values, so it gets a non-empty
       // guard: a jsonb-only seed (what this test used to do) makes it return []
       // and the orgId assertion below would then pass while proving nothing.
-      // The other six are left as they were — several of them are empty here for
-      // reasons that predate this wave and are not this PR's to change.
+      // The other six keep the assertion AND the fixture they had. Some of them
+      // (at least /backup-configurations, which this test never seeds) are empty
+      // here, so their check is vacuous today — but that predates this wave (W05
+      // touched only customFieldValueSource in routes/partnerApi/configuration.ts;
+      // every other source query is untouched), so it is not this PR's to change.
       if (path === '/custom-field-values') {
         expect(body.data.length, `${path} returned no records`).toBeGreaterThan(0);
       }
