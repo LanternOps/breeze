@@ -297,6 +297,21 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
  * repeat #4867 by skipping both paths. `ticket_alert_links` is the one derived
  * name that is deliberately NOT here — it is the ticket axis's row and is
  * already rewritten by CUSTOM_ORG_REWRITE_TABLES.
+ *
+ * LIMIT OF THIS GUARD (#5005 review): the derivation walks
+ * `getTableConfig(table).foreignKeys`, which sees only the FKs DECLARED in the
+ * Drizzle schema — not the ones that exist solely in a migration. Nothing in
+ * this repo forces the two to agree: `pnpm db:check-drift` compares the schema
+ * against the migrations' DDL for columns, but drizzle-kit does not surface a
+ * migration-only FK as drift the schema must adopt (the same gap
+ * `aiAlertVerdicts.supersededBy`'s DEFERRABLE note and
+ * `deviceMtlsCertificates`' composite FK already call out from the other
+ * direction). So a future alert child whose only link to `alerts` is an FK
+ * added in raw SQL — or one that reaches alerts through an untyped uuid column
+ * with no FK at all — is invisible here and will be missed exactly the way
+ * #4867 was. When adding such a table, add it to ALERT_CHILD_ORG_REWRITE_TABLES
+ * by hand; the `stale` assertion below will then flag it, which is the prompt
+ * to declare the FK in the Drizzle schema too.
  */
 describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
   const alertChildSet = new Set<string>(ALERT_CHILD_ORG_REWRITE_TABLES);
@@ -410,15 +425,20 @@ describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
     ).toEqual([]);
   });
 
-  it('is ordered member -> group -> verdict, the order moveOrg.ts issues them in', () => {
-    // Load-bearing, not cosmetic: the group statement's "every member alert is
-    // now in the target org" predicate reads alerts.org_id as re-stamped by the
-    // generic loop, and the verdict statement's group leg reads
-    // alert_correlation_groups.org_id as re-stamped by the group statement.
+  it('is ordered group -> member -> verdict, the order moveOrg.ts issues them in', () => {
+    // Load-bearing for TWO reasons, and the first is a lock order (#5005
+    // review): the correlation job (services/alertCorrelationGroups.ts) writes
+    // the GROUP then its MEMBERS on every pass, so a mover taking them the
+    // other way round forms an AB-BA with a concurrent correlation pass and
+    // loses one side to 40P01. Second, the data dependency runs the same way:
+    // the member statement and the verdict statement's group leg both read
+    // alert_correlation_groups.org_id as re-stamped by the group statement,
+    // whose own "does this group still span two orgs?" guard reads
+    // alerts.org_id from the generic loop — never members.org_id.
     // moveOrg.test.ts pins the real statement sequence to this array.
     expect(ALERT_CHILD_ORG_REWRITE_TABLES).toEqual([
-      'alert_correlation_members',
       'alert_correlation_groups',
+      'alert_correlation_members',
       'ai_alert_verdicts',
     ]);
   });

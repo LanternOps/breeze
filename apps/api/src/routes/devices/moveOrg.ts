@@ -55,14 +55,27 @@ class OrgVanishedDuringMoveError extends Error {
 /**
  * How much alert-axis derived state a device org-move carried over (#4867),
  * recorded on BOTH audit rows so the source and target feeds agree.
- * `correlationGroupsHeld` counts the groups the move touched but deliberately
- * left in the source org — still spanning two orgs, or their
- * (org_id, group_key) slot already taken in the target org.
+ *
+ * The held counts are split by CAUSE, because the two have different operator
+ * answers (#5005 review):
+ *
+ *  - `correlationGroupsHeldSpanning` — the group still has a member alert on a
+ *    device in another org. It travels by itself once that last device moves;
+ *    nothing to do.
+ *  - `correlationGroupsHeldKeyCollision` — the target org already holds a group
+ *    with this `group_key` (`alert_correlation_groups_org_key_uq`). This one
+ *    never self-resolves: the two groups need a human decision, so the number
+ *    being non-zero is the signal.
+ *  - `correlationMembersHeld` — this device's own membership rows that stayed
+ *    behind with a held group. Members always travel with their group, so this
+ *    is the count of alerts that moved without their correlation membership.
  */
 interface AlertChildOrgRewriteCounts {
-  correlationMembers: number;
   correlationGroups: number;
-  correlationGroupsHeld: number;
+  correlationGroupsHeldSpanning: number;
+  correlationGroupsHeldKeyCollision: number;
+  correlationMembers: number;
+  correlationMembersHeld: number;
   alertVerdicts: number;
 }
 
@@ -625,7 +638,7 @@ moveOrgRoutes.post(
         );
 
         // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
-        // core.ts): alert_correlation_members, alert_correlation_groups and
+        // core.ts): alert_correlation_groups, alert_correlation_members and
         // ai_alert_verdicts all denormalize org_id but have NO device_id
         // column, so neither the generic loop above nor the DB-side
         // breeze_cascade_device_org_id() trigger (which discovers its tables BY
@@ -639,28 +652,43 @@ moveOrgRoutes.post(
         // and nothing regenerates either (the verdict scheduler is event-driven
         // off `alert.triggered` and never re-scans).
         //
-        // Placement is load-bearing twice: AFTER the generic loop, because the
-        // group predicate below reads alerts.org_id AS RE-STAMPED by it; and
-        // AFTER the ticket chain above, so this extends — never reorders — the
-        // documented ticket-child lock order
-        // (services/ticketOrgMoveLockOrder.ts). The three run member -> group ->
-        // verdict because each later predicate reads what the earlier one just
-        // wrote. None of them carries a composite tenant FK, so there is no
-        // 23503 hazard of the kind the ticket chain is ordered for.
+        // ORDER — group -> member -> verdict. Two reasons, and the FIRST is a
+        // lock order, not a data dependency:
         //
-        // A member row describes ONE alert's membership, so it always follows
-        // that alert — even when its group does not (next statement).
-        const movedCorrelationMembers = (await tx.execute(
-          sql`UPDATE ${sql.identifier('alert_correlation_members')} SET org_id = ${targetOrgId}::uuid
-              WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
-              RETURNING id`,
-        )) as unknown as Array<{ id: string }>;
-
-        // A GROUP can span alerts from several devices, so it travels only once
-        // EVERY member alert shares the target org — handing a group to an org
-        // that owns part of it would make its member_count / noise_reduction_
-        // percent claims wrong for both orgs. A group still spanning two orgs
-        // is left behind and counted below instead.
+        //  1. LOCK ORDER (#5005 review). The other writer of this pair is the
+        //     correlation job (services/alertCorrelationGroups.ts), which
+        //     upserts the GROUP and then its MEMBERS, in that order, on every
+        //     pass. Taking them the other way round here is a textbook AB-BA:
+        //     a correlation pass running concurrently over the same group
+        //     deadlocks with this move and Postgres kills one with 40P01,
+        //     surfacing as a 500 on an admin action. Same class of bug and same
+        //     fix as the ticket-child order in
+        //     services/ticketOrgMoveLockOrder.ts (#4657) — read that module for
+        //     the precedent. This pair is not listed there because its
+        //     counterpart is the correlation job rather than a second org-mover,
+        //     but the rule is identical: state the order once, and align with
+        //     the existing writer instead of reasoning locally.
+        //  2. DATA DEPENDENCY, and it runs the same way. The member statement
+        //     reads `alert_correlation_groups.org_id` as re-stamped by the group
+        //     statement, and the verdict's group leg reads that same column.
+        //     NOTHING reads `alert_correlation_members.org_id`: the group's
+        //     "does this group still span two orgs?" guard reads `alerts.org_id`
+        //     (re-stamped by the generic loop above), never the member row's own
+        //     org. An earlier revision of this comment asserted the opposite —
+        //     that member -> group -> verdict was load-bearing — and the order
+        //     it justified was the deadlock in 1.
+        //
+        // Placement of the whole block is load-bearing too: AFTER the generic
+        // loop, because the group guard reads alerts.org_id as re-stamped by it;
+        // and AFTER the ticket chain above, so this extends — never reorders —
+        // ticketOrgMoveLockOrder.ts's documented order. None of the three
+        // carries a composite tenant FK, so there is no 23503 hazard of the kind
+        // the ticket chain is ordered for.
+        //
+        // A GROUP travels only once EVERY member alert shares the target org —
+        // handing a group to an org that owns part of it would make its
+        // member_count / noise_reduction_percent claims wrong for both orgs. A
+        // group still spanning two orgs is left behind and counted below.
         //
         // The third guard is `alert_correlation_groups_org_key_uq (org_id,
         // group_key)`: the correlation job mints group_key as
@@ -686,6 +714,36 @@ moveOrgRoutes.post(
                   SELECT 1 FROM alert_correlation_groups existing
                   WHERE existing.org_id = ${targetOrgId}::uuid AND existing.group_key = g.group_key)
               RETURNING g.id`,
+        )) as unknown as Array<{ id: string }>;
+
+        // Members travel WITH their group — never apart from it. The gate is the
+        // GROUP's org_id as this transaction just left it, not the member's own
+        // alert: `correlationMetadataCondition` (routes/alerts/alerts.ts) joins a
+        // member to its group and pins BOTH org_ids, so a member re-stamped to
+        // the target while its group stayed behind is visible to NEITHER org.
+        // That is strictly worse than leaving both in the source org, where the
+        // source org still renders the group intact and the target org merely
+        // sees an uncorrelated alert (#5005 post-merge review).
+        //
+        // Scoped to groups this device's alerts belong to, so an unrelated
+        // target-org group is never touched. Within such a group EVERY member
+        // moves, including one whose own alert lives on a DIFFERENT device —
+        // that device's alerts already sit in the target org, which is exactly
+        // what let the group past the guards above. Matching on
+        // `g.org_id = <target>` rather than on the ids RETURNed above also heals
+        // a member stranded by the pre-fix code, whose group is already there.
+        const movedCorrelationMembers = (await tx.execute(
+          sql`UPDATE ${sql.identifier('alert_correlation_members')} m SET org_id = ${targetOrgId}::uuid
+              WHERE m.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+                AND EXISTS (
+                  SELECT 1 FROM alert_correlation_groups g
+                  WHERE g.id = m.group_id
+                    AND g.org_id = ${targetOrgId}::uuid
+                    AND EXISTS (
+                      SELECT 1 FROM alert_correlation_members m2
+                      JOIN alerts a ON a.id = m2.alert_id
+                      WHERE m2.group_id = g.id AND a.device_id = ${deviceId}::uuid))
+              RETURNING m.id`,
         )) as unknown as Array<{ id: string }>;
 
         // A verdict follows the row it judges. The OR is the point: a
@@ -718,24 +776,52 @@ moveOrgRoutes.post(
               RETURNING id`,
         )) as unknown as Array<{ id: string }>;
 
-        // Groups this move touched but deliberately left behind (still spanning
-        // two orgs, or blocked by an occupied group_key). Counted so an operator
-        // asking "why didn't the correlation badge follow this device?" finds
-        // the number in the audit row instead of reconstructing it from SQL.
+        // Groups this move touched but deliberately left behind, split by CAUSE
+        // so an operator asking "why didn't the correlation badge follow this
+        // device?" reads the answer off the audit row instead of reconstructing
+        // it from SQL. The group UPDATE has already run, so a group still
+        // outside the target org failed exactly one of its two skippable
+        // guards: it spans two orgs, or its (org_id, group_key) slot is taken
+        // there. `spans` is evaluated first and wins when both are true, so the
+        // two counts always sum to the number of held groups.
         const [heldCorrelationGroups] = (await tx.execute(
-          sql`SELECT count(*)::int AS held
-              FROM alert_correlation_groups g
-              WHERE g.org_id IS DISTINCT FROM ${targetOrgId}::uuid
-                AND EXISTS (
-                  SELECT 1 FROM alert_correlation_members m
-                  JOIN alerts a ON a.id = m.alert_id
-                  WHERE m.group_id = g.id AND a.device_id = ${deviceId}::uuid)`,
-        )) as unknown as Array<{ held: number }>;
+          sql`SELECT
+                count(*) FILTER (WHERE t.spans)::int AS held_spanning,
+                count(*) FILTER (WHERE NOT t.spans)::int AS held_key_collision
+              FROM (
+                SELECT EXISTS (
+                    SELECT 1 FROM alert_correlation_members m2
+                    JOIN alerts a2 ON a2.id = m2.alert_id
+                    WHERE m2.group_id = g.id
+                      AND a2.org_id IS DISTINCT FROM ${targetOrgId}::uuid) AS spans
+                FROM alert_correlation_groups g
+                WHERE g.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+                  AND EXISTS (
+                    SELECT 1 FROM alert_correlation_members m
+                    JOIN alerts a ON a.id = m.alert_id
+                    WHERE m.group_id = g.id AND a.device_id = ${deviceId}::uuid)
+              ) t`,
+        )) as unknown as Array<{ held_spanning: number; held_key_collision: number }>;
+
+        // This device's OWN memberships that stayed behind with a held group:
+        // the alert moved, its correlation membership deliberately did not.
+        // Counted separately from the moved members so the two numbers never
+        // have to be read as "everything else".
+        const [heldCorrelationMembers] = (await tx.execute(
+          sql`SELECT count(*)::int AS held_members
+              FROM alert_correlation_members m
+              JOIN alerts a ON a.id = m.alert_id
+              JOIN alert_correlation_groups g ON g.id = m.group_id
+              WHERE a.device_id = ${deviceId}::uuid
+                AND g.org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
+        )) as unknown as Array<{ held_members: number }>;
 
         const alertChildCounts = {
-          correlationMembers: movedCorrelationMembers.length,
           correlationGroups: movedCorrelationGroups.length,
-          correlationGroupsHeld: Number(heldCorrelationGroups?.held ?? 0),
+          correlationGroupsHeldSpanning: Number(heldCorrelationGroups?.held_spanning ?? 0),
+          correlationGroupsHeldKeyCollision: Number(heldCorrelationGroups?.held_key_collision ?? 0),
+          correlationMembers: movedCorrelationMembers.length,
+          correlationMembersHeld: Number(heldCorrelationMembers?.held_members ?? 0),
           alertVerdicts: movedAlertVerdicts.length,
         };
         // Only audit the block when the device actually had alert-axis rows, so

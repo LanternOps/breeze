@@ -380,14 +380,25 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
  * regenerates them: the verdict scheduler is event-driven off `alert.triggered`
  * (jobs/alertVerdictScheduler.ts) and never re-scans existing alerts.
  *
- * ORDER IS LOAD-BEARING, but for a different reason than the ticket list's:
- * member -> group -> verdict, because each later statement's predicate reads
- * the rows the earlier one just re-stamped (the group's "every member alert is
- * now in the target org" test reads `alerts.org_id` from the generic loop, and
- * the verdict's group leg reads `alert_correlation_groups.org_id` from the
- * group statement). None of the three carries a composite tenant FK, so there
- * is no 23503 ordering hazard of the kind the ticket chain above is ordered
- * for. These statements run AFTER that chain, extending — never reordering —
+ * ORDER IS LOAD-BEARING — group -> member -> verdict — and, unlike the ticket
+ * list's, the primary reason is a LOCK ORDER (#5005 review). The correlation
+ * job (services/alertCorrelationGroups.ts) upserts the GROUP and then its
+ * MEMBERS on every pass; a mover that took them the other way round would form
+ * an AB-BA with a concurrent correlation pass and lose one side to 40P01.
+ * Aligning with the existing writer is the same discipline
+ * services/ticketOrgMoveLockOrder.ts encodes for the ticket axis (#4657).
+ *
+ * The data dependency runs the same way and is downstream only: the member
+ * statement reads `alert_correlation_groups.org_id` as re-stamped by the group
+ * statement, and the verdict's group leg reads that same column. Nothing reads
+ * `alert_correlation_members.org_id` — the group's "does this group still span
+ * two orgs?" guard reads `alerts.org_id` from the generic loop, never the
+ * member row's own org. (Before #5005's follow-up this comment claimed the
+ * reverse order was load-bearing for that reason; it was not.)
+ *
+ * None of the three carries a composite tenant FK, so there is no 23503
+ * ordering hazard of the kind the ticket chain above is ordered for. These
+ * statements run AFTER that chain, extending — never reordering —
  * services/ticketOrgMoveLockOrder.ts's documented order.
  *
  * moveOrg.coverage.test.ts DERIVES the expected membership from the schema
@@ -396,8 +407,8 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
  * statement sequence to this array's order.
  */
 export const ALERT_CHILD_ORG_REWRITE_TABLES = [
-  'alert_correlation_members',
   'alert_correlation_groups',
+  'alert_correlation_members',
   'ai_alert_verdicts',
 ] as const;
 
