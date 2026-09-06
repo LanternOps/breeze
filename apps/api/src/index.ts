@@ -122,6 +122,7 @@ import { partnerTrustRoutes } from './routes/partnerTrust';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
+import { customFieldImportRoutes } from './routes/customFieldImport';
 import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
@@ -1020,6 +1021,11 @@ api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
+// Mounted BEFORE customFieldRoutes so `/custom-fields/import*` is matched by
+// the importer rather than falling through to the CRUD app's `/:id` handlers
+// (#3257 W07). The two apps carry disjoint methods+paths today, so the order is
+// belt-and-braces rather than load-bearing.
+api.route('/custom-fields', customFieldImportRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
 api.route('/deployments', deploymentRoutes);

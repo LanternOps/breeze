@@ -95,6 +95,67 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       }
     },
     schemas: {
+      // Custom-field definition importer (#3257 W07)
+      CustomFieldDefinitionImportRow: {
+        type: 'object',
+        required: ['fieldKey', 'name', 'type', 'ownerScope'],
+        properties: {
+          fieldKey: {
+            type: 'string',
+            pattern: '^[a-z][a-z0-9_]*$',
+            maxLength: 100,
+            description: 'Lowercase alphanumeric with underscores — the same rule POST /custom-fields enforces.'
+          },
+          name: { type: 'string', maxLength: 100 },
+          type: { type: 'string', enum: ['text', 'number', 'boolean', 'dropdown', 'date'] },
+          options: { type: 'object', nullable: true, description: 'Shared CustomFieldOptions contract (choices/min/max/…).' },
+          required: { type: 'boolean' },
+          deviceTypes: { type: 'array', nullable: true, items: { type: 'string', enum: ['windows', 'macos', 'linux'] } },
+          ownerScope: {
+            type: 'string',
+            enum: ['partner', 'organization'],
+            description: 'Ownership axis. Org XOR partner is enforced by custom_field_definitions_one_owner_chk.'
+          },
+          organizationId: { type: 'string', format: 'uuid', description: 'Required when ownerScope is "organization".' },
+          sourceLabel: {
+            type: 'string',
+            maxLength: 120,
+            description: 'The incumbent RMM\'s own name for the field (e.g. "udf7"). Recorded in the audit trail, never stored on the definition.'
+          },
+          expectedAnnotation: {
+            type: 'string',
+            description: 'COMMIT only. The annotation preview returned; the row is rejected if it has since moved.'
+          },
+          expectedDefinitionId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'COMMIT only. Required when expectedAnnotation is "already-exists" — pins the acknowledgement to one definition.'
+          }
+        }
+      },
+      CustomFieldDefinitionImportRequest: {
+        type: 'object',
+        required: ['rows'],
+        properties: {
+          partnerId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'System scope only may name a partner other than its own; anyone else supplying a different one gets 403.'
+          },
+          externalSystem: {
+            type: 'string',
+            maxLength: 64,
+            default: 'csv',
+            description: 'Which RMM the file came from (datto_rmm, ninjaone, cw_automate, n_central, csv). Recorded in the audit trail.'
+          },
+          rows: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1000,
+            items: { $ref: '#/components/schemas/CustomFieldDefinitionImportRow' }
+          }
+        }
+      },
       // Common schemas
       Pagination: {
         type: 'object',
@@ -2510,6 +2571,144 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           }
         }
       }
+    },
+
+    // ============================================
+    // CUSTOM FIELD DEFINITION IMPORT (#3257 W07)
+    // ============================================
+    '/custom-fields/import/preview': {
+      post: {
+        operationId: 'previewCustomFieldDefinitionImport',
+        tags: ['Devices'],
+        summary: 'Preview a custom-field definition import',
+        description:
+          'Annotate every submitted definition row against current state without writing anything. '
+          + 'Requires organization, partner or system scope, devices:write and MFA; JWT only (an X-API-Key caller gets 401). '
+          + 'Rows with ownerScope "partner" additionally require full partner org access — a batch containing one from a '
+          + 'caller without it is refused 403 in full, matching POST /custom-fields.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomFieldDefinitionImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Annotated rows',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    rows: {
+                      type: 'array',
+                      items: {
+                        allOf: [
+                          { $ref: '#/components/schemas/CustomFieldDefinitionImportRow' },
+                          {
+                            type: 'object',
+                            properties: {
+                              index: { type: 'integer' },
+                              annotation: {
+                                type: 'string',
+                                enum: ['create', 'already-exists', 'type-conflict', 'key-shadowed', 'org-not-found', 'partner-wide-denied'],
+                                description:
+                                  'create = no field owns this key on the row\'s axis; already-exists = same axis, same type (skipped at commit); '
+                                  + 'type-conflict = same axis different type, or the key appears twice in the file; '
+                                  + 'key-shadowed = the key is taken on the OTHER ownership axis (W03 anti-shadowing trigger); '
+                                  + 'org-not-found = the organization is absent or out of reach; '
+                                  + 'partner-wide-denied = the caller may not create all-organizations fields.',
+                              },
+                              existingId: { type: 'string', format: 'uuid', nullable: true },
+                              existingType: { type: 'string', nullable: true },
+                              conflictReason: { type: 'string' },
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap exceeded, bad field key, organization row with no organizationId)' },
+          '403': { description: 'Access denied to this partner, or partner-wide rows without full partner org access' },
+        },
+      },
+    },
+    '/custom-fields/import': {
+      post: {
+        operationId: 'commitCustomFieldDefinitionImport',
+        tags: ['Devices'],
+        summary: 'Commit a custom-field definition import',
+        description:
+          'Create the acknowledged definitions. Every annotation is RE-DERIVED against fresh state inside the request and a row '
+          + 'whose annotation moved since preview is rejected with code "annotation-changed"; an "already-exists" acknowledgement '
+          + 'must pin expectedDefinitionId or it is rejected with "match-changed". '
+          + 'Always responds 200, even when errors[] is non-empty: a partial import must not read as a total failure.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/CustomFieldDefinitionImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Import summary (may report per-row errors)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    created: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          definitionId: { type: 'string', format: 'uuid' },
+                          fieldKey: { type: 'string' },
+                          ownerScope: { type: 'string', enum: ['partner', 'organization'] },
+                          organizationId: { type: 'string', format: 'uuid', nullable: true },
+                        },
+                      },
+                    },
+                    skipped: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          definitionId: { type: 'string', format: 'uuid' },
+                          fieldKey: { type: 'string' },
+                          reason: { type: 'string', enum: ['already-exists'] },
+                        },
+                      },
+                    },
+                    errors: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          fieldKey: { type: 'string' },
+                          error: { type: 'string' },
+                          code: {
+                            type: 'string',
+                            enum: [
+                              'org-not-found', 'type-conflict', 'key-shadowed', 'annotation-changed',
+                              'match-changed', 'partner-wide-denied', 'write-failed',
+                            ],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap exceeded, unpinned "already-exists" acknowledgement)' },
+          '403': { description: 'Access denied to this partner, or partner-wide rows without full partner org access' },
+        },
+      },
     },
 
     // ============================================
