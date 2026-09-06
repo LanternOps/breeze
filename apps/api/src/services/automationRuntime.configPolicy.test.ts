@@ -39,6 +39,10 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
+    // #3525 W05 — the dispatch fence reads the run row FOR SHARE through
+    // db.execute before either runner seeds. Returning no row is "run not
+    // found", which the fence deliberately treats as "not cancelled".
+    execute: vi.fn(async () => []),
   },
 }));
 
@@ -1196,5 +1200,69 @@ describe('executeAutomationRun durable dispatch', () => {
       commandId: 'cmd-ordinary',
     }));
     expect(reconcileRunMock).toHaveBeenCalledWith(run.id);
+  });
+
+  // #3525 W05 — the dispatch fence. A BullMQ job is not permission to
+  // dispatch: before this wave neither runner checked run status, so a job
+  // picked up after an operator hit Stop ran the whole automation anyway.
+  it('refuses to seed anything at all for an already-cancelled run', async () => {
+    const run = {
+      id: 'run-cancelled',
+      automationId: 'auto-cancelled',
+      status: 'cancelled',
+      triggeredBy: 'scheduler',
+      logs: [],
+    };
+    const automation = {
+      id: 'auto-cancelled',
+      orgId: 'org-1',
+      partnerId: null,
+      name: 'Cancelled automation',
+      trigger: { type: 'manual' },
+      conditions: null,
+      actions: [{ type: 'execute_command', command: 'echo nope' }],
+      onFailure: 'stop',
+      notificationTargets: null,
+      createdBy: 'user-1',
+    };
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        const rows = selectCall === 1 ? [run] : [automation];
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          }),
+        } as any;
+      }
+      if (selectCall === 3) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+            osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null,
+            customFields: null,
+          }]),
+        }),
+      } as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // The fence read (SELECT ... FOR SHARE) sees the cancelled run.
+    vi.mocked(db.execute).mockResolvedValue([{ status: 'cancelled' }] as any);
+
+    const result = await executeAutomationRun(run.id, ['dev-1']);
+
+    expect(result).toEqual({ status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 });
+    expect(seedActionResultsMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 });

@@ -493,6 +493,10 @@ const actionLabels: Record<string, string> = {
   'agent.command.script_cancel': 'Stop script command sent',
   'agent.command.software_uninstall': 'Software uninstall command sent',
   'agent.command.software_update': 'Software update command sent',
+  // #3525 W05 — the run-wide stop. The copy says the run was stopped, never
+  // that every device stopped: in-flight actions close on their own evidence
+  // and execute_command / deployment actions cannot be recalled at all.
+  'automation.run.cancel': 'Automation run cancelled',
   'alert.acknowledge': 'Alert acknowledged',
   'alert.resolve': 'Alert resolved',
   'alert.suppress': 'Alert suppressed',

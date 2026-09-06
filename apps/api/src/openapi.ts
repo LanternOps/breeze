@@ -3284,7 +3284,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           { $ref: '#/components/parameters/idParam' },
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
-          { name: 'status', in: 'query', schema: { type: 'string', enum: ['running', 'completed', 'failed', 'partial'] } }
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['running', 'completed', 'failed', 'partial', 'cancelled'] } }
         ],
         responses: {
           '200': {
@@ -3301,6 +3301,87 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           }
+        }
+      }
+    },
+    '/automations/runs/{runId}/cancel': {
+      post: {
+        operationId: 'cancelAutomationRun',
+        tags: ['Automations'],
+        summary: 'Stop a running automation run',
+        description: 'Stops an automation run (#3525). The run moves to `cancelled` immediately — that write is the dispatch fence, so no device that has not been dispatched yet ever will be. Devices already dispatched are asked to stop and close on their own evidence, so `devicesCancelled` only counts PROVEN stops and rises after this call returns. `execute_command` and `deploy_software` actions cannot be recalled at all and are reported in `uncancellableActions` rather than claimed stopped. Config-policy runs are out of scope and return 404.',
+        parameters: [
+          { name: 'runId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  graceSeconds: {
+                    type: 'integer',
+                    minimum: 0,
+                    maximum: 30,
+                    default: 5,
+                    description: 'Seconds each device waits after SIGTERM before SIGKILL. No graceful phase on Windows.'
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Cancellation requested. The counts describe what THIS call achieved, not that every device stopped.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    run: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        status: { type: 'string', enum: ['cancelled'] }
+                      }
+                    },
+                    alreadyCancelling: { type: 'boolean', description: 'The run had already been cancelled; the devices were asked again.' },
+                    actionsCancelled: { type: 'integer', description: 'Action rows that had never been dispatched and are now terminal.' },
+                    executionsCancelled: { type: 'integer', description: 'Executions this call asked to stop or proved stopped. Excludes ones whose cancel was already in flight.' },
+                    executions: {
+                      type: 'object',
+                      description: 'Per-kind breakdown of the script-execution sweep. Exactly one bucket per execution.',
+                      properties: {
+                        requested: { type: 'integer' },
+                        retracted: { type: 'integer' },
+                        alreadyCancelling: { type: 'integer' },
+                        noActionNeeded: { type: 'integer' },
+                        failed: { type: 'integer' }
+                      }
+                    },
+                    uncancellableActions: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          actionIndex: { type: 'integer' },
+                          actionType: { type: 'string' },
+                          reason: { type: 'string' }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { description: 'Partner-wide run and the caller cannot manage partner-wide state, or the run escapes the caller\'s site allowlist' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': { description: 'The run already finished on its own and cannot be relabelled cancelled' }
         }
       }
     },

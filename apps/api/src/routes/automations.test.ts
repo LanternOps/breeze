@@ -145,6 +145,17 @@ function scriptExecutionsSelectMock(rows: any[]) {
   } as any;
 }
 
+// #3525 W05 — the cancel route delegates every state decision to the service.
+const cancelAutomationRunMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/automationRunCancellation', () => ({
+  cancelAutomationRun: cancelAutomationRunMock,
+}));
+// scriptCancellation reaches agentWs/commandQueue at module load; the route
+// only needs the grace bound from it.
+vi.mock('../services/scriptCancellation', () => ({
+  MAX_GRACE_SECONDS: 30,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
   writeRouteAudit: vi.fn(),
@@ -174,7 +185,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { getRedis } from '../services/redis';
-import { writeAuditEvent } from '../services/auditEvents';
+import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { checkAutomationTargetsWithinSiteScope, createAutomationRunRecord } from '../services/automationRuntime';
 
 describe('automations routes', () => {
@@ -2024,5 +2035,192 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.name).toBe('Renamed');
+  });
+});
+
+describe('automations routes — POST /runs/:runId/cancel (#3525 W05)', () => {
+  let app: Hono;
+
+  const RUN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const AUTOMATION_ID = '11111111-1111-4111-8111-111111111111';
+
+  const orgRun = {
+    id: RUN_ID,
+    automationId: AUTOMATION_ID,
+    configPolicyId: null,
+    status: 'running',
+    triggeredBy: 'manual:user-123',
+  };
+  const orgAutomation = {
+    id: AUTOMATION_ID,
+    name: 'Nightly patch',
+    orgId: 'org-123',
+    partnerId: null,
+    conditions: null,
+    trigger: { type: 'manual' },
+  };
+  const partnerWideAutomation = { ...orgAutomation, orgId: null, partnerId: 'partner-1' };
+
+  const cancelledOutcome = {
+    kind: 'cancelled',
+    alreadyCancelling: false,
+    actionsCancelled: 2,
+    executionsCancelled: 3,
+    executions: { requested: 3, retracted: 0, alreadyCancelling: 1, noActionNeeded: 0, failed: 0 },
+    uncancellableActions: [
+      { actionIndex: 4, actionType: 'deploy_software', reason: 'Software deployments cannot be recalled.' },
+    ],
+  };
+
+  function mockSelectOnce(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+  }
+
+  function post(body?: unknown) {
+    return app.request(`/automations/runs/${RUN_ID}/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer valid-token',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.permissions = undefined;
+    mockState.auth = undefined;
+    cancelAutomationRunMock.mockReset().mockResolvedValue(cancelledOutcome);
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true, outOfScopeDeviceIds: [], unbounded: false,
+    } as any);
+    app = new Hono();
+    app.route('/automations', automationRoutes);
+  });
+
+  it('404s an unknown run without touching the service', async () => {
+    mockSelectOnce([]);
+    const res = await post();
+    expect(res.status).toBe(404);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a malformed run id', async () => {
+    const res = await app.request('/automations/runs/not-a-uuid/cancel', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+    expect(res.status).toBe(404);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a config-policy run (OD10-B: out of scope, and its RLS arm hides partner-owned policies)', async () => {
+    mockSelectOnce([{ ...orgRun, automationId: null, configPolicyId: 'policy-1' }]);
+    const res = await post();
+    expect(res.status).toBe(404);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('404s (never 403) a run belonging to another tenant, to avoid an existence oracle', async () => {
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([{ ...orgAutomation, orgId: 'org-other' }]);
+    const res = await post();
+    expect(res.status).toBe(404);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('403s an org-scoped operator stopping a PARTNER-WIDE run', async () => {
+    // OD7-A: they may stop individual executions on their own devices, but not
+    // a run that fans out across sibling tenants.
+    mockState.auth = {
+      user: { id: 'user-123', email: 'tech@example.com', name: 'Org Tech' },
+      scope: 'partner',
+      partnerId: 'partner-1',
+      partnerOrgAccess: 'selected',
+      orgId: null,
+      token: { sub: 'user-123' },
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123',
+    };
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([partnerWideAutomation]);
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a site-restricted user whose run spans sibling sites', async () => {
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([orgAutomation]);
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false, outOfScopeDeviceIds: ['device-9'], unbounded: false,
+    } as any);
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels, audits, and reports the tally honestly', async () => {
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([orgAutomation]);
+    const res = await post();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      success: true,
+      run: { id: RUN_ID, status: 'cancelled' },
+      executionsCancelled: 3,
+      actionsCancelled: 2,
+      executions: { alreadyCancelling: 1 },
+      uncancellableActions: [{ actionIndex: 4, actionType: 'deploy_software' }],
+    });
+    expect(cancelAutomationRunMock).toHaveBeenCalledWith({
+      runId: RUN_ID,
+      actorId: 'user-123',
+      actorLabel: 'test@example.com',
+      graceSeconds: undefined,
+    });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'automation.run.cancel',
+        resourceType: 'automation_run',
+        resourceId: RUN_ID,
+      }),
+    );
+  });
+
+  it('409s a run that already finished on its own rather than relabelling it', async () => {
+    mockSelectOnce([{ ...orgRun, status: 'completed' }]);
+    mockSelectOnce([orgAutomation]);
+    cancelAutomationRunMock.mockResolvedValue({ kind: 'already_terminal', status: 'completed' });
+    const res = await post();
+    expect(res.status).toBe(409);
+  });
+
+  it('404s when the run vanished between the read and the cancel', async () => {
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([orgAutomation]);
+    cancelAutomationRunMock.mockResolvedValue({ kind: 'not_found' });
+    const res = await post();
+    expect(res.status).toBe(404);
+  });
+
+  it('forwards an in-range graceSeconds and rejects an out-of-range one', async () => {
+    mockSelectOnce([orgRun]);
+    mockSelectOnce([orgAutomation]);
+    expect((await post({ graceSeconds: 12 })).status).toBe(200);
+    expect(cancelAutomationRunMock).toHaveBeenCalledWith(expect.objectContaining({ graceSeconds: 12 }));
+
+    // Out of range is rejected, never silently reinterpreted as the default.
+    cancelAutomationRunMock.mockClear();
+    const res = await post({ graceSeconds: 999 });
+    expect(res.status).toBe(400);
+    expect(cancelAutomationRunMock).not.toHaveBeenCalled();
   });
 });
