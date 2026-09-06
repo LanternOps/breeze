@@ -296,16 +296,11 @@ func TestExecuteTimestamps(t *testing.T) {
 	}
 }
 
-func TestCancelNonexistentExecution(t *testing.T) {
-	e := newTestExecutor()
-	err := e.Cancel("nonexistent-id")
-	if err == nil {
-		t.Fatal("expected error cancelling nonexistent execution")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
+// An unknown execution id is no longer an error — it is the structured
+// CancelNotFound outcome, asserted by
+// TestCancelReportsNotFoundForAnUnknownID in cancel_test.go. The server needs
+// to tell "we have no such execution" apart from "the kill failed" (#3525),
+// and an error string cannot carry that.
 
 func TestListRunningEmpty(t *testing.T) {
 	e := newTestExecutor()

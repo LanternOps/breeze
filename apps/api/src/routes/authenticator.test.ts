@@ -1376,6 +1376,36 @@ describe('attested mobile registration (#1374 W02)', () => {
       });
     });
 
+    it('persists WHY a rejected attestation was refused (#1374 W04)', async () => {
+      // The W04 verifiers return `unattested` with `evidence.rejected` rather
+      // than throwing (this route has no catch). If that evidence were blanked
+      // the way the claimed-but-unusable case is, a rejected registration would
+      // leave no durable record anywhere of why the device is not L4 — only a
+      // console line carrying no user or attempt id.
+      attestationMocks.verifyPlatformAttestation.mockResolvedValueOnce({
+        basis: 'unattested',
+        verifiedAt: null,
+        keyId: null,
+        evidence: {
+          verifier: 'android_key_attestation',
+          verifierVersion: 1,
+          rejected: 'attested key security level is Software, which is not hardware-backed',
+        },
+        appIntegrityVerifiedAt: null,
+      });
+
+      const res = await post('/devices/mobile/verify', validBody);
+      expect(res.status).toBe(201);
+      expect(dbState.insertValues[0]).toMatchObject({
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested',
+        attestationVerifiedAt: null,
+        attestationEvidence: expect.objectContaining({
+          rejected: expect.stringMatching(/security level/i),
+        }),
+      });
+    });
+
     it('raises a dedicated signal when it downgrades — a silent success row is not enough', async () => {
       // This path means a verifier said "verified" for a key that would not
       // re-parse for hashing, even though the PoP check parsed the same bytes

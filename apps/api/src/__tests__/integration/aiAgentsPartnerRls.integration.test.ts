@@ -1,6 +1,6 @@
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgents } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -115,7 +115,15 @@ describe('ai_agents RLS — dual-axis (2026-09-02 migration)', () => {
     );
   });
 
-  it('org token cannot see a partner-wide row; partner token can', async () => {
+  // #4942 flipped the first half of this. It used to assert an org token could
+  // not see a partner-wide agent at all; `ai_agents_partner_wide_select`
+  // (2026-10-11-150000-ai-partner-wide-select.sql) now grants exactly that read,
+  // SELECT-only, for the caller's OWN partner — the read request-path resolvers
+  // previously bought with a nested system-context escalation (#1105). Org
+  // tokens still never pass `breeze_has_partner_access`, so writes are as strict
+  // as before; the hijack probe below is the proof. Cross-partner isolation and
+  // the other two tables: aiPartnerWideSelect.integration.test.ts.
+  it('org token can READ (never write) a partner-wide row of its own partner; partner token can', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const by = await creator(partner.id);
@@ -129,9 +137,22 @@ describe('ai_agents RLS — dual-axis (2026-09-02 migration)', () => {
     const seenByOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select().from(aiAgents),
     );
-    expect(seenByOrg.find((candidate) => candidate.id === row!.id)).toBeUndefined();
+    expect(seenByOrg.find((candidate) => candidate.id === row!.id)?.id).toBe(row!.id);
+
+    // FOR SELECT only. RLS hides the row from the write command rather than
+    // raising, so the ROW COUNT is the assertion with teeth — "it didn't throw"
+    // would be satisfied by a successful hijack.
+    const hijack = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(aiAgents)
+        .set({ name: 'HIJACKED' })
+        .where(eq(aiAgents.id, row!.id))
+        .returning({ id: aiAgents.id }),
+    );
+    expect(hijack).toEqual([]);
+
     // Positive control: the org context must be able to see SOMETHING of its
-    // own, or the assertion above passes for the wrong reason.
+    // own, or the assertions above pass for the wrong reason.
     const [ownRow] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db
         .insert(aiAgents)

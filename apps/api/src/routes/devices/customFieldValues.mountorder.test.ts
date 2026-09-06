@@ -90,6 +90,9 @@ vi.mock('../../services/auditService', () => ({
 // #3257 W04: the PATCH handler now validates against the bounded definition
 // lookup before merging. Mocked here too (see customFieldValues.test.ts) so
 // this mount-order guard keeps exercising mount order, not validation.
+//
+// #3257 W05: the write itself is `persistDeviceCustomFieldValues` (an upsert
+// into `device_custom_field_values`), also mocked here for the same reason.
 vi.mock('../../services/customFields/queries', () => ({
   loadVisibleCustomFieldDefinitions: vi.fn().mockResolvedValue([
     {
@@ -105,6 +108,7 @@ vi.mock('../../services/customFields/queries', () => ({
       partnerId: null,
     },
   ]),
+  persistDeviceCustomFieldValues: vi.fn().mockResolvedValue([]),
 }));
 
 // Other device sub-routers pulled in by the assembled router import them at
@@ -135,18 +139,23 @@ vi.mock('../agents/enrollment', () => ({
 import { deviceRoutes } from './index';
 import { db } from '../../db';
 
+// `db.select` is called once for the device lookup, then (for a PATCH that
+// reaches the write) a second time for the post-write projection re-read —
+// register `rigDeviceLookup` before `rigProjectionRead` so the once-queue
+// order matches call order (#3257 W05 — the route no longer calls
+// `db.update` at all).
 function rigDeviceLookup(device: unknown) {
   const limit = vi.fn().mockResolvedValue(device ? [device] : []);
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
-  vi.mocked(db.select).mockReturnValue({ from } as never);
+  vi.mocked(db.select).mockReturnValueOnce({ from } as never);
 }
 
-function rigUpdate(updatedRow: unknown) {
-  const returning = vi.fn().mockResolvedValue(updatedRow ? [updatedRow] : []);
-  const where = vi.fn().mockReturnValue({ returning });
-  const set = vi.fn().mockReturnValue({ where });
-  vi.mocked(db.update).mockReturnValue({ set } as never);
+function rigProjectionRead(updatedRow: { customFields: unknown } | null) {
+  const limit = vi.fn().mockResolvedValue(updatedRow ? [updatedRow] : []);
+  const where = vi.fn().mockReturnValue({ limit });
+  const from = vi.fn().mockReturnValue({ where });
+  vi.mocked(db.select).mockReturnValueOnce({ from } as never);
 }
 
 describe('custom-field value routes mount order (#2066)', () => {
@@ -160,7 +169,7 @@ describe('custom-field value routes mount order (#2066)', () => {
 
   it('an X-API-Key PATCH reaches the handler through the assembled deviceRoutes (not 401)', async () => {
     rigDeviceLookup({ id: DEVICE_ID, orgId: ORG_A, siteId: null, hostname: 'WS', displayName: 'WS', customFields: {} });
-    rigUpdate({ customFields: { note: 'hi' } });
+    rigProjectionRead({ customFields: { note: 'hi' } });
 
     const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
       method: 'PATCH',

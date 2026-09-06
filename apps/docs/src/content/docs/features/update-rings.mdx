@@ -76,6 +76,8 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 | `low` | Minor fixes or informational updates |
 | `unknown` | Severity not classified by the vendor |
 
+A patch with no severity at all is shown as **Unrated** rather than being filed under Low. Breeze never invents a rating, so an unrated patch is skipped by auto-approval unless you turn the opt-in on — see [Auto-approving unrated patches](#auto-approving-unrated-patches).
+
 ### Approval Statuses
 
 | Status | Description |
@@ -203,10 +205,19 @@ Category rules let you set per-category auto-approval behavior within a ring. Th
 | `category` | string | The patch category name to match |
 | `autoApprove` | boolean | Whether matching patches are auto-approved |
 | `autoApproveSeverities` | string[] | If set, only auto-approve patches with these severities |
+| `autoApproveUnrated` | boolean | Also auto-approve patches that carry no severity rating. Default `false` |
 | `deferralDaysOverride` | integer or null | Override the ring's default deferral for this category |
 
+### Auto-approving unrated patches
+
+Some vendors publish an update with no severity at all. Breeze does not guess: it labels the patch **Unrated** and leaves it out of auto-approval, so ticking every severity box still will not approve it. This is deliberate — an unrated patch used to be filed under Low and could slip into an auto-approved batch nobody reviewed.
+
+To let a ring approve them anyway, turn on **Also auto-approve unrated patches**. The toggle appears twice on the ring form: once in the ring's own auto-approve block, and once inside each category rule, so you can accept unrated patches for one category without accepting them everywhere. The form spells out the same rule next to the severity picker: *"Unrated patches (no severity rating) are excluded from this severity selection and will not auto-approve, even with every severity checked, unless you turn on the toggle below."*
+
+Leave it off and unrated patches simply wait in **Pending Approval** for a technician — the dashboard's patch compliance card counts them for you.
+
 <Aside type="note">
-  **Third-party patches now auto-approve.** Third-party application updates (winget) usually report an `unknown` severity, which previously meant an `autoApproveSeverities` filter never matched them and they sat pending indefinitely. A ring that includes `third_party` in its **Patch sources** now auto-approves its third-party patches regardless of severity, so browser and runtime updates flow through the ring the same way OS patches do. OS patches keep full severity gating.
+  **Third-party patches now auto-approve.** Third-party application updates (winget) usually report an `unknown` severity, which previously meant an `autoApproveSeverities` filter never matched them and they sat pending indefinitely. A ring that includes `third_party` in its **Patch sources** now auto-approves its third-party patches regardless of severity, so browser and runtime updates flow through the ring the same way OS patches do. OS patches keep full severity gating. The **Also auto-approve unrated patches** toggle does not apply here — it only affects OS and category severity gating, and third-party auto-approval is unchanged by it either way.
 </Aside>
 
 ---

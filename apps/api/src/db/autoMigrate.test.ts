@@ -1247,3 +1247,71 @@ describe('extension-owned ledger rows', () => {
     expect(skip).toEqual(['workspace/2026-07-10-a.sql', 'ghost/2026-01-01-x.sql']);
   });
 });
+
+// #2787 wave 04 — the device_lifecycle retention feature needs a config-policy
+// enum value and a `devices.decommissioned_at` stamp. The stamp is what the
+// daily purge job compares against; without it there is no record anywhere of
+// WHEN a device was removed, so the whole feature hangs on this column being
+// added, backfilled, and indexed correctly.
+describe('device removal retention: decommissioned_at + device_lifecycle feature type', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const retentionMigration = '2026-10-11-160000-device-lifecycle-feature-and-decommissioned-at.sql';
+
+  it('sorts after every migration that shipped before it', () => {
+    const files = listMigrationFilenames();
+
+    expect(files).toContain(retentionMigration);
+    // Relative order against the newest migration on main when this wave was
+    // cut — NOT adjacency, so a sibling branch landing its own file in the
+    // same date block does not redden this wave (see the Wave 6 note above).
+    expect(files.indexOf(retentionMigration)).toBeGreaterThan(
+      files.indexOf('2026-10-11-150000-ai-partner-wide-select.sql'),
+    );
+  });
+
+  it('maps decommissioned_at as a nullable timestamptz on the devices table', () => {
+    const column = getTableConfig(devices).columns.find(
+      (candidate) => candidate.name === 'decommissioned_at',
+    );
+
+    expect(column).toBeDefined();
+    expect(column?.getSQLType()).toBe('timestamp with time zone');
+    expect(column?.notNull).toBe(false);
+  });
+
+  it('adds the enum value, the column, the partial index, and an idempotent scoped backfill', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, retentionMigration), 'utf8');
+
+    expect(migrationSql).toMatch(
+      /ALTER TYPE .*config_feature_type ADD VALUE IF NOT EXISTS 'device_lifecycle'/,
+    );
+    expect(migrationSql).toMatch(/ADD COLUMN IF NOT EXISTS decommissioned_at timestamptz/);
+    expect(migrationSql).toMatch(/CREATE INDEX IF NOT EXISTS devices_decommissioned_at_idx/);
+
+    // The backfill runs as an unprivileged role against forced-RLS `devices`.
+    // Without breeze.scope=system it is a SILENT 0-row no-op on managed
+    // Postgres, and the CI superuser masks that — so the elevation and the
+    // row-count report are both asserted, not assumed.
+    //
+    // The CANONICAL form specifically: `migrationRlsScope.ts` recognises only
+    // `SELECT`/`PERFORM set_config(...)`, so a functionally-equivalent
+    // `SET LOCAL breeze.scope = 'system'` elevates at runtime but is invisible
+    // to the guard — which then reports this file as an unscoped write.
+    expect(migrationSql).toMatch(
+      /SELECT set_config\('breeze\.scope', 'system', true\);/,
+    );
+    // Line comments stripped: the file DOCUMENTS why `SET LOCAL` is the wrong
+    // form, so a naive negative match would fail on its own explanation.
+    const executable = migrationSql.replace(/--[^\n]*/g, '');
+    expect(executable).not.toMatch(/SET LOCAL breeze\.scope/);
+    expect(migrationSql).toMatch(/GET DIAGNOSTICS/);
+    expect(migrationSql).toMatch(/RAISE WARNING/);
+    expect(migrationSql).toMatch(
+      /UPDATE devices\s+SET decommissioned_at = updated_at\s+WHERE status = 'decommissioned' AND decommissioned_at IS NULL/,
+    );
+
+    // autoMigrate wraps every file in its own transaction.
+    expect(migrationSql).not.toMatch(/\bBEGIN;/);
+    expect(migrationSql).not.toMatch(/\bCOMMIT;/);
+  });
+});

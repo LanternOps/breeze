@@ -214,16 +214,22 @@ describe('deviceActions service', () => {
     it('returns success payload on delete', async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({ data: { success: true } }));
 
-      const result = await decommissionDevice('dev-1');
+      const result = await decommissionDevice('dev-1', { uninstallAgent: true });
 
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1', { method: 'DELETE' });
+      // #3987: the agent choice always rides along in the JSON body. A
+      // bodyless DELETE is what left zombie agents installed on removed boxes.
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uninstallAgent: true }),
+      });
       expect(result).toEqual({ success: true });
     });
 
     it('throws helpful error on failure', async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({ message: 'Delete rejected' }, false, 403));
 
-      await expect(decommissionDevice('dev-1')).rejects.toThrow('Delete rejected');
+      await expect(decommissionDevice('dev-1', { uninstallAgent: true })).rejects.toThrow('Delete rejected');
     });
   });
 
@@ -385,7 +391,7 @@ describe('deviceActions service', () => {
         { id: 'dev-1', hostname: 'host-1' },
         { id: 'dev-2', hostname: 'host-2' },
         { id: 'dev-3', hostname: 'host-3' },
-      ]);
+      ], { uninstallAgent: true });
 
       // The real bug this guards: previously `catch { failed++; }` discarded
       // which device failed — a partial-failure toast could only say "1
@@ -398,7 +404,7 @@ describe('deviceActions service', () => {
     it('falls back to id when hostname is empty', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'gone' }, false, 404));
 
-      const result = await bulkDecommissionDevices([{ id: 'dev-1', hostname: '' }]);
+      const result = await bulkDecommissionDevices([{ id: 'dev-1', hostname: '' }], { uninstallAgent: true });
 
       expect(result.failed).toEqual([{ id: 'dev-1', hostname: 'dev-1' }]);
     });

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/launchdplist"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
 )
@@ -72,65 +73,12 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>user_session</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
-
-const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>login_window</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>LoginWindow</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
+// darwinDesktopUserPlist and darwinDesktopLoginWindowPlist are rendered by
+// internal/launchdplist — the single source of truth for these plists (#4379).
+var (
+	darwinDesktopUserPlist        = launchdplist.DesktopHelperUser
+	darwinDesktopLoginWindowPlist = launchdplist.DesktopHelperLoginWindow
+)
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",

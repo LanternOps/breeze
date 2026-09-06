@@ -13,10 +13,24 @@ interface AiKillStateRow {
   epoch: number;
   reason: string | null;
   updatedBy: string | null;
+  updatedByName: string | null;
+  updatedByEmail: string | null;
   updatedAt: string;
 }
 
 const MIN_REASON_LENGTH = 3;
+
+/**
+ * Actor label for "Last changed by" (#4931). The API resolves `updatedBy` to a
+ * name + email server-side, but both come back null for a deleted user or a row
+ * flipped through the documented SQL fallback (`updated_by` NULL) — so degrade
+ * to the raw UUID rather than showing nothing next to a filled-in reason.
+ * Blank-but-present names are treated as absent; `users.name` is NOT NULL but
+ * not non-empty.
+ */
+function actorLabel(row: AiKillStateRow): string | null {
+  return row.updatedByName?.trim() || row.updatedByEmail?.trim() || row.updatedBy;
+}
 
 /**
  * Platform-admin UI for the global AI kill switch (#4208, follow-up to #3828 /
@@ -137,6 +151,12 @@ export default function AiKillSwitch() {
   }
 
   const canSubmit = reason.trim().length >= MIN_REASON_LENGTH && !submitting;
+  const actor = row ? actorLabel(row) : null;
+  const actorUuid = row?.updatedBy ?? null;
+  // Tooltip carries the UUID only when it is NOT the visible label: two admins
+  // can share a display name, and the UUID is what matches this row against the
+  // audit log. Duplicating it when the actor never resolved adds nothing.
+  const actorTitle = actor && actorUuid && actor !== actorUuid ? actorUuid : undefined;
 
   return (
     <div className="p-6">
@@ -178,7 +198,9 @@ export default function AiKillSwitch() {
             <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.epoch')}</dt>
             <dd data-testid="ai-kill-switch-epoch" className="font-mono">{row.epoch}</dd>
             <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.updatedBy')}</dt>
-            <dd data-testid="ai-kill-switch-updated-by">{row.updatedBy ?? t('admin.aiKillSwitch.fields.none')}</dd>
+            <dd data-testid="ai-kill-switch-updated-by" title={actorTitle}>
+              {actor ?? t('admin.aiKillSwitch.fields.none')}
+            </dd>
             <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.updatedAt')}</dt>
             <dd data-testid="ai-kill-switch-updated-at">
               {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : t('admin.aiKillSwitch.fields.none')}

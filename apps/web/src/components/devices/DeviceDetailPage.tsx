@@ -5,11 +5,14 @@ import { showToast } from "../shared/Toast";
 import DeviceDetails from "./DeviceDetails";
 import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
+import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
 import {
   sendDeviceCommand,
@@ -43,6 +46,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // #3987: Remove has to ask what happens to the agent before it runs.
+  // DeviceActions asks in its own dialog and passes the answer down;
+  // DeviceSettingsModal's Danger Zone button has no dialog at all, so the
+  // page owes that caller one. Set = "asked, not yet answered".
+  const [pendingRemove, setPendingRemove] = useState<Device | null>(null);
+  // #5023: same gate, for the one action that is worse than Remove. Every
+  // trigger on this page (kebab, settings Danger Zone) fired Delete
+  // permanently on a single click, straight into a 5-second undo toast, while
+  // the bulk version of the same operation makes the operator type the device
+  // count. Nothing is restorable afterwards, so it gets asked about first.
+  const [pendingPermanentDelete, setPendingPermanentDelete] =
+    useState<Device | null>(null);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
 
@@ -122,6 +137,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // columns (neither is in SENSITIVE_DEVICE_FIELDS).
         linkGroupId: data.linkGroupId ?? null,
         linkGroupRole: data.linkGroupRole ?? null,
+        // What became of the agent-uninstall a Remove queued (#3987 item 7) —
+        // the ONLY input to UninstallStateBadge, and the same dropped-field
+        // mode as the three fields above: the badge's `undefined` guard means
+        // omitting it here renders nothing at all, silently.
+        //
+        // `?? null` rather than a passthrough is load-bearing. On THIS payload
+        // an absent field means "this Remove queued no uninstall", which the
+        // badge reports as "left installed"; `undefined` means "this payload
+        // does not carry the field" (a device-list row) and says nothing. The
+        // detail endpoint always knows, so it must never hand the badge the
+        // list row's answer. See the component doc on UninstallStateBadge.
+        uninstall: data.uninstall ?? null,
         // RDS per-session helper mode (Task 12) — gates the session pickers
         // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
         // detail endpoint's full-row spread already includes it.
@@ -232,8 +259,29 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     void navigateTo("/devices");
   };
 
-  const handleAction = async (action: string, device: Device) => {
+  const handleAction = async (
+    action: string,
+    device: Device,
+    // #3987: RemoveDeviceDialog's agent answer, present only for Remove.
+    opts?: DeviceActionOptions,
+  ) => {
     if (actionInProgress) return;
+
+    // Gate/execute split, mirroring DevicesPage. A `decommission` that carries
+    // no agent answer has not been through a dialog yet — open one and come
+    // back through here with `opts` set. Keying on the ABSENCE of `opts` (not on
+    // the caller) means any present or future Remove trigger on this page is
+    // gated by default; a caller that already asked is not asked twice.
+    if (action === "decommission" && !opts) {
+      setPendingRemove(device);
+      return;
+    }
+    // #5023, same shape: `confirmed` is set only by this page's own dialog, so
+    // any present or future Delete permanently trigger is gated by default.
+    if (action === "permanent-delete" && !opts?.confirmed) {
+      setPendingPermanentDelete(device);
+      return;
+    }
 
     try {
       setActionInProgress(true);
@@ -395,7 +443,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({
                 type: "success",
                 message: `${device.hostname} has been removed`,
@@ -442,22 +490,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setTimeout(async () => {
             if (pdCancelled) return;
             try {
-              const result = await permanentDeleteDevice(device.id);
-              if (result.warning) {
-                showToast({
-                  type: "warning",
-                  message: t("deviceDetailPage.permanentlyDeletedWithWarning", {
-                    hostname: device.hostname,
-                    warning: result.warning,
-                  }),
-                  duration: 10000,
-                });
-              } else {
-                showToast({
-                  type: "success",
-                  message: `${device.hostname} has been permanently deleted`,
-                });
-              }
+              await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
+              showToast({
+                type: "success",
+                message: `${device.hostname} has been permanently deleted`,
+              });
               void navigateTo("/devices");
             } catch (err) {
               showToast({
@@ -597,6 +636,44 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         onSaved={fetchDevice}
         onAction={handleAction}
       />
+      {pendingRemove && (
+        <RemoveDeviceDialog
+          open
+          targets={[{ hostname: pendingRemove.hostname, status: pendingRemove.status }]}
+          onClose={() => setPendingRemove(null)}
+          onConfirm={(choice) => {
+            const target = pendingRemove;
+            setPendingRemove(null);
+            void handleAction("decommission", target, choice);
+          }}
+          confirmTestId="detail-remove-confirm"
+        />
+      )}
+      {/* #5023 — the purge-framed confirm, reusing the SAME
+          deviceActions.confirm.permanentDelete.* copy DevicesPage renders so
+          the two screens read identically. The undo toast still follows on
+          confirm; the dialog is what stops a single stray click from starting
+          the countdown at all. */}
+      {pendingPermanentDelete && (
+        <ConfirmDialog
+          open
+          onClose={() => setPendingPermanentDelete(null)}
+          onConfirm={() => {
+            const target = pendingPermanentDelete;
+            setPendingPermanentDelete(null);
+            void handleAction("permanent-delete", target, { confirmed: true });
+          }}
+          title={t("deviceActions.confirm.permanentDelete.title", {
+            hostname: pendingPermanentDelete.hostname,
+          })}
+          message={t("deviceActions.confirm.permanentDelete.message", {
+            hostname: pendingPermanentDelete.hostname,
+          })}
+          confirmLabel={t("deviceActions.confirm.permanentDelete.confirm")}
+          variant="destructive"
+          confirmTestId="detail-permanent-delete-confirm"
+        />
+      )}
       <ChangeSiteModal
         device={device}
         isOpen={changeSiteOpen}

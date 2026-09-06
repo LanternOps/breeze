@@ -1,12 +1,22 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon, ListChecks, RotateCcw } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon, ListChecks, RotateCcw, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import { computeDurationSeconds, formatDuration } from './ExecutionHistory';
-import { executionDetailStatusConfig as statusConfig } from './executionStatus';
+import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
 import { RunContextChip } from '@/components/common/RunContext';
+import { hasPermission } from '@/lib/permissions';
+import type { Permission } from '@/stores/auth';
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import type { ExecutionStatus } from '@breeze/shared';
+
+// Mirrors ExecutionHistory.tsx — kept as a local constant rather than a shared
+// export since this is the only other call site and a shared module would be
+// pure ceremony for two five-line consumers.
+const CANCELLABLE_STATUSES = new Set<ExecutionStatus>(['pending', 'queued', 'running']);
+const DEFAULT_GRACE_SECONDS = 5;
 
 type ExecutionDetailsProps = {
   execution: ScriptExecution;
@@ -17,6 +27,11 @@ type ExecutionDetailsProps = {
   // execution's device + parameters. Omitted entirely (no button rendered)
   // where the host page has nowhere to send it.
   onRunAgain?: (execution: ScriptExecution) => void;
+  // #4767 — same contract as ExecutionHistory's onCancel/permissions: omitted
+  // entirely where the host page has no cancel endpoint to call, and
+  // permission-gated (hidden, not disabled) client-side as UX only.
+  onCancel?: (execution: ScriptExecution, graceSeconds: number) => Promise<void> | void;
+  permissions?: Permission[];
 };
 
 function formatDateTime(dateString: string, timezone?: string): string {
@@ -235,12 +250,35 @@ export default function ExecutionDetails({
   isOpen,
   onClose,
   timezone,
-  onRunAgain
+  onRunAgain,
+  onCancel,
+  permissions
 }: ExecutionDetailsProps) {
   const { t } = useTranslation('scripts');
+  const [confirming, setConfirming] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   if (!isOpen) return null;
 
   const StatusIcon = statusConfig[execution.status].icon;
+  const canCancel = hasPermission(permissions, 'scripts', 'execute');
+  const isCancellable = CANCELLABLE_STATUSES.has(execution.status);
+  const isCancelling = execution.status === 'cancelling';
+
+  const handleConfirmCancel = async (graceSeconds: number) => {
+    if (!onCancel) return;
+    setSubmitting(true);
+    try {
+      await onCancel(execution, graceSeconds);
+    } catch (err) {
+      // Backstop only — see the identical comment in ExecutionHistory.tsx.
+      if (import.meta.env.DEV) {
+        console.warn('[ExecutionDetails] onCancel rejected without reporting its own failure', err);
+      }
+    } finally {
+      setSubmitting(false);
+      setConfirming(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
@@ -251,13 +289,27 @@ export default function ExecutionDetails({
             <h2 className="text-lg font-semibold">{t('executionDetails.title')}</h2>
             <p className="text-sm text-muted-foreground">{execution.scriptName}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onCancel && canCancel && (isCancellable || isCancelling) && (
+              <button
+                type="button"
+                data-testid="cancel-execution"
+                disabled={isCancelling}
+                onClick={() => setConfirming(true)}
+                className="flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                {isCancelling ? t('executionHistory.status.cancelling') : t('executionHistory.actions.stop')}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -278,7 +330,7 @@ export default function ExecutionDetails({
                   'text-lg font-semibold',
                   statusConfig[execution.status].color
                 )}>
-                  {t(/* i18n-dynamic */ `executionDetails.${statusConfig[execution.status].label}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {t(/* i18n-dynamic */ `executionDetails.statusDescription.${execution.status}`)}
@@ -389,6 +441,30 @@ export default function ExecutionDetails({
           </button>
         </div>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setConfirming(false)}
+          onConfirm={() => void handleConfirmCancel(DEFAULT_GRACE_SECONDS)}
+          title={t('executionHistory.actions.confirmStopTitle')}
+          message={t('executionHistory.actions.confirmStopMessage', { script: execution.scriptName })}
+          variant="warning"
+          confirmLabel={t('executionHistory.actions.stop')}
+          confirmTestId="confirm-stop"
+          isLoading={submitting}
+        >
+          <button
+            type="button"
+            data-testid="confirm-force-stop"
+            disabled={submitting}
+            onClick={() => void handleConfirmCancel(0)}
+            className="text-sm font-medium text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('executionHistory.actions.forceStop')}
+          </button>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

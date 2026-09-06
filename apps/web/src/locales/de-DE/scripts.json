@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} erfolgreich",
       "failed": "{{count}} fehlgeschlagen",
-      "skipped": "{{count}} übersprungen"
+      "skipped": "{{count}} übersprungen",
+      "cancelled": "{{count}} abgebrochen"
     },
     "duration": "Dauer: {{duration}}",
     "progress": {
@@ -265,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Protokolle ausblenden",
-      "viewLogs": "Protokolle anzeigen"
+      "viewLogs": "Protokolle anzeigen",
+      "cancelRun": "Ausführung abbrechen",
+      "partnerScopeTooltip": "Diese Ausführung gilt für alle Organisationen unter Ihrem Partnerkonto. Bitten Sie einen vollständigen Partneradministrator, sie abzubrechen, oder stoppen Sie stattdessen einzelne Ausführungen auf Ihren eigenen Geräten.",
+      "confirmCancelRunTitle": "Diese Ausführung abbrechen?",
+      "confirmCancelRunMessage": "Breeze stoppt jede Skriptausführung, auf die diese Ausführung noch wartet. Bereits laufende Aktionen können abgeschlossen werden, bevor sie gestoppt werden können.",
+      "uncancellableActions_one": "{{count}} Aktion konnte nicht gestoppt werden und läuft möglicherweise weiterhin eigenständig.",
+      "uncancellableActions_other": "{{count}} Aktionen konnten nicht gestoppt werden und laufen möglicherweise weiterhin eigenständig.",
+      "cancelRunSuccess_one": "Abgebrochen — {{count}} Ausführung gestoppt.",
+      "cancelRunSuccess_other": "Abgebrochen — {{count}} Ausführungen gestoppt."
     },
     "timestamps": {
       "started": "Gestartet: {{date}}",
@@ -304,6 +313,9 @@
       "untitled": "Skript",
       "awaiting": "Warten auf Rückmeldung des Agenten…",
       "truncated": "Ausgabe gekürzt — vollständiger Text im Skriptverlauf des Geräts."
+    },
+    "errors": {
+      "cancelRun": "Die Ausführung konnte nicht abgebrochen werden."
     }
   },
   "automationsPage": {
@@ -717,11 +729,19 @@
     },
     "empty": "Keine Hinrichtungen gefunden. Versuchen Sie, Ihre Filter anzupassen.",
     "actions": {
-      "viewDetails": "Details anzeigen"
+      "viewDetails": "Details anzeigen",
+      "stop": "Stoppen",
+      "forceStop": "Sofort stoppen",
+      "confirmStopTitle": "Diese Ausführung stoppen?",
+      "confirmStopMessage": "Breeze bittet das Gerät, {{script}} zu stoppen. Das kann einige Sekunden dauern — „Sofort stoppen“ überspringt die Karenzzeit und beendet den Prozess sofort."
     },
     "pagination": {
       "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
       "page": "Seite {{page}} von {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Diese Ausführung ist bereits abgeschlossen und kann nicht mehr gestoppt werden.",
+      "cancelFailed": "Der Stopp der Ausführung ist fehlgeschlagen."
     }
   },
   "scriptAiInput": {

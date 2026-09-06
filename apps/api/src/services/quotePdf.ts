@@ -355,6 +355,7 @@ async function renderLineTable(
   startY: number,
   loadCatalogImage: LoadCatalogImage,
   loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
+  fonts: PdfThemeFonts,
   taxRate = 0,
   showTax = false,
   showSubtotal = false,
@@ -399,7 +400,7 @@ async function renderLineTable(
     doc.save();
     doc.rect(c.left - 6, headerY - 5, c.contentWidth + 12, 22).fill('#f8fafc');
     doc.restore();
-    doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
+    doc.fillColor('#6b7280').fontSize(8.5).font(fonts.heading.bold);
     doc.text('QTY', c.colQtyX, headerY, { width: c.colQtyW, align: 'left' });
     doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left' });
     doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right' });
@@ -425,9 +426,9 @@ async function renderLineTable(
     // Title falls back to description for legacy lines that predate the name/description split.
     const title = (l.name ?? l.description ?? '').trim() || '—';
     const blurb = l.name ? (l.description ?? '').trim() : '';
-    doc.font('Helvetica-Bold').fontSize(10);
+    doc.font(fonts.body.bold).fontSize(10);
     const titleHeight = doc.heightOfString(title, { width: descW });
-    doc.font('Helvetica').fontSize(8.5);
+    doc.font(fonts.body.regular).fontSize(8.5);
     const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
     const deviceSetText = deviceSetCustomerText(l, currency, locale);
     const deviceSetHeight = deviceSetText.length
@@ -443,13 +444,13 @@ async function renderLineTable(
   // got drawn at the foot of the page, then the row-level break moved the row to
   // the next page and stranded them. Reserve the first row's real measured height
   // instead, capped to a page so a taller-than-a-page row can't force a blank one.
-  const labelHeight = label ? (doc.font('Helvetica-Bold').fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
+  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
   const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
   const firstLine = lines[0];
   const firstRowHeight = firstLine ? measureRow(firstLine).rowHeight + 6 : 0;
   y = ensureSpace(doc, y, Math.min(labelHeight + 24 + firstRowHeight, usable));
   if (label) {
-    doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(label, c.left, y, { width: c.contentWidth });
     y = doc.y + 6;
   }
 
@@ -463,7 +464,7 @@ async function renderLineTable(
     // description overflow into the footer band. (Old reserve was a flat 30/52pt,
     // so tall rows spilled past the bottom margin.)
     y = ensureRowSpace(y, rowHeight + 6);
-    doc.fillColor('#1f2937').font('Helvetica').fontSize(10);
+    doc.fillColor('#1f2937').font(fonts.body.regular).fontSize(10);
     doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.colQtyW, align: 'left' });
     if (img) {
       // A buffer that loaded but pdfkit can't decode: skip the thumbnail (never
@@ -476,15 +477,15 @@ async function renderLineTable(
         captureException(e instanceof Error ? e : new Error(String(e)));
       }
     }
-    doc.fillColor('#1f2937').font('Helvetica-Bold').fontSize(10).text(title, descX + gutter, y, { width: descW });
+    doc.fillColor('#1f2937').font(fonts.body.bold).fontSize(10).text(title, descX + gutter, y, { width: descW });
     if (blurb) {
-      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
+      doc.fillColor('#6b7280').fontSize(8.5).font(fonts.body.regular).text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
       doc.fillColor('#1f2937').fontSize(10);
     }
     if (deviceSetText.length) {
       let textY = y + titleHeight + blurbHeight + 2;
       for (const text of deviceSetText) {
-        doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(text, descX + gutter, textY, { width: descW, lineGap: 1 });
+        doc.fillColor('#6b7280').fontSize(8.5).font(fonts.body.regular).text(text, descX + gutter, textY, { width: descW, lineGap: 1 });
         textY = doc.y + 2;
       }
       doc.fillColor('#1f2937').fontSize(10);
@@ -496,7 +497,7 @@ async function renderLineTable(
     // sized for ~1M while numeric(12,2) permits 9'999'999'999.99, so every
     // money cell shrinks its font to fit its box (#3777 review F10).
     const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
-    doc.font('Helvetica');
+    doc.font(fonts.body.regular);
     fitFontSize(doc, unitText, c.colNumW, 10);
     doc.text(unitText, c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
     if (showTax) {
@@ -531,7 +532,7 @@ async function renderLineTable(
     if (lines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
     if (parts.length) {
       const subtotalText = parts.join('  +  ');
-      doc.font('Helvetica-Bold').fontSize(9.5);
+      doc.font(fonts.body.bold).fontSize(9.5);
       const subtotalWidth = c.right - c.colUnitX;
       const labelWidth = doc.widthOfString('Subtotal');
       const inlineAmountWidth = subtotalWidth - labelWidth - 10;
@@ -541,7 +542,7 @@ async function renderLineTable(
       y = ensureRowSpace(y, subtotalHeight);
       doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
       y += 6;
-      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#374151').text('Subtotal', c.colUnitX, y, { width: c.contentWidth * 0.2, align: 'left' });
+      doc.font(fonts.body.bold).fontSize(9.5).fillColor('#374151').text('Subtotal', c.colUnitX, y, { width: c.contentWidth * 0.2, align: 'left' });
       if (stackAmount) {
         y += 14;
         doc.fillColor('#111827').text(subtotalText, c.colUnitX, y, { width: subtotalWidth, align: 'right' });
@@ -574,6 +575,7 @@ function renderRecurringSummary(
   locale: string,
   primary: string,
   startY: number,
+  fonts: PdfThemeFonts,
   showTax = false,
   recurringLines: { monthly: boolean; annual: boolean } = { monthly: false, annual: false },
   lines: QuoteLine[] = [],
@@ -598,7 +600,7 @@ function renderRecurringSummary(
   const labelW = c.colSummaryAmtX - sumX - 8;
   const categoryAmountX = c.colSummaryAmtX - 60;
   const categoryAmountW = c.right - categoryAmountX;
-  doc.font('Helvetica').fontSize(9);
+  doc.font(fonts.body.regular).fontSize(9);
   const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
     const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
     const parts: string[] = [];
@@ -641,7 +643,7 @@ function renderRecurringSummary(
   // category. Drawn above the One-time/Monthly/Annual roll-up.
   if (breakdownRows.length) {
     for (const row of breakdownRows) {
-      doc.font('Helvetica').fontSize(9).fillColor('#9ca3af');
+      doc.font(fonts.body.regular).fontSize(9).fillColor('#9ca3af');
       doc.text(row.label, labelX, y, { width: labelW, align: 'left' });
       if (row.stacked) {
         y += 12;
@@ -663,7 +665,7 @@ function renderRecurringSummary(
     const { bold = false, emphasis = false } = opts;
     const strong = bold || emphasis;
     const size = emphasis ? 14 : strong ? 12 : 10;
-    doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
+    doc.font(strong ? fonts.body.bold : fonts.body.regular).fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
     // lineBreak: false — the y advances below are fixed constants shared with
     // the page-break reservation; a wrapped amount would silently break both.
@@ -1031,7 +1033,7 @@ export async function renderQuotePdf(
         // row's real height. Reserving a flat minimum here instead stranded the
         // label + header at the foot of a page whenever the first row was tall.
         const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
-        y = await renderLineTable(doc, blockLines, currency, locale, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal, label);
+        y = await renderLineTable(doc, blockLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax, showSubtotal, label);
       }
     } else if (b.blockType === 'contract') {
       // contractRenderData[b.id] is pre-fetched by the route (Task 14's
@@ -1076,10 +1078,10 @@ export async function renderQuotePdf(
 
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, locale, y, loadCatalogImage, loadImage, taxRate, showTax);
+  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax);
 
   // ---- Recurring summary footer -------------------------------------------
-  y = renderRecurringSummary(doc, quote, currency, locale, primary, y, showTax, {
+  y = renderRecurringSummary(doc, quote, currency, locale, primary, y, fonts, showTax, {
     monthly: lines.some((line) => line.recurrence === 'monthly'),
     annual: lines.some((line) => line.recurrence === 'annual'),
   }, lines);

@@ -23,6 +23,7 @@ import {
   AuthIssuanceCapabilityError,
   issueUserSession,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
   issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
@@ -39,7 +40,6 @@ import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDe
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
@@ -903,20 +903,100 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     }
   }
 
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-disable', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaSecret: null,
-        mfaEnabled: false,
-        mfaMethod: null,
-        mfaRecoveryCodes: null,
-        phoneNumber: null,
-        phoneVerified: false,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+  // SR2-07 keeps its teeth: removing the factor advances mfa_epoch and revokes
+  // every refresh family, so no OTHER live session survives the account losing
+  // its second factor. What it must not do is evict the ACTOR — the caller's
+  // access token goes stale on that bump and the refresh cookie it would retry
+  // with belongs to a family revoked in the same transaction, so fetchWithAuth's
+  // refresh fails and the web client hard-redirects to
+  // /login?reason=session-expired the moment the user turns MFA off (#4934).
+  // Same road /mfa/enable and /mfa/recovery-codes already take: one transaction
+  // bumps the epoch, revokes every family, mints a REPLACEMENT session bound to
+  // the post-bump epochs, and clears the factor.
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeMfaFactorRemoval({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        // Carry the caller's OWN assurance forward, never elevate it: removing a
+        // factor must not upgrade a session that was not MFA-assured. (An
+        // already-assured caller — every session on a protected account — keeps
+        // full access, which is also what a fresh post-disable login would mint:
+        // `mfaSatisfied` in routes/auth/login.ts is vacuously true once
+        // mfa_enabled is false and policy does not mandate a factor.)
+        mfa: auth.token?.mfa === true,
+        // SR-001: this is a RE-MINT of an existing session, so the device binding
+        // comes from the previously-signed `mdid` claim, never from the forgeable
+        // request header — the same rule /auth/refresh follows. A bound mobile
+        // session must not be silently un-bound by a disable call.
+        mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      // The `mfaEnabled` read above is advisory (it answers with a friendly
+      // 400); this is the real check, folded into the epoch bump's WHERE so a
+      // concurrent second /mfa/disable loses with a 409 instead of bumping the
+      // epoch again and evicting the session the first one just issued.
+      revokeReason: 'mfa-disable',
+      // A removal supplies no code pair: the account must be left holding no
+      // recovery codes at all.
+      persistFactor: async (tx) => {
+        const rows = await tx
+          .update(users)
+          .set({
+            mfaSecret: null,
+            mfaEnabled: false,
+            mfaMethod: null,
+            mfaRecoveryCodes: null,
+            phoneNumber: null,
+            phoneVerified: false,
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('MFA disable user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+
+  // POST-COMMIT from here: the factor is already gone and every other session is
+  // already dead, so a failure installing the replacement must not turn a
+  // completed disable into an error the user retries against an account that no
+  // longer has MFA (the retry answers 400 'MFA is not enabled'). Report it and
+  // step over, exactly like /mfa/recovery-codes.
+  let sessionInstalled = true;
+  try {
+    await bindIssuedUserSession(result.issued);
+    installAuthorizedUserSessionCookies(c, result.issued);
+  } catch (error) {
+    sessionInstalled = false;
+    captureException(error, c, { factorChange: 'mfa_disable' });
+    console.error('[auth] MFA disabled but the replacement session could not be installed', {
+      userId: auth.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -924,10 +1004,22 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: currentMethod, mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: {
+      method: currentMethod,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
+      sessionInstalled,
+    }
   });
 
-  return c.json({ success: true, message: 'MFA disabled successfully' });
+  return c.json({
+    success: true,
+    message: 'MFA disabled successfully',
+    // Withheld when the install above failed: the refresh JTI was never bound, so
+    // the access token would die at its first refresh. Better the client
+    // re-authenticates knowingly than holds a token with minutes left.
+    ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
+  });
 });
 
 // MFA enable compatibility endpoint for frontend settings flow

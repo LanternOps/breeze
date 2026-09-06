@@ -1,7 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import NewTicketForm from '../../components/portal/NewTicketForm';
-import { withBase } from '../../lib/basePath';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -18,8 +18,10 @@ if (formsResponse.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
 }
-if (formsResponse.statusCode === 403 && formsResponse.code === 'PORTAL_TICKETS_DISABLED') {
-  return Astro.redirect(withBase('/devices'));
+if (isPortalPageDisabled(formsResponse)) {
+  // PORTAL_TICKETS_DISABLED — bounce to the ungated home, never to /devices,
+  // which is itself gated on Self-service (#4932 follow-up).
+  return redirectToPortalHomeAfterDisabled(Astro);
 }
 if (formsResponse.error && formsResponse.statusCode !== 403) {
   // Fail-open is intentional, but never invisible: without this breadcrumb a

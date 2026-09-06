@@ -7,6 +7,21 @@ const tableSource = readFileSync(
   'utf8',
 );
 
+describe('security page visibility gate', () => {
+  it('bounces a page the MSP switched off instead of reporting a load failure', () => {
+    // #4932 — "We couldn't load your security summary just now. Your IT team can
+    // help." is the wrong answer to a deliberate switch-off: it sends the
+    // customer to raise a ticket about a setting, not a fault.
+    expect(pageSource).toContain('redirectToPortalHomeAfterDisabled(Astro)');
+  });
+
+  it('reads the gate off both calls — either one refusing means the page is off', () => {
+    // /security/overview and /security/devices sit behind the same gate, so a
+    // check on one alone would miss a page that only half-refused.
+    expect(pageSource).toMatch(/isPortalPageDisabled\(overview, devices\)/);
+  });
+});
+
 describe('security page fetch states', () => {
   it('never prints a raw transport error at the customer', () => {
     expect(pageSource).not.toMatch(/\{overview\.error\}/);

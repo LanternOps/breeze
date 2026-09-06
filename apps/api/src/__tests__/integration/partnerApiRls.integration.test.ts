@@ -16,6 +16,7 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
   customFieldDefinitions,
+  deviceCustomFieldValues,
   deviceGroups,
   devices,
   enrollmentKeys,
@@ -116,6 +117,8 @@ interface SeededPartner {
   orgs: Array<{ id: string }>;
   sites: Array<{ id: string; orgId: string }>;
   devices: Array<{ id: string; orgId: string }>;
+  /** The org-owned custom-field definition seeded alongside each org's device. */
+  fieldDefinitions: Array<{ id: string; orgId: string; fieldKey: string; value: string }>;
   groups: Array<{ id: string; orgId: string }>;
   policies: Array<{ id: string }>;
   assignments: Array<{ id: string }>;
@@ -298,14 +301,17 @@ describe('partner reconstruction export RLS traversal', () => {
       type: 'text',
     }).returning();
     if (!partnerField) throw new Error('partner custom field seed failed');
-    for (const [index, device] of partnerA.devices.entries()) {
-      await getTestDb().update(devices).set({
-        customFields: {
-          [`rack_a_${index + 1}`]: `A-rack-value-${index + 1}`,
-          partner_inventory_label: `A-partner-value-${index + 1}`,
-        },
-      }).where(eq(devices.id, device.id));
-    }
+    // Second datum per device, under the PARTNER-WIDE definition. Written to the
+    // normalized table for the same reason as the org-owned one in seedPartnerOrg:
+    // /custom-field-values reads device_custom_field_values, not the jsonb.
+    const partnerValues = partnerA.devices.map((device, index) => ({
+      deviceId: device.id,
+      orgId: device.orgId,
+      definitionId: partnerField.id,
+      fieldKey: 'partner_inventory_label',
+      valueText: `A-partner-value-${index + 1}`,
+    }));
+    await getTestDb().insert(deviceCustomFieldValues).values(partnerValues);
     const keyA = await issueKey(partnerA.partner.id, partnerA.user.id);
     const keyB = await issueKey(partnerB.partner.id, partnerB.user.id);
     const observedRoles: Array<{ who: string; bypass: boolean }> = [];
@@ -330,6 +336,22 @@ describe('partner reconstruction export RLS traversal', () => {
         allTuples.add(tuple);
       }
     }
+
+    // The suite now seeds only the table, so this proves the projection trigger —
+    // not a test fixture — is what puts the values back into devices.custom_fields.
+    // Without it a future regression could silently stop maintaining the jsonb and
+    // every JS reader of devices.customFields would go blind with nothing red.
+    const [projectedDevice] = partnerA.devices;
+    const projectedDefinition = partnerA.fieldDefinitions
+      .find((definition) => definition.orgId === projectedDevice!.orgId)!;
+    const [projectionRow] = await getTestDb()
+      .select({ customFields: devices.customFields })
+      .from(devices)
+      .where(eq(devices.id, projectedDevice!.id));
+    expect(projectionRow!.customFields).toEqual({
+      [projectedDefinition.fieldKey]: projectedDefinition.value,
+      partner_inventory_label: 'A-partner-value-1',
+    });
 
     const fannedDefinitions = traversals.get('custom-fields')!
       .filter((record) => record.id === partnerField.id);
@@ -991,7 +1013,7 @@ async function createPartnerSeed(label: 'A' | 'B'): Promise<SeededPartner> {
   return {
     partner,
     user,
-    orgs: [], sites: [], devices: [], groups: [], policies: [], assignments: [], featureLinks: [],
+    orgs: [], sites: [], devices: [], fieldDefinitions: [], groups: [], policies: [], assignments: [], featureLinks: [],
   };
 }
 
@@ -1003,9 +1025,10 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   });
   const site = await createSite({ orgId: org.id, name: `${label}-Site-${index}` });
   const fieldKey = `rack_${label.toLowerCase()}_${index}`;
-  await admin.insert(customFieldDefinitions).values({
+  const [fieldDefinition] = await admin.insert(customFieldDefinitions).values({
     orgId: org.id, name: `${label}-Rack-${index}`, fieldKey, type: 'text',
-  });
+  }).returning();
+  if (!fieldDefinition) throw new Error('custom field definition seed failed');
   const [device] = await admin.insert(devices).values({
     orgId: org.id,
     siteId: site.id,
@@ -1015,9 +1038,20 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
     osVersion: 'Ubuntu 24.04',
     architecture: 'amd64',
     agentVersion: '1.0.0',
-    customFields: { [fieldKey]: `${label}-rack-value-${index}` },
   }).returning();
   if (!device) throw new Error('device seed failed');
+  // #3257 W05 — the datum is the ROW in device_custom_field_values;
+  // devices.custom_fields is the projection its triggers rebuild. Seeding the
+  // jsonb literal here instead would be invisible to /custom-field-values (which
+  // reads the table) and would be discarded by the next projection pass anyway.
+  const fieldValue = `${label}-rack-value-${index}`;
+  await admin.insert(deviceCustomFieldValues).values({
+    deviceId: device.id,
+    orgId: org.id,
+    definitionId: fieldDefinition.id,
+    fieldKey,
+    valueText: fieldValue,
+  });
   const [group] = await admin.insert(deviceGroups).values({
     orgId: org.id, siteId: site.id, name: `${label}-Group-${index}`,
   }).returning();
@@ -1063,6 +1097,7 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.orgs.push(org);
   seed.sites.push(site);
   seed.devices.push(device);
+  seed.fieldDefinitions.push({ id: fieldDefinition.id, orgId: org.id, fieldKey, value: fieldValue });
   seed.groups.push(group);
   seed.policies.push(policy);
   seed.assignments.push(assignment);

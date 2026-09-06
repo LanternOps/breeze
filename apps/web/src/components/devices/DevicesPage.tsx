@@ -11,7 +11,10 @@ import DeviceCard from './DeviceCard';
 import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
+import RemoveDeviceDialog from './RemoveDeviceDialog';
+import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
@@ -32,7 +35,7 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -107,17 +110,27 @@ function summarizeFailedDevices(names: string[]): string {
 // ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+//
+// #5023: `permanent-delete` belongs here for a stronger reason than any of the
+// others. Bulk purge has always made the operator type the device count
+// (BulkPurgeDialog), while the single row/card kebab fired the same
+// irreversible operation on one click — and unlike `decommission` there is no
+// Restore afterwards. The 5s undo toast is not a substitute for a gate: it
+// starts a countdown the operator has to NOTICE to stop.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete']);
 
 // ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
 // caution-triangle), so the grading has to match the detail page rather than
 // drift from it: DeviceActions.tsx marks shutdown and decommission
 // `destructive` and every other confirm `warning`.
-const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete']);
 
-// The command name is snake_case; the locale keys are camelCase.
-const confirmKeyFor = (action: string): string =>
-  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+// The command name is snake_case / kebab-case; the locale keys are camelCase.
+const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
+  reboot_safe_mode: 'rebootSafeMode',
+  'permanent-delete': 'permanentDelete',
+};
+const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
@@ -169,6 +182,12 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
+  // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
+  // (#import-definitions / #import-values) internally, so this only tracks
+  // whether either of those hashes means the wizard is open at all.
+  const [showRmmImport, setShowRmmImport] = useHashState<boolean>(false, (h) =>
+    h === 'import-definitions' || h === 'import-values' ? true : undefined,
+  );
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
@@ -190,6 +209,16 @@ export default function DevicesPage() {
   // on which screen you were on — and the list is the dense, easy-to-mis-click
   // one, with Reboot sitting next to Run Script and Wake.
   const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
+  // #3987: bulk Remove asks the agent question ONCE for the whole selection,
+  // then runBulkRemove runs the per-device DELETE loop with that one answer.
+  const [pendingBulkRemove, setPendingBulkRemove] = useState<Device[] | null>(null);
+  // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
+  // runBulkPurge then starts the async job and polls it.
+  const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
+  const purgePollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped whenever a poll chain is superseded (a new run, or unmount), so a
+  // tick already in flight cannot land its result over a newer run's.
+  const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -220,7 +249,15 @@ export default function DevicesPage() {
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.
-  const { ids: advancedFilterIds, loading: advancedFilterLoading, error: advancedFilterError } = useAdvancedFilterIds(advancedFilter);
+  const {
+    ids: advancedFilterIds,
+    loading: advancedFilterLoading,
+    error: advancedFilterError,
+    // #5023: the resolution is keyed on the FILTER, so it never notices that a
+    // mutation changed a filtered attribute. Every post-mutation refresh below
+    // goes through `refreshDevices`, which re-resolves the id set as well.
+    refetch: refetchAdvancedFilterIds,
+  } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -612,6 +649,28 @@ export default function DevicesPage() {
     }
   }, [t]);
 
+  /**
+   * The post-change refresh — use this, not `fetchDevices`, anywhere something
+   * has just altered the fleet (#5023).
+   *
+   * An advanced filter is resolved SERVER-side into an id set
+   * (`serverFilterIds`), and that resolution is keyed on the filter alone, so
+   * refreshing the device rows on their own leaves the id set describing the
+   * fleet as it was BEFORE the mutation. Restoring a device inside a "Status is
+   * Removed" filter is the reported case: the row came back with a stale count
+   * and only a full page reload cleared it. The same staleness applies to every
+   * mutation that touches a filtered attribute, which is why the pairing lives
+   * here once rather than at each call site.
+   *
+   * The mount effect below deliberately keeps calling `fetchDevices` directly:
+   * the hook resolves the filter itself on mount, so going through here would
+   * just fire a second, redundant /filters/preview.
+   */
+  const refreshDevices = useCallback(async () => {
+    await fetchDevices();
+    refetchAdvancedFilterIds();
+  }, [fetchDevices, refetchAdvancedFilterIds]);
+
   useEffect(() => {
     // Org context not usable for scoping yet (#4147). A request now would go
     // out unscoped: `loading` is the sub-second window before the shell's
@@ -628,8 +687,8 @@ export default function DevicesPage() {
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
     setAutoSelectGroupId(newGroupId);
-    await fetchDevices();
-  }, [fetchDevices]);
+    await refreshDevices();
+  }, [refreshDevices]);
 
   const handleAutoSelectConsumed = useCallback(() => {
     setAutoSelectGroupId(null);
@@ -670,9 +729,11 @@ export default function DevicesPage() {
       // fleet-wide list on screen. Nothing is lost by skipping: the mount
       // effect fetches as soon as the scope resolves.
       if (orgScopeResolving || orgContextFailed) return;
-      fetchDevices();
+      // An enrol/decommission changes `status`, which is a filterable
+      // attribute — refresh the resolved id set with the rows (#5023).
+      void refreshDevices();
     }
-  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
+  }, [refreshDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
@@ -793,7 +854,14 @@ export default function DevicesPage() {
     await runDeviceAction(action, device);
   };
 
-  const runDeviceAction = async (action: string, device: Device) => {
+  const runDeviceAction = async (
+    action: string,
+    device: Device,
+    // #3987: the Remove dialog's agent answer. Absent for every other
+    // action, and absent means UNINSTALL — the web default, deliberately
+    // stricter than the API's back-compat `false`.
+    opts?: { uninstallAgent?: boolean },
+  ) => {
     if (actionInProgress) return;
 
     try {
@@ -841,7 +909,7 @@ export default function DevicesPage() {
               .then(async (outcome) => {
                 if (outcome === 'online') {
                   showToast({ type: 'success', message: t('devicesPage.toasts.deviceOnline', { hostname }) });
-                  await fetchDevices();
+                  await refreshDevices();
                 } else if (outcome === 'timeout') {
                   showToast({
                     type: 'error',
@@ -882,7 +950,7 @@ export default function DevicesPage() {
               ? t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname })
               : t('devicesPage.toasts.maintenanceOn', { hostname: device.hostname }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'deploy-software':
@@ -921,9 +989,9 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({ type: 'success', message: t('devicesPage.toasts.decommissioned', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.decommissionFailed', { hostname: device.hostname }) });
             }
@@ -934,7 +1002,7 @@ export default function DevicesPage() {
         case 'restore':
           await restoreDevice(device.id);
           showToast({ type: 'success', message: t('devicesPage.toasts.restored', { hostname: device.hostname }) });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'permanent-delete': {
@@ -952,20 +1020,11 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (pdCancelled) return;
             try {
-              const result = await permanentDeleteDevice(device.id);
-              showToast(
-                result.warning
-                  ? {
-                      type: 'warning',
-                      message: t('devicesPage.toasts.permanentlyDeletedWithWarning', {
-                        hostname: device.hostname,
-                        warning: result.warning,
-                      }),
-                      duration: 10000,
-                    }
-                  : { type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) }
-              );
-              await fetchDevices();
+              await permanentDeleteDevice(device.id);
+              // No warning branch: the API returns `{ success: true }` and
+              // nothing else since #2787 (see permanentDeleteDevice).
+              showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
             }
@@ -997,7 +1056,7 @@ export default function DevicesPage() {
         message: `Linked ${targets.length - 1} guest VM${targets.length - 1 === 1 ? '' : 's'} under ${host?.displayName || host?.hostname || 'the host server'}.`,
       });
       setVmHostPickerDevices(null);
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to link devices' });
     } finally {
@@ -1151,7 +1210,7 @@ export default function DevicesPage() {
             type: 'success',
             message: t('devicesPage.toasts.multibootLinked', { count: deviceCount }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1220,36 +1279,51 @@ export default function DevicesPage() {
           } else {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
         case 'decommission': {
-          const result = await bulkDecommissionDevices(
-            selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
-          );
+          // Ask the agent question once for the whole selection (#3987). The
+          // actual DELETE loop runs in runBulkRemove once the dialog confirms.
+          // `return` inside `try` still runs the `finally` that clears
+          // actionInProgress, so the dialog's own Confirm is not dead on arrival.
+          setPendingBulkRemove(selectedDevices);
+          return;
+        }
+
+        case 'restore': {
+          // #2787. Synchronous: the API returns the final per-device outcome,
+          // so there is nothing to poll. Emitted by the bulk bar ONLY for an
+          // all-removed selection (REMOVED_ONLY_BULK_ACTIONS).
+          const result = await bulkRestoreDevices(deviceIds);
+          const dispatched = result.succeeded.filter(r => r.uninstallAlreadyDispatched).length;
           if (result.failed.length === 0) {
-            showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
-          } else if (result.succeeded === 0) {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
-                count: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
+            showToast({ type: 'success', message: t('devicesPage.toasts.bulkRestored', { count: result.succeeded.length }) });
+          } else if (result.succeeded.length === 0) {
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }) });
           } else {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionFailed', {
-                succeeded: result.succeeded,
-                failed: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }) });
           }
-          await fetchDevices();
+          // A SEPARATE toast, deliberately: the device row came back, but those
+          // machines had already been handed the uninstall and may be gone.
+          // Folding it into the success line would let it read as "all fine".
+          if (dispatched > 0) {
+            showToast({ type: 'warning', message: t('devicesPage.toasts.bulkRestoreUninstallAlreadySent', { count: dispatched }) });
+          }
+          await refreshDevices();
           break;
+        }
+
+        case 'permanent-delete': {
+          // Confirm first — this is the only irreversible bulk action, and the
+          // dialog makes the operator type the count. runBulkPurge starts the
+          // job. Prune to rows still present in the current fetch: the
+          // selection persists across filter changes, so a stale id would be
+          // rejected by the API and counted against the typed total.
+          const present = new Set(devices.map(d => d.id));
+          setPendingBulkPurge(selectedDevices.filter(d => present.has(d.id)));
+          return;
         }
 
         case 'wake': {
@@ -1288,6 +1362,159 @@ export default function DevicesPage() {
       }
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action }) });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // #2787: the second half of bulk Delete permanently.
+  //
+  // The API returns 202 the moment the job is queued, so the only way the
+  // operator learns the outcome is this poll. It is deliberately shaped like
+  // MergeOrgModal's: a token ref invalidates a superseded chain so a tick
+  // already in flight cannot land its result over a newer run's (or after
+  // unmount), and every terminal state stops the chain explicitly rather than
+  // relying on the next tick not being scheduled.
+  // -------------------------------------------------------------------------
+  const stopPurgePolling = useCallback(() => {
+    if (purgePollTimeoutRef.current !== null) {
+      clearTimeout(purgePollTimeoutRef.current);
+      purgePollTimeoutRef.current = null;
+    }
+    purgePollTokenRef.current += 1;
+  }, []);
+
+  useEffect(() => stopPurgePolling, [stopPurgePolling]);
+
+  const pollPurgeRun = useCallback(
+    async (jobId: string, token: number) => {
+      const scheduleNextTick = () => {
+        if (purgePollTokenRef.current !== token) return; // superseded meanwhile
+        purgePollTimeoutRef.current = setTimeout(
+          () => void pollPurgeRun(jobId, token),
+          PURGE_POLL_INTERVAL_MS,
+        );
+      };
+
+      let run: Awaited<ReturnType<typeof fetchPurgeRun>>;
+      try {
+        run = await fetchPurgeRun(jobId);
+      } catch {
+        // A transient blip is not a failed purge — the job is running in the
+        // worker either way. Retry on the next tick.
+        scheduleNextTick();
+        return;
+      }
+      if (purgePollTokenRef.current !== token) return; // stale — drop silently
+
+      if (run.state === 'completed') {
+        stopPurgePolling();
+        const purged = run.result?.purged.length ?? 0;
+        const skipped = run.result?.skipped ?? [];
+        if (skipped.length === 0) {
+          showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeDone', { count: purged }) });
+        } else {
+          // Group by refusal code: a 50-device run with 40 UNINSTALL_PENDING
+          // must not become 40 toasts, and a bare count would hide WHY.
+          const byCode: Record<string, number> = {};
+          for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
+          const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+          showToast({
+            type: 'warning',
+            message: purged === 0
+              ? t('devicesPage.toasts.bulkPurgeNoneDeleted', { reasons })
+              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
+          });
+        }
+        await refreshDevices();
+        return;
+      }
+
+      if (run.state === 'failed') {
+        stopPurgePolling();
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkPurgeFailed', {
+            reason: run.failedReason ?? t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+          }),
+        });
+        // The job may have deleted some devices before failing, so the list is
+        // stale either way.
+        await refreshDevices();
+        return;
+      }
+
+      scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
+    },
+    [refreshDevices, stopPurgePolling, t],
+  );
+
+  const runBulkPurge = async (targets: Device[]) => {
+    if (targets.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const started = await startBulkPurge(targets.map(d => d.id));
+      showToast({ type: 'success', message: t('devicesPage.toasts.bulkPurgeStarted', { count: started.accepted }) });
+      if (started.rejected.length > 0) {
+        // A partial rejection is NOT an error — the accepted devices are being
+        // deleted. Say which ones were left out and why, or they silently
+        // survive a delete the operator believes they ordered.
+        const byCode: Record<string, number> = {};
+        for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
+        const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged: started.accepted, skipped: started.rejected.length, reasons }) });
+      }
+      stopPurgePolling(); // drop anything from a previous run
+      const token = purgePollTokenRef.current;
+      purgePollTimeoutRef.current = setTimeout(
+        () => void pollPurgeRun(started.jobId, token),
+        PURGE_POLL_INTERVAL_MS,
+      );
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'permanent-delete' }),
+      });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // #3987: the second half of bulk Remove. runBulkAction's `decommission` case
+  // only opens RemoveDeviceDialog; this runs once the operator has answered the
+  // agent question, with the SAME answer applied to every device in the batch.
+  const runBulkRemove = async (selectedDevices: Device[], choice: { uninstallAgent: boolean }) => {
+    if (selectedDevices.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const result = await bulkDecommissionDevices(
+        selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
+        choice,
+      );
+      if (result.failed.length === 0) {
+        showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
+      } else if (result.succeeded === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
+            count: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionFailed', {
+            succeeded: result.succeeded,
+            failed: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      }
+      await refreshDevices();
+    } catch (err) {
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'decommission' }) });
     } finally {
       setActionInProgress(false);
     }
@@ -1361,7 +1588,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={() => void fetchDevices()}
+            onClick={() => void refreshDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             {t('devicesPage.tryAgain')}
@@ -1405,6 +1632,17 @@ export default function DevicesPage() {
               <Grid className="h-4 w-4" />
             </button>
           </div>
+          <button
+            type="button"
+            data-testid="devices-page-import-rmm"
+            onClick={() => {
+              window.location.hash = 'import-definitions';
+              setShowRmmImport(true);
+            }}
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            {t('devicesPage.importFromRmm')}
+          </button>
           <button
             type="button"
             onClick={() => setShowAddDevice(true)}
@@ -1545,6 +1783,16 @@ export default function DevicesPage() {
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
 
+      {showRmmImport && (
+        <RmmCustomFieldImport
+          organizationId={orgScope.status === 'resolved' && orgScope.scope !== 'all' ? orgScope.orgId : null}
+          onClose={() => {
+            window.location.hash = '';
+            setShowRmmImport(false);
+          }}
+        />
+      )}
+
       <CreateGroupModal
         isOpen={showCreateGroup}
         onClose={() => setShowCreateGroup(false)}
@@ -1641,7 +1889,28 @@ export default function DevicesPage() {
           deviceActions.confirm.* copy so the two screens read identically and
           no new locale keys are needed. Double-click safety is the shared
           components' job (#3705) — see the decommissioned-skip dialog above. */}
-      {pendingDeviceAction && (
+      {/* #3987: Remove owns its own dialog — it is the one confirm that has a
+          question to ask (uninstall the agent, or leave it?), not just a
+          yes/no. Every other gated action keeps the generic ConfirmDialog
+          below with the shared deviceActions.confirm.* copy. */}
+      {pendingDeviceAction && pendingDeviceAction.action === 'decommission' && (
+        <RemoveDeviceDialog
+          open
+          targets={[{
+            hostname: pendingDeviceAction.device.hostname,
+            status: pendingDeviceAction.device.status,
+          }]}
+          onClose={() => setPendingDeviceAction(null)}
+          onConfirm={(choice) => {
+            const p = pendingDeviceAction;
+            setPendingDeviceAction(null);
+            void runDeviceAction(p.action, p.device, choice);
+          }}
+          confirmTestId="confirm-device-action"
+        />
+      )}
+
+      {pendingDeviceAction && pendingDeviceAction.action !== 'decommission' && (
         <ConfirmDialog
           open={true}
           onClose={() => setPendingDeviceAction(null)}
@@ -1650,7 +1919,14 @@ export default function DevicesPage() {
             setPendingDeviceAction(null);
             void runDeviceAction(p.action, p.device);
           }}
-          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`)}
+          // The hostname is interpolated into the TITLE as well as the message
+          // (#5023): permanentDelete names the device up front — "Delete
+          // {{hostname}} permanently?" — because that is the last thing the
+          // operator reads before an irreversible delete. A no-op for the
+          // existing keys, whose titles carry no placeholder.
+          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`, {
+            hostname: pendingDeviceAction.device.hostname,
+          })}
           message={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.message`, {
             hostname: pendingDeviceAction.device.hostname,
           })}
@@ -1660,12 +1936,41 @@ export default function DevicesPage() {
         />
       )}
 
+      {pendingBulkRemove && (
+        <RemoveDeviceDialog
+          open
+          targets={pendingBulkRemove.map(d => ({ hostname: d.hostname, status: d.status }))}
+          onClose={() => setPendingBulkRemove(null)}
+          onConfirm={(choice) => {
+            const devicesToRemove = pendingBulkRemove;
+            setPendingBulkRemove(null);
+            void runBulkRemove(devicesToRemove, choice);
+          }}
+          isLoading={actionInProgress}
+          confirmTestId="confirm-bulk-remove"
+        />
+      )}
+
+      {pendingBulkPurge && (
+        <BulkPurgeDialog
+          open
+          targets={pendingBulkPurge.map(d => ({ hostname: d.hostname, orgId: d.orgId }))}
+          onClose={() => setPendingBulkPurge(null)}
+          onConfirm={() => {
+            const devicesToPurge = pendingBulkPurge;
+            setPendingBulkPurge(null);
+            void runBulkPurge(devicesToPurge);
+          }}
+          isLoading={actionInProgress}
+        />
+      )}
+
       {settingsDevice && (
         <DeviceSettingsModal
           device={settingsDevice}
           isOpen={!!settingsDevice}
           onClose={() => setSettingsDevice(null)}
-          onSaved={fetchDevices}
+          onSaved={refreshDevices}
           onAction={handleDeviceAction}
         />
       )}

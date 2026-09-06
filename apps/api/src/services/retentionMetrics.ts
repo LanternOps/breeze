@@ -41,6 +41,7 @@ export const RETENTION_JOB_NAMES = [
   'playbook_retention',
   'process_sample_retention',
   'reliability_retention',
+  'removed_device_purge',
   'service_process_check_retention',
   'snmp_retention',
   'ticket_outbox_retention',

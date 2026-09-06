@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} superati",
       "failed": "{{count}} non riusciti",
-      "skipped": "{{count}} ignorati"
+      "skipped": "{{count}} ignorati",
+      "cancelled": "{{count}} annullati"
     },
     "duration": "Durata: {{duration}}",
     "progress": {
@@ -265,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Nascondi log",
-      "viewLogs": "Visualizza log"
+      "viewLogs": "Visualizza log",
+      "cancelRun": "Annulla esecuzione",
+      "partnerScopeTooltip": "Questa esecuzione si applica a tutte le organizzazioni del tuo account partner. Chiedi a un amministratore partner completo di annullarla, oppure interrompi singole esecuzioni sui tuoi dispositivi.",
+      "confirmCancelRunTitle": "Annullare questa esecuzione?",
+      "confirmCancelRunMessage": "Breeze interromperà ogni esecuzione di script che questa esecuzione sta ancora attendendo. Le azioni già in corso potrebbero terminare prima di poter essere interrotte.",
+      "uncancellableActions_one": "{{count}} azione non è stata interrotta e potrebbe essere ancora in esecuzione per conto proprio.",
+      "uncancellableActions_other": "{{count}} azioni non sono state interrotte e potrebbero essere ancora in esecuzione per conto proprio.",
+      "cancelRunSuccess_one": "Annullato — {{count}} esecuzione interrotta.",
+      "cancelRunSuccess_other": "Annullato — {{count}} esecuzioni interrotte."
     },
     "timestamps": {
       "started": "Avviata: {{date}}",
@@ -304,6 +313,9 @@
       "untitled": "Script",
       "awaiting": "In attesa della risposta dell'agente…",
       "truncated": "Output troncato: consulta la cronologia degli script del dispositivo per il testo completo."
+    },
+    "errors": {
+      "cancelRun": "Impossibile annullare l'esecuzione."
     }
   },
   "automationsPage": {
@@ -717,11 +729,19 @@
     },
     "empty": "Nessuna esecuzione trovata. Prova a modificare i filtri.",
     "actions": {
-      "viewDetails": "Visualizza dettagli"
+      "viewDetails": "Visualizza dettagli",
+      "stop": "Interrompi",
+      "forceStop": "Interrompi immediatamente",
+      "confirmStopTitle": "Interrompere questa esecuzione?",
+      "confirmStopMessage": "Breeze chiederà al dispositivo di interrompere {{script}}. L'operazione può richiedere alcuni secondi — “Interrompi immediatamente” salta il periodo di tolleranza e termina il processo all'istante."
     },
     "pagination": {
       "showing": "Visualizzazione da {{start}} a {{end}} di {{total}}",
       "page": "Pagina {{page}} di {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Questa esecuzione è già terminata e non può più essere interrotta.",
+      "cancelFailed": "Impossibile interrompere l'esecuzione."
     }
   },
   "scriptAiInput": {

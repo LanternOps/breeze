@@ -1,4 +1,4 @@
-import { loadVisibleCustomFieldDefinitions } from './queries';
+import { loadVisibleCustomFieldDefinitions, type CustomFieldValueWrite } from './queries';
 import { validateCustomFieldValue, type CustomFieldValueRejection } from './validateValue';
 
 export type CustomFieldMapRejection = {
@@ -7,7 +7,22 @@ export type CustomFieldMapRejection = {
 };
 
 export type CustomFieldMapResult =
-  | { ok: true; values: Record<string, string | number | boolean | null> }
+  | {
+      ok: true;
+      /**
+       * Coerced values keyed by `field_key`. Still the shape every caller uses
+       * to echo the request back and to name `changedFields` in the audit.
+       */
+      values: Record<string, string | number | boolean | null>;
+      /**
+       * The same values resolved against their matched definition, ready for
+       * `persistDeviceCustomFieldValues` (#3257 W05). Carried here rather than
+       * re-looked-up per caller: this function already holds the matched
+       * `VisibleCustomFieldDefinition`, and a second lookup would open a second
+       * system DB context per PATCH.
+       */
+      writes: CustomFieldValueWrite[];
+    }
   | { ok: false; rejected: CustomFieldMapRejection[] };
 
 export const INVALID_CUSTOM_FIELD_VALUE_MESSAGE =
@@ -35,6 +50,7 @@ export async function validateCustomFieldMap(
   const byKey = new Map(definitions.map((d) => [d.fieldKey, d]));
   const rejected: CustomFieldMapRejection[] = [];
   const values: Record<string, string | number | boolean | null> = {};
+  const writes: CustomFieldValueWrite[] = [];
 
   for (const [fieldKey, raw] of Object.entries(updates)) {
     const definition = byKey.get(fieldKey);
@@ -56,10 +72,16 @@ export async function validateCustomFieldMap(
       continue;
     }
     values[fieldKey] = result.value;
+    writes.push({
+      definitionId: definition.id,
+      fieldKey,
+      type: definition.type,
+      value: result.value,
+    });
   }
 
   if (rejected.length > 0) {
     return { ok: false, rejected };
   }
-  return { ok: true, values };
+  return { ok: true, values, writes };
 }

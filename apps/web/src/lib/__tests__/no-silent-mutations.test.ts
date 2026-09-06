@@ -67,6 +67,10 @@ const TARGET_GLOBS = [
   // an unreported failure on the surface that governs autonomous agents.
   'src/components/settings/AiAgentsPage.tsx',
   'src/components/settings/AiAgentForm.tsx',
+  // Task 13 (#5051): the guided create flow's own POST /ai/agents — the same
+  // surface AiAgentForm.tsx's create path already guards, just reached
+  // through the four-step flow instead of the drawer.
+  'src/components/settings/aiAgents/AgentCreateFlow.tsx',
   // Sweep schedules (P2-2, #4189): the section writes partner-wide baselines
   // and per-org overrides that decide what runs against customer machines on a
   // cron, unattended. A silent create/update/delete here is invisible until the
@@ -248,6 +252,24 @@ const TARGET_GLOBS = [
   // assign/unassign mutations here were bare fetchWithAuth calls with no
   // toast — a failed assign or unassign looked identical to a successful one.
   'src/components/configurationPolicies/AssignmentsTab.tsx',
+  // #4767 — Stop / Force-stop wires the long-dormant cancel endpoint to the UI
+  // for the first time. A bare fetchWithAuth here would silently no-op a
+  // Force-stop click, which is exactly the "did it work?" ambiguity runAction
+  // exists to remove.
+  'src/components/scripts/ExecutionHistory.tsx',
+  'src/components/scripts/ExecutionDetails.tsx',
+  'src/components/scripts/ScriptExecutionsPage.tsx',
+  // #4767 review — Cancel run's own POST /automations/runs/:runId/cancel
+  // lives inside this component (it has no owning page-level fetch layer),
+  // so it needs the same guard as the scripts-side files above.
+  'src/components/automations/AutomationRunHistory.tsx',
+  // #3257: the RMM custom-field importer. Every preview and commit POST is a
+  // multi-tenant write of customer data with a partial-success body — exactly
+  // the class this guard exists for, and the class where a silent failure
+  // looks identical to "nothing matched".
+  'src/components/devices/RmmCustomFieldImport.tsx',
+  'src/components/devices/CustomFieldDefinitionImportStep.tsx',
+  'src/components/devices/CustomFieldValueImportStep.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -560,10 +582,14 @@ describe('no silent mutations in targeted set', () => {
     // #4549 W07 — the admin trust queue page's approve/suspend actions).
     // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
     // main added 3 in parallel, so the true merged count was 113. A prior
-    // commit added 1 more (TrustQueue.tsx) to reach 114. This commit adds 1
-    // more (AssignmentsTab.tsx), so the count is now 115 — bump it
+    // commit added 1 more (TrustQueue.tsx) to reach 114. A prior commit added 1
+    // more (AssignmentsTab.tsx) to reach 115. A prior commit added 3 more
+    // (#4767 — ExecutionHistory.tsx, ExecutionDetails.tsx,
+    // ScriptExecutionsPage.tsx) to reach 118. This commit adds 1 more
+    // (AutomationRunHistory.tsx), so the count was 119. Task 13 (#5051) adds
+    // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
     // deliberately on every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(115);
+    expect(absoluteFiles.length).toBe(123);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

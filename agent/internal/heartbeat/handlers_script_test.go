@@ -326,17 +326,12 @@ func TestHandleScriptCancel(t *testing.T) {
 		t.Fatalf("expected failed for missing executionId, got %s", result.Status)
 	}
 
-	// Cancel nonexistent execution
-	result = handleScriptCancel(h, Command{
-		ID:   "cmd-cancel-nonexist",
-		Type: tools.CmdScriptCancel,
-		Payload: map[string]any{
-			"executionId": "nonexistent",
-		},
-	})
-	if result.Status != "failed" {
-		t.Fatalf("expected failed for nonexistent execution, got %s", result.Status)
-	}
+	// A nonexistent execution is NO LONGER a failed result (#3525): it is the
+	// structured `not_found` outcome on a success result, because the server
+	// closes cancel_state differently for not_found than for a failed kill and
+	// an error string cannot carry that. Asserted by
+	// TestScriptCancelReportsNotFoundAsASuccessResult in
+	// handlers_script_cancel_test.go.
 }
 
 func TestHandleScriptListRunning(t *testing.T) {

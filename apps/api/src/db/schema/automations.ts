@@ -8,13 +8,20 @@ import { aiAgents } from './aiAgents';
 
 export const automationTriggerTypeEnum = pgEnum('automation_trigger_type', ['schedule', 'event', 'webhook', 'manual']);
 export const automationOnFailureEnum = pgEnum('automation_on_failure', ['stop', 'continue', 'notify']);
-export const automationRunStatusEnum = pgEnum('automation_run_status', ['running', 'completed', 'failed', 'partial']);
+// `cancelled` (#3525 W05) is APPENDED, matching the migration's ADD VALUE order
+// — drizzle-kit compares enum value order, so inserting it mid-list here would
+// report phantom drift. A run reaches `cancelled` the moment a stop is
+// REQUESTED (that write is the dispatch fence); its children keep closing
+// honestly underneath and `completed_at` is stamped only once they are all
+// terminal.
+export const automationRunStatusEnum = pgEnum('automation_run_status', ['running', 'completed', 'failed', 'partial', 'cancelled']);
 export const automationResourceKindEnum = pgEnum('automation_resource_kind', ['script', 'software_catalog', 'notification_channel']);
 export const automationResourceBindingStateEnum = pgEnum('automation_resource_binding_state', ['active', 'quarantined']);
 // Per-device outcome within a single automation run (#2023). `pending` = row
 // seeded before the device is processed; `running` = actively executing;
-// terminal states are success/failed/skipped.
-export const automationDeviceResultStatusEnum = pgEnum('automation_device_result_status', ['pending', 'running', 'success', 'failed', 'skipped']);
+// terminal states are success/failed/skipped/cancelled. `cancelled` (#3525 W05)
+// is appended last for the same drift reason as automation_run_status above.
+export const automationDeviceResultStatusEnum = pgEnum('automation_device_result_status', ['pending', 'running', 'success', 'failed', 'skipped', 'cancelled']);
 export const automationActionResultStatusEnum = pgEnum('automation_action_result_status', [
   'pending', 'queued', 'delivered', 'running',
   'succeeded', 'failed', 'skipped', 'timed_out', 'cancelled',
@@ -113,6 +120,10 @@ export const automationRuns = pgTable('automation_runs', {
   devicesTargeted: integer('devices_targeted').notNull().default(0),
   devicesSucceeded: integer('devices_succeeded').notNull().default(0),
   devicesFailed: integer('devices_failed').notNull().default(0),
+  // #3525 W05 — devices whose work was PROVEN stopped, not devices asked to
+  // stop. Maintained by the reconciler as child rows terminalise as
+  // `cancelled`; a cancel request on its own never moves it.
+  devicesCancelled: integer('devices_cancelled').notNull().default(0),
   startedAt: timestamp('started_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
   logs: jsonb('logs').default([]),

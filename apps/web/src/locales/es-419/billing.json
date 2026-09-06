@@ -599,6 +599,7 @@
         "driftChip": "el conteo cambió: {{stored}} → {{live}}", "refresh": "Actualizar conteos", "estimateError": "No se pudo comprobar el conteo actual de dispositivos.", "pickerError": "No se pudieron cargar los grupos de dispositivos ni los sitios. Actualiza la página e inténtalo de nuevo.",
         "groupDeleted": "El grupo de dispositivos “{{name}}” fue eliminado: elige otro", "siteDeleted": "El sitio “{{name}}” fue eliminado: elige otro",
         "typeLocked": "Un conjunto de dispositivos no se puede cambiar después de crear la línea: elimina la línea y agrégala de nuevo.",
+        "allowanceGroupLabel": "Límite de cantidad", "allowanceToggle": "Incluir una cantidad fija y gestionar los extras",
         "includedLabel": "Cantidad incluida", "overageModeLabel": "Por encima del límite incluido", "overageBill": "Facturar cada unidad adicional", "overageFlag": "Informar para revisión", "overagePriceLabel": "Precio por excedente",
         "driftToast": "{{count}} línea(s) ya no coinciden con el conteo actual de dispositivos: {{lines}}",
         "retargetToast": "{{count}} línea(s) necesitan que se vuelva a elegir un grupo de dispositivos o sitio para esta organización"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Las líneas se eliminan. Obligatorio cuando alguna línea es manual o un paquete.",
         "modeReprice": "Recalcular precios de las líneas del catálogo",
         "modeRepriceHint": "Cada línea del catálogo se resuelve con la lista de precios de la nueva moneda. Solo es posible si todas las líneas provienen del catálogo.",
+        "modeRepriceUnavailable": "No disponible: al menos una línea es manual o un paquete, por lo que la lista de precios no puede recalcularla. Elimina todas las líneas en su lugar.",
         "confirm": "Entiendo que esto cambia la moneda de la cotización.",
         "submit": "Cambiar moneda"
       },

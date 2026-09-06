@@ -72,13 +72,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#4953) keys on, so a test that omits it
+ * is exercising a context with no partner GUC at all, not an org token's, and
+ * any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -138,15 +148,37 @@ describe('sensitive_data_policies RLS — dual-axis (2026-07-01 migration)', () 
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('an org-scope caller cannot see a partner-wide policy owned by its partner', async () => {
+  // #4953 flipped this. It used to assert org scope could not see a
+  // partner-wide policy at all — but the fixture never set `currentPartnerId`,
+  // so it was exercising a context with no partner GUC and passed for the wrong
+  // reason. `sensitive_data_policies_partner_wide_select`
+  // (2026-10-11-000200-software-security-partner-wide-select.sql) now grants an
+  // org token a SELECT-only view of its OWN partner's partner-wide rows, which
+  // is what every request-path reader previously bought with a nested
+  // system-context escalation. Writes are unchanged; the full read/write matrix
+  // for all five software-security tables lives in
+  // softwareSecurityPartnerWideSelect.integration.test.ts.
+  it('an org-scope caller of the owning partner CAN read a partner-wide policy but cannot write it', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const id = await seedPartnerPolicy(partner.id);
 
-    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select({ id: sensitiveDataPolicies.id }).from(sensitiveDataPolicies).where(eq(sensitiveDataPolicies.id, id)),
     );
-    expect(visibleToOrg).toEqual([]);
+    expect(visibleToOrg.map((r) => r.id)).toEqual([id]);
+
+    // The branch is FOR SELECT only: RLS hides the row from the write command
+    // rather than raising, so assert the ROW COUNT — "it didn't throw" would be
+    // satisfied by a successful hijack.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(sensitiveDataPolicies)
+        .set({ name: 'HIJACKED' })
+        .where(eq(sensitiveDataPolicies.id, id))
+        .returning({ id: sensitiveDataPolicies.id }),
+    );
+    expect(updated).toEqual([]);
   });
 
   it('org scope can still INSERT and SELECT an org-scoped policy (unchanged shape)', async () => {

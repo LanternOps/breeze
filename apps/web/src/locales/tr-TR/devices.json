@@ -194,6 +194,11 @@
         "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
         "confirm": "Çıkar"
       },
+      "permanentDelete": {
+        "title": "{{hostname}} kalıcı olarak silinsin mi?",
+        "message": "Bu işlem, bu cihaza ait tüm geçmişi siler: talepler, uyarılar, yama ve yedekleme kayıtları. Geri alınamaz.",
+        "confirm": "Kalıcı olarak sil"
+      },
       "clearSessions": {
         "title": "Oturumları Temizle",
         "message": "{{hostname}} için tüm etkin uzaktan oturumlar sonlandırılsın mı? Bu, halihazırda terminal, masaüstü veya dosya aktarımı yoluyla bağlı olan tüm kullanıcıların bağlantısını kesecektir.",
@@ -204,6 +209,22 @@
         "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
         "confirm": "Homebrew'u yükle"
       }
+    },
+    "removeDialog": {
+      "titleOne": "{{hostname}} çıkarılsın mı?",
+      "titleMany": "{{count}} cihaz çıkarılsın mı?",
+      "bodyOne": "Etkin filonuzdan çıkarılacak ve izlenmeyecek. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "bodyMany": "Etkin filonuzdan çıkarılacak ve izlenmeyecekler. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "summary": "{{online}} çevrimiçi, {{notOnline}} şu anda çevrimiçi değil.",
+      "legend": "Breeze aracısına ne olsun?",
+      "uninstall": "Breeze aracısını kaldır",
+      "uninstallOnline": "Şimdi sıraya alındı — çevrimiçi bir aracı komutu birkaç saniye içinde alır.",
+      "uninstallQueuedWithWindow": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır. {{hours}} saat içinde bağlanmazsa iptal edilir.",
+      "uninstallQueued": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır.",
+      "uninstallMixed": "Çevrimiçi cihazlar komutu birkaç saniye içinde alır; diğerleri bir sonraki bağlantılarında çalıştırır.",
+      "leave": "Aracıyı yüklü bırak",
+      "leaveHint": "Makine aracıyı çalıştırmaya devam eder ancak yönetilemez.",
+      "confirm": "Çıkar"
     },
     "runScript": "Komut Dosyasını Çalıştır",
     "remoteTools": "Uzaktan Araçlar",
@@ -529,7 +550,6 @@
     "s": "s",
     "decommissionCancelled": "Çıkarma iptal edildi",
     "permanentDeleteCancelled": "Kalıcı silme işlemi iptal edildi",
-    "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
     "failedToQueueScript": "Komut dosyası sıraya alınamadı",
     "loadingDevice": "Cihaz yükleniyor...",
     "backToDevices": "Cihazlara geri dön",
@@ -1124,6 +1144,8 @@
     "compareSelected": "Seçilenleri Karşılaştır",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
     "decommissionSelected": "Seçilenleri Çıkar",
+    "restoreSelected": "Seçilenleri Geri Yükle",
+    "permanentDeleteSelected": "Kalıcı Olarak Sil…",
     "clearSelection": "Seçimi temizle",
     "selectAllDevicesOnThisPage": "Bu sayfadaki tüm cihazları seçin",
     "actions": "Eylemler",
@@ -1136,6 +1158,8 @@
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "wake": "Uyan",
     "settings": "Ayarlar",
+    "enterMaintenance": "Bakıma Girin",
+    "exitMaintenance": "Bakımdan Çık",
     "restore": "Geri Yükle",
     "decommission": "Çıkar",
     "permanentlyDelete": "Kalıcı Olarak Sil",
@@ -1783,6 +1807,14 @@
       "shutdown": "Kapatma"
     },
     "addDevice": "Cihaz Ekle",
+    "bulkPurge": {
+      "andMore": "ve {{count}} tane daha",
+      "confirm": "Kalıcı olarak sil",
+      "message": "Bu işlem geri alınamaz. Bu cihazlara ait tüm kayıtlar — geçmiş, uyarılar, betikler, oturumlar — birlikte silinir. Talepler korunur ve bağlantısı kaldırılır.",
+      "multipleOrgs": "Bu seçim {{count}} kuruluşu kapsıyor. Devam etmeden önce kuruluş kapsamını kontrol edin.",
+      "title": "{{count}} cihaz kalıcı olarak silinsin mi?",
+      "typeCount": "Onaylamak için {{count}} yazın"
+    },
     "confirmDecommissionedSkip": {
       "message": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{eligible}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
       "title": "Seçilen bazı cihazlar çıkarıldı"
@@ -1819,11 +1851,23 @@
       "bulkMaintenanceAllFailed": "Tüm {{count}} cihazları için bakım modu güncellenemedi: {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} cihaz(lar) {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
+      "bulkMaintenanceSuccess_one": "{{count}} cihaz {{verb}} bakım modu",
+      "bulkMaintenanceSuccess_other": "{{count}} cihazlar {{verb}} bakım modu",
+      "bulkPurgeDone": "{{count}} cihaz kalıcı olarak silindi",
+      "bulkPurgeDoneWithSkips": "{{purged}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
+      "bulkPurgeFailed": "Kalıcı silme başarısız: {{reason}}",
+      "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi: {{reasons}}",
+      "bulkPurgeStarted": "{{count}} cihaz kalıcı olarak siliniyor…",
+      "bulkRestoreAllFailed": "{{count}} cihazın tamamı geri yüklenemedi",
+      "bulkRestoreSomeFailed": "{{succeeded}} cihaz geri yüklendi; {{failed}} başarısız",
+      "bulkRestoreUninstallAlreadySent": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
+      "bulkRestored": "{{count}} cihaz geri yüklendi",
       "bulkWakeAllFailed": "Toplu Uyandırma Hepsi Başarısız",
       "bulkWakeSent": "Toplu Uyandırma Gönderildi",
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
+      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "decommissionCancelled": "Çıkarma İptal Edildi",
       "decommissionFailed": "Çıkarma Başarısız",
       "decommissioned": "Çıkarıldı",
@@ -1837,11 +1881,9 @@
       "maintenanceOn": "Bakım Açık",
       "multibootLinked": "Çoklu Önyükleme Bağlantılı",
       "networkSkipped": "{{count}} ağ cihazı/cihazları atlandı — bu eylem yalnızca aracı cihazlar için geçerlidir.",
-      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
-      "permanentlyDeleted": "Kalıcı Olarak Silindi",
-      "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
+      "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
       "restored": "Yenilendi",
       "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
       "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",
@@ -1857,7 +1899,8 @@
     "unknownDevice": "Bilinmiyor",
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
-    "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin"
+    "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
+    "importFromRmm": "Başka bir RMM'den içe aktar"
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",
@@ -2378,5 +2421,170 @@
     "colDetectedVersion": "Algılanan sürüm",
     "colScannedAt": "Son tarama",
     "loadMore": "Daha fazlasını yükle"
+  },
+  "uninstallState": {
+    "pending": "Aracı kaldırma sıraya alındı — {{when}} sona eriyor",
+    "pendingNoDeadline": "Aracı kaldırma sıraya alındı",
+    "sent": "Aracı kaldırma iletildi",
+    "completed": "Aracı kaldırıldı",
+    "expired": "Kaldırma süresi doldu — aracı hiç bağlanmadı ve hâlâ kurulu olabilir",
+    "failed": "Aracı kaldırma başarısız oldu",
+    "cancelled": "Aracı kaldırma iptal edildi",
+    "none": "Aracı kurulu bırakıldı"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Başka bir RMM'den içe aktar",
+    "description": "Önceki RMM'nizden özel alanları ve değerlerini aktarın.",
+    "close": "Kapat",
+    "sourceLabel": "Kaynak",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Genel CSV"
+    },
+    "steps": {
+      "definitions": "Alan tanımları",
+      "values": "Cihaz değerleri"
+    },
+    "backToDefinitions": "Alan tanımlarına dön"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Önceki sağlayıcınızın alan listesini içeren bir CSV'yi buraya bırakın veya göz atmak için tıklayın",
+    "errors": {
+      "previewFailed": "Bu alan tanımları önizlenemedi",
+      "importFailed": "Bu alan tanımları içe aktarılamadı",
+      "allRefused": "Bu alan tanımlarından hiçbiri içe aktarılamadı — aşağıdaki hatalara bakın"
+    },
+    "ownerScope": {
+      "legend": "Bu alanlar kime ait",
+      "allOrganizations": "Tüm kuruluşlar",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
+    "grid": {
+      "heading": "{{count}} alan bulundu — her birini yeniden adlandırın ve türünü belirleyin",
+      "heading_other": "{{count}} alan bulundu — her birini yeniden adlandırın ve türünü belirleyin",
+      "sourceLabel": "Kaynak alan",
+      "name": "Ad",
+      "type": "Tür"
+    },
+    "actions": {
+      "preview": "Önizleme",
+      "previewing": "Önizleniyor…",
+      "import": "Alanları oluştur",
+      "importing": "Oluşturuluyor…",
+      "skipToValues": "Atla — değerlere devam et"
+    },
+    "preview": {
+      "heading": "Önizleme"
+    },
+    "annotations": {
+      "create": "Oluşturulacak",
+      "already-exists": "Zaten mevcut",
+      "type-conflict": "Tür çakışması",
+      "key-shadowed": "Anahtar diğer kapsamda zaten kullanılıyor",
+      "org-not-found": "Kuruluş bulunamadı",
+      "partner-wide-denied": "Tüm kuruluşlar için alan oluşturamazsınız"
+    },
+    "summary": "{{created}} oluşturuldu, {{skipped}} atlandı, {{failed}} başarısız"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Cihaz değerlerini içeren bir CSV'yi buraya bırakın veya göz atmak için tıklayın",
+    "errors": {
+      "previewFailed": "Bu değerler önizlenemedi",
+      "importFailed": "Bu değerler içe aktarılamadı"
+    },
+    "mode": {
+      "label": "Bir değer zaten ayarlıysa",
+      "skip": "Olduğu gibi bırak",
+      "update": "Üzerine yaz"
+    },
+    "dateFormat": {
+      "label": "Tarih biçimi",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Üretici garanti verilerini geçersiz kıl",
+    "mapping": {
+      "ignore": "Bu sütunu yoksay",
+      "identifierGroup": "Cihazı şuna göre eşleştir…",
+      "identifiers": {
+        "deviceId": "Cihaz kimliği",
+        "externalSystem": "Kaynak sistem",
+        "externalId": "Kaynaktaki cihaz kimliği",
+        "serialNumber": "Seri numarası",
+        "hostname": "Ana bilgisayar adı",
+        "organizationId": "Kuruluş kimliği"
+      },
+      "customField": "Özel alan…",
+      "warrantyGroup": "Garanti",
+      "warranty": {
+        "warrantyStartDate": "Garanti başlangıç tarihi",
+        "warrantyEndDate": "Garanti bitiş tarihi",
+        "manufacturer": "Üretici"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} satır atlandı — tanımlayıcı veya değer eşleşmedi",
+      "droppedRows_other": "{{count}} satır atlandı — tanımlayıcı veya değer eşleşmedi"
+    },
+    "actions": {
+      "preview": "{{count}} satırı önizle",
+      "preview_other": "{{count}} satırı önizle",
+      "previewing": "Önizleniyor…",
+      "import": "{{count}} satırı içe aktar",
+      "import_other": "{{count}} satırı içe aktar",
+      "importing": "İçe aktarılıyor…"
+    },
+    "chunkedNotice": "Bu dosya tek bir istekten daha büyük — otomatik olarak parçalar halinde gönderilecek.",
+    "progress": "{{total}} parçadan {{done}}.",
+    "summary": "{{applied}} uygulandı, {{skipped}} atlandı, {{failed}} değer başarısız",
+    "notAttempted": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "notAttempted_other": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "errorRow": "Satır {{index}}",
+    "previewStale": "Bu önizlemeden bu yana eşleme değişti — içe aktarmadan önce önizlemeyi yeniden çalıştırın"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Tümünü seç",
+    "unresolved": "Çözümlenmedi",
+    "columns": {
+      "device": "Cihaz",
+      "status": "Durum",
+      "values": "Değerler"
+    },
+    "rowOutcomes": {
+      "matched": "Eşleşti",
+      "linkMatch": "Bağlantılı",
+      "ambiguous": "Belirsiz",
+      "notFound": "Bulunamadı",
+      "orgNotFound": "Kuruluş bulunamadı",
+      "identityConflict": "Çakışan eşleşme"
+    },
+    "valueOutcomes": {
+      "applied": "Uygulandı",
+      "skippedAlreadySet": "Zaten ayarlı",
+      "skippedProviderOwned": "Sağlayıcıya ait",
+      "noDefinition": "Böyle bir alan yok",
+      "typeError": "Tür hatası",
+      "notApplicable": "Bu cihaz için geçerli değil",
+      "deviceUnresolved": "Cihaz çözümlenemedi"
+    },
+    "hideCandidates": "Adayları gizle",
+    "showCandidates": "{{count}} adayı göster",
+    "showCandidates_other": "{{count}} adayı göster",
+    "picked": "{{deviceId}} seçildi",
+    "candidate": {
+      "serial": "Seri: {{value}}",
+      "os": "İşletim sistemi: {{value}}",
+      "enrolled": "Kayıt: {{value}}",
+      "lastSeen": "Son görülme: {{value}}",
+      "pick": "Seç",
+      "picked": "Seçildi"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Garanti başlangıç tarihi",
+      "warrantyEndDate": "Garanti bitiş tarihi",
+      "manufacturer": "Üretici"
+    },
+    "identityConflictNote": "Bu satırın tanımlayıcıları farklı cihazları işaret ediyor ve olduğu gibi içe aktarılamaz — dosyayı düzeltin ve önizlemeyi yeniden çalıştırın. Aşağıdaki adaylar yalnızca referans için gösterilmektedir."
   }
 }

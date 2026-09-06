@@ -36,7 +36,11 @@ const expectedSingleBoundaryFiles = new Map([
 const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
 const expectedGuardedCookieInstallerFiles = new Map([
   ...expectedSingleBoundaryFiles,
-  ['routes/auth/mfa.ts', 5],
+  // /mfa/verify (two issuance branches), /mfa/setup confirm, /mfa/enable,
+  // /mfa/recovery-codes, and /mfa/disable (#4934 — a self-disable that evicted
+  // its own caller bounced the user to /login?reason=session-expired, so it now
+  // installs a replacement too).
+  ['routes/auth/mfa.ts', 6],
   ['routes/auth/passkeys.ts', 3],
   ['routes/auth/phone.ts', 1],
   ['routes/sso.ts', 1],

@@ -14,6 +14,7 @@ import {
   FileCode,
   RotateCcw,
   Settings,
+  Shield,
   Trash2,
   Zap,
   Columns3,
@@ -39,6 +40,7 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -203,6 +205,28 @@ export type Device = {
    * device page.
    */
   possibleReplacementOfDeviceId?: string | null;
+  /**
+   * What became of the agent-uninstall this device's Remove queued (#3987).
+   *
+   * Present ONLY on the `GET /devices/:id` detail payload, and only ever
+   * non-null for a `decommissioned` device. The three-way distinction is
+   * load-bearing for `UninstallStateBadge`:
+   *
+   *   undefined → this payload does not carry the field (a list row) — say
+   *               nothing, because we do not know.
+   *   null      → the Remove deliberately left the agent installed.
+   *   object    → an uninstall was queued; `state` says how far it got.
+   *
+   * `state: 'sent'` means the agent's handler acked the command, NOT that the
+   * teardown is confirmed — only `'completed'` claims that.
+   */
+  uninstall?: {
+    state: string;
+    queuedAt?: string | null;
+    sentAt: string | null;
+    completedAt?: string | null;
+    expiresAt: string | null;
+  } | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
@@ -982,6 +1006,21 @@ export default function DeviceList({
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
+
+  /**
+   * #2787 — the bulk bar is SELECTION-AWARE. A selection of only removed
+   * devices gets Restore / Delete permanently and nothing else; every other
+   * selection (including a mixed one) gets the ordinary menu.
+   *
+   * Not merely cosmetic: the removed-only actions call APIs that require
+   * `status = 'decommissioned'`, so offering them for a mixed selection would
+   * reject every active device in the batch. The ordinary actions, by contrast,
+   * already SKIP removed devices via DECOMMISSION_BLOCKED_BULK_ACTIONS, so the
+   * mixed case degrades gracefully on the active menu and badly on the other.
+   */
+  const selectionKind = classifyBulkSelection(
+    devices.filter((d) => selectedIds.has(d.id)).map((d) => d.status),
+  );
 
   const allSelected =
     selectablePageDevices.length > 0 &&
@@ -2109,6 +2148,8 @@ export default function DeviceList({
                 data-testid="bulk-actions-menu"
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
+                {selectionKind !== "removed" && (
+                  <>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("reboot")}
@@ -2187,11 +2228,48 @@ export default function DeviceList({
                 <hr className="my-1" />
                 <button
                   type="button"
+                  data-testid="bulk-decommission"
                   onClick={() => handleBulkAction("decommission")}
                   className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
                   {t("deviceList.decommissionSelected")}{" "}
                 </button>
+                  </>
+                )}
+                {selectionKind === "removed" && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="bulk-restore"
+                      onClick={() => handleBulkAction("restore")}
+                      className="w-full px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                    >
+                      {t("deviceList.restoreSelected")}
+                    </button>
+                    {/* Same 2-4 cap as the active branch — DeviceCompare's own
+                        selection limit. A removed device is a legitimate (if
+                        approximate) comparison subject. */}
+                    {selectedIds.size >= 2 && selectedIds.size <= 4 && (
+                      <button
+                        type="button"
+                        data-testid="bulk-compare"
+                        onClick={() => handleBulkAction("compare")}
+                        className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                      >
+                        {t("deviceList.compareSelected")}
+                      </button>
+                    )}
+                    <hr className="my-1" />
+                    <button
+                      type="button"
+                      data-testid="bulk-permanent-delete"
+                      onClick={() => handleBulkAction("permanent-delete")}
+                      className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      {t("deviceList.permanentDeleteSelected")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -2381,10 +2459,10 @@ export default function DeviceList({
                                 if (rowMenuOpenId !== device.id) {
                                   const rect =
                                     e.currentTarget.getBoundingClientRect();
-                                  // ~280px dropdown height (7 items × ~36px + padding/divider).
+                                  // ~320px dropdown height (8 items × ~36px + padding/divider).
                                   // Flip up when the space below the button is less than that.
                                   setRowMenuFlipUp(
-                                    window.innerHeight - rect.bottom < 300,
+                                    window.innerHeight - rect.bottom < 340,
                                   );
                                   setRowMenuAnchor({
                                     top: rect.top,
@@ -2519,6 +2597,48 @@ export default function DeviceList({
                                   >
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
+                                  </button>
+                                  {/* #4936: maintenance mode was reachable only
+                                      through Bulk Actions, so acting on ONE
+                                      device meant ticking its checkbox and
+                                      opening a bulk menu. This dispatches the
+                                      same `maintenance` action the page already
+                                      handled — a per-device POST for one id.
+
+                                      Gating: maintenance is a DB flag, not an
+                                      agent command, so it is NOT gated on
+                                      `online` (bulkActionGating.ts lists
+                                      `maintenance-*` as intentionally ungated) —
+                                      suppressing monitoring on a box that has
+                                      already gone dark is the point of it. The
+                                      API does refuse a REMOVED device
+                                      (commands.ts: "Cannot change maintenance
+                                      mode for a decommissioned device"), which
+                                      is exactly the set `isCommandQueueable`
+                                      excludes, so the shared predicate and its
+                                      tooltip are correct here rather than
+                                      borrowed (#3994: no surface should offer an
+                                      action the API rejects). */}
+                                  <button
+                                    type="button"
+                                    data-testid={`device-${device.id}-action-maintenance`}
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(device.status, t)}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      onAction?.("maintenance", device);
+                                      setRowMenuOpenId(null);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Shield className="h-4 w-4" />
+                                    {device.status === "maintenance"
+                                      ? t("deviceList.exitMaintenance")
+                                      : t("deviceList.enterMaintenance")}{" "}
                                   </button>
                                   <hr className="my-1" />
                                   {device.status === "decommissioned" ? (

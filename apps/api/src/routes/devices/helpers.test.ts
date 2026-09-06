@@ -194,3 +194,144 @@ describe('device helpers reject a malformed uuid before querying (#2968)', () =>
     await expect(getDeviceWithOrgCheck(device.id, auth)).resolves.toEqual(device);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2787 minor — batched sibling of getDeviceWithOrgAndSiteCheck.
+//
+// POST /devices/bulk/permanent-delete used to issue up to 500 single-row
+// SELECTs inside the ambient request transaction, one per selected device.
+// The batched helper must reach EXACTLY the same verdict per device; the
+// site-restriction case is the one worth pinning hardest, because a batch
+// lookup that forgot it would silently hand a site-scoped tech devices from
+// sites they cannot see.
+// ---------------------------------------------------------------------------
+describe('getDevicesWithOrgAndSiteCheck (#2787)', () => {
+  const D1 = '11111111-1111-4111-8111-111111111111';
+  const D2 = '22222222-2222-4222-8222-222222222222';
+  const D3 = '33333333-3333-4333-8333-333333333333';
+
+  const partnerAuth = {
+    scope: 'partner' as const,
+    orgId: null as unknown as string,
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (orgId: string) => orgId === 'org-1',
+  };
+
+  /** `db.select().from().where()` resolving to `rows` (no `.limit()` — batched). */
+  function mockBatchSelect(rows: unknown[]) {
+    const where = vi.fn().mockResolvedValue(rows);
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where }),
+    } as unknown as ReturnType<typeof db.select>);
+    return where;
+  }
+
+  function ctx(userPerms: UserPermissions | undefined) {
+    return { get: (k: string) => (k === 'permissions' ? userPerms : undefined) } as never;
+  }
+
+  const noSiteRestriction = { allowedSiteIds: null } as unknown as UserPermissions;
+
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('issues ONE query for the whole batch, not one per device', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-1' },
+      { id: D2, orgId: 'org-1', siteId: 'site-1' },
+    ]);
+
+    await getDevicesWithOrgAndSiteCheck(ctx(noSiteRestriction), [D1, D2], partnerAuth);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns SITE_ACCESS_DENIED for a device outside the site allowlist, and the row for one inside it', async () => {
+    const { getDevicesWithOrgAndSiteCheck, SITE_ACCESS_DENIED } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-allowed' },
+      { id: D2, orgId: 'org-1', siteId: 'site-other' },
+    ]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx({ allowedSiteIds: ['site-allowed'] } as unknown as UserPermissions),
+      [D1, D2],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(out.get(D2)).toBe(SITE_ACCESS_DENIED);
+  });
+
+  it('denies a device whose siteId is not a string when a site allowlist is in force', async () => {
+    // Fail closed: a null site cannot be proven to be inside the allowlist.
+    const { getDevicesWithOrgAndSiteCheck, SITE_ACCESS_DENIED } = await import('./helpers');
+    mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: null }]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx({ allowedSiteIds: ['site-allowed'] } as unknown as UserPermissions),
+      [D1],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toBe(SITE_ACCESS_DENIED);
+  });
+
+  it('returns null for an org the caller cannot access, and for a row that does not exist', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-1' },
+      { id: D2, orgId: 'org-elsewhere', siteId: 'site-9' },
+      // D3 is absent from the result entirely.
+    ]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx(noSiteRestriction),
+      [D1, D2, D3],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(out.get(D2)).toBeNull();
+    expect(out.get(D3)).toBeNull();
+  });
+
+  it('returns null for a malformed uuid without putting it in the query', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    const where = mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: 'site-1' }]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx(noSiteRestriction),
+      [D1, 'not-a-uuid'],
+      partnerAuth,
+    );
+
+    expect(out.get('not-a-uuid')).toBeNull();
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(where).toHaveBeenCalledTimes(1);
+  });
+
+  it('never queries at all when every id is malformed', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(ctx(noSiteRestriction), ['x', 'y'], partnerAuth);
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(out.get('x')).toBeNull();
+    expect(out.get('y')).toBeNull();
+  });
+
+  it('throws a 500-class error when requirePermission never ran', async () => {
+    // Same programmer-error guard as the single helper: a missing permissions
+    // context must fail loudly, never silently grant cross-site access.
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: 'site-1' }]);
+
+    await expect(
+      getDevicesWithOrgAndSiteCheck(ctx(undefined), [D1], partnerAuth),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+});
