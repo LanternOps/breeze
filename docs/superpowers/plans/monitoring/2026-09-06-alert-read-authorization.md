@@ -43,4 +43,20 @@ No schema migration, alert mutation, deployment or QA closure is in scope.
    tests with at most two workers. Use command-scoped `caffeinate` for long runs.
 5. Obtain independent exact-head review, fix findings, publish one draft PR,
    monitor exact-head CI and fix failures. Stop at a reviewed open PR; merge and
-   candidate verification are separate tracker states.
+candidate verification are separate tracker states.
+
+## Verified schema correction and scope decisions
+
+The closure brief's deviceless real-database fixture is incompatible with current
+main: both `0001-baseline.sql` and Drizzle enforce `alerts.device_id NOT NULL`.
+No migration in this change relaxes that invariant. Real-database parity tests
+therefore use two Site-A alerts and one Site-B alert; an empty allowlist sees
+zero alerts. The existing defensive deviceless policy remains pinned by compiled
+SQL predicate tests and existing by-id unit tests, without claiming reachable
+deviceless production rows.
+
+Restricted readers omit correlation aggregate decoration and group verdict
+rationale, and group verdicts do not affect their noise filter. Individual alert
+verdicts remain usable. Unrestricted group behavior is unchanged. Mobile's
+`getAlertStats` has no mounted callers; service tests pin its existing rejected
+403 contract and exact scoped counts rather than introducing a new return shape.
