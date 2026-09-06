@@ -30,6 +30,7 @@ import {
   canManagePartnerWidePolicies,
   policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PolicyHasChildrenError,
 } from './configurationPolicy';
 import {
   getConfigPolicyComplianceRuleInfo,
@@ -621,7 +622,21 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'delete') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required for delete' });
-        const deleted = await deleteConfigPolicy(input.policyId as string, auth);
+        let deleted;
+        try {
+          deleted = await deleteConfigPolicy(input.policyId as string, auth);
+        } catch (err) {
+          // Without this branch safeHandler would flatten an actionable refusal
+          // into "Operation failed. Check server logs for details.", leaving the
+          // model with no way to know WHY or what to do next (#5080).
+          if (err instanceof PolicyHasChildrenError) {
+            const names = err.children.map((c) => `"${c.name}" (${c.id})`).join(', ');
+            return JSON.stringify({
+              error: `Cannot delete this configuration policy: ${err.children.length} policy/policies inherit from it${names ? ` — ${names}` : ''}. Delete or re-create those first.`,
+            });
+          }
+          throw err;
+        }
         if (!deleted) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
         return JSON.stringify({ success: true, message: `Policy "${deleted.name}" deleted` });
       }
