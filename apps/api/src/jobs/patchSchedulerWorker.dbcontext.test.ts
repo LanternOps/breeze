@@ -65,7 +65,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   configurationPolicies: { id: 'cp.id', name: 'cp.name', orgId: 'cp.orgId', status: 'cp.status' },
-  configPolicyFeatureLinks: { id: 'fl.id', configPolicyId: 'fl.cpId', featureType: 'fl.type' },
+  configPolicyEffectiveFeatureLinks: { id: 'fl.id', configPolicyId: 'fl.cpId', featureType: 'fl.type' },
   configPolicyAssignments: { configPolicyId: 'a.cpId', level: 'a.level', targetId: 'a.targetId' },
   patchJobs: { id: 'pj.id', configPolicyId: 'pj.cpId', orgId: 'pj.orgId', createdAt: 'pj.createdAt' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },

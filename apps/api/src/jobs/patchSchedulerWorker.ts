@@ -10,7 +10,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
   configurationPolicies,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
   patchJobs,
   devices,
@@ -497,17 +497,17 @@ async function scanAndCreateJobs(): Promise<{
       policyName: configurationPolicies.name,
       policyOrgId: configurationPolicies.orgId,
       policyPartnerId: configurationPolicies.partnerId,
-      featureLinkId: configPolicyFeatureLinks.id,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
-    .where(eq(configPolicyFeatureLinks.featureType, 'patch'))
+    .where(eq(configPolicyEffectiveFeatureLinks.featureType, 'patch'))
   );
 
   for (const row of patchPoliciesWithSchedules) {
