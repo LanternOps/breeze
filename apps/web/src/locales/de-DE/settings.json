@@ -4594,6 +4594,7 @@
     },
     "actions": {
       "add": "Benutzerdefiniertes Feld hinzufügen",
+      "importFromRmm": "Von einer anderen RMM importieren",
       "addFirst": "Fügen Sie Ihr erstes benutzerdefiniertes Feld hinzu",
       "addChoice": "Auswahl hinzufügen",
       "createField": "Feld erstellen",
