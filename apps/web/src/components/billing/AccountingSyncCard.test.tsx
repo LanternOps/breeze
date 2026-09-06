@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AccountingSyncCard from './AccountingSyncCard';
-import type { AccountingSyncSummary } from './invoiceTypes';
+import type { AccountingSyncSummary, InvoiceStatus } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -322,10 +322,10 @@ describe('AccountingSyncCard live sync watch', () => {
     const view = render(
       <AccountingSyncCard invoiceId="inv-1" sync={initialSync} invoiceStatus="draft" canPush onChanged={onChanged} />,
     );
-    const show = (next: AccountingSyncSummary | null) =>
+    const show = (next: AccountingSyncSummary | null, status: InvoiceStatus = 'sent') =>
       act(() => {
         view.rerender(
-          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus="sent" canPush onChanged={onChanged} />,
+          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus={status} canPush onChanged={onChanged} />,
         );
       });
     // The Issue action flips the invoice out of draft and the refetch brings
@@ -373,11 +373,14 @@ describe('AccountingSyncCard live sync watch', () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to Not pushed yet with the Push button when the watch times out', () => {
+  // `advanceTimersByTimeAsync` (not the sync form) because each poll only
+  // releases the next one when its refetch promise settles — a microtask,
+  // which the synchronous form never flushes.
+  it('falls back to Not pushed yet with the Push button when the watch times out', async () => {
     const onChanged = vi.fn();
     issued(onChanged);
 
-    act(() => { vi.advanceTimersByTime(60000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
 
     expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
     expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
@@ -402,34 +405,240 @@ describe('AccountingSyncCard live sync watch', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('starts the watch after a manual push so the card does not offer a second submit', async () => {
+  // The manual push route is SYNCHRONOUS — it awaits the QuickBooks call and
+  // returns the settled syncStatus (routes/accounting/index.ts) — so the
+  // refetch that follows already reads the outcome. Arming the watch here
+  // would strand a retry from an `error` row on a 60s spinner, because the
+  // row's status never changes again to end it.
+  it('does not arm the watch after a manual push — the route is synchronous', async () => {
     const onChanged = vi.fn();
-    fetchMock.mockResolvedValue(json({ syncStatus: 'pending' }));
+    fetchMock.mockResolvedValue(json({ syncStatus: 'synced', docNumber: 'QB-1042', taxVarianceCents: null }));
 
-    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync({ syncStatus: 'error', lastError: 'QuickBooks rejected the invoice sync (HTTP 500)' })}
+        invoiceStatus="sent"
+        canPush
+        onChanged={onChanged}
+      />,
+    );
     await act(async () => {
       fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
     });
 
-    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
-    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('invoice-accounting-sync-status')).not.toHaveTextContent('Syncing');
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('gives up quickly when no QuickBooks mapping row ever appears', () => {
+  it('stops the watch when the invoice is voided mid-window', () => {
     const onChanged = vi.fn();
+    const { show } = issued(onChanged);
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
+
+    // The operator voids the invoice while the push is still in flight — a
+    // spinning "Syncing…" over the "nothing to push" hint is a contradiction.
+    show(sync(), 'void');
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
+    expect(screen.getByTestId('invoice-accounting-sync-voided-hint')).toBeInTheDocument();
+
+    const calls = onChanged.mock.calls.length;
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).toHaveBeenCalledTimes(calls);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // The watch must not give up early on a mapping row that has not appeared
+  // yet: under a worker backlog the row is claimed well after the issue
+  // response, and nothing else would restart the watch.
+  it('keeps polling the whole window while no mapping row has appeared yet', async () => {
+    const onChanged = vi.fn();
+    const view = render(
+      <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
+    );
+    const show = (next: AccountingSyncSummary | null) =>
+      act(() => {
+        view.rerender(
+          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus="sent" canPush onChanged={onChanged} />,
+        );
+      });
+    show(null);
+
+    // 30s of a backlogged worker: no row yet, still polling.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(onChanged.mock.calls.length).toBeGreaterThanOrEqual(9);
+    // Nothing is rendered while there is no row to show...
+    expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
+
+    // ...and the late row is still picked up by the same live watch.
+    show(sync());
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
+    show(sync({ syncStatus: 'synced' }));
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Synced');
+  });
+
+  it('skips a tick while the previous refetch is still in flight', async () => {
+    let resolveRefetch: (() => void) | undefined;
+    const onChanged = vi.fn(() => new Promise<void>((resolve) => { resolveRefetch = resolve; }));
     const view = render(
       <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
     );
     act(() => {
       view.rerender(
-        <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="sent" canPush onChanged={onChanged} />,
+        <AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
       );
     });
 
-    act(() => { vi.advanceTimersByTime(60000); });
-    // Two probes, then the watch gives up: a partner with no QuickBooks
-    // connection must not refetch the invoice for a full minute per issue.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    // Three more ticks pass while the first refetch is still pending — a slow
+    // response must not queue up refetches that can land out of order.
+    await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    // Once it settles the cadence resumes.
+    await act(async () => { resolveRefetch?.(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(onChanged).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The primary prod flow never sees the draft -> issued transition at all:
+ * InvoiceWorkspace opens a draft on the Editor tab and only renders
+ * InvoiceDetail when the Detail tab is active, so a header Issue click flips
+ * the status, unmounts the editor and mounts the Detail tab (and this card)
+ * FRESH — already in the issued state. The card therefore also arms the watch
+ * on mount for an invoice that was touched seconds ago and has no settled
+ * mapping row.
+ */
+describe('AccountingSyncCard live sync watch on a fresh mount', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+
+  it('shows Syncing on mount when the invoice was just issued', () => {
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync()}
+        invoiceStatus="sent"
+        invoiceTouchedAt={at(2000)}
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+  });
+
+  it('polls on a fresh mount and settles on the pushed row', () => {
+    const onChanged = vi.fn();
+    const view = render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync()}
+        invoiceStatus="sent"
+        invoiceTouchedAt={at(2000)}
+        canPush
+        onChanged={onChanged}
+      />,
+    );
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      view.rerender(
+        <AccountingSyncCard
+          invoiceId="inv-1"
+          sync={sync({ syncStatus: 'synced', remoteDocNumber: 'QB-1042' })}
+          invoiceStatus="sent"
+          invoiceTouchedAt={at(2000)}
+          canPush
+          onChanged={onChanged}
+        />,
+      );
+    });
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Synced');
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  // Control for the case above: an old invoice with a pending row is a
+  // settled fact (manual push mode, or a push that never happened), not a
+  // push in flight — it must mount straight to the actionable view.
+  it('mounts straight to Not pushed yet for an invoice issued an hour ago', () => {
+    const onChanged = vi.fn();
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync()}
+        invoiceStatus="sent"
+        invoiceTouchedAt={at(3600000)}
+        canPush
+        onChanged={onChanged}
+      />,
+    );
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
+    expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(60000); });
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('does not arm the mount watch for a settled row or a draft', () => {
+    const { unmount } = render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync({ syncStatus: 'synced' })}
+        invoiceStatus="sent"
+        invoiceTouchedAt={at(2000)}
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Synced');
     expect(vi.getTimerCount()).toBe(0);
+    unmount();
+
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync()}
+        invoiceStatus="draft"
+        invoiceTouchedAt={at(2000)}
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // Deploy skew: `updatedAt` is not declared on the web's InvoiceSummary today,
+  // so an older payload can omit it entirely. No timestamp = no mount watch,
+  // never a watch armed on a guess.
+  it('does not arm the mount watch without a timestamp', () => {
+    const onChanged = vi.fn();
+    render(
+      <AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />,
+    );
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
+    act(() => { vi.advanceTimersByTime(60000); });
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });
