@@ -6,7 +6,7 @@
  * covering notification_channels, notification_routing_rules, and
  * escalation_policies — plus the SELECT-only own-partner read branch added to
  * all three by
- * 2026-10-10-100100-notification-maintenance-partner-wide-select.sql
+ * 2026-10-10-120000-notification-maintenance-partner-wide-select.sql
  * (#4956, #4957, #4958). alert_notifications stay alert-join (the firing
  * device's org) and are unchanged.
  *
@@ -228,7 +228,7 @@ describe.each(RAIL_CASES)('$label RLS — dual-axis (2026-07-01 migration)', (ra
   // This used to assert org scope could NOT see a partner-wide rail row — but
   // the fixture never set `currentPartnerId`, so it was asserting the NULL-GUC
   // shape and passed for the wrong reason. The `<rail>_partner_wide_select`
-  // policies (2026-10-10-100100-notification-maintenance-partner-wide-select
+  // policies (2026-10-10-120000-notification-maintenance-partner-wide-select
   // .sql, #4956/#4957/#4958) now grant an org token a SELECT-only view of its
   // OWN partner's partner-wide rails. Org tokens still never pass
   // `breeze_has_partner_access`, so every WRITE path is exactly as strict as

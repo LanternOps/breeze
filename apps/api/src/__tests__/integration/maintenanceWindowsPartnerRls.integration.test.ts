@@ -4,7 +4,7 @@
  *
  * Migration under test: 2026-07-01-maintenance-windows-partner-ownership.sql,
  * plus the SELECT-only own-partner read branch added by
- * 2026-10-10-100100-notification-maintenance-partner-wide-select.sql (#4955).
+ * 2026-10-10-120000-notification-maintenance-partner-wide-select.sql (#4955).
  *
  * A maintenance window is owned by EITHER an org (org_id set, partner_id
  * NULL) OR a partner (partner_id set, org_id NULL — partner-wide / "all
@@ -165,7 +165,7 @@ describe('maintenance_windows RLS — dual-axis (2026-07-01 migration)', () => {
   // the fixture never set `currentPartnerId`, so it was asserting the
   // NULL-GUC shape and passed for the wrong reason.
   // `maintenance_windows_partner_wide_select`
-  // (2026-10-10-100100-notification-maintenance-partner-wide-select.sql,
+  // (2026-10-10-120000-notification-maintenance-partner-wide-select.sql,
   // #4955) now grants an org token a SELECT-only view of its OWN partner's
   // partner-wide windows. Org tokens still never pass
   // `breeze_has_partner_access`, so every WRITE path is exactly as strict as

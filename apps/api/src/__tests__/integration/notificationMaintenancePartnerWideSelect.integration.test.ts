@@ -3,7 +3,7 @@
  * (#4673 wave 4 follow-ups #4955, #4956, #4957, #4958).
  *
  * Migration under test:
- * 2026-10-10-100100-notification-maintenance-partner-wide-select.sql.
+ * 2026-10-10-120000-notification-maintenance-partner-wide-select.sql.
  *
  * All four tables are the plain org_id-XOR-partner_id config shape: each row is
  * owned by EITHER an org (`org_id` set, `partner_id` NULL) OR a partner
