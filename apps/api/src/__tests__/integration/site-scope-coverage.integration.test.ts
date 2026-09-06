@@ -215,15 +215,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // site-restricted caller sees no sessions here in the first place.
   'routes/remote/supportSessions.ts:GET /support-sessions',
   'routes/remote/supportSessions.ts:GET /support-sessions/:id',
-  // ---- Org-wide AGGREGATE reads: return only counts/summaries (no
-  // per-device rows), so no cross-site device data is disclosed (returns
-  // re-verified 2026-05-31). NB: totals still span the org incl. other
-  // sites — site-scoping the aggregates themselves is a separate product call.
-  // routes/metrics.ts:GET / and GET /trends were exempted here as org-wide
-  // aggregates with the note that site-scoping them was "a separate product
-  // call". Wave 2 made that call: GET / now applies the allowed-site
-  // predicate to every aggregate and GET /trends denies site-restricted
-  // callers outright, so the ratchet correctly demands these entries go.
+  // ---- Partner/system-only aggregates: organization site-restricted roles
+  // cannot reach these handlers. User-reachable software/SentinelOne summaries
+  // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
   'routes/huntress.ts:GET /status',
   'routes/updateRings.ts:GET /:id/compliance',
   // Org-scoped compliance list, identical posture to its sibling routes
@@ -277,14 +271,9 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // all, let alone reach a device through them.
   'routes/remote/supportSessions.ts:GET /support-sessions',
   'routes/remote/supportSessions.ts:GET /support-sessions/:id',
-  // Org-wide AGGREGATE reads: return only counts/summaries (no per-device rows),
-  // so no cross-site device data is disclosed. Reached via user auth but exempt
-  // for the aggregate reason rather than non-user auth — recorded here so the
-  // re-verification test (added in #1041) accepts them. (Site-scoping the
-  // aggregate totals themselves is a separate product call.)
+  // Partner/system-only aggregates use user auth but cannot be reached by
+  // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',
-  'routes/sentinelOne.ts:GET /status',
-  'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
   // Org-scoped compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached
   // via user auth (requireScope) but exempt because the escrow enrichment is
