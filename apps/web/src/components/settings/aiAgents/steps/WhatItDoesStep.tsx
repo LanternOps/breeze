@@ -11,21 +11,33 @@ export interface WhatItDoesStepProps {
   catalog: AgentToolCatalogDto | null;
   ceiling: AgentCeilingDto | null;
   catalogLoading: boolean;
+  /** Scripts the row is effectively authorized to run unattended
+   *  (`actAssets.scriptIds` ∩ the partner ceiling), for the picker's
+   *  `run_script` outcome. The create flow cannot authorize scripts, so it
+   *  leaves this at 0; the edit drawer passes the row's real count. */
+  authorizedScriptCount?: number;
 }
 
 /**
- * Step 2 of the guided create flow (spec §4.6): "Runs when" (severities for
- * triage, maintenance windows, helpdesk ticket writes) above the capability
- * picker — same order and test ids as `AiAgentForm.tsx`'s "When it runs"
- * fieldset and Permissions section, so an operator moving between the drawer
- * and the guided flow finds identical controls.
+ * "What it does" — step 2 of the guided create flow (spec §4.6) AND the same
+ * block of the edit drawer (`AiAgentForm.tsx`, #5063): "Runs when"
+ * (severities for triage, maintenance windows, helpdesk ticket writes) above
+ * the capability picker. One rendering per setting, so the two surfaces
+ * cannot drift.
  */
-export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalogLoading }: WhatItDoesStepProps) {
+export default function WhatItDoesStep({
+  draft,
+  patch,
+  catalog,
+  ceiling,
+  catalogLoading,
+  authorizedScriptCount = 0,
+}: WhatItDoesStepProps) {
   const { t } = useTranslation('settings');
   const usesAlertSeverities = ALERT_SEVERITY_KINDS.has(draft.kind);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="agent-step-does">
       <fieldset className="space-y-2 rounded-md border p-3">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
           {t('aiAgentsPage.sections.scope')}
@@ -86,6 +98,7 @@ export default function WhatItDoesStep({ draft, patch, catalog, ceiling, catalog
             mode={draft.mode}
             entries={lines(draft.toolAllowlist)}
             onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+            authorizedScriptCount={authorizedScriptCount}
           />
         ) : catalogLoading ? (
           <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">

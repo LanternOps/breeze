@@ -477,6 +477,34 @@ describe('AiAgentForm — capability picker wiring (#5050)', () => {
   // duplicated here.
 });
 
+// #5063: the drawer renders the guided create flow's own step components, so
+// every setting from "When it runs" through recipients has exactly one
+// rendering. The step roots carry test ids so this stays asserted rather
+// than implied by the individual field ids still resolving.
+describe('AiAgentForm — renders the create flow\'s step components (#5063)', () => {
+  it('mounts WhatItDoesStep and SafetyStep, in that order, with the edit-only pieces around them', async () => {
+    mockEndpoints(REGISTRY);
+    renderForm({ agent: makeAgent({ mode: 'act' }) });
+
+    const does = await screen.findByTestId('agent-step-does');
+    const safety = screen.getByTestId('agent-step-safety');
+    expect(does.compareDocumentPosition(safety) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The settings live INSIDE the steps, not beside them.
+    expect(within(does).getByTestId('ai-agent-permissions')).toBeInTheDocument();
+    expect(within(does).getByTestId('ai-agent-respect-maintenance')).toBeInTheDocument();
+    expect(within(safety).getByTestId('ai-agent-services')).toBeInTheDocument();
+    expect(within(safety).getByTestId('ai-agent-policy-decide')).toBeInTheDocument();
+    expect(within(safety).getByTestId('ai-agent-limit-devices')).toBeInTheDocument();
+    expect(within(safety).getByTestId('ai-agent-role-r-1')).toBeInTheDocument();
+
+    // Edit-only pieces stay the drawer's own.
+    expect(screen.getByTestId('ai-agent-kind')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-disable')).toBeInTheDocument();
+  });
+});
+
 describe('AiAgentForm — alert severities', () => {
   it('offers alert severities to an alert-triage agent', async () => {
     mockEndpoints();

@@ -1,8 +1,13 @@
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import PolicyKeysCheckboxes, { collapsedForCeiling, type PolicyDecidableKeyOption } from '../PolicyKeysCheckboxes';
+import PolicyKeysCheckboxes, {
+  collapsedForCeiling,
+  policyActionLabel,
+  sentenceCase,
+  type PolicyDecidableKeyOption,
+} from '../PolicyKeysCheckboxes';
 import { listField, numberField, RecipientRolesFieldset, type RoleOption } from '../agentFields';
-import { lines, toggle, type Draft } from '../agentDraft';
+import { toggle, type Draft } from '../agentDraft';
 
 // Re-exported so `AgentCreateFlow.tsx`'s `import { type RoleOption } from
 // './steps/SafetyStep'` keeps resolving — `RoleOption` itself now lives in
@@ -20,21 +25,59 @@ export interface SafetyStepProps {
 }
 
 /**
- * Step 3 of the guided create flow (spec §4.6): protected resources, the six
- * exposed limits, recipient roles and — for a PARTNER draft only — the
- * unattended-ceiling registry (`PolicyKeysCheckboxes`, extracted from
- * `AiAgentForm.tsx`). An ORG draft shows nothing here: a brand-new org row
- * holds no keys yet, and a key can only go live later through the four-eyes
- * grant executor (spec §4.4) — there is nothing to review or edit at create
- * time.
+ * "Safety and oversight" — step 3 of the guided create flow (spec §4.6) AND
+ * the same block of the edit drawer (`AiAgentForm.tsx`, #5063): protected
+ * resources, the six exposed limits, recipient roles and the unattended
+ * policy authorization registry. One rendering per setting, so the two
+ * surfaces cannot drift.
+ *
+ * The registry has three shapes, all driven by the draft alone:
+ * - PARTNER row: the interactive checkbox registry — a partner row's keys are
+ *   a CEILING on what its organizations may be granted (P2-5, #4192), so it
+ *   is offered regardless of the row's own mode, collapsed behind a summary
+ *   while the row is not acting (`collapsedForCeiling`).
+ * - ORG row in act mode: a read-only list of the keys the row already holds.
+ *   #5049: the API refuses any org-row write that ADDS a key — a key goes live
+ *   on an org row only through the four-eyes grant executor — so a checkbox
+ *   here could never be honored by Save, and the rest of the registry
+ *   (never held) is noise, not information. A brand-new org draft holds none.
+ * - ORG row not in act mode: nothing — the "act acknowledgement pattern":
+ *   additional unattended authority is only shown once the operator is
+ *   already looking at the act-mode warning.
  */
 export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKeys, policyKeysFailed }: SafetyStepProps) {
   const { t } = useTranslation('settings');
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
 
-  // The registry rendering, shared with everything the collapsed/uncollapsed
-  // branches below both need.
+  const orgOwned = draft.ownerScope === 'organization';
+  const showPolicyDecide = draft.mode === 'act' || draft.ownerScope === 'partner';
+
+  /** Registry entries keyed by their `key`, so an org row's read-only list
+   *  can translate its currently-held keys without walking the full
+   *  registry-grouped-by-tool structure the checkboxes build. */
+  const policyKeysByKey = useMemo(
+    () => new Map(policyKeys.map((entry) => [entry.key, entry] as const)),
+    [policyKeys],
+  );
+
+  const orgHeldKeysList = draft.supervisedActionKeys.length === 0 ? (
+    <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+      {t('aiAgentsPage.fields.supervisedActionKeysNoneHeld')}
+    </p>
+  ) : (
+    <ul className="list-disc space-y-1 pl-5 text-sm" data-testid="ai-agent-supervised-keys-readonly-list">
+      {draft.supervisedActionKeys.map((key) => {
+        const entry = policyKeysByKey.get(key);
+        return (
+          <li key={key} data-testid={`ai-agent-supervised-key-${key}`}>
+            {entry ? policyActionLabel(t, entry) : sentenceCase(key)}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   const policyKeysCheckboxes = (
     <PolicyKeysCheckboxes
       policyKeys={policyKeys}
@@ -43,14 +86,21 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
       onToggle={(key) => patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, key) })}
     />
   );
-  const ceilingHint = (
+  const policyKeysBody = orgOwned ? orgHeldKeysList : policyKeysCheckboxes;
+
+  const ceilingHint = draft.ownerScope === 'partner' && (
     <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-ceiling-hint">
       {t('aiAgentsPage.graduation.ceilingHint')}
     </p>
   );
+  const grantOnlyHint = orgOwned && (
+    <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-grant-only-hint">
+      {t('aiAgentsPage.graduation.grantOnlyHint')}
+    </p>
+  );
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="agent-step-safety">
       <fieldset className="space-y-2 rounded-md border p-3">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
           {t('aiAgentsPage.flow.protectedResourcesLegend')}
@@ -63,18 +113,16 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
         </div>
       </fieldset>
 
-      {draft.ownerScope === 'partner' && (
+      {showPolicyDecide && (
         <fieldset className="space-y-2 rounded-md border p-3" data-testid="ai-agent-policy-decide">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
             {t('aiAgentsPage.sections.policyDecide')}
           </legend>
           <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
-          {/* Same collapse rule as the edit drawer (`AiAgentForm.tsx`'s
-              `policyDecideFieldset`, via the shared `collapsedForCeiling`
-              helper): a shadow/off partner draft's registry starts collapsed
-              behind a summary that counts the selection, since ticking a key
-              here authorizes nothing on its own until the row is acting.
-              Entering act mode unwraps it entirely. */}
+          {/* A shadow/off partner row's registry starts collapsed behind a
+              summary that counts the selection, since ticking a key here
+              authorizes nothing on its own until an organization's row is
+              acting. Entering act mode unwraps it entirely. */}
           {collapsedForCeiling(draft.ownerScope, draft.mode) ? (
             <details data-testid="ai-agent-policy-keys-details">
               <summary className="cursor-pointer text-xs font-medium">
@@ -84,13 +132,14 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
               </summary>
               <div className="mt-1 space-y-2">
                 {ceilingHint}
-                {policyKeysCheckboxes}
+                {policyKeysBody}
               </div>
             </details>
           ) : (
             <>
               {ceilingHint}
-              {policyKeysCheckboxes}
+              {grantOnlyHint}
+              {policyKeysBody}
             </>
           )}
         </fieldset>
