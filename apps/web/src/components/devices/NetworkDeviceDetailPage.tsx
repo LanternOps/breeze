@@ -1,9 +1,14 @@
+// Network device detail page (route `/devices/network/:id`): owns page-level
+// state (tab, type-editor, unlink) and composes the presentational/data
+// modules in `./networkDevice/` — kept thin so each concern stays reviewable
+// on its own.
+
 import { useCallback, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { ArrowLeft, Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
+import { runAction } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -56,7 +61,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   };
 
   const [unlinking, setUnlinking] = useState(false);
-  const [typeSaving, setTypeSaving] = useState(false);
+  // Which type-editor action (if any) is in flight — distinct from a plain
+  // boolean so Save and Reset can each show their own loading label without
+  // the other one flashing the wrong text while it's merely disabled.
+  const [typeAction, setTypeAction] = useState<'save' | 'reset' | null>(null);
+  const typeSaving = typeAction !== null;
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
   // Uncommitted type-select value. Arrowing through a native <select> with a
   // keyboard fires a change event per option landed on, so committing on
@@ -99,7 +108,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const changeType = useCallback(
     async (next: DiscoveredAssetType | 'reset'): Promise<boolean> => {
       if (!asset) return false;
-      setTypeSaving(true);
+      setTypeAction(next === 'reset' ? 'reset' : 'save');
       let succeeded = false;
       try {
         await runAction({
@@ -128,7 +137,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       } catch {
         // runAction already toasted the failure; leave the current type in place.
       } finally {
-        setTypeSaving(false);
+        setTypeAction(null);
       }
       return succeeded;
     },
@@ -277,7 +286,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                   <div className="mt-1 flex items-center gap-2">
                     <select
                       data-testid="network-asset-type-select"
-                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       value={selectedType}
                       disabled={typeSaving}
                       onChange={(e) => setPendingType(e.target.value as DiscoveredAssetType)}
@@ -297,16 +306,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                         <button
                           type="button"
                           data-testid="network-detail-type-save"
-                          className="text-xs font-medium text-primary hover:underline disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          className="text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                           disabled={typeSaving}
                           onClick={() => void handleSaveType()}
                         >
-                          {t('common:actions.save')}
+                          {typeAction === 'save' ? t('networkDeviceDetailPage.savingType') : t('common:actions.save')}
                         </button>
                         <button
                           type="button"
                           data-testid="network-detail-type-cancel"
-                          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          className="text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                           disabled={typeSaving}
                           onClick={handleCancelType}
                         >
@@ -318,16 +327,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       <button
                         type="button"
                         data-testid="network-asset-type-reset"
-                        className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                        className="text-xs text-muted-foreground underline hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                         disabled={typeSaving}
                         onClick={handleResetType}
                       >
-                        {t('networkDeviceDetailPage.resetToAutoDetected')}
+                        {typeAction === 'reset' ? t('networkDeviceDetailPage.resettingType') : t('networkDeviceDetailPage.resetToAutoDetected')}
                       </button>
                     )}
                   </div>
                   {asset.typeSource === 'manual' && (
-                    <p className="mt-1 text-[11px] text-muted-foreground">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {asset.detectedType
                         ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: t(/* i18n-dynamic */ typeConfig[asset.detectedType].labelKey) })
                         : t('networkDeviceDetailPage.manuallySet')}
@@ -426,7 +435,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                         data-testid="network-detail-unlink"
                         onClick={() => setConfirmUnlinkOpen(true)}
                         disabled={unlinking}
-                        className="text-xs text-destructive hover:underline disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                        className="text-xs text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {unlinking ? t('networkDeviceDetailPage.unlinking') : t('networkDeviceDetailPage.unlink')}
                       </button>

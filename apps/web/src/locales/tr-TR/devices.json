@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
     "connecting": "Bağlanılıyor",
     "discoveryAssetView": "keşif varlık görünümü",
-    "emptyPorts": "Açık bağlantı noktası algılanmadı.",
+    "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
       "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
@@ -2120,7 +2120,6 @@
       "tags": "Etiketler"
     },
     "goBack": "Geri dön",
-    "lastSeen": "Son görülme {{time}}",
     "live": {
       "webUiOpened": "Web arayüzü yeni bir sekmede açıldı",
       "refreshed": "Cihaz ayrıntıları yenilendi"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Manuel olarak ayarlandı · tarama algılandı {{type}}",
     "networkDevice": "Ağ Cihazı",
     "notConfigured": "Yapılandırılmadı",
-    "notLinked": "Bağlantılı değil",
+    "notLinked": "Henüz yönetilen bir cihaza bağlanmadı.",
     "openWebUi": "Web kullanıcı arayüzünü aç",
     "ports": {
       "insecure": "Şifrelenmemiş",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
+    "savingType": "Kaydediliyor…",
+    "resettingType": "Sıfırlanıyor…",
     "sections": {
       "discovery": "Keşif",
       "identity": "Kimlik",
       "monitoringStatus": "İzleme durumu",
-      "networkReachability": "Ağa erişilebilirlik",
       "openPorts": "Açık bağlantı noktaları",
       "snmpData": "SNMP verisi"
     },

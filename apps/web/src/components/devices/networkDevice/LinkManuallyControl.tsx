@@ -127,7 +127,7 @@ export function LinkManuallyControl({
           data-testid="network-detail-link-manually-submit"
           onClick={() => void handleLink()}
           disabled={linking || !deviceId}
-          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
         >
           {linking ? t('networkDeviceDetailPage.linkManuallyLinking') : t('common:actions.save')}
         </button>
@@ -135,7 +135,7 @@ export function LinkManuallyControl({
           type="button"
           onClick={() => { setOpen(false); setError(undefined); }}
           disabled={linking}
-          className="text-xs text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          className="text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t('common:actions.cancel')}
         </button>

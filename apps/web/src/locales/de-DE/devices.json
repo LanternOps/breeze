@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
     "connecting": "Verbindung wird hergestellt",
     "discoveryAssetView": "Discovery-Asset-Ansicht",
-    "emptyPorts": "Keine offenen Ports erkannt.",
+    "emptyPorts": "Beim letzten Scan wurden keine offenen Ports gefunden.",
     "emptySnmp": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "errors": {
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
@@ -2120,7 +2120,6 @@
       "tags": "Schlagworte"
     },
     "goBack": "Zurück",
-    "lastSeen": "Zuletzt gesehen {{time}}",
     "live": {
       "webUiOpened": "Web-Oberfläche in neuem Tab geöffnet",
       "refreshed": "Gerätedetails aktualisiert"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Manuell eingestellt · Scan erkannt {{type}}",
     "networkDevice": "Netzwerkgerät",
     "notConfigured": "Nicht konfiguriert",
-    "notLinked": "Nicht verlinkt",
+    "notLinked": "Noch nicht mit einem verwalteten Gerät verknüpft.",
     "openWebUi": "Web-UI öffnen",
     "ports": {
       "insecure": "Unverschlüsselt",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Die Liste der Agenten konnte nicht geladen werden. Erneut versuchen."
     },
     "resetToAutoDetected": "Auf „Automatisch erkannt“ zurücksetzen",
+    "savingType": "Wird gespeichert…",
+    "resettingType": "Wird zurückgesetzt…",
     "sections": {
       "discovery": "Entdeckung",
       "identity": "Identität",
       "monitoringStatus": "Überwachungsstatus",
-      "networkReachability": "Netzwerk-Erreichbarkeit",
       "openPorts": "Offene Ports",
       "snmpData": "SNMP-Daten"
     },

@@ -23,22 +23,22 @@ describe('pingColor', () => {
     expect(pingColor(undefined)).toBe('text-muted-foreground');
   });
 
-  it('colors readings under 5ms as the fastest tier', () => {
-    expect(pingColor(4.9)).toBe('text-green-600');
+  it('colors readings under 5ms as the fastest tier, with a dark-theme variant', () => {
+    expect(pingColor(4.9)).toBe('text-green-600 dark:text-green-400');
   });
 
-  it('colors readings between 5ms and 50ms as the next tier', () => {
-    expect(pingColor(5)).toBe('text-emerald-600');
-    expect(pingColor(49.9)).toBe('text-emerald-600');
+  it('colors readings between 5ms and 50ms as the next tier, with a dark-theme variant', () => {
+    expect(pingColor(5)).toBe('text-emerald-600 dark:text-emerald-400');
+    expect(pingColor(49.9)).toBe('text-emerald-600 dark:text-emerald-400');
   });
 
-  it('colors readings between 50ms and 200ms as the warning tier', () => {
-    expect(pingColor(50)).toBe('text-yellow-600');
-    expect(pingColor(199.9)).toBe('text-yellow-600');
+  it('colors readings between 50ms and 200ms as the warning tier, with a dark-theme variant', () => {
+    expect(pingColor(50)).toBe('text-yellow-600 dark:text-yellow-400');
+    expect(pingColor(199.9)).toBe('text-yellow-600 dark:text-yellow-400');
   });
 
-  it('colors readings at or above 200ms as the slow tier', () => {
-    expect(pingColor(200)).toBe('text-red-600');
-    expect(pingColor(2000)).toBe('text-red-600');
+  it('colors readings at or above 200ms as the slow tier, with a dark-theme variant', () => {
+    expect(pingColor(200)).toBe('text-red-600 dark:text-red-400');
+    expect(pingColor(2000)).toBe('text-red-600 dark:text-red-400');
   });
 });

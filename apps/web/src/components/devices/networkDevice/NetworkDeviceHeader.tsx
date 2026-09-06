@@ -43,7 +43,7 @@ export function NetworkDeviceHeader({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-start gap-4">
-          <div className={`flex h-14 w-14 items-center justify-center rounded-lg border ${typeMeta?.color ?? typeConfig.unknown.color}`}>
+          <div className={`flex h-14 w-14 items-center justify-center rounded-lg border ${typeMeta?.tile ?? typeConfig.unknown.tile}`}>
             <TypeIcon aria-hidden="true" className="h-7 w-7" />
           </div>
           <div className="min-w-0 flex-1">

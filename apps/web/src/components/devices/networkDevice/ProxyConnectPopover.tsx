@@ -177,6 +177,11 @@ export function ProxyConnectPopover({
   }, [port, initialPort, service]);
   const [skipTlsVerify, setSkipTlsVerify] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [retryingDevices, setRetryingDevices] = useState(false);
+  const handleRetryDevices = useCallback(() => {
+    setRetryingDevices(true);
+    void Promise.resolve(onRetryDevices()).finally(() => setRetryingDevices(false));
+  }, [onRetryDevices]);
   const [inlineError, setInlineError] = useState<string>();
 
   const portValid = Number.isInteger(port) && port >= 1 && port <= 65535;
@@ -291,7 +296,7 @@ export function ProxyConnectPopover({
                   setPortText(e.target.value);
                   setPort(Number(e.target.value));
                 }}
-                className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs font-mono focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs font-mono [appearance:textfield] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
               {!portValid && (
                 <p id={`proxy-port-error-${assetId}`} className="mt-1 text-xs text-destructive" data-testid="proxy-popover-port-error">
@@ -309,10 +314,11 @@ export function ProxyConnectPopover({
               <button
                 type="button"
                 data-testid="proxy-popover-retry-agents"
-                onClick={() => onRetryDevices()}
-                className="text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={handleRetryDevices}
+                disabled={retryingDevices}
+                className="text-xs text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {t('common:actions.retry')}
+                {retryingDevices ? t('common:states.processing') : t('common:actions.retry')}
               </button>
             </div>
           ) : onlineDevices.length === 0 ? (
@@ -415,7 +421,7 @@ export function ProxyConnectPopover({
                 data-testid="proxy-popover-connect"
                 onClick={() => void handleConnect()}
                 disabled={connecting || !deviceId || !portValid}
-                className="mt-1 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                className="mt-1 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {connecting ? t('networkDeviceDetailPage.connecting') : t('discovery:proxyConnect.connect')}
               </button>

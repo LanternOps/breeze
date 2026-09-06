@@ -138,7 +138,7 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-device-detail');
 
     expect(screen.getByTestId('network-detail-snmp').textContent).toContain('No SNMP data was collected');
-    expect(screen.getByTestId('network-detail-ports').textContent).toContain('No open ports detected');
+    expect(screen.getByTestId('network-detail-ports').textContent).toContain('No open ports were found on the most recent scan');
   });
 
   it('falls back to hostname for the display name when no label is set', async () => {

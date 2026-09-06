@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
     "connecting": "Connecting",
     "discoveryAssetView": "discovery asset view",
-    "emptyPorts": "No open ports detected.",
+    "emptyPorts": "No open ports were found on the most recent scan.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
       "load": "Couldn't load this network device. Check your connection and try again.",
@@ -2120,7 +2120,6 @@
       "tags": "Tags"
     },
     "goBack": "Go back",
-    "lastSeen": "Last seen {{time}}",
     "live": {
       "webUiOpened": "Web UI opened in a new tab",
       "refreshed": "Device details refreshed"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Manually set · scan detected {{type}}",
     "networkDevice": "Network Device",
     "notConfigured": "Not configured",
-    "notLinked": "Not linked",
+    "notLinked": "Not linked to a managed device yet.",
     "openWebUi": "Open Web UI",
     "ports": {
       "insecure": "Unencrypted",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
+    "savingType": "Saving…",
+    "resettingType": "Resetting…",
     "sections": {
       "discovery": "Discovery",
       "identity": "Identity",
       "monitoringStatus": "Monitoring status",
-      "networkReachability": "Network reachability",
       "openPorts": "Open ports",
       "snmpData": "SNMP data"
     },

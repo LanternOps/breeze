@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
     "connecting": "Connessione in corso",
     "discoveryAssetView": "vista asset di rilevamento",
-    "emptyPorts": "Nessuna porta aperta rilevata.",
+    "emptyPorts": "Nessuna porta aperta trovata nell'ultima scansione.",
     "emptySnmp": "Non è stato raccolto alcun dato SNMP — il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la community string sia impostata nel profilo di rilevamento.",
     "errors": {
       "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
@@ -2120,7 +2120,6 @@
       "tags": "Tag"
     },
     "goBack": "Torna indietro",
-    "lastSeen": "Ultima rilevazione {{time}}",
     "live": {
       "webUiOpened": "L'interfaccia web è stata aperta in una nuova scheda",
       "refreshed": "Dettagli del dispositivo aggiornati"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Impostato manualmente · scansione: {{type}}",
     "networkDevice": "Dispositivo di rete",
     "notConfigured": "Non configurato",
-    "notLinked": "Non collegato",
+    "notLinked": "Non ancora collegato a un dispositivo gestito.",
     "openWebUi": "Apri interfaccia web",
     "ports": {
       "insecure": "Non crittografato",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Impossibile caricare l'elenco degli agenti. Riprova."
     },
     "resetToAutoDetected": "Ripristina rilevamento automatico",
+    "savingType": "Salvataggio in corso…",
+    "resettingType": "Ripristino in corso…",
     "sections": {
       "discovery": "Rilevamento",
       "identity": "Identità",
       "monitoringStatus": "Stato monitoraggio",
-      "networkReachability": "Raggiungibilità rete",
       "openPorts": "Porte aperte",
       "snmpData": "Dati SNMP"
     },

@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "O ativo descoberto e o dispositivo gerenciado serão exibidos como itens separados. A vinculação automática permanecerá desativada para este ativo até que você o vincule novamente.",
     "connecting": "Conectando",
     "discoveryAssetView": "visualização do ativo de descoberta",
-    "emptyPorts": "Nenhuma porta aberta detectada.",
+    "emptyPorts": "Nenhuma porta aberta encontrada na última verificação.",
     "emptySnmp": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido sondado. Verifique se o método SNMP está ativado e se a string de comunidade está definida no perfil de descoberta.",
     "errors": {
       "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
@@ -2120,7 +2120,6 @@
       "tags": "Tags"
     },
     "goBack": "Voltar",
-    "lastSeen": "Visto pela última vez {{time}}",
     "live": {
       "webUiOpened": "A interface da web foi aberta em uma nova guia",
       "refreshed": "Detalhes do dispositivo atualizados"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Definido manualmente · a verificação detectou {{type}}",
     "networkDevice": "Dispositivo de rede",
     "notConfigured": "Não configurado",
-    "notLinked": "Não vinculado",
+    "notLinked": "Ainda não vinculado a um dispositivo gerenciado.",
     "openWebUi": "Abrir interface web",
     "ports": {
       "insecure": "Não criptografado",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Não foi possível carregar a lista de agentes. Tentar novamente."
     },
     "resetToAutoDetected": "Redefinir para detecção automática",
+    "savingType": "Salvando…",
+    "resettingType": "Redefinindo…",
     "sections": {
       "discovery": "Descoberta",
       "identity": "Identidade",
       "monitoringStatus": "Status do monitoramento",
-      "networkReachability": "Acessibilidade da rede",
       "openPorts": "Portas abertas",
       "snmpData": "Dados SNMP"
     },

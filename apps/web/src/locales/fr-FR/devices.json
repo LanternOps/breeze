@@ -2090,7 +2090,7 @@
     "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez à nouveau.",
     "connecting": "Connexion en cours",
     "discoveryAssetView": "vue de l'actif de découverte",
-    "emptyPorts": "Aucun port ouvert détecté.",
+    "emptyPorts": "Aucun port ouvert trouvé lors de la dernière analyse.",
     "emptySnmp": "Aucune donnée SNMP n’a été collectée — l’appareil n’a peut-être pas répondu ou n’a pas été interrogé via SNMP. Vérifiez que la méthode SNMP est activée et que la chaîne de communauté est définie dans le profil de découverte.",
     "errors": {
       "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
@@ -2120,7 +2120,6 @@
       "tags": "Étiquettes"
     },
     "goBack": "Retour",
-    "lastSeen": "Dernière vue {{time}}",
     "live": {
       "webUiOpened": "L'interface Web s'est ouverte dans un nouvel onglet",
       "refreshed": "Détails de l'appareil actualisés"
@@ -2131,7 +2130,7 @@
     "manuallySetWithDetected": "Réglé manuellement · balayage détecté {{type}}",
     "networkDevice": "Appareil réseau",
     "notConfigured": "Non configuré",
-    "notLinked": "Non lié",
+    "notLinked": "Pas encore lié à un appareil géré.",
     "openWebUi": "Ouvrir l'interface Web",
     "ports": {
       "insecure": "Non chiffré",
@@ -2152,11 +2151,12 @@
       "agentListFailed": "Impossible de charger la liste des agents. Réessayer."
     },
     "resetToAutoDetected": "Réinitialiser en détection automatique",
+    "savingType": "Enregistrement en cours…",
+    "resettingType": "Réinitialisation en cours…",
     "sections": {
       "discovery": "Découverte",
       "identity": "Identité",
       "monitoringStatus": "Statut de surveillance",
-      "networkReachability": "Accessibilité du réseau",
       "openPorts": "Ports ouverts",
       "snmpData": "Données SNMP"
     },
