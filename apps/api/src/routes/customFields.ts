@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
+import { pgErrorCode, pgErrorNode } from '../utils/pgErrors';
 
 // Custom field schemas (defined locally to avoid rootDir issues)
 // Must match the database enum: 'text', 'number', 'boolean', 'dropdown', 'date'
@@ -343,21 +344,56 @@ customFieldRoutes.post(
       return c.json({ error: 'orgId or partnerId is required' }, 400);
     }
 
-    const [field] = await db
-      .insert(customFieldDefinitions)
-      .values({
-        orgId,
-        partnerId,
-        name: payload.name,
-        fieldKey: payload.fieldKey,
-        type: payload.type,
-        options: payload.options,
-        required: payload.required,
-        defaultValue: payload.defaultValue,
-        deviceTypes: payload.deviceTypes,
-        scriptWrite: payload.scriptWrite
-      })
-      .returning();
+    let field;
+    try {
+      [field] = await db
+        .insert(customFieldDefinitions)
+        .values({
+          orgId,
+          partnerId,
+          name: payload.name,
+          fieldKey: payload.fieldKey,
+          type: payload.type,
+          options: payload.options,
+          required: payload.required,
+          defaultValue: payload.defaultValue,
+          deviceTypes: payload.deviceTypes,
+          scriptWrite: payload.scriptWrite
+        })
+        .returning();
+    } catch (err) {
+      // Both mapped conditions are the caller's own to fix and neither is a
+      // server fault, so neither may surface as a 500 — a 500 tells the
+      // operator nothing and hides a one-word fix (rename the key).
+      //
+      // P0001 is the anti-shadowing trigger (#3257 W03,
+      // 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql). Its
+      // message is written to be read by a human: it names the key and which
+      // axis already owns it, and deliberately discloses nothing else about the
+      // conflicting definition, so it is safe to pass through verbatim.
+      //
+      // 23505 is W02's per-axis unique index. Its driver message is NOT safe to
+      // pass through — postgres.js puts the offending column VALUES in `detail`
+      // and the constraint name in the text — so this returns fixed copy built
+      // from the request's own payload instead.
+      const code = pgErrorCode(err);
+      if (code === 'P0001') {
+        return c.json(
+          {
+            error: String(pgErrorNode(err)?.message ?? 'Custom field key conflicts with an existing field'),
+            code: 'field-key-shadowed'
+          },
+          409
+        );
+      }
+      if (code === '23505') {
+        return c.json(
+          { error: `A custom field with key "${payload.fieldKey}" already exists for this owner`, code: 'field-key-duplicate' },
+          409
+        );
+      }
+      throw err;
+    }
 
     if (!field) {
       return c.json({ error: 'Failed to create custom field' }, 500);
