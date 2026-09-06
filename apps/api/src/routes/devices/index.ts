@@ -27,6 +27,7 @@ import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
 import { networkRoutes } from './network';
 import { customFieldValuesRoutes } from './customFieldValues';
+import { customFieldImportRoutes } from './customFieldImport';
 import { linksRoutes } from './links';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
@@ -45,6 +46,17 @@ export const deviceRoutes = new Hono();
 // JWT-only `authMiddleware` and resurrect the 401. Mounting first keeps them
 // clear of every later wildcard auth middleware.
 deviceRoutes.route('/', customFieldValuesRoutes);
+
+// Mount the RMM custom-field VALUE importer (#3257 W08) immediately after them,
+// and BEFORE coreRoutes. Two reasons, both pinned by
+// customFieldImport.mountorder.test.ts:
+//  - `/custom-fields/import*` is a static path that must not be reached through
+//    any later `/:id` matcher.
+//  - This router uses PER-ROUTE auth and must never grow a `.use('*')`: a
+//    wildcard here would attach to every route mounted after it, and — mounted
+//    where it is — would be the same #2066 shadowing of the API-key branch that
+//    the comment above exists to prevent.
+deviceRoutes.route('/', customFieldImportRoutes);
 
 // Mount the server-backed selector before coreRoutes so the static `/options`
 // path cannot be consumed by core's `GET /:id` matcher.

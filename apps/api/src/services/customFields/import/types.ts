@@ -122,9 +122,14 @@ export type DeviceResolution = DeviceResolutionEvidence & (
  * One value assignment on an import row. W08 owns the coercion and validation
  * rules; the resolver never reads this field, and only carries it so a row can
  * be passed through resolution and commit as one object.
+ *
+ * `target` (rather than the bare `fieldKey` this shipped with in W06) is what
+ * lets one mapped CSV column land somewhere other than a custom field — see
+ * `MappingTarget` in the W08 section below. W06 reserved the field's meaning
+ * for W08 and no code outside these types ever read it.
  */
 export interface DeviceCustomFieldImportValue {
-  fieldKey: string;
+  target: MappingTarget;
   value: unknown;
 }
 
@@ -333,4 +338,205 @@ export interface DefinitionImportSummary {
   created: DefinitionImportCreatedEntry[];
   skipped: DefinitionImportSkippedEntry[];
   errors: DefinitionImportErrorEntry[];
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * W08 — values importer (#4776)
+ *
+ * The values pass is org-scoped and device-scoped: there is no ownership axis
+ * to choose, but there IS a second destination. A migrating MSP's incumbent
+ * export carries warranty expiry in the same file as its custom fields, and
+ * landing that in a text custom field ships the flagship use case INERT (see
+ * `warrantyTarget.ts`), so a mapped column names a TARGET, not a field key.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The `device_warranty` columns an import may write.
+ *
+ * `status` is deliberately absent: it is COMPUTED from the end date
+ * (`computeWarrantyStatus`), never taken from the file. A CSV that could set
+ * `status` directly would let a stale export mark an expired machine `active`
+ * and silence its own alert. `is_subscription` is absent for the same reason
+ * plus a stronger one — a true value suppresses expiry alerting outright
+ * (`warrantyAlertEvaluator.ts:208`) and an import cannot know it.
+ */
+export type WarrantyImportField = 'warrantyStartDate' | 'warrantyEndDate' | 'manufacturer';
+
+/**
+ * Where one mapped column lands. A discriminated union rather than a nullable
+ * `fieldKey` beside an optional `warrantyField`, so "a warranty column has no
+ * field key" is carried by the TYPE — the same reasoning as `DeviceResolution`
+ * above, and the reason no downstream caller needs a non-null assertion.
+ */
+export type MappingTarget =
+  | { kind: 'customField'; fieldKey: string }
+  | { kind: 'warranty'; field: WarrantyImportField };
+
+/**
+ * Row-level: how the DEVICE resolved. An ALIAS of W06's outcome vocabulary,
+ * never a second copy — preview, commit and the wizard all branch on one set.
+ */
+export type ValueRowOutcome = DeviceRowOutcome;
+
+/**
+ * Per-VALUE: what happened to this one datum.
+ *
+ * PER VALUE, NOT PER ROW — the single most important shape decision in this
+ * wave. One device row carries up to 30 mapped columns and the normal case is
+ * mixed: 28 land, one names a field this organization has never defined, one
+ * holds `abc` in a number column. A row-level annotation cannot express that,
+ * and an all-or-nothing row would refuse a whole migration over one bad cell.
+ *
+ * - `applied` — written (or, at preview, would be written).
+ * - `skipped-already-set` — a value is already stored for this target on this
+ *   device. Covers BOTH "the stored value is identical" (a re-import: a no-op
+ *   in either mode) and "the stored value differs and the mode is `skip`", so
+ *   the operator sees one honest reason instead of two synonyms.
+ * - `no-definition` — no `custom_field_definitions` row visible to this
+ *   device's organization owns this key. Run the DEFINITIONS import (W07) first.
+ * - `type-error` — `validateCustomFieldValue` refused it; `reason` says how.
+ * - `not-applicable-to-device` — the definition is scoped to `deviceTypes` this
+ *   device's OS is not in (the gate `validateValueMap` already applies).
+ * - `device-unresolved` — the ROW did not resolve to exactly one device, so no
+ *   value on it can be judged at all: there is no organization whose definitions
+ *   to look the key up in. Without this member an ambiguous row's values would
+ *   have to borrow an annotation that means something else.
+ */
+export type ValueOutcome =
+  | 'applied'
+  | 'skipped-already-set'
+  | 'no-definition'
+  | 'type-error'
+  | 'not-applicable-to-device'
+  | 'device-unresolved';
+
+/**
+ * Why `validateCustomFieldValue` refused a value. Restated structurally rather
+ * than imported so this module keeps its no-imports rule (see the file header).
+ * `services/customFields/validateValue.ts` is the source of truth, and
+ * `valueImport.ts` carries a compile-time assertion that the two agree — so a
+ * new rejection reason there breaks the build rather than drifting silently.
+ */
+export type CustomFieldImportRejection =
+  | 'invalid_type'
+  | 'out_of_range'
+  | 'not_a_choice'
+  | 'too_long'
+  | 'invalid_date';
+
+export interface AnnotatedImportValue {
+  target: MappingTarget;
+  outcome: ValueOutcome;
+  /** Set on `type-error`. */
+  reason?: CustomFieldImportRejection;
+  /**
+   * Advisory, and ORTHOGONAL to `outcome` — an `applied` value carries one when
+   * the write has a consequence beyond the device. Today that is the
+   * partner-integration identity keys (`asset_tag`, `inventory_id`,
+   * `external_id`), which `routes/partnerApi/devices.ts` republishes as a
+   * device's `stableIdentifiers` to every integration the partner has
+   * connected. Writing them is intended; doing it fleet-wide without being told
+   * is not, so preview says so on the value.
+   */
+  warning?: string;
+}
+
+export interface AnnotatedValueRow {
+  index: number;
+  outcome: ValueRowOutcome;
+  deviceId: string | null;
+  method: DeviceMatchMethod | null;
+  organizationId: string | null;
+  /** Ranked, for `ambiguous` / `identity-conflict`. The UI must require a pick. */
+  candidates: DeviceCandidate[];
+  conflictingMethods?: DeviceMatchMethod[];
+  discardedIdentifiers?: DeviceMatchMethod[];
+  values: AnnotatedImportValue[];
+}
+
+export interface CommitValueRowInput extends DeviceCustomFieldImportRow {
+  /** Commit re-derives the row outcome and refuses any row whose outcome moved. */
+  expectedOutcome?: ValueRowOutcome;
+  /**
+   * Identity pin. REQUIRED when `expectedOutcome` is `ambiguous`: an
+   * acknowledgement that says "apply this" without saying "to WHOM" would
+   * transfer to a different device if the candidate set moved between preview
+   * and commit — the exact silent mis-assignment W06's resolver refuses to make
+   * on its own.
+   */
+  expectedDeviceId?: string;
+}
+
+/**
+ * Verbatim from the contacts importer (`ContactImportMode`), including the
+ * default (`skip`). A third importer using the same word with the same default
+ * is worth more than a marginally better one.
+ */
+export type ValueImportMode = 'skip' | 'update';
+
+export type ValueImportErrorCode =
+  | 'org-not-found'
+  | 'not-found'
+  | 'identity-conflict'
+  | 'annotation-changed'
+  | 'match-changed'
+  | 'match-unconfirmed'
+  | 'write-failed';
+
+/** What `applyWarrantyImport` did with a row's warranty columns. */
+export type WarrantyImportOutcome =
+  | 'applied'
+  | 'skipped-provider-owned'
+  | 'skipped-already-set'
+  | 'none';
+
+export interface ValueImportRowResult {
+  index: number;
+  deviceId: string;
+  organizationId: string;
+  /**
+   * How the device resolved, and which system the row came from. Both are
+   * carried on the SUMMARY because the service has no Hono context and the
+   * ROUTE writes the audits — "where did this asset tag come from" is only
+   * answerable after a migration if the resolution method is recorded.
+   */
+  method: DeviceMatchMethod;
+  externalSystem: string | null;
+  applied: number;
+  skipped: number;
+  failed: number;
+  /**
+   * Field KEYS only, for the audit's `changedFields`. A VALUE can be anything
+   * the incumbent held and must never enter an audit payload — the same rule
+   * `scriptWriteBack.ts` and `customFieldValues.ts` already apply.
+   */
+  appliedFieldKeys: string[];
+  warranty: WarrantyImportOutcome;
+  linkCreated: boolean;
+}
+
+export interface ValueImportErrorEntry {
+  index: number;
+  error: string;
+  code: ValueImportErrorCode;
+  /**
+   * Attached NON-ENUMERABLY by the service so it never reaches a JSON body —
+   * routes hand this summary straight to `c.json(...)` and a pg error carries
+   * query text and column values. Read in-process; never serialize it.
+   */
+  cause?: unknown;
+}
+
+export interface ValueImportSummary {
+  /**
+   * Counts VALUES, not rows. An operator cannot reconcile "30,000 in the file"
+   * against "1,180 imported" otherwise — and a row count would hide the very
+   * partial-application behaviour this importer is built around.
+   */
+  appliedValues: number;
+  skippedValues: number;
+  failedValues: number;
+  rows: ValueImportRowResult[];
+  linksCreated: number;
+  errors: ValueImportErrorEntry[];
 }
