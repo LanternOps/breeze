@@ -2135,6 +2135,7 @@
       "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
       "approvalsLink": "Track this request in the approvals inbox",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
+      "grantOnlyHint": "Pre-authorized keys on an organization agent are granted only through the Graduation panel by a second approver, and are revoked there too.",
       "promote": "Promote",
       "revoke": "Revoke",
       "emptyTitle": "No evidence yet",

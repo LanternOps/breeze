@@ -2135,6 +2135,7 @@
       "thresholdPerOrgNote": "Cada organización resuelve su propio umbral de promoción, por eso aquí las ejecuciones verificadas se muestran sin objetivo. Elige una sola organización en el selector de organizaciones para ver su objetivo.",
       "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
       "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
+      "grantOnlyHint": "Las claves preautorizadas de un agente de organización solo se conceden a través del panel de graduación por un segundo aprobador, y también se revocan allí.",
       "promote": "Promover",
       "revoke": "Revocar",
       "emptyTitle": "Todavía no hay evidencia",

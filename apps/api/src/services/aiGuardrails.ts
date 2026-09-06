@@ -1280,6 +1280,24 @@ export type GuardrailCheck =
     });
 
 /**
+ * The read-only formula `checkAgentGuardrails` applies to a resolved
+ * `GuardrailCheck`: tier 1 is always read-only; tier 2 is read-only only on
+ * the #3130 allowlists (an explicit `readOnly: true` from an action-level
+ * table, or the tool being in `TIER2_READONLY_TOOLS`). Extracted so
+ * `agentToolCatalog.ts`'s catalog-operation resolution (which never calls
+ * `checkAgentGuardrails` — it has no run policy to check against) computes
+ * the exact same answer `checkAgentGuardrails` would, instead of a
+ * hand-rolled copy that could drift from it.
+ */
+export function isReadOnlyResolution(
+  toolName: string,
+  check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
+): boolean {
+  return check.tier === 1
+    || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+}
+
+/**
  * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
  * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
  * signals the run-loop pre-hook to revalidate (live policy + guardrail
@@ -1722,8 +1740,7 @@ export function checkAgentGuardrails(
     );
   }
 
-  const readOnly = base.tier === 1
-    || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+  const readOnly = isReadOnlyResolution(toolName, base);
 
   // A device-less run has no site scope (buildAgentAuthContext pins
   // allowedSiteIds only when a device exists), so a mutation from it would be

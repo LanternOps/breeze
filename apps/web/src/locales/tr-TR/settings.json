@@ -2135,6 +2135,7 @@
       "thresholdPerOrgNote": "Her kuruluş kendi terfi eşiğini çözümler; bu nedenle doğrulanan çalışmalar burada hedefsiz gösterilir. Bir kuruluşun hedefini görmek için kuruluş seçiciden tek bir kuruluş seçin.",
       "approvalsLink": "Bu isteği onay kutusunda izleyin",
       "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
+      "grantOnlyHint": "Bir kuruluş aracısındaki önceden yetkilendirilmiş anahtarlar yalnızca Kademeli Yetkilendirme panelinden ikinci bir onaylayan tarafından verilir ve iptalleri de orada yapılır.",
       "promote": "Yükselt",
       "revoke": "Geri al",
       "emptyTitle": "Henüz kanıt yok",

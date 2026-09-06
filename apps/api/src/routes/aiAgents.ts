@@ -52,9 +52,11 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
+import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
 import {
+  loadPartnerBaselineCeiling,
   loadPartnerBaselineKinds,
   resolveEffectiveAgent,
   resolveEffectiveAgentSystem,
@@ -207,10 +209,12 @@ export function mapError(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
   }
   // Wave 5 Part B (#3827): actAssets.supervisedActionKeys failed write-time
-  // registry validation (validateAuthorizationKeys, policyDecidable.ts).
-  // `rejected` names exactly which keys and why, same shape as `missing`
-  // above, so the client (Task 5's editor) can render an actionable message.
-  if (err instanceof InvalidSupervisedActionKeysError) {
+  // registry validation (validateAuthorizationKeys, policyDecidable.ts) —
+  // OR (Spec §4.4, Task 5, #5049) an org row tried to add a pre-authorized
+  // key outside the four-eyes grant executor. Both name exactly which keys
+  // and why via the same `rejected` shape, so the client (Task 5's editor)
+  // can render an actionable message either way.
+  if (err instanceof InvalidSupervisedActionKeysError || err instanceof SupervisedKeysGrantOnlyError) {
     return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {
@@ -401,6 +405,40 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * Task 4 (#5049): the capability picker's catalog — every agent-reachable
+ * tool, its capability grouping, and the per-kind presets. Derived once from
+ * the registry/TOOL_TIERS/checkGuardrails (agentToolCatalog.ts), not stored,
+ * so it never drifts from what an agent can actually reach. Cached briefly on
+ * the client — it changes only when a code deploy changes the registry.
+ */
+aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
+  c.header('Cache-Control', 'private, max-age=300');
+  return c.json({ data: buildAgentToolCatalog() });
+});
+
+/**
+ * Task 4 (#5049): the partner-wide baseline's tool ceiling for one `kind`,
+ * projected for the create/edit form so an org-scoped caller can see what a
+ * new org row would be capped to WITHOUT being able to read the partner row
+ * itself (`effectivePolicy.ts:341-350` — an org token carries a partnerId but
+ * never passes `breeze_has_partner_access`). `null` for a partner/system-scope
+ * session (the partner row IS the ceiling there — nothing to project) or when
+ * no live baseline exists for that kind yet.
+ */
+aiAgentsRoutes.get(
+  '/ceiling',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS) })),
+  async (c) => {
+    const auth = c.get('auth');
+    if (auth.scope !== 'organization') return c.json({ data: null });
+    const { kind } = c.req.valid('query');
+    return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
+  },
+);
 
 /**
  * Orgs per system-context transaction in the `byOrg` fan-out of
