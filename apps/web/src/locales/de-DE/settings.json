@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
+      "supervisedActionKeysNoneHeld": "Dieser Agent hat noch keine vorab autorisierten Vorgänge.",
       "supervisedActionKeysCeilingSummary_one": "Obergrenze für Organisationen — {{count}} Schlüssel",
       "supervisedActionKeysCeilingSummary_other": "Obergrenze für Organisationen — {{count}} Schlüssel",
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Nach Schwachstellen suchen"
         }
       },
-      "alwaysOn": "Immer aktiv: schreibgeschützte Tools",
-      "alwaysOnCount": "{{count}} schreibgeschützte Tools",
+      "alwaysOnCount_one": "{{count}} schreibgeschütztes Tool",
+      "alwaysOnCount_other": "{{count}} schreibgeschützte Tools",
       "highImpact": "Hohe Auswirkung",
       "recommendedTitle": "Empfohlen für {{kind}}",
       "recommendedDescription": "Vorgänge, die {{kind}}-Agenten typischerweise benötigen.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "Dieses Tool existiert nicht mehr.",
         "unreachable_tool": "Dieses Tool steht Agenten nicht zur Verfügung.",
-        "bare_multi_op": "Dieser Eintrag deckt jede Aktion dieses Tools ab, auch später hinzugefügte. Wählen Sie stattdessen einzelne Vorgänge aus."
+        "bare_multi_op": "Dieser Eintrag deckt jede Aktion dieses Tools ab, auch später hinzugefügte. Wählen Sie stattdessen einzelne Vorgänge aus.",
+        "read_only": "Schreibgeschützt: für den Agenten immer verfügbar, daher hat dieser Eintrag keine Wirkung."
       },
       "remove": "Entfernen",
-      "operationsCount": "{{selected}} von {{total}} Vorgängen",
+      "operationsCount_one": "{{selected}} von {{total}} Vorgang",
+      "operationsCount_other": "{{selected}} von {{total}} Vorgängen",
+      "capabilityCount_one": "{{count}} Fähigkeit",
+      "capabilityCount_other": "{{count}} Fähigkeiten",
       "summary": {
-        "shadow": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilities}} Fähigkeiten vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
-        "act": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilities}} Fähigkeiten vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
-        "off": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgänge in {{capabilities}} Fähigkeiten betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge)."
+        "shadow_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
+        "shadow_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt nichts unbeaufsichtigt aus.",
+        "act_one": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgang in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
+        "act_other": "Liest Geräte-, Warnungs- und Flottendaten; schlägt möglicherweise {{operations}} Vorgänge in {{capabilityPhrase}} vor ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge); führt geeignete Vorgänge unbeaufsichtigt aus.",
+        "off_one": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgang in {{capabilityPhrase}} betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge).",
+        "off_other": "Aus: Dieser Agent läuft nicht. Eingeschaltet würde er {{operations}} Vorgänge in {{capabilityPhrase}} betreffen ({{approvalRequests}} Genehmigungsanfragen, {{loggedProposals}} protokollierte Vorschläge)."
       },
       "modeLine": {
         "shadow": "Schattenmodus: Nichts davon läuft von selbst. Genehmigungsanfragen gehen an einen Techniker; risikoarme Änderungen werden als Vorschlag protokolliert und nie ausgeführt.",
         "act": "Handlungsmodus: Als „Läuft unbeaufsichtigt“ markierte Vorgänge laufen ohne Genehmigung eines Technikers; alles andere sendet weiterhin eine Genehmigungsanfrage oder wird als Vorschlag protokolliert.",
         "off": "Aus: Dieser Agent läuft nicht, daher hat nichts davon bisher eine Wirkung."
       },
-      "catalogUnavailable": "Der Tool-Katalog konnte nicht geladen werden. Sie können die Berechtigungsliste weiterhin direkt unten bearbeiten."
+      "catalogUnavailable": "Der Tool-Katalog konnte nicht geladen werden. Sie können die Berechtigungsliste weiterhin direkt unten bearbeiten.",
+      "loading": "Fähigkeiten werden geladen…"
     }
   },
   "apiKeyForm": {

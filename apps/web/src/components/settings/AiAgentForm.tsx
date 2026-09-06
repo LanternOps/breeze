@@ -619,7 +619,10 @@ export default function AiAgentForm({
   // organization-owned draft — see the hook's own doc). Neither fetch ever
   // blocks this form: a failed/absent catalog falls back to the old
   // textarea below (see the Permissions section).
-  const { catalog: fetchedCatalog, ceiling } = useAgentToolCatalog({ kind: draft.kind, ownerScope: draft.ownerScope });
+  const { catalog: fetchedCatalog, ceiling, loading: catalogLoading } = useAgentToolCatalog({
+    kind: draft.kind,
+    ownerScope: draft.ownerScope,
+  });
   // Defensive, same reasoning as the policy-decidable-keys row filter above:
   // this catalog is server-owned, so a shape the picker cannot use must
   // degrade to the textarea fallback, never crash the form on
@@ -1040,10 +1043,45 @@ export default function AiAgentForm({
    */
   const orgOwnedKeysReadOnly = draft.ownerScope === 'organization';
 
-  /** The registry checkboxes, grouped by tool with translated labels — shared
-   *  between the plain (org, act-only) rendering and the partner-wide
-   *  `<details>` wrapper below, so the two never drift out of sync. */
-  const policyKeysBody = policyKeysFailed ? (
+  /** Registry entries keyed by their `key`, so an org row's read-only list
+   *  below can translate its currently-held keys without walking the full
+   *  registry-grouped-by-tool structure `policyKeysBody` builds for the
+   *  interactive (partner) rendering. */
+  const policyKeysByKey = useMemo(
+    () => new Map(policyKeys.map((entry) => [entry.key, entry] as const)),
+    [policyKeys],
+  );
+
+  /**
+   * #5049: an org row can never change its own supervisedActionKeys through
+   * this form (a save can only narrow the list — see the comment on
+   * `orgOwnedKeysReadOnly` — so there is nothing here for a checkbox to DO).
+   * A read-only `<ul>` of the row's own currently-held keys replaces the full
+   * registry-as-disabled-checkboxes rendering: showing every OTHER
+   * registered operation, unselected and disabled, described a control that
+   * cannot be operated either way, which is not information — it's noise.
+   */
+  const orgHeldKeysList = draft.supervisedActionKeys.length === 0 ? (
+    <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+      {t('aiAgentsPage.fields.supervisedActionKeysNoneHeld')}
+    </p>
+  ) : (
+    <ul className="list-disc space-y-1 pl-5 text-sm" data-testid="ai-agent-supervised-keys-readonly-list">
+      {draft.supervisedActionKeys.map((key) => {
+        const entry = policyKeysByKey.get(key);
+        return (
+          <li key={key} data-testid={`ai-agent-supervised-key-${key}`}>
+            {entry ? policyActionLabel(entry) : sentenceCase(key)}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  /** The registry checkboxes, grouped by tool with translated labels — the
+   *  interactive rendering, now reached only for a PARTNER row (org rows
+   *  render `orgHeldKeysList` above instead; see `policyKeysBody` below). */
+  const policyKeysCheckboxes = policyKeysFailed ? (
     <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
       {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
     </p>
@@ -1068,7 +1106,6 @@ export default function AiAgentForm({
                     type="checkbox"
                     className="mt-0.5"
                     checked={draft.supervisedActionKeys.includes(entry.key)}
-                    disabled={orgOwnedKeysReadOnly}
                     onChange={() =>
                       patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
                     aria-describedby={noteId}
@@ -1092,6 +1129,10 @@ export default function AiAgentForm({
       ))}
     </div>
   );
+
+  /** Org rows get the read-only list; partner rows keep the interactive
+   *  checkbox registry — see the two blocks above. */
+  const policyKeysBody = orgOwnedKeysReadOnly ? orgHeldKeysList : policyKeysCheckboxes;
 
   /* Wave 5 Part B (#3827). Gated the same way as the act-warning block above
    * (draft.mode === 'act' only) for ORG rows — the "act acknowledgement
@@ -1427,9 +1468,11 @@ export default function AiAgentForm({
                 textarea used, so the save body at `policy.toolAllowlist`
                 above is untouched.
                 The picker's own catalog+ceiling fetch (`useAgentToolCatalog`)
-                never blocks this form: `catalog === null` — no catalog yet,
-                or the fetch failed — falls back to the original textarea so
-                an operator can still edit permissions by hand. */}
+                never blocks this form: while the fetch is still in flight, a
+                muted loading line replaces the picker rather than flashing
+                the textarea fallback first — the fallback is reserved for an
+                actual failure (or an unusable shape), not the normal time it
+                takes the catalog to arrive. */}
             {catalog ? (
               <CapabilityPicker
                 catalog={catalog}
@@ -1439,6 +1482,10 @@ export default function AiAgentForm({
                 entries={lines(draft.toolAllowlist)}
                 onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
               />
+            ) : catalogLoading ? (
+              <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">
+                {t('aiAgentsPage.catalog.loading')}
+              </p>
             ) : (
               <>
                 <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-unavailable">

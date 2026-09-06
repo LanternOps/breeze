@@ -11,6 +11,8 @@ export interface UseAgentToolCatalogResult {
   catalog: AgentToolCatalogDto | null;
   ceiling: AgentCeilingDto | null;
   error: boolean;
+  /** True while the catalog fetch is in flight — independent of the (secondary, org-only) ceiling fetch. */
+  loading: boolean;
 }
 
 /**
@@ -77,5 +79,5 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
     };
   }, [kind, ownerScope]);
 
-  return { catalog, ceiling, error: catalogError || ceilingError };
+  return { catalog, ceiling, error: catalogError || ceilingError, loading: catalog === null && !catalogError };
 }

@@ -37,6 +37,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "get_vm_restore_estimate",
   "instant_boot_vm",
   "list_remote_sessions",
+  "manage_ai_agents",
   "manage_backup_profiles",
   "manage_browser_policy",
   "manage_catalog",

@@ -37,7 +37,8 @@ const catalog: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [] },
+  unreachableTools: ['manage_ai_agents'],
 };
 
 function renderPicker(overrides: {
@@ -104,6 +105,22 @@ describe('CapabilityPicker', () => {
     expect(restartCheckbox.disabled).toBe(false);
   });
 
+  it('keeps a checked operation outside the ceiling enabled, so a stale grant can still be unchecked', () => {
+    const { onChange } = renderPicker({
+      entries: ['manage_services:stop'],
+      ceiling: { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] },
+    });
+
+    const stopCheckbox = screen.getByTestId('operation-checkbox-manage_services:stop') as HTMLInputElement;
+    expect(stopCheckbox.checked).toBe(true);
+    expect(stopCheckbox.disabled).toBe(false);
+    expect(screen.getByTestId('operation-row-manage_services:stop')).toHaveTextContent('Not in partner baseline');
+
+    fireEvent.click(stopCheckbox);
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
   it('lists an unrecognised entry with a reason and removes it on click', () => {
     const { onChange } = renderPicker({ entries: ['restart_spooler'] });
 
@@ -120,8 +137,33 @@ describe('CapabilityPicker', () => {
 
     const summary = screen.getByTestId('capability-picker-summary');
     expect(summary).toHaveTextContent('2 operations');
-    expect(summary).toHaveTextContent('1 capabilities');
+    expect(summary).toHaveTextContent('1 capability');
     expect(summary).toHaveTextContent('2 approval requests');
+  });
+
+  it('pluralises the operations and capability nouns independently — singular case', () => {
+    renderPicker({ entries: ['run_script'] });
+
+    const summary = screen.getByTestId('capability-picker-summary');
+    expect(summary).toHaveTextContent('1 operation across 1 capability');
+    expect(summary).not.toHaveTextContent('1 operations');
+    expect(summary).not.toHaveTextContent('1 capabilities');
+  });
+
+  it('pluralises the always-on read-only tools count', () => {
+    renderPicker();
+
+    const alwaysOn = screen.getByTestId('capability-picker-always-on');
+    expect(alwaysOn).toHaveTextContent('1 read-only tool');
+    expect(alwaysOn).not.toHaveTextContent('1 read-only tools');
+  });
+
+  it('pluralises the per-capability "x of y operations" text on a single-operation capability', () => {
+    renderPicker();
+
+    const row = screen.getByTestId('capability-row-scripts_commands');
+    expect(row).toHaveTextContent('0 of 1 operation');
+    expect(row).not.toHaveTextContent('0 of 1 operations');
   });
 
   it('hides the literal operation key until Show tool names is toggled on', () => {
@@ -132,5 +174,61 @@ describe('CapabilityPicker', () => {
     fireEvent.click(screen.getByTestId('capability-picker-show-names'));
 
     expect(screen.getByText('manage_services:restart')).toBeInTheDocument();
+  });
+
+  it('resyncs which capability is pre-expanded when kind changes after mount', () => {
+    const { rerender } = render(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="triage" mode="shadow" entries={[]} onChange={vi.fn()} />,
+    );
+
+    // triage's preset only touches services_startup — scripts_commands starts collapsed.
+    expect(screen.queryByTestId('operation-row-run_script')).not.toBeInTheDocument();
+
+    rerender(
+      <CapabilityPicker catalog={catalog} ceiling={null} kind="patch" mode="shadow" entries={[]} onChange={vi.fn()} />,
+    );
+
+    // patch's preset touches scripts_commands (run_script) — it must now be pre-expanded, not just moved into view.
+    expect(screen.getByTestId('operation-row-run_script')).toBeInTheDocument();
+  });
+
+  it('shows "Applied" once every in-ceiling preset key is selected, even when the ceiling excludes another preset key', () => {
+    // The triage preset is just `manage_services:restart`, so extend it here
+    // via a ceiling-scoped catalog with a two-key preset to exercise the
+    // partial-ceiling case.
+    const twoKeyPresetCatalog: AgentToolCatalogDto = {
+      ...catalog,
+      presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [] },
+    };
+    const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [] };
+
+    render(
+      <CapabilityPicker
+        catalog={twoKeyPresetCatalog}
+        ceiling={ceiling}
+        kind="triage"
+        mode="shadow"
+        entries={['manage_services:restart']}
+        onChange={vi.fn()}
+      />,
+    );
+
+    const applyButton = screen.getByTestId('capability-picker-recommended-apply') as HTMLButtonElement;
+    expect(applyButton.disabled).toBe(true);
+    expect(applyButton).toHaveTextContent('Applied');
+  });
+
+  it('flags a read-only entry as Unrecognised with its own reason, preserves it across an unrelated change, and only drops it via Remove', () => {
+    const { onChange } = renderPicker({ entries: ['query_devices'] });
+
+    const unrecognised = screen.getByTestId('capability-picker-unrecognised');
+    expect(unrecognised).toHaveTextContent('query_devices');
+    expect(unrecognised).toHaveTextContent('Read-only: always available to the agent, so this entry has no effect.');
+
+    fireEvent.click(screen.getByTestId('operation-checkbox-manage_services:restart'));
+    expect(onChange).toHaveBeenLastCalledWith(['manage_services:restart', 'query_devices']);
+
+    fireEvent.click(screen.getByTestId('capability-picker-unrecognised-remove-query_devices'));
+    expect(onChange).toHaveBeenLastCalledWith([]);
   });
 });

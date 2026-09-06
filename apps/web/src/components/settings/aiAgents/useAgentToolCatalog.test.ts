@@ -103,4 +103,36 @@ describe('useAgentToolCatalog', () => {
 
     await waitFor(() => expect(result.current.error).toBe(true));
   });
+
+  it('reports loading true until the catalog fetch resolves, independent of the ceiling fetch', async () => {
+    let resolveCatalog!: (value: Response) => void;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') {
+        return new Promise((resolve) => {
+          resolveCatalog = resolve;
+        });
+      }
+      return Promise.resolve(json({ data: null }));
+    });
+
+    const { result } = renderHook(() => useAgentToolCatalog({ kind: 'triage', ownerScope: 'partner' }));
+    expect(result.current.loading).toBe(true);
+
+    resolveCatalog(json({ data: CATALOG }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.catalog).toEqual(CATALOG);
+  });
+
+  it('reports loading false once the catalog fetch fails', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ error: 'boom' }, false, 500));
+      return Promise.resolve(json({ data: CEILING }));
+    });
+
+    const { result } = renderHook(() => useAgentToolCatalog({ kind: 'triage', ownerScope: 'partner' }));
+
+    await waitFor(() => expect(result.current.error).toBe(true));
+    expect(result.current.loading).toBe(false);
+  });
 });

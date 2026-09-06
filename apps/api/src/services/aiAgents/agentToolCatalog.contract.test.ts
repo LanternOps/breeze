@@ -46,10 +46,30 @@ describe('agentToolCatalog contract', () => {
   });
 
   it('pins the unreachable set so a reachability change is a deliberate edit (#3300)', () => {
-    // Registered but absent from TOOL_TIERS: the agent SDK never offers these.
-    // Widening reachability is a product decision; update this list WITH the
-    // TOOL_TIERS change that makes it true, never on its own.
+    // Every registered tool NOT in the reachable set: absent from TOOL_TIERS,
+    // OR excluded by the same runtime-deny filters as `listAgentReachableTools`
+    // (session-only, human-only, blocked, secret-bearing). Widening
+    // reachability is a product decision; update this snapshot WITH the
+    // registry/guardrail change that makes it true, never on its own.
     expect(listUnreachableRegisteredTools()).toMatchSnapshot();
+  });
+
+  it('unreachableTools ∪ reachable = every registered tool name, and the two sets are disjoint (Task 7, #5049)', () => {
+    const reachable = new Set(listAgentReachableTools());
+    const unreachable = new Set(listUnreachableRegisteredTools());
+    const registered = new Set(aiTools.keys());
+    for (const name of reachable) expect(unreachable.has(name)).toBe(false);
+    for (const name of unreachable) expect(reachable.has(name)).toBe(false);
+    expect(new Set([...reachable, ...unreachable])).toEqual(registered);
+    // A concrete, non-vacuous member: registered + in TOOL_TIERS, but
+    // AGENT_HUMAN_ONLY_TOOLS — so `listUnreachableRegisteredTools` must widen
+    // beyond a bare `!(name in TOOL_TIERS)` filter to catch it.
+    expect(unreachable.has('manage_ai_agents')).toBe(true);
+  });
+
+  it("buildAgentToolCatalog's DTO carries unreachableTools matching listUnreachableRegisteredTools() (Task 7, #5049)", () => {
+    const catalog = buildAgentToolCatalog();
+    expect(catalog.unreachableTools).toEqual(listUnreachableRegisteredTools());
   });
 
   it('every preset entry names a reachable, mutating operation', () => {

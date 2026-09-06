@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { AgentCeilingDto, AgentToolCatalogDto, AiAgentKind } from '@breeze/shared';
@@ -76,6 +76,14 @@ export default function CapabilityPicker({
   const [showNames, setShowNames] = useState(showToolNames ?? false);
   const touchedIds = useMemo(() => presetCapabilityIds(catalog, kind), [catalog, kind]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(touchedIds));
+  // The `useState` initializer above only runs once, at mount — if `kind`
+  // changes afterward (the create/edit form lets the operator switch it),
+  // `expanded` would keep pointing at the OLD kind's preset capabilities
+  // forever. Resync it whenever `touchedIds` (derived from `kind`, and
+  // `catalog` which is effectively static per mount) changes.
+  useEffect(() => {
+    setExpanded(new Set(touchedIds));
+  }, [touchedIds]);
   const [moreOpen, setMoreOpen] = useState(false);
 
   const { selected, unrecognised } = useMemo(() => entriesToSelection(entries, catalog), [entries, catalog]);
@@ -96,10 +104,12 @@ export default function CapabilityPicker({
    * SELECTION, never the raw entries the draft happened to arrive with. A
    * bare multi-op entry (`bare_multi_op`) already folded its operations into
    * `selected` when `entries` was parsed, so round-tripping through
-   * `selectionToEntries` normalises it away on the very next change. Entries
-   * the catalog could never represent at all (`unknown_tool`,
-   * `unreachable_tool`) are carried over verbatim so an unrelated checkbox
-   * click never silently drops them — only the explicit Remove button does.
+   * `selectionToEntries` normalises it away on the very next change. Every
+   * other unrecognised reason (`unknown_tool`, `unreachable_tool`,
+   * `read_only`) names an entry the selection model could never represent —
+   * a tool that doesn't exist, one the agent can't reach, or one whose only
+   * effect is already always-on — so those are carried over verbatim on an
+   * unrelated change; only the explicit Remove button drops them.
    */
   const commit = (next: Set<string>) => {
     const preserved = unrecognised.filter((u) => u.reason !== 'bare_multi_op').map((u) => u.entry);
@@ -118,7 +128,7 @@ export default function CapabilityPicker({
 
   const toggleCapability = (capabilityId: string) => {
     const ops = mutatingOpsFor(capabilityId);
-    const state = capabilityState(capabilityId, selected, catalog);
+    const state = capabilityState(capabilityId, selected, catalog, ceiling);
     const next = new Set(selected);
     if (state.checked === 'all') {
       for (const op of ops) next.delete(op.key);
@@ -142,7 +152,12 @@ export default function CapabilityPicker({
   };
 
   const preset = catalog.presets[kind] ?? [];
-  const presetApplied = preset.length > 0 && preset.every((key) => selected.has(key));
+  // "Applied" reads against what the ceiling actually allows this row to
+  // select — a preset key the ceiling excludes can never be checked, so
+  // requiring it too would leave the button permanently un-appliable for an
+  // org row whose partner baseline doesn't cover the full preset.
+  const presetKeysInCeiling = preset.filter((key) => isWithinCeiling(key, ceiling));
+  const presetApplied = presetKeysInCeiling.length > 0 && presetKeysInCeiling.every((key) => selected.has(key));
   const applyRecommended = () => {
     const next = new Set(selected);
     for (const key of preset) if (isWithinCeiling(key, ceiling)) next.add(key);
@@ -178,7 +193,7 @@ export default function CapabilityPicker({
   const renderCapability = (capabilityId: string) => {
     const cap = catalog.capabilities.find((c) => c.id === capabilityId);
     if (!cap) return null;
-    const state = capabilityState(capabilityId, selected, catalog);
+    const state = capabilityState(capabilityId, selected, catalog, ceiling);
     const isOpen = expanded.has(capabilityId) || searchLower !== '';
     const enabledOps = mutatingOpsFor(capabilityId);
     const capDisabled = enabledOps.length > 0 && enabledOps.every((op) => !isWithinCeiling(op.key, ceiling));
@@ -223,7 +238,14 @@ export default function CapabilityPicker({
               </span>
               <span className="block text-xs text-muted-foreground">{capabilityDescription(capabilityId)}</span>
               <span className="block text-xs text-muted-foreground">
-                {t('aiAgentsPage.catalog.operationsCount', { selected: state.selectedCount, total: state.totalCount })}
+                {t('aiAgentsPage.catalog.operationsCount', {
+                  selected: state.selectedCount,
+                  total: state.totalCount,
+                  // Pluralises "operation(s)" on the total, not the selected
+                  // count — "1 of 1 operation" reads correctly even when
+                  // `selected` is 0.
+                  count: state.totalCount,
+                })}
               </span>
             </span>
           </button>
@@ -388,7 +410,15 @@ export default function CapabilityPicker({
       <p className="text-xs text-muted-foreground" data-testid="capability-picker-summary">
         {t(/* i18n-dynamic */ `aiAgentsPage.catalog.summary.${mode}`, {
           operations: summary.operations,
-          capabilities: summary.capabilities,
+          // i18next pluralises the WHOLE key (summary.<mode>_one/_other) off
+          // a single `count` — that has to be the operations count, since
+          // it's the sentence's primary noun. The capabilities count is a
+          // SECOND noun in the same sentence with its own plural form, which
+          // one `count` can't drive too — so it's pre-pluralised into its own
+          // phrase here and interpolated as `capabilityPhrase`, rather than
+          // pluralising "capabilities" inside the summary string itself.
+          count: summary.operations,
+          capabilityPhrase: t('aiAgentsPage.catalog.capabilityCount', { count: summary.capabilities }),
           approvalRequests: summary.approvalRequests,
           loggedProposals: summary.loggedProposals,
         })}

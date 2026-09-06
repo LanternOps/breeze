@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Não foi possível carregar as funções, então os destinatários das notificações não podem ser alterados agora.",
       "supervisedActionKeysHint": "Operações que este agente pode executar SEM um humano clicar em aprovar, quando existe uma política correspondente e o limite de exposição da organização tem espaço. Cada uma ainda passa pelas proteções em tempo real, pelo interruptor de interrupção e pelos limites por organização no momento da execução.",
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
+      "supervisedActionKeysNoneHeld": "Este agente ainda não tem operações pré-autorizadas.",
       "supervisedActionKeysCeilingSummary_one": "Teto para organizações — {{count}} chave",
       "supervisedActionKeysCeilingSummary_other": "Teto para organizações — {{count}} chaves",
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Procurar vulnerabilidades"
         }
       },
-      "alwaysOn": "Sempre ativo: ferramentas somente leitura",
-      "alwaysOnCount": "{{count}} ferramentas somente leitura",
+      "alwaysOnCount_one": "{{count}} ferramenta somente leitura",
+      "alwaysOnCount_other": "{{count}} ferramentas somente leitura",
       "highImpact": "Alto impacto",
       "recommendedTitle": "Recomendado para {{kind}}",
       "recommendedDescription": "Operações que os agentes de {{kind}} geralmente precisam.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "Esta ferramenta não existe mais.",
         "unreachable_tool": "Esta ferramenta não está disponível para agentes.",
-        "bare_multi_op": "Esta entrada abrange todas as ações desta ferramenta, incluindo as adicionadas posteriormente. Selecione operações individuais em vez disso."
+        "bare_multi_op": "Esta entrada abrange todas as ações desta ferramenta, incluindo as adicionadas posteriormente. Selecione operações individuais em vez disso.",
+        "read_only": "Somente leitura: sempre disponível para o agente, portanto esta entrada não tem efeito."
       },
       "remove": "Remover",
-      "operationsCount": "{{selected}} de {{total}} operações",
+      "operationsCount_one": "{{selected}} de {{total}} operação",
+      "operationsCount_other": "{{selected}} de {{total}} operações",
+      "capabilityCount_one": "{{count}} capacidade",
+      "capabilityCount_other": "{{count}} capacidades",
       "summary": {
-        "shadow": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operações em {{capabilities}} capacidades ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); não executa nada sem supervisão.",
-        "act": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operações em {{capabilities}} capacidades ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); executa as operações elegíveis sem supervisão.",
-        "off": "Desligado: este agente não é executado. Se fosse ativado, afetaria {{operations}} operações em {{capabilities}} capacidades ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas)."
+        "shadow_one": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operação em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); não executa nada sem supervisão.",
+        "shadow_other": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operações em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); não executa nada sem supervisão.",
+        "act_one": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operação em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); executa as operações elegíveis sem supervisão.",
+        "act_other": "Lê dados de dispositivos, alertas e da frota; pode propor {{operations}} operações em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas); executa as operações elegíveis sem supervisão.",
+        "off_one": "Desligado: este agente não é executado. Se fosse ativado, afetaria {{operations}} operação em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas).",
+        "off_other": "Desligado: este agente não é executado. Se fosse ativado, afetaria {{operations}} operações em {{capabilityPhrase}} ({{approvalRequests}} solicitações de aprovação, {{loggedProposals}} propostas registradas)."
       },
       "modeLine": {
         "shadow": "Modo Sombra: nada abaixo é executado por conta própria. Solicitações de aprovação são enviadas a um técnico; alterações de baixo risco são registradas como propostas e nunca executadas.",
         "act": "Modo Ação: operações marcadas como “Executa sem supervisão” são executadas sem a aprovação de um técnico; todo o resto ainda envia uma solicitação de aprovação ou é registrado como proposta.",
         "off": "Desligado: este agente não é executado, portanto nada abaixo tem efeito ainda."
       },
-      "catalogUnavailable": "Não foi possível carregar o catálogo de ferramentas. Você ainda pode editar a lista de permissões diretamente abaixo."
+      "catalogUnavailable": "Não foi possível carregar o catálogo de ferramentas. Você ainda pode editar a lista de permissões diretamente abaixo.",
+      "loading": "Carregando capacidades…"
     }
   },
   "apiKeyForm": {

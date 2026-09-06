@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysNoneHeld": "This agent has no pre-authorized operations yet.",
       "supervisedActionKeysCeilingSummary_one": "Ceiling for organizations — {{count}} key",
       "supervisedActionKeysCeilingSummary_other": "Ceiling for organizations — {{count}} keys",
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Scan for vulnerabilities"
         }
       },
-      "alwaysOn": "Always on: read-only tools",
-      "alwaysOnCount": "{{count}} read-only tools",
+      "alwaysOnCount_one": "{{count}} read-only tool",
+      "alwaysOnCount_other": "{{count}} read-only tools",
       "highImpact": "High impact",
       "recommendedTitle": "Recommended for {{kind}}",
       "recommendedDescription": "Operations that {{kind}} agents typically need.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "This tool no longer exists.",
         "unreachable_tool": "This tool is not available to agents.",
-        "bare_multi_op": "This entry covers every action for this tool, including ones added later. Select individual operations instead."
+        "bare_multi_op": "This entry covers every action for this tool, including ones added later. Select individual operations instead.",
+        "read_only": "Read-only: always available to the agent, so this entry has no effect."
       },
       "remove": "Remove",
-      "operationsCount": "{{selected}} of {{total}} operations",
+      "operationsCount_one": "{{selected}} of {{total}} operation",
+      "operationsCount_other": "{{selected}} of {{total}} operations",
+      "capabilityCount_one": "{{count}} capability",
+      "capabilityCount_other": "{{count}} capabilities",
       "summary": {
-        "shadow": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilities}} capabilities ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes nothing unattended.",
-        "act": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilities}} capabilities ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes eligible operations unattended.",
-        "off": "Off: this agent does not run. Turned on, it would touch {{operations}} operations across {{capabilities}} capabilities ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals)."
+        "shadow_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes nothing unattended.",
+        "shadow_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes nothing unattended.",
+        "act_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes eligible operations unattended.",
+        "act_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals); executes eligible operations unattended.",
+        "off_one": "Off: this agent does not run. Turned on, it would touch {{operations}} operation across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals).",
+        "off_other": "Off: this agent does not run. Turned on, it would touch {{operations}} operations across {{capabilityPhrase}} ({{approvalRequests}} approval requests, {{loggedProposals}} logged proposals)."
       },
       "modeLine": {
         "shadow": "Shadow mode: nothing below runs on its own. Approval requests go to a technician; low-risk changes are logged as proposals and never executed.",
         "act": "Act mode: operations marked “Executes unattended” run without a technician's approval; everything else still sends an approval request or is logged as a proposal.",
         "off": "Off: this agent does not run, so nothing below has any effect yet."
       },
-      "catalogUnavailable": "Could not load the tool catalog. You can still edit the permissions list directly below."
+      "catalogUnavailable": "Could not load the tool catalog. You can still edit the permissions list directly below.",
+      "loading": "Loading capabilities…"
     }
   },
   "apiKeyForm": {

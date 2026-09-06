@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Impossible de charger les rôles ; les destinataires des notifications ne peuvent pas être modifiés pour le moment.",
       "supervisedActionKeysHint": "Opérations que cet agent peut exécuter SANS qu’un humain clique sur approuver, lorsqu’une politique correspondante existe et que le plafond d’exposition de l’organisation le permet. Chacune passe tout de même par les garde-fous en direct, l’interrupteur d’arrêt et les plafonds par organisation au moment de l’exécution.",
       "supervisedActionKeysEmpty": "Aucune action décidable par politique n’est enregistrée.",
+      "supervisedActionKeysNoneHeld": "Cet agent n'a pas encore d'opérations préautorisées.",
       "supervisedActionKeysCeilingSummary_one": "Plafond pour les organisations — {{count}} clé",
       "supervisedActionKeysCeilingSummary_other": "Plafond pour les organisations — {{count}} clés",
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Rechercher des vulnérabilités"
         }
       },
-      "alwaysOn": "Toujours actif : outils en lecture seule",
-      "alwaysOnCount": "{{count}} outils en lecture seule",
+      "alwaysOnCount_one": "{{count}} outil en lecture seule",
+      "alwaysOnCount_other": "{{count}} outils en lecture seule",
       "highImpact": "Impact élevé",
       "recommendedTitle": "Recommandé pour {{kind}}",
       "recommendedDescription": "Opérations dont les agents {{kind}} ont généralement besoin.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "Cet outil n'existe plus.",
         "unreachable_tool": "Cet outil n'est pas accessible aux agents.",
-        "bare_multi_op": "Cette entrée couvre toutes les actions de cet outil, y compris celles ajoutées ultérieurement. Sélectionnez plutôt des opérations individuelles."
+        "bare_multi_op": "Cette entrée couvre toutes les actions de cet outil, y compris celles ajoutées ultérieurement. Sélectionnez plutôt des opérations individuelles.",
+        "read_only": "Lecture seule : toujours accessible à l'agent, donc cette entrée n'a aucun effet."
       },
       "remove": "Retirer",
-      "operationsCount": "{{selected}} opérations sur {{total}}",
+      "operationsCount_one": "{{selected}} opération sur {{total}}",
+      "operationsCount_other": "{{selected}} opérations sur {{total}}",
+      "capabilityCount_one": "{{count}} capacité",
+      "capabilityCount_other": "{{count}} capacités",
       "summary": {
-        "shadow": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilities}} capacités ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; n'exécute rien sans intervention.",
-        "act": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilities}} capacités ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; exécute sans intervention les opérations éligibles.",
-        "off": "Désactivé : cet agent ne s'exécute pas. Une fois activé, il concernerait {{operations}} opérations sur {{capabilities}} capacités ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées)."
+        "shadow_one": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opération sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; n'exécute rien sans intervention.",
+        "shadow_other": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; n'exécute rien sans intervention.",
+        "act_one": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opération sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; exécute sans intervention les opérations éligibles.",
+        "act_other": "Lit les données des postes, des alertes et du parc ; peut proposer {{operations}} opérations sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées) ; exécute sans intervention les opérations éligibles.",
+        "off_one": "Désactivé : cet agent ne s'exécute pas. Une fois activé, il concernerait {{operations}} opération sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées).",
+        "off_other": "Désactivé : cet agent ne s'exécute pas. Une fois activé, il concernerait {{operations}} opérations sur {{capabilityPhrase}} ({{approvalRequests}} demandes d'approbation, {{loggedProposals}} propositions consignées)."
       },
       "modeLine": {
         "shadow": "Mode Ombre : rien ci-dessous ne s'exécute de lui-même. Les demandes d'approbation sont envoyées à un technicien ; les changements à faible risque sont consignés comme propositions et ne sont jamais exécutés.",
         "act": "Mode Action : les opérations marquées « S'exécute sans intervention » s'exécutent sans l'approbation d'un technicien ; tout le reste envoie toujours une demande d'approbation ou est consigné comme proposition.",
         "off": "Désactivé : cet agent ne s'exécute pas, donc rien ci-dessous n'a d'effet pour l'instant."
       },
-      "catalogUnavailable": "Impossible de charger le catalogue d'outils. Vous pouvez toujours modifier la liste des permissions directement ci-dessous."
+      "catalogUnavailable": "Impossible de charger le catalogue d'outils. Vous pouvez toujours modifier la liste des permissions directement ci-dessous.",
+      "loading": "Chargement des capacités…"
     }
   },
   "apiKeyForm": {

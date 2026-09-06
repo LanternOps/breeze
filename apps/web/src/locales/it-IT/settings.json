@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati.",
       "supervisedActionKeysHint": "Operazioni che questo agente può eseguire SENZA che un essere umano clicchi su approva, quando esiste una policy corrispondente e il limite di esposizione dell'organizzazione ha margine. Ognuna passa comunque attraverso le protezioni live, l'interruttore di emergenza e i limiti per organizzazione al momento dell'esecuzione.",
       "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
+      "supervisedActionKeysNoneHeld": "Questo agente non ha ancora operazioni preautorizzate.",
       "supervisedActionKeysCeilingSummary_one": "Limite per le organizzazioni — {{count}} chiave",
       "supervisedActionKeysCeilingSummary_other": "Limite per le organizzazioni — {{count}} chiavi",
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Cercare vulnerabilità"
         }
       },
-      "alwaysOn": "Sempre attivo: strumenti di sola lettura",
-      "alwaysOnCount": "{{count}} strumenti di sola lettura",
+      "alwaysOnCount_one": "{{count}} strumento di sola lettura",
+      "alwaysOnCount_other": "{{count}} strumenti di sola lettura",
       "highImpact": "Impatto elevato",
       "recommendedTitle": "Consigliato per {{kind}}",
       "recommendedDescription": "Operazioni di cui gli agenti {{kind}} hanno solitamente bisogno.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "Questo strumento non esiste più.",
         "unreachable_tool": "Questo strumento non è disponibile per gli agenti.",
-        "bare_multi_op": "Questa voce copre ogni azione di questo strumento, incluse quelle aggiunte in seguito. Seleziona invece le singole operazioni."
+        "bare_multi_op": "Questa voce copre ogni azione di questo strumento, incluse quelle aggiunte in seguito. Seleziona invece le singole operazioni.",
+        "read_only": "Sola lettura: sempre disponibile per l'agente, quindi questa voce non ha alcun effetto."
       },
       "remove": "Rimuovi",
-      "operationsCount": "{{selected}} di {{total}} operazioni",
+      "operationsCount_one": "{{selected}} di {{total}} operazione",
+      "operationsCount_other": "{{selected}} di {{total}} operazioni",
+      "capabilityCount_one": "{{count}} capacità",
+      "capabilityCount_other": "{{count}} capacità",
       "summary": {
-        "shadow": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilities}} capacità ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); non esegue nulla senza supervisione.",
-        "act": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilities}} capacità ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); esegue le operazioni idonee senza supervisione.",
-        "off": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazioni in {{capabilities}} capacità ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate)."
+        "shadow_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); non esegue nulla senza supervisione.",
+        "shadow_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); non esegue nulla senza supervisione.",
+        "act_one": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); esegue le operazioni idonee senza supervisione.",
+        "act_other": "Legge i dati di dispositivi, avvisi e flotta; può proporre {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate); esegue le operazioni idonee senza supervisione.",
+        "off_one": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazione in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate).",
+        "off_other": "Disattivato: questo agente non è in esecuzione. Se attivato, riguarderebbe {{operations}} operazioni in {{capabilityPhrase}} ({{approvalRequests}} richieste di approvazione, {{loggedProposals}} proposte registrate)."
       },
       "modeLine": {
         "shadow": "Modalità Ombra: nulla di quanto segue viene eseguito da solo. Le richieste di approvazione vengono inviate a un tecnico; le modifiche a basso rischio vengono registrate come proposte e non vengono mai eseguite.",
         "act": "Modalità Azione: le operazioni contrassegnate come “Viene eseguito senza supervisione” vengono eseguite senza l'approvazione di un tecnico; tutto il resto continua a inviare una richiesta di approvazione o viene registrato come proposta.",
         "off": "Disattivato: questo agente non è in esecuzione, quindi nulla di quanto segue ha ancora effetto."
       },
-      "catalogUnavailable": "Impossibile caricare il catalogo degli strumenti. È comunque possibile modificare l'elenco dei permessi direttamente qui sotto."
+      "catalogUnavailable": "Impossibile caricare il catalogo degli strumenti. È comunque possibile modificare l'elenco dei permessi direttamente qui sotto.",
+      "loading": "Caricamento delle capacità…"
     }
   },
   "apiKeyForm": {

@@ -1716,6 +1716,7 @@
       "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor.",
       "supervisedActionKeysHint": "Eşleşen bir politika varsa ve kuruluşun maruziyet sınırında yer varsa, bu aracının bir insan onaylamadan gerçekleştirebileceği işlemler. Her biri yürütme anında yine de canlı korumalardan, kapatma anahtarından ve kuruluş başına sınırlardan geçer.",
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
+      "supervisedActionKeysNoneHeld": "Bu aracının henüz önceden yetkilendirilmiş bir işlemi yok.",
       "supervisedActionKeysCeilingSummary_one": "Kuruluşlar için üst sınır — {{count}} anahtar",
       "supervisedActionKeysCeilingSummary_other": "Kuruluşlar için üst sınır — {{count}} anahtar",
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
@@ -2611,8 +2612,8 @@
           "vulnerabilities": "Güvenlik açığı tara"
         }
       },
-      "alwaysOn": "Her zaman açık: salt okunur araçlar",
-      "alwaysOnCount": "{{count}} salt okunur araç",
+      "alwaysOnCount_one": "{{count}} salt okunur araç",
+      "alwaysOnCount_other": "{{count}} salt okunur araç",
       "highImpact": "Yüksek etki",
       "recommendedTitle": "{{kind}} için önerilen",
       "recommendedDescription": "{{kind}} aracılarının genellikle ihtiyaç duyduğu işlemler.",
@@ -2634,21 +2635,29 @@
       "unrecognised": {
         "unknown_tool": "Bu araç artık mevcut değil.",
         "unreachable_tool": "Bu araç aracılar için kullanılamaz.",
-        "bare_multi_op": "Bu giriş, daha sonra eklenenler dahil bu aracın tüm eylemlerini kapsar. Bunun yerine tek tek işlemleri seçin."
+        "bare_multi_op": "Bu giriş, daha sonra eklenenler dahil bu aracın tüm eylemlerini kapsar. Bunun yerine tek tek işlemleri seçin.",
+        "read_only": "Salt okunur: aracı için her zaman kullanılabilir, bu nedenle bu girişin hiçbir etkisi yok."
       },
       "remove": "Kaldır",
-      "operationsCount": "{{total}} işlemden {{selected}} tanesi",
+      "operationsCount_one": "{{total}} işlemden {{selected}} tanesi",
+      "operationsCount_other": "{{total}} işlemden {{selected}} tanesi",
+      "capabilityCount_one": "{{count}} yetenek",
+      "capabilityCount_other": "{{count}} yetenek",
       "summary": {
-        "shadow": "Cihaz, uyarı ve filo verilerini okur; {{capabilities}} yetenekte {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
-        "act": "Cihaz, uyarı ve filo verilerini okur; {{capabilities}} yetenekte {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
-        "off": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilities}} yetenekte {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri)."
+        "shadow_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "shadow_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); hiçbir şeyi gözetimsiz çalıştırmaz.",
+        "act_one": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
+        "act_other": "Cihaz, uyarı ve filo verilerini okur; {{capabilityPhrase}} kapsamında {{operations}} işlem önerebilir ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri); uygun işlemleri gözetimsiz çalıştırır.",
+        "off_one": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri).",
+        "off_other": "Kapalı: bu aracı çalışmıyor. Açılsaydı {{capabilityPhrase}} kapsamında {{operations}} işlemi etkilerdi ({{approvalRequests}} onay isteği, {{loggedProposals}} kayıtlı öneri)."
       },
       "modeLine": {
         "shadow": "Gölge modu: aşağıdakilerin hiçbiri kendiliğinden çalışmaz. Onay istekleri bir teknisyene gider; düşük riskli değişiklikler öneri olarak kaydedilir ve hiçbir zaman yürütülmez.",
         "act": "Eylem modu: “Gözetimsiz çalışır” olarak işaretlenen işlemler bir teknisyenin onayı olmadan çalışır; geri kalan her şey yine de bir onay isteği gönderir veya öneri olarak kaydedilir.",
         "off": "Kapalı: bu aracı çalışmıyor, bu yüzden aşağıdakilerin henüz hiçbir etkisi yok."
       },
-      "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz."
+      "catalogUnavailable": "Araç kataloğu yüklenemedi. Yine de izin listesini doğrudan aşağıdan düzenleyebilirsiniz.",
+      "loading": "Yetenekler yükleniyor…"
     }
   },
   "apiKeyForm": {

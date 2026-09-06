@@ -50,7 +50,10 @@ export default function OperationRow({
         type="checkbox"
         className="mt-0.5 h-4 w-4 shrink-0 rounded border focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
         checked={checked}
-        disabled={!withinCeiling}
+        // A stale grant outside the current ceiling must stay removable —
+        // only block a NEW selection outside the ceiling, never block
+        // unchecking an existing one.
+        disabled={!withinCeiling && !checked}
         onChange={() => onToggle(op.key)}
         data-testid={`operation-checkbox-${op.key}`}
       />

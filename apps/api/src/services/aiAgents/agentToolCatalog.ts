@@ -325,8 +325,17 @@ export function listAgentReachableTools(): string[] {
     .sort();
 }
 
+/**
+ * Every registered tool NOT in `listAgentReachableTools()` — not just the
+ * ones absent from `TOOL_TIERS`, but also whichever of the same runtime-deny
+ * filters (`AGENT_HUMAN_ONLY_TOOLS`, `BLOCKED_TOOLS`, secret-bearing) trip on
+ * a tool that otherwise HAS a tier. Lets the picker (Task 7, #5049) tell a
+ * stale allowlist entry naming a real-but-unreachable tool
+ * (`unreachable_tool`) apart from one that never existed (`unknown_tool`).
+ */
 export function listUnreachableRegisteredTools(): string[] {
-  return [...aiTools.keys()].filter((name) => !(name in TOOL_TIERS)).sort();
+  const reachable = new Set(listAgentReachableTools());
+  return [...aiTools.keys()].filter((name) => !reachable.has(name)).sort();
 }
 
 /**
@@ -405,6 +414,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       patch: [...AGENT_KIND_PRESETS.patch],
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
     },
+    unreachableTools: listUnreachableRegisteredTools(),
   };
   return memo;
 }
